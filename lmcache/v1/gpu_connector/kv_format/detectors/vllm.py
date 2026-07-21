@@ -51,7 +51,20 @@ class VLLM_Detector(EngineDetector):
                 raise ValueError(
                     f"blocks-first fused trailing dim {fused_dim} is not 2 * head_size"
                 )
-            split = [t.reshape(*t.shape[:3], 2, fused_dim // 2) for t in kv_caches]
+            # Split each fused K/V tensor by its own trailing dim; skip non-4-D
+            # tensors so a hybrid list (e.g. MiniMax-M3's rank-3 key-only index
+            # cache + rank-4 fused K/V) doesn't crash. Per-group re-detection
+            # then classifies each group's format.
+            split = [
+                t.reshape(*t.shape[:3], 2, t.shape[3] // 2)
+                if (
+                    isinstance(t, torch.Tensor)
+                    and t.dim() == 4
+                    and t.shape[3] % 2 == 0
+                )
+                else t
+                for t in kv_caches
+            ]
             if is_hnd:
                 return lmc_ops.EngineKVFormat.NL_X_NB_NH_BS_TWO_HS, split
             return lmc_ops.EngineKVFormat.NL_X_NB_BS_NH_TWO_HS, split
