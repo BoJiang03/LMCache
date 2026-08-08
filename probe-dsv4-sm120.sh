@@ -10,10 +10,17 @@
 # Every other flag is copied verbatim from run-dsv4-flash-tp.sh so the KV cache
 # group geometry the probe reports is the one the real test would see.
 #
-# Usage:
-#   ./probe-dsv4-sm120.sh                      # install SM120 DeepGEMM, fp8_ds_mla
-#   INSTALL_DEEPGEMM=0 ./probe-dsv4-sm120.sh   # baseline: reproduce the crash
-#   KV_CACHE_DTYPE=fp8 ./probe-dsv4-sm120.sh   # vllm#43477's SM120 recipe
+# Usage, cheapest first:
+#   INSTALL_DEEPGEMM=0 ./probe-dsv4-sm120.sh                    # baseline: reproduce the crash
+#   INSTALL_DEEPGEMM=0 USE_DEEP_GEMM=0 ./probe-dsv4-sm120.sh    # route around DeepGEMM entirely
+#   ./probe-dsv4-sm120.sh                                       # install SM120 DeepGEMM
+#   KV_CACHE_DTYPE=fp8 ./probe-dsv4-sm120.sh                    # vllm#43477's SM120 recipe
+#
+# USE_DEEP_GEMM=0 sets VLLM_USE_DEEP_GEMM=0, which makes is_deep_gemm_supported()
+# False. Both callers that reach the failing SF-layout transform are gated on it
+# (kernels/linear/scaled_mm/deep_gemm.py: is_supported(); fused_moe/experts/
+# deep_gemm_moe.py: is_supported()), and the MXFP4 MoE oracle then falls through
+# DEEPGEMM_MXFP4 to MARLIN. If this boots, no DeepGEMM swap is needed at all.
 #
 # Run it inside an environment that already has vllm + lmcache importable
 # (i.e. what .buildkite/k3_harness/setup-env.sh leaves behind).
@@ -33,6 +40,7 @@ LMCACHE_PORT="${LMCACHE_PORT:-6655}"
 VLLM_PORT="${VLLM_PORT:-8100}"
 READY_TIMEOUT="${READY_TIMEOUT:-900}"
 INSTALL_DEEPGEMM="${INSTALL_DEEPGEMM:-1}"
+USE_DEEP_GEMM="${USE_DEEP_GEMM:-1}"
 # vllm-project/DeepGEMM@codex/cuda129-fp8-include-5f33a180: the SM120 branch
 # (nv_dev+situ) plus the one-line CUDA FP8 header fix that vLLM's current pin was
 # cut for. Drop-in replacement for that pin -- same fix, different base:
@@ -124,8 +132,8 @@ LMCACHE_PID=$!
 sleep 10
 
 # ── 3. vLLM with dummy weights ────────────────────────────────────────
-echo "=== Launching vLLM TP=$TENSOR_PARALLEL_SIZE (dummy weights, kv-cache-dtype=$KV_CACHE_DTYPE) ==="
-VLLM_SERVER_DEV_MODE=1 vllm serve "$MODEL" \
+echo "=== Launching vLLM TP=$TENSOR_PARALLEL_SIZE (dummy weights, kv-cache-dtype=$KV_CACHE_DTYPE, VLLM_USE_DEEP_GEMM=$USE_DEEP_GEMM) ==="
+VLLM_SERVER_DEV_MODE=1 VLLM_USE_DEEP_GEMM="$USE_DEEP_GEMM" vllm serve "$MODEL" \
     --load-format dummy \
     --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
     --enable-expert-parallel \
