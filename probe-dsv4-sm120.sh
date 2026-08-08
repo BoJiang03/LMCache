@@ -33,8 +33,16 @@ LMCACHE_PORT="${LMCACHE_PORT:-6655}"
 VLLM_PORT="${VLLM_PORT:-8100}"
 READY_TIMEOUT="${READY_TIMEOUT:-900}"
 INSTALL_DEEPGEMM="${INSTALL_DEEPGEMM:-1}"
-# vllm-project/DeepGEMM@nv_dev+situ -- the branch carrying the SM120 kernels.
-DEEPGEMM_REF="${DEEPGEMM_REF:-5f33a18079e96d26d5869c9759657eb6150f31b1}"
+# vllm-project/DeepGEMM@codex/cuda129-fp8-include-5f33a180: the SM120 branch
+# (nv_dev+situ) plus the one-line CUDA FP8 header fix that vLLM's current pin was
+# cut for. Drop-in replacement for that pin -- same fix, different base:
+#
+#   codex/f5a-cuda-fp8-include         e21c821f = f5a76426 + fix   <- vLLM pins this, 0 sm120
+#   codex/cuda129-fp8-include-5f33a180 2fd67329 = 5f33a180 + fix   <- this, 18 sm120
+#
+# SM120 support was live in vLLM from #47304 (07-02, deepseek-ai@a6b593d2) until
+# #50000 (07-30) repointed the pin at a fork branch based off pre-SM120 code.
+DEEPGEMM_REF="${DEEPGEMM_REF:-2fd67329ec2942f65ba35d561256ab6ed3b903cb}"
 
 OUT_DIR="${OUT_DIR:-/tmp/dsv4_probe_$$}"
 mkdir -p "$OUT_DIR"
