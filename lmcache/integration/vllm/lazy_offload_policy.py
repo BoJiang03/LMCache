@@ -424,10 +424,12 @@ class EvictionAwareStoreQueue:
     def drop_request(self, request_id: str) -> int:
         """Discard all pending operations of a request.
 
-        Called when the buffered state becomes stale: on abort, or when a
+        Called when the buffered state becomes stale: today only when a
         preempted request's tracker is reset (after resume it re-produces
         store metadata from token zero, overlapping anything still
-        buffered). An in-flight batch is deliberately not forgotten: it
+        buffered). An abort does not drop: it routes through
+        :meth:`mark_request_finished` and the buffered ops stay storable.
+        An in-flight batch is deliberately not forgotten: it
         stays tracked until its completion receipt arrives via
         :meth:`notify_stored`, so an operation re-admitted after the drop
         cannot be emitted while the worker still holds an outstanding

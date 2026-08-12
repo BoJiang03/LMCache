@@ -22,7 +22,8 @@ admitted op whose blocks come under eviction pressure.
   mutate pool state.
 - **`PendingStoreOp`** — one deferred store: opaque `store_metadata` (the
   ready `LMCacheMPRequestMetadata`), the covered blocks' hash snapshot taken
-  at admission, `prefix_end_tokens` (prefix length once this op lands), and
+  at admission, `prefix_start_tokens` / `prefix_end_tokens` (the op's token
+  range; the start detects deduplication holes in the pending list), and
   `cache_salt` (part of the op's content identity).
 - **`EvictionAwareStoreQueue`** — the policy object, one per connector.
 
@@ -46,7 +47,10 @@ admitted op whose blocks come under eviction pressure.
      bounded by the unique cached content on the GPU. It is optimistic: if
      the covering op is later dropped, chunks the deduplicated request stores
      past that point are unreachable until a future request re-buffers the
-     prefix — wasted storage, never corruption.
+     prefix — wasted storage, never corruption. A deduplicated chunk also
+     leaves a *hole* in its request's pending list; emission never spans a
+     hole (each batch is coalesced into one contiguous store op), so the ops
+     on each side go out in separate batches.
 2. Once per step: `observe_step(gross_blocks_allocated, est_next_step_blocks)`
    then `collect_due()`.
 3. For every op in `DrainResult.to_store` (already ordered): pin (`touch`)
@@ -63,18 +67,24 @@ admitted op whose blocks come under eviction pressure.
    stores are pending or in flight — defer `end_session` until the id
    appears in `DrainResult.released_requests` (remaining ops all dropped) or
    `notify_stored` returns True (stored).
-6. When the request's buffered state goes stale — abort, or the preemption
+6. When the request's buffered state goes stale — today only the preemption
    tracker reset (the recreated tracker re-produces metadata from token
    zero, overlapping anything buffered) — call `drop_request(id)`. It
    discards pending ops only: an in-flight batch stays tracked until its
    receipt, so a re-admitted op cannot be emitted while the worker still
-   holds an outstanding store for the request.
+   holds an outstanding store for the request. The surviving batch is
+   marked *stale* (see step 7). An abort is **not** a drop: it routes
+   through `request_finished` → `mark_request_finished`, and the aborted
+   request's buffered ops stay storable until drained or evicted.
 7. When a receipt reports the store **failed** (worker-side failure signal):
    call `mark_store_failed(id)` before `notify_stored(id)`. It drops the
    request's held-back ops and rejects its later chunks (without the failed
    prefix they would be stored unreachable), while leaving the finished and
    in-flight markers alone so the accompanying receipt still tears the
-   request down through `notify_stored` as usual.
+   request down through `notify_stored` as usual. A failure of a batch
+   marked stale by `drop_request` is ignored: ops admitted after the reset
+   were re-produced from token zero and do not depend on the failed prefix.
+   `notify_stored` clears the stale mark along with the in-flight marker.
 
 ## Decision rule
 
@@ -93,10 +103,21 @@ admitted op whose blocks come under eviction pressure.
   `min_prefix_tokens`, all its ops are dropped (the due front is dying, which
   breaks the chain for the rest). The threshold is the offline break-even
   prefix length; 0 disables.
+- A due segment is cut at the first deduplication hole before emission
+  (the batch must coalesce into one contiguous token range); the request
+  keeps its due-rank urgency, and the post-hole ops follow in a later
+  batch once the front run's receipt arrives.
 - Cross-request drain order = min due rank ascending; `max_drain_per_step`
   bounds the per-step D2H burst. The cap may split a request's due segment,
   but only ever emits a front slice of it, so within-request prefix order is
   preserved and the remainder stays pending.
+- **Idle consequences**: receipts travel in worker metadata, which only
+  flows on steps that schedule tokens. If the engine goes idle with a
+  batch in flight, its pins and its request's session stay held until the
+  next non-empty step delivers the receipt; finished requests whose ops
+  never come due likewise hold their sessions open. Both resolve on the
+  next activity — nothing leaks permanently, by design ("idle never
+  drains" also means "idle never settles").
 
 ## Observability
 
