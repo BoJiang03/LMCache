@@ -76,6 +76,55 @@ Residual uncertainty: intra-step allocation bursts (bounded by one step).
 Upstream endgame: a synchronous evict callback (immediate drop confirmation)
 and grace-period reclaim / RFC #38260 (certainty *before* the loss).
 
+*Why step-boundary sampling is lossless.* All eviction happens inside
+`schedule()` (`get_new_blocks`), and the connector hook runs at the end of
+every step -- eviction and observation share one clock, so nothing happens
+while we are not looking. Step N's drain protects against step N+1's
+allocations; the only blind window is intra-step, and the one-step
+feedforward covers it. Passivity is a thread-safety constraint (the block
+pool is unlocked scheduler state), not a lost capability.
+
+*Gate 1 ceiling.* The two error rates are not symmetric:
+
+- **Recall (no evicted-unsaved) can approach 1.** The eviction *order* is
+  fully known (strict LRU queue); only the per-step *cutoff* is uncertain,
+  and it has a sound upper bound -- the scheduler's own token budget
+  (`max_num_batched_tokens` / block_size, plus `on_new_request` visibility
+  into arrivals). Pinning at drain then turns prediction into prevention: a
+  drained block can no longer be evicted.
+- **Precision (no saved-unevicted) is irreducibly < 1.** A head block can be
+  resurrected by a hit before its eviction; that is future-arrival
+  information -- gate 2's uncertainty leaking into gate 1 -- which no
+  eviction-side signal can supply. The synchronous callback reaches
+  precision 1 not with more information but by acting at the instant
+  uncertainty is zero. The gap is naturally small (LRU head = coldest) and
+  each miss costs one cheap write.
+- **Interference: a cost eager does not have.** Eager stores live requests'
+  blocks (ref-held, not in the free queue); lazy stores dead requests'
+  blocks and must pin them for the in-flight copy -- shrinking the free pool
+  exactly when pressure is high, and displacing eviction onto warmer,
+  deeper blocks (A3 at runtime). Bounded by drain cap x in-flight steps and
+  reversed by `free_blocks(prepend=True)`. Mitigations, in order: drain
+  early while slack exists (interference pushes the optimal horizon *up*;
+  two watermarks), pin budget as a function of free-queue depth (drop a few
+  stores rather than trigger a preemption), and -- escape hatch -- a D2D
+  staging buffer that shrinks the pin window to microseconds at the price
+  of a permanent reservation. The callback alternative converts this cost
+  into allocation-path latency: it pays per actual eviction instead of per
+  predicted one.
+
+*Eviction is recycling, not overflow.* `get_usage()` counts only ref-held
+blocks; the free queue is not empty space -- it *is* the GPU prefix cache
+(freed blocks keep their hashes and serve hits until reallocated). Once the
+pool has been filled once, **every allocation evicts a cached block, at any
+usage level**. Consequences: a usage-watermark trigger is the wrong signal
+(it implicitly assumes an overflow model that vLLM does not have);
+lazy offload is a steady-state activity, not a crisis response; and the GPU
+tier itself has a computable retention window -- free-queue depth /
+allocation rate -- extending the tier-hierarchy view of gate 2 down to the
+GPU as tier 0. Lazy offload is exactly the copy made in the last moments of
+that window.
+
 **Gate 2 -- replace prediction with sequential observation.** The storage
 hierarchy *is* the estimator: each tier's retention window is a survival
 test; KV that is not reused demotes tier by tier and is finally dropped.
