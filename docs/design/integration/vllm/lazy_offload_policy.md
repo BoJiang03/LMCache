@@ -22,7 +22,8 @@ admitted op whose blocks come under eviction pressure.
   mutate pool state.
 - **`PendingStoreOp`** — one deferred store: opaque `store_metadata` (the
   ready `LMCacheMPRequestMetadata`), the covered blocks' hash snapshot taken
-  at admission, and `prefix_end_tokens` (prefix length once this op lands).
+  at admission, `prefix_end_tokens` (prefix length once this op lands), and
+  `cache_salt` (part of the op's content identity).
 - **`EvictionAwareStoreQueue`** — the policy object, one per connector.
 
 ## Per-step protocol (connector obligations)
@@ -36,6 +37,16 @@ admitted op whose blocks come under eviction pressure.
      offload requires prefix caching (enforced at connector init).
    - `REJECTED_PREFIX_BROKEN` → **skip** (an earlier chunk was dropped; this
      chunk would be unreachable on retrieval).
+   - `DEDUPLICATED` → nothing now (identical content — same salt, range, and
+     block-hash chain — is already buffered under another request and will be
+     stored or dropped with that op; this op must not defer its own request's
+     teardown). Deduplication is what bounds the queue: without it every
+     request over a hot shared prefix (blocks never in the free queue, so
+     never due) would buffer its own copy indefinitely; with it the queue is
+     bounded by the unique cached content on the GPU. It is optimistic: if
+     the covering op is later dropped, chunks the deduplicated request stores
+     past that point are unreachable until a future request re-buffers the
+     prefix — wasted storage, never corruption.
 2. Once per step: `observe_step(gross_blocks_allocated, est_next_step_blocks)`
    then `collect_due()`.
 3. For every op in `DrainResult.to_store` (already ordered): pin (`touch`)
@@ -51,8 +62,19 @@ admitted op whose blocks come under eviction pressure.
 5. On `request_finished`: call `mark_request_finished(id)`; True means
    stores are pending or in flight — defer `end_session` until the id
    appears in `DrainResult.released_requests` (remaining ops all dropped) or
-   `notify_stored` returns True (stored). On abort/error paths use
-   `drop_request(id)`.
+   `notify_stored` returns True (stored).
+6. When the request's buffered state goes stale — abort, or the preemption
+   tracker reset (the recreated tracker re-produces metadata from token
+   zero, overlapping anything buffered) — call `drop_request(id)`. It
+   discards pending ops only: an in-flight batch stays tracked until its
+   receipt, so a re-admitted op cannot be emitted while the worker still
+   holds an outstanding store for the request.
+7. When a receipt reports the store **failed** (worker-side failure signal):
+   call `mark_store_failed(id)` before `notify_stored(id)`. It drops the
+   request's held-back ops and rejects its later chunks (without the failed
+   prefix they would be stored unreachable), while leaving the finished and
+   in-flight markers alone so the accompanying receipt still tears the
+   request down through `notify_stored` as usual.
 
 ## Decision rule
 
@@ -72,7 +94,9 @@ admitted op whose blocks come under eviction pressure.
   breaks the chain for the rest). The threshold is the offline break-even
   prefix length; 0 disables.
 - Cross-request drain order = min due rank ascending; `max_drain_per_step`
-  bounds the per-step D2H burst, cutting whole segments from the tail.
+  bounds the per-step D2H burst. The cap may split a request's due segment,
+  but only ever emits a front slice of it, so within-request prefix order is
+  preserved and the remainder stays pending.
 
 ## Observability
 
