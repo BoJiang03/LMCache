@@ -456,6 +456,13 @@ class EvictionAwareStoreQueue:
         batch is marked stale: operations admitted after the reset do not
         depend on it, so its failure no longer breaks their prefix chain.
 
+        Precondition: the request is not finished with deferred teardown
+        (:meth:`mark_request_finished` returned True and no release arrived
+        yet). The drop discards the finished marker without emitting a
+        release, so violating this would leak the caller's session. The only
+        call site today -- the preemption tracker reset -- satisfies it:
+        a finished request is never rescheduled, hence never preempted.
+
         Args:
             request_id: The request to discard.
 
