@@ -256,6 +256,56 @@ class TestEconomyGate:
         assert len(queue.collect_due().to_store) == 1
 
 
+class TestStoreFailure:
+    def test_store_failure_breaks_prefix_and_drops_held_back_ops(self) -> None:
+        """A failed in-flight store leaves the request without its stored
+        prefix: held-back operations must be dropped and later chunks
+        rejected, or they would be stored unreachable."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=2.0, max_drain_per_step=1)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1  # first op in flight
+
+        assert queue.mark_store_failed("req") == 1  # held-back op dropped
+        assert queue.stats().dropped_failed_store == 1
+        assert queue.notify_stored("req") is False  # request still running
+
+        result = queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        assert result is AdmitResult.REJECTED_PREFIX_BROKEN
+
+    def test_store_failure_of_finished_request_still_allows_teardown(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        assert queue.mark_request_finished("req") is True
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+
+        queue.mark_store_failed("req")
+        assert queue.notify_stored("req") is True
+
+    def test_prefix_broken_cleared_when_finished_request_releases(self) -> None:
+        """Teardown clears the broken-prefix mark, so a reused request id
+        does not inherit it."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        assert queue.mark_request_finished("req") is True
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1  # in flight
+        queue.mark_store_failed("req")  # prefix broken while in flight
+        assert queue.notify_stored("req") is True  # teardown clears the mark
+
+        seed_blocks(pool, [2], free=False)
+        result = queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+        assert result is AdmitResult.ADMITTED
+
+
 class TestContentDeduplication:
     """One pending op per unique content: requests sharing a hot prefix
     must not each buffer their own copy (the unbounded-growth case), and

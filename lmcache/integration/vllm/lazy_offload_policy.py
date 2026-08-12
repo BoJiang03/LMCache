@@ -235,6 +235,7 @@ class LazyOffloadCounters:
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
     dropped_on_request_drop: int = 0
+    dropped_failed_store: int = 0
     deduplicated: int = 0
 
 
@@ -417,6 +418,28 @@ class EvictionAwareStoreQueue:
         self._prefix_broken.discard(request_id)
         return len(dropped)
 
+    def mark_store_failed(self, request_id: str) -> int:
+        """Record that the request's in-flight store batch failed.
+
+        The request's stored prefix chain is broken: its held-back pending
+        operations are dropped (stored without the failed prefix they would
+        be unreachable) and further admissions are rejected. The finished
+        and in-flight markers are left untouched, so the completion receipt
+        that accompanies the failure still tears the request down through
+        :meth:`notify_stored` as usual.
+
+        Args:
+            request_id: The request whose store failed.
+
+        Returns:
+            The number of pending operations dropped.
+        """
+        dropped = self._pending.pop(request_id, [])
+        self._forget_content(dropped)
+        self._counters.dropped_failed_store += len(dropped)
+        self._prefix_broken.add(request_id)
+        return len(dropped)
+
     def num_pending_ops(self) -> int:
         """Return the total number of buffered store operations."""
         return sum(len(ops) for ops in self._pending.values())
@@ -474,8 +497,9 @@ class EvictionAwareStoreQueue:
                 continue
             due_segments.append((min_rank, request_id, due_ops))
 
-        # Most imminent requests first; cap cuts whole-request segments from
-        # the tail so within-request prefix order is never violated.
+        # Most imminent requests first. The cap may split a segment, but the
+        # emitted part is a front slice of it, so within-request prefix order
+        # is never violated; the rest stays pending for a later step.
         due_segments.sort(key=lambda seg: seg[0])
         budget = self._config.max_drain_per_step
         for _, request_id, due_ops in due_segments:

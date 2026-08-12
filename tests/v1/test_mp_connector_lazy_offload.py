@@ -290,6 +290,17 @@ def _report_store_complete(harness: _Harness, request_id: str, count: int = 1) -
     harness.connector.update_connector_output(output)
 
 
+def _report_store_failed(harness: _Harness, request_id: str, count: int = 1) -> None:
+    """Deliver a receipt whose store failed on at least one rank."""
+    output = SimpleNamespace(
+        kv_connector_worker_meta=LMCacheMPWorkerMetadata(
+            completed_store_requests={request_id: count},
+            failed_store_requests={request_id},
+        )
+    )
+    harness.connector.update_connector_output(output)
+
+
 ####
 # Pure helpers
 ####
@@ -747,6 +758,47 @@ def test_lifecycle_store_completes_with_balanced_pins_and_one_teardown() -> None
     # with no reference left behind.
     assert harness.pool.free_block_ids() == [1, 2]
     assert harness.pool.blocks[1].ref_cnt == 0
+
+
+####
+# Failed-store receipts
+####
+
+
+def test_failed_store_receipt_unpins_and_drops_held_back_ops() -> None:
+    """A failure receipt still unpins the batch's blocks, but the
+    request's held-back ops must be dropped: without the failed prefix
+    they would be stored unreachable."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _admit_op(harness, "req", [[3, 4]], 32, 64)
+    harness.pool.make_free([1, 2])
+    metadata = _drain(harness)
+    assert len(metadata) == 1  # first chunk in flight, second held back
+
+    _report_store_failed(harness, "req")
+
+    # Unpinned regardless of the failure.
+    assert harness.pool.blocks[1].ref_cnt == 0
+    # The held-back chunk is gone: pressure on its blocks emits nothing.
+    harness.pool.make_free([3, 4])
+    assert len(_drain(harness)) == 0
+    # Nothing pending or in flight: the finished request tears down now.
+    _finish_request(harness, "req")
+    assert harness.adapter.ended_sessions == ["req"]
+
+
+def test_failed_store_receipt_for_finished_request_ends_session_once() -> None:
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _finish_request(harness, "req")
+    harness.pool.make_free([1, 2])
+    assert len(_drain(harness)) == 1
+
+    _report_store_failed(harness, "req")
+
+    assert harness.pool.blocks[1].ref_cnt == 0
+    assert harness.adapter.ended_sessions == ["req"]
 
 
 ####

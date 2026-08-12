@@ -745,9 +745,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if not self.lazy_offload:
             return None
         completed_store_requests = self.worker_adapter.get_completed_store_requests()
-        if completed_store_requests:
+        failed_store_requests = self.worker_adapter.get_failed_store_requests()
+        if completed_store_requests or failed_store_requests:
             return LMCacheMPWorkerMetadata(
-                completed_store_requests=completed_store_requests
+                completed_store_requests=completed_store_requests or {},
+                failed_store_requests=failed_store_requests or set(),
             )
         else:
             return None
@@ -1004,6 +1006,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         meta = connector_output.kv_connector_worker_meta
         if not isinstance(meta, LMCacheMPWorkerMetadata):
             return
+        # Break the prefix chains of failed stores before processing the
+        # receipts: a finished request whose held-back ops are dropped here
+        # can then tear down on the receipt below, and a running one stops
+        # buffering chunks that would be unreachable without their prefix.
+        for req_id in meta.failed_store_requests:
+            if not self._pending_store.has_in_flight_store(req_id):
+                continue
+            dropped = self._pending_store.mark_store_failed(req_id)
+            logger.warning(
+                "Store failed for request %s; dropped %d held-back store "
+                "op(s) that would lack their stored prefix",
+                req_id,
+                dropped,
+            )
         for req_id, count in meta.completed_store_requests.items():
             if not self._pending_store.has_in_flight_store(req_id):
                 # Duplicate or stale receipt (e.g. a resend after the batch

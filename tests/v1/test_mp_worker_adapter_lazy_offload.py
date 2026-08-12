@@ -60,6 +60,7 @@ def _make_worker_adapter(
     adapter._dropped_retrieves = set()
     adapter.error_block_ids = set()
     adapter._completed_store_requests = {}
+    adapter._failed_store_requests = set()
     return adapter
 
 
@@ -190,6 +191,62 @@ def test_get_finished_with_lazy_offload_requires_lazy_mode() -> None:
 
 
 ####
+# Failed stores: the receipt still arrives, the integrity signal separately
+####
+
+
+def test_failed_store_future_reports_failure_alongside_receipt() -> None:
+    """A failed store must still produce its completion receipt (the
+    pinned blocks have to be unpinned either way); the failure travels as
+    a separate signal so the scheduler can break the prefix chain."""
+    adapter = _make_worker_adapter()
+    _prepare_for_get_finished(adapter)
+    adapter.store_futures["req"] = _FakeStoreFuture(done=True, result=None)  # type: ignore[assignment]
+
+    adapter.get_finished_with_lazy_offload()
+
+    assert adapter.get_completed_store_requests() == {"req": 1}
+    assert adapter.get_failed_store_requests() == {"req"}
+    # Exactly once.
+    assert adapter.get_failed_store_requests() is None
+
+
+def test_successful_store_future_reports_no_failure() -> None:
+    adapter = _make_worker_adapter()
+    _prepare_for_get_finished(adapter)
+    adapter.store_futures["req"] = _FakeStoreFuture(done=True)  # type: ignore[assignment]
+
+    adapter.get_finished_with_lazy_offload()
+
+    assert adapter.get_failed_store_requests() is None
+
+
+def test_unhealthy_submit_drop_reports_failure() -> None:
+    adapter = _make_worker_adapter(healthy=False)
+    _submit_store(adapter)
+    assert adapter.get_failed_store_requests() == {"req"}
+
+
+def test_unhealthy_drain_reports_failure_for_unknown_outcomes() -> None:
+    """A future drained by the unhealthy branch has an unknown outcome;
+    the data cannot be assumed stored."""
+    adapter = _make_worker_adapter(healthy=False)
+    adapter.store_futures["req"] = _FakeStoreFuture(done=False)  # type: ignore[assignment]
+
+    adapter.get_finished_with_lazy_offload()
+
+    assert adapter.get_failed_store_requests() == {"req"}
+
+
+def test_non_writer_receipt_is_not_a_failure() -> None:
+    """A non-writer rank stores nothing by design; its synthetic receipt
+    must not break the prefix chain (the writer rank stores the data)."""
+    adapter = _make_worker_adapter(is_kv_writer=False)
+    _submit_store(adapter)
+    assert adapter.get_failed_store_requests() is None
+
+
+####
 # Scheduler-side receipt counting
 ####
 
@@ -245,3 +302,18 @@ def test_worker_metadata_aggregate_sums_per_request_counts() -> None:
     # Inputs are not mutated.
     assert first.completed_store_requests == {"r1": 1, "r2": 1}
     assert second.completed_store_requests == {"r1": 1, "r3": 1}
+
+
+def test_worker_metadata_aggregate_unions_failed_stores() -> None:
+    """One rank's failure breaks the request's prefix chain even when the
+    other ranks succeeded."""
+    first = LMCacheMPWorkerMetadata(
+        completed_store_requests={"r1": 1}, failed_store_requests={"r1"}
+    )
+    second = LMCacheMPWorkerMetadata(completed_store_requests={"r1": 1})
+
+    merged = first.aggregate(second)
+
+    assert isinstance(merged, LMCacheMPWorkerMetadata)
+    assert merged.failed_store_requests == {"r1"}
+    assert second.failed_store_requests == set()

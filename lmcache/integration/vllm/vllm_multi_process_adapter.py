@@ -1205,6 +1205,10 @@ class LMCacheMPWorkerAdapter:
 
         # Completed store requests to report via build_connector_worker_meta
         self._completed_store_requests: dict[str, int] = {}
+        # Requests whose store did not succeed on this rank (failed result,
+        # or dropped while unhealthy). Reported alongside the completion
+        # receipts so the scheduler can break their stored-prefix chains.
+        self._failed_store_requests: set[str] = set()
 
     @property
     def is_healthy(self) -> bool:
@@ -1436,6 +1440,7 @@ class LMCacheMPWorkerAdapter:
                     request_id,
                 )
                 self._completed_store_requests[request_id] = 1
+                self._failed_store_requests.add(request_id)
             return
 
         assert op.token_ids is not None
@@ -1769,6 +1774,9 @@ class LMCacheMPWorkerAdapter:
 
             for req_id in finished_stores:
                 self._completed_store_requests[req_id] = 1
+                # The drained future's outcome is unknown; the data cannot
+                # be assumed stored.
+                self._failed_store_requests.add(req_id)
             return None, finished_retrieves
 
         finished_stores = set()
@@ -1786,6 +1794,7 @@ class LMCacheMPWorkerAdapter:
                     "store request for request_id=%s",
                     request_id,
                 )
+                self._failed_store_requests.add(request_id)
 
         for request_id, (r_future, _) in self.retrieve_futures.items():
             if not r_future.query():
@@ -1842,6 +1851,20 @@ class LMCacheMPWorkerAdapter:
         completed_store_requests = self._completed_store_requests
         self._completed_store_requests = {}
         return completed_store_requests
+
+    def get_failed_store_requests(self) -> set[str] | None:
+        """Return the requests whose store failed since the last call.
+
+        A failed store still produces its completion receipt (via
+        :meth:`get_completed_store_requests`); this set is the additional
+        integrity signal telling the scheduler to break the requests'
+        stored-prefix chains.
+        """
+        if not self._failed_store_requests:
+            return None
+        failed_store_requests = self._failed_store_requests
+        self._failed_store_requests = set()
+        return failed_store_requests
 
     def num_blocks_per_chunk(self) -> int:
         """

@@ -269,7 +269,25 @@ class LazyOffloadPendingStore:
         return self._mode
 
     def bind_gpu_block_pool(self, gpu_block_pool: "BlockPool") -> None:
-        """Bind the GPU block pool to the pending store."""
+        """Bind the GPU block pool to the pending store.
+
+        Idempotent for the same pool. Rebinding a different pool would
+        silently invalidate every buffered operation's hash snapshot and,
+        in EVICTION_AWARE mode, discard the whole pending queue.
+
+        Args:
+            gpu_block_pool: The scheduler's GPU block pool.
+
+        Raises:
+            ValueError: If a different pool is already bound.
+        """
+        if self._gpu_block_pool is gpu_block_pool:
+            return
+        if self._gpu_block_pool is not None:
+            raise ValueError(
+                "a different GPU block pool is already bound; rebinding "
+                "would discard the buffered store operations"
+            )
         self._gpu_block_pool = gpu_block_pool
         if self._mode is LazyOffloadMode.EVICTION_AWARE:
             self._eviction_queue = EvictionAwareStoreQueue(
@@ -420,6 +438,26 @@ class LazyOffloadPendingStore:
         if self._eviction_queue is not None:
             return self._eviction_queue.drop_request(req_id)
         return self._require_fifo_policy().drop_request(req_id)
+
+    def mark_store_failed(self, req_id: str) -> int:
+        """Record that the request's in-flight store batch failed.
+
+        The request's stored prefix chain is broken: its buffered
+        operations are dropped and, in EVICTION_AWARE mode, further chunks
+        are rejected until the request is torn down (storing them without
+        the failed prefix would be unreachable).
+
+        Args:
+            req_id: The request whose store failed.
+
+        Returns:
+            The number of buffered operations dropped.
+        """
+        if self._eviction_queue is not None:
+            return self._eviction_queue.mark_store_failed(req_id)
+        # FIFO drains a request's chunks all at once after it finishes, so
+        # nothing of it remains buffered by the time its store fails.
+        return 0
 
     def _require_eviction_queue(self) -> EvictionAwareStoreQueue:
         if self._eviction_queue is None:

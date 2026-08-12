@@ -383,3 +383,25 @@ class TestEvictionAwareMode:
         assert store.drop_request("req-0") == 1
         store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
         assert store.collect_due().to_store == []
+
+    def test_mark_store_failed_drops_buffered_ops(self):
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=2))
+        assert store.mark_store_failed("req-0") == 1
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert store.collect_due().to_store == []
+
+    def test_rebind_same_pool_is_idempotent(self):
+        store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=2))
+
+        store.bind_gpu_block_pool(gpu_pool)
+
+        # Buffered state survived the redundant bind.
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert len(store.collect_due().to_store) == 1
+
+    def test_rebind_different_pool_raises(self):
+        store, _ = self._setup()
+        with pytest.raises(ValueError, match="already bound"):
+            store.bind_gpu_block_pool(_make_gpu_pool())
