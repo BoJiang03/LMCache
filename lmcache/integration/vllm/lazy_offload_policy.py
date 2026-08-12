@@ -123,8 +123,11 @@ class AdmitResult(enum.Enum):
     - REJECTED_UNHASHED_BLOCK: a covered block has no hash, so eviction of
       that block could not be detected later (a reallocated block would also
       read None, masking the loss). The connector must skip the store and
-      warn: chunk-aligned ranges cannot cover unhashed blocks while prefix
-      caching is on, and lazy offload requires prefix caching.
+      warn. Because the caller's tracker has already advanced past the
+      skipped range, the request's later chunks are unreachable and will be
+      rejected as prefix-broken. With plain prefix caching, chunk-aligned
+      ranges never cover unhashed blocks; hybrid-attention models (sliding
+      window, mamba) can place hash-less null blocks in block tables.
     - REJECTED_PREFIX_BROKEN: an earlier chunk of this request was already
       dropped, so this chunk would be unreachable on retrieval. The
       connector must skip the store entirely.
@@ -368,6 +371,10 @@ class EvictionAwareStoreQueue:
             self._counters.rejected_prefix_broken += 1
             return AdmitResult.REJECTED_PREFIX_BROKEN
         if any(block_hash is None for block_hash in op.block_hashes.values()):
+            # The caller's tracker has already advanced past this range, so
+            # the request's later chunks would be stored without their prefix
+            # (unreachable): reject them like any other broken chain.
+            self._prefix_broken.add(op.request_id)
             self._counters.rejected_unhashed += 1
             return AdmitResult.REJECTED_UNHASHED_BLOCK
         content_key = _content_key(op)

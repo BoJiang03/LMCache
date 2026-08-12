@@ -143,6 +143,51 @@ class TestAdmission:
         assert queue.num_pending_ops() == 0
         assert queue.stats().rejected_unhashed == 1
 
+    def test_unhashed_rejection_breaks_prefix_chain(self) -> None:
+        """The caller's tracker has already advanced past the skipped range,
+        so a later chunk would be stored without its prefix (the retrieval
+        prefix lookup stops at the hole) -- it must be rejected."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool)
+        unhashed = PendingStoreOp(
+            request_id="req",
+            store_metadata=cast(
+                "LMCacheMPRequestMetadata", FakeStoreMetadata(label="req")
+            ),
+            block_hashes={1: None},  # type: ignore[dict-item]
+            prefix_start_tokens=0,
+            prefix_end_tokens=256,
+        )
+        assert queue.admit(unhashed) is AdmitResult.REJECTED_UNHASHED_BLOCK
+        later = make_op("req", [2], pool, prefix_end_tokens=512)
+        assert queue.admit(later) is AdmitResult.REJECTED_PREFIX_BROKEN
+        assert queue.num_pending_ops() == 0
+
+    def test_chunks_admitted_before_unhashed_rejection_stay_storable(self) -> None:
+        """Only chunks past the skipped range are unreachable; the prefix
+        buffered before the rejection is intact and still emits."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        seed_blocks(pool, [2], free=False)
+        queue = make_queue(pool)
+        first = make_op("req", [1], pool, prefix_end_tokens=256)
+        assert queue.admit(first) is AdmitResult.ADMITTED
+        unhashed = PendingStoreOp(
+            request_id="req",
+            store_metadata=cast(
+                "LMCacheMPRequestMetadata", FakeStoreMetadata(label="req")
+            ),
+            block_hashes={2: None},  # type: ignore[dict-item]
+            prefix_start_tokens=256,
+            prefix_end_tokens=512,
+        )
+        assert queue.admit(unhashed) is AdmitResult.REJECTED_UNHASHED_BLOCK
+        assert queue.num_pending_ops() == 1
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [256]
+
 
 class TestPressureTrigger:
     def test_idle_engine_never_drains(self) -> None:

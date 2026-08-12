@@ -34,8 +34,12 @@ admitted op whose blocks come under eviction pressure.
    - `ADMITTED` → nothing now.
    - `REJECTED_UNHASHED_BLOCK` → **skip and warn** (a hash-less block's later
      eviction is undetectable: evicted-and-reallocated also reads `None`).
-     Cannot occur for chunk-aligned ranges while prefix caching is on; lazy
-     offload requires prefix caching (enforced at connector init).
+     The tracker has already advanced past the skipped range by the time the
+     op reaches `admit`, so the request's later chunks are unreachable; the
+     queue blacklists the request and rejects them as prefix-broken. With
+     plain prefix caching (enforced at connector init) chunk-aligned ranges
+     never cover unhashed blocks, but hybrid-attention models (sliding
+     window, mamba) can place hash-less null blocks in block tables.
    - `REJECTED_PREFIX_BROKEN` → **skip** (an earlier chunk was dropped; this
      chunk would be unreachable on retrieval).
    - `DEDUPLICATED` → nothing now (identical content — same salt, range, and
