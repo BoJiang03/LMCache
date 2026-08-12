@@ -8,6 +8,7 @@ through the ``BlockPoolReader`` protocol.
 
 # Standard
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 # Third Party
 import pytest
@@ -19,6 +20,10 @@ from lmcache.integration.vllm.lazy_offload_policy import (
     LazyOffloadPolicyConfig,
     PendingStoreOp,
 )
+
+if TYPE_CHECKING:
+    # First Party
+    from lmcache.integration.vllm.lmcache_mp_metadata import LMCacheMPRequestMetadata
 
 
 class FakePoolView:
@@ -56,7 +61,10 @@ def make_op(
     """Build a pending op whose hash snapshot matches the pool's state."""
     return PendingStoreOp(
         request_id=request_id,
-        store_metadata=FakeStoreMetadata(label=f"{request_id}:{prefix_end_tokens}"),
+        store_metadata=cast(
+            "LMCacheMPRequestMetadata",
+            FakeStoreMetadata(label=f"{request_id}:{prefix_end_tokens}"),
+        ),
         block_hashes={block_id: pool.hashes[block_id] for block_id in block_ids},
         prefix_end_tokens=prefix_end_tokens,
     )
@@ -113,7 +121,9 @@ class TestAdmission:
         queue = make_queue(pool)
         op = PendingStoreOp(
             request_id="req",
-            store_metadata=FakeStoreMetadata(label="req"),
+            store_metadata=cast(
+                "LMCacheMPRequestMetadata", FakeStoreMetadata(label="req")
+            ),
             block_hashes={1: pool.hashes[1], 2: None},  # type: ignore[dict-item]
             prefix_end_tokens=256,
         )
