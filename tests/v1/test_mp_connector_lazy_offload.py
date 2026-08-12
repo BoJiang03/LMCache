@@ -37,6 +37,7 @@ from vllm.v1.request import RequestStatus  # noqa: E402
 
 # First Party
 from lmcache.integration.vllm.lazy_offload_pending_store import (  # noqa: E402
+    AddOutcome,
     LazyOffloadPendingStore,
 )
 from lmcache.integration.vllm.lmcache_mp_connector import (  # noqa: E402
@@ -822,6 +823,45 @@ def test_shared_prefix_content_buffered_once_across_requests() -> None:
     metadata = _drain(harness)
     assert len(metadata) == 1
     assert metadata.requests[0].request_id == "req-a"
+
+
+def test_drain_never_coalesces_across_dedup_hole() -> None:
+    """Deduplication can leave a hole in a request's pending list; the
+    drain must emit only the contiguous front run (the batch is coalesced
+    into one store op), leaving the post-hole ops for a later batch.
+
+    Request C buffers chunks 1+2 and drains chunk 1 alone (emission
+    releases its content key while chunk 2's stays held). Request B with
+    identical content then admits chunk 1, is DEDUPLICATED on chunk 2, and
+    admits chunk 3 -- a pending list with a hole at [32, 64)."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req-c", [[1, 2]], 0, 32)
+    _admit_op(harness, "req-c", [[3, 4]], 32, 64)
+    harness.pool.make_free([1, 2])
+    metadata = _drain(harness)
+    assert len(metadata) == 1
+    assert (metadata.requests[0].op.start, metadata.requests[0].op.end) == (0, 32)
+    _report_store_complete(harness, "req-c")  # chunk 2 still pending under C
+
+    _admit_op(harness, "req-b", [[1, 2]], 0, 32)
+    dedup = harness.pending_store.add(_make_store_metadata("req-b", [[3, 4]], 32, 64))
+    assert dedup is AddOutcome.DEDUPLICATED
+    _admit_op(harness, "req-b", [[5, 6]], 64, 96)
+
+    # Pressure on B's chunk-3 blocks: prefix closure pulls chunk 1 along,
+    # but the batch must stop at the hole instead of coalescing across it.
+    harness.pool.make_free([5, 6])
+    metadata = _drain(harness)
+    assert len(metadata) == 1
+    op = metadata.requests[0].op
+    assert (metadata.requests[0].request_id, op.start, op.end) == ("req-b", 0, 32)
+
+    # After the receipt the post-hole op is emitted as its own batch.
+    _report_store_complete(harness, "req-b")
+    metadata = _drain(harness)
+    assert len(metadata) == 1
+    op = metadata.requests[0].op
+    assert (metadata.requests[0].request_id, op.start, op.end) == ("req-b", 64, 96)
 
 
 ####

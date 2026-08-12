@@ -322,6 +322,7 @@ class LazyOffloadPendingStore:
             store_metadata=meta,
             # admit() rejects any None value in the snapshot.
             block_hashes=cast("dict[int, BlockHashWithGroupId]", block_hashes),
+            prefix_start_tokens=meta.op.start,
             prefix_end_tokens=meta.op.end,
             cache_salt=meta.cache_salt,
         )

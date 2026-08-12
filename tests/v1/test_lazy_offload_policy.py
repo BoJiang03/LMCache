@@ -58,8 +58,16 @@ def make_op(
     pool: FakePoolView,
     prefix_end_tokens: int,
     cache_salt: str = "",
+    prefix_start_tokens: int = -1,
 ) -> PendingStoreOp:
-    """Build a pending op whose hash snapshot matches the pool's state."""
+    """Build a pending op whose hash snapshot matches the pool's state.
+
+    ``prefix_start_tokens`` defaults to one 256-token chunk before the end,
+    so consecutive ops built with 256-spaced ends form a contiguous chain;
+    pass it explicitly to model a deduplication hole.
+    """
+    if prefix_start_tokens < 0:
+        prefix_start_tokens = max(0, prefix_end_tokens - 256)
     return PendingStoreOp(
         request_id=request_id,
         store_metadata=cast(
@@ -67,6 +75,7 @@ def make_op(
             FakeStoreMetadata(label=f"{request_id}:{prefix_end_tokens}"),
         ),
         block_hashes={block_id: pool.hashes[block_id] for block_id in block_ids},
+        prefix_start_tokens=prefix_start_tokens,
         prefix_end_tokens=prefix_end_tokens,
         cache_salt=cache_salt,
     )
@@ -127,6 +136,7 @@ class TestAdmission:
                 "LMCacheMPRequestMetadata", FakeStoreMetadata(label="req")
             ),
             block_hashes={1: pool.hashes[1], 2: None},  # type: ignore[dict-item]
+            prefix_start_tokens=0,
             prefix_end_tokens=256,
         )
         assert queue.admit(op) is AdmitResult.REJECTED_UNHASHED_BLOCK
@@ -394,6 +404,39 @@ class TestContentDeduplication:
         assert queue.drop_request("req-a") == 1
         result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
+
+
+class TestEmissionContiguity:
+    """An emitted batch is coalesced into one contiguous store operation, so
+    emission must never span a deduplication hole in the pending list."""
+
+    def _queue_with_hole(self) -> "tuple[FakePoolView, EvictionAwareStoreQueue]":
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=False)
+        seed_blocks(pool, [3], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        # [256, 512) was deduplicated under another request: the pending
+        # list has a hole between the two admitted ops.
+        queue.admit(
+            make_op("req", [3], pool, prefix_end_tokens=768, prefix_start_tokens=512)
+        )
+        queue.observe_step(new_blocks_allocated=4, est_next_step_blocks=4)
+        return pool, queue
+
+    def test_emission_stops_at_dedup_hole(self) -> None:
+        _, queue = self._queue_with_hole()
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [256]
+        assert queue.num_pending_ops() == 1
+
+    def test_post_hole_op_emitted_in_next_batch_after_receipt(self) -> None:
+        _, queue = self._queue_with_hole()
+        queue.collect_due()
+        queue.notify_stored("req")
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [768]
+        assert queue.num_pending_ops() == 0
 
 
 class TestDrainOrderingAndCap:

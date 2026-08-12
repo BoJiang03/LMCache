@@ -154,6 +154,11 @@ class PendingStoreOp:
             range, snapshotted at admission. All values are non-None
             (enforced by admission); a later mismatch against the pool means
             the block was evicted or reallocated.
+        prefix_start_tokens: Token index of the start of this operation's
+            range. Used to detect holes in a request's pending list: after
+            a deduplicated chunk, the next operation does not start where
+            the previous pending one ended, and an emitted batch must never
+            span such a hole (it is coalesced into one contiguous store).
         prefix_end_tokens: Token index one past the end of this operation's
             range, i.e. the request-prefix length covered once this
             operation and all earlier ones are stored.
@@ -165,6 +170,7 @@ class PendingStoreOp:
     request_id: str
     store_metadata: "LMCacheMPRequestMetadata"
     block_hashes: dict[int, "BlockHashWithGroupId"]
+    prefix_start_tokens: int
     prefix_end_tokens: int
     cache_salt: str = ""
 
@@ -179,6 +185,21 @@ def _content_key(
     salt separates cache namespaces.
     """
     return (op.cache_salt, op.prefix_end_tokens, tuple(op.block_hashes.values()))
+
+
+def _contiguous_front_run(ops: list[PendingStoreOp]) -> list[PendingStoreOp]:
+    """Front slice of ops up to (excluding) the first token-range hole.
+
+    Deduplication can leave a hole in a request's pending list: the missing
+    chunk is buffered under another request. An emitted batch is coalesced
+    into a single store operation with one contiguous token range, so it
+    must never span a hole; ops past the hole stay pending and are emitted
+    in a later batch once the front run's completion receipt arrives.
+    """
+    for index in range(1, len(ops)):
+        if ops[index].prefix_start_tokens != ops[index - 1].prefix_end_tokens:
+            return ops[:index]
+    return ops
 
 
 @dataclass(frozen=True)
@@ -284,6 +305,9 @@ class EvictionAwareStoreQueue:
     if the covering operation is later dropped, chunks the deduplicated
     request stores past that point are unreachable until a future request
     re-buffers the missing prefix -- wasted storage, never corruption.
+    A deduplicated chunk also leaves a hole in its request's pending list;
+    emission never spans a hole (each batch is one contiguous store), so
+    the ops on each side of it go out in separate batches.
 
     Not thread-safe: all methods must be called from the scheduler thread
     (the vLLM connector scheduler-side call pattern).
@@ -457,7 +481,10 @@ class EvictionAwareStoreQueue:
         a later chunk without its prefix would be unreachable. Then, if any
         surviving operation has a block within the danger depth of the free
         queue, the request's operations are released from the front up to
-        the last due one (prefix closure), subject to gate 3.
+        the last due one (prefix closure), subject to gate 3. The released
+        segment is additionally cut at the first deduplication hole: the
+        batch is coalesced into one contiguous store operation, so ops past
+        the hole wait for a later batch.
 
         Returns:
             The operations to store and to drop this step; see
@@ -485,6 +512,10 @@ class EvictionAwareStoreQueue:
             if segment is None:
                 continue
             min_rank, due_ops = segment
+            # Never emit across a deduplication hole: the batch is coalesced
+            # into one contiguous store. The request keeps its due urgency
+            # (min_rank); the post-hole ops follow in a later batch.
+            due_ops = _contiguous_front_run(due_ops)
             if self._fails_economy_gate(surviving):
                 # Gate 3: the whole known prefix is below break-even. The due
                 # front is about to die, which breaks the prefix chain for
