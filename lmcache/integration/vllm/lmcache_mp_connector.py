@@ -1303,7 +1303,16 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             self.scheduler_adapter.end_session(request_id)
 
     def _drain_fifo(self, metadata: LMCacheMPConnectorMetadata) -> None:
-        """Legacy count-triggered FIFO drain with ex-post hash validation."""
+        """Legacy count-triggered FIFO drain with ex-post hash validation.
+
+        A request's buffered chunks are validated in prefix order and the
+        surviving prefix is submitted as one coalesced store: the worker
+        tracks one in-flight store future per request, so per-chunk
+        submission would overwrite futures and lose completion receipts.
+        On the first hash mismatch the remaining chunks are dropped; a
+        request left with no valid chunk produces no store -- and hence no
+        receipt -- so its session is ended here.
+        """
         if not self._pending_store.should_offload():
             return
 
@@ -1312,30 +1321,33 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         for item in self._pending_store.select_items():
             request_id = item.request_id
+            valid_metas: list[LMCacheMPRequestMetadata] = []
+            valid_block_ids: list[int] = []
             for meta, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes.keys())
-                self._gpu_block_pool.touch(
-                    [self._gpu_block_pool.blocks[bid] for bid in gpu_block_ids]
-                )
+                blocks = [self._gpu_block_pool.blocks[bid] for bid in gpu_block_ids]
+                self._gpu_block_pool.touch(blocks)
                 new_block_hashes = {
                     bid: self._gpu_block_pool.blocks[bid].block_hash
                     for bid in gpu_block_ids
                 }
-                if old_block_hashes == new_block_hashes:
-                    # remove block hashes and free blocks until store is done
-                    metadata.add_request_metadata(meta)
-                    self._pending_store.update_request_gpu_block_ids(
-                        request_id, gpu_block_ids
-                    )
-                else:
+                if old_block_hashes != new_block_hashes:
                     logger.warning(
-                        "Part block hashes mismatch for request %s, skip it",
+                        "Part block hashes mismatch for request %s, "
+                        "dropping its remaining chunks",
                         request_id,
                     )
-                    self._gpu_block_pool.free_blocks(
-                        [self._gpu_block_pool.blocks[bid] for bid in gpu_block_ids]
-                    )
+                    self._gpu_block_pool.free_blocks(blocks)
                     break
+                valid_metas.append(meta)
+                valid_block_ids.extend(gpu_block_ids)
+            if not valid_metas:
+                self.scheduler_adapter.end_session(request_id)
+                continue
+            metadata.add_request_metadata(_coalesce_store_metadata(valid_metas))
+            self._pending_store.update_request_gpu_block_ids(
+                request_id, valid_block_ids
+            )
 
     def _report_block_allocation_deltas(
         self,

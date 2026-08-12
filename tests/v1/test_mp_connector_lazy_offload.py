@@ -894,6 +894,59 @@ def test_fifo_drain_skips_request_with_reallocated_block() -> None:
     assert harness.pool.freed == [([1, 2], False)]
 
 
+def test_fifo_drain_coalesces_chunks_into_one_store() -> None:
+    """A request's buffered chunks must go out as one store: the worker
+    keys its in-flight store future by request id, so per-chunk submission
+    overwrites futures and loses completion receipts."""
+    harness = _make_fifo_harness()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _admit_op(harness, "req", [[3, 4]], 32, 64)
+    _finish_request(harness, "req")
+
+    metadata = _drain(harness)
+
+    assert len(metadata) == 1
+    op = metadata.requests[0].op
+    assert (op.start, op.end) == (0, 64)
+    assert op.block_ids[0] == [1, 2, 3, 4]
+
+
+def test_fifo_first_chunk_mismatch_still_ends_session() -> None:
+    """A request whose drain submits nothing gets no completion receipt,
+    so its session must be ended at the drain itself."""
+    harness = _make_fifo_harness()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _finish_request(harness, "req")
+    harness.pool.set_hash(1, b"other-content")
+
+    metadata = _drain(harness)
+
+    assert len(metadata) == 0
+    assert harness.adapter.ended_sessions == ["req"]
+
+
+def test_fifo_mid_request_mismatch_submits_valid_prefix() -> None:
+    """A mismatch drops the remaining chunks but the intact prefix is
+    still stored, and the receipt path ends the session."""
+    harness = _make_fifo_harness()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _admit_op(harness, "req", [[3, 4]], 32, 64)
+    _finish_request(harness, "req")
+    harness.pool.set_hash(3, b"other-content")
+
+    metadata = _drain(harness)
+
+    assert len(metadata) == 1
+    op = metadata.requests[0].op
+    assert (op.start, op.end) == (0, 32)
+    # The mismatched chunk was unpinned right away; nothing else freed yet.
+    assert harness.pool.freed == [([3, 4], False)]
+    assert harness.adapter.ended_sessions == []
+
+    _report_store_complete(harness, "req")
+    assert harness.adapter.ended_sessions == ["req"]
+
+
 def test_fifo_duplicate_receipt_is_ignored() -> None:
     """FIFO's ``notify_store_complete`` unconditionally allows teardown, so
     without the in-flight guard a resent receipt would end the session a
