@@ -1054,7 +1054,7 @@ def test_id_reuse_with_in_flight_batch_defers_release_to_receipt() -> None:
 
 
 ####
-# Count-triggered FIFO drain
+# Count-triggered FIFO drain (legacy placeholder policy)
 ####
 
 

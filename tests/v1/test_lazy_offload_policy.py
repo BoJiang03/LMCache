@@ -484,7 +484,16 @@ class TestContentDeduplication:
         result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
 
-    def test_dead_covering_op_does_not_deduplicate_live_copy(self) -> None:
+    def test_content_admittable_again_after_drop_request(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        assert queue.drop_request("req-a") == 1
+        result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
+        assert result is AdmitResult.ADMITTED
+
+    def test_cover_with_recycled_blocks_does_not_absorb_live_copy(self) -> None:
         """A dedup hit must verify the covering op's snapshot is still live.
         The covering op can already be a corpse while it waits in the pending
         list (its blocks recycled by this step's allocation, or its cleanup
@@ -504,7 +513,7 @@ class TestContentDeduplication:
         assert queue.admit(live) is AdmitResult.ADMITTED
         assert queue.num_pending_ops() == 2
 
-    def test_corpse_drop_keeps_live_copy_deduplicating(self) -> None:
+    def test_content_key_follows_live_copy_after_corpse_drop(self) -> None:
         """Dropping the corpse must not release the live copy's content key:
         a third identical admission still deduplicates against the live op."""
         pool = FakePoolView()
@@ -527,16 +536,7 @@ class TestContentDeduplication:
         )
         assert queue.num_pending_ops() == 1
 
-    def test_content_admittable_again_after_drop_request(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1], free=False)
-        queue = make_queue(pool)
-        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
-        assert queue.drop_request("req-a") == 1
-        result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
-        assert result is AdmitResult.ADMITTED
-
-    def test_cover_doomed_by_prefix_closure_does_not_deduplicate(self) -> None:
+    def test_cover_with_corpse_earlier_sibling_does_not_absorb_live_copy(self) -> None:
         """The dedup liveness check must cover the whole prefix chain, not
         just the covering op: a cover whose earlier sibling is already a
         corpse is deterministically dropped by prefix closure on the next
@@ -572,7 +572,7 @@ class TestContentDeduplication:
             is AdmitResult.DEDUPLICATED
         )
 
-    def test_corpse_after_cover_does_not_block_deduplication(self) -> None:
+    def test_cover_with_corpse_later_sibling_still_absorbs_duplicates(self) -> None:
         """Only corpses before the cover doom it: a later sibling's loss
         prefix-closes from its own position, leaving the cover storable, so
         the cover remains a valid deduplication target."""
