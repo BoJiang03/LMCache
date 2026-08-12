@@ -750,6 +750,29 @@ def test_lifecycle_store_completes_with_balanced_pins_and_one_teardown() -> None
 
 
 ####
+# Content deduplication across requests
+####
+
+
+def test_shared_prefix_content_buffered_once_across_requests() -> None:
+    """Two requests covering the same blocks buffer one op: the duplicate
+    does not defer its request's session teardown, and the pressure drain
+    emits a single store."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req-a", [[1, 2]], 0, 32)
+    _admit_op(harness, "req-b", [[1, 2]], 0, 32)
+
+    delay_free, _ = _finish_request(harness, "req-b")
+    assert delay_free is False
+    assert harness.adapter.ended_sessions == ["req-b"]
+
+    harness.pool.make_free([1, 2])
+    metadata = _drain(harness)
+    assert len(metadata) == 1
+    assert metadata.requests[0].request_id == "req-a"
+
+
+####
 # Preemption: tracker reset must drop stale buffered ops
 ####
 

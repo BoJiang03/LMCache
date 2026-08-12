@@ -57,6 +57,7 @@ def make_op(
     block_ids: list[int],
     pool: FakePoolView,
     prefix_end_tokens: int,
+    cache_salt: str = "",
 ) -> PendingStoreOp:
     """Build a pending op whose hash snapshot matches the pool's state."""
     return PendingStoreOp(
@@ -67,6 +68,7 @@ def make_op(
         ),
         block_hashes={block_id: pool.hashes[block_id] for block_id in block_ids},
         prefix_end_tokens=prefix_end_tokens,
+        cache_salt=cache_salt,
     )
 
 
@@ -252,6 +254,96 @@ class TestEconomyGate:
         queue.admit(make_op("req", [1], pool, prefix_end_tokens=16))
         queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
         assert len(queue.collect_due().to_store) == 1
+
+
+class TestContentDeduplication:
+    """One pending op per unique content: requests sharing a hot prefix
+    must not each buffer their own copy (the unbounded-growth case), and
+    a deduplicated request must not defer its session teardown."""
+
+    def test_identical_content_from_other_request_is_deduplicated(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool)
+        assert (
+            queue.admit(make_op("req-a", [1, 2], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        assert (
+            queue.admit(make_op("req-b", [1, 2], pool, prefix_end_tokens=256))
+            is AdmitResult.DEDUPLICATED
+        )
+        assert queue.num_pending_ops() == 1
+        assert queue.stats().deduplicated == 1
+        # req-b has nothing pending: its session may be torn down now.
+        assert queue.mark_request_finished("req-b") is False
+
+    def test_hot_prefix_requests_keep_one_pending_op(self) -> None:
+        """The round-2 repro: a hot shared prefix must not grow the queue
+        by one op per request."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)  # hot: never in the free queue
+        queue = make_queue(pool)
+        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=8)
+        for i in range(100):
+            request_id = f"req-{i}"
+            queue.admit(make_op(request_id, [1, 2], pool, prefix_end_tokens=256))
+            queue.collect_due()
+            deferred = queue.mark_request_finished(request_id)
+            assert deferred is (i == 0), "only the buffering request defers"
+        assert queue.num_pending_ops() == 1
+
+    def test_different_salt_is_not_deduplicated(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1, 2], pool, prefix_end_tokens=256))
+        result = queue.admit(
+            make_op("req-b", [1, 2], pool, prefix_end_tokens=256, cache_salt="s")
+        )
+        assert result is AdmitResult.ADMITTED
+        assert queue.num_pending_ops() == 2
+
+    def test_content_admittable_again_after_emission(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
+        assert result is AdmitResult.ADMITTED
+
+    def test_content_admittable_again_after_eviction_drop(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        op_b = make_op("req-b", [1], pool, prefix_end_tokens=256)
+        pool.evict(1)
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        assert len(queue.collect_due().dropped_evicted) == 1
+        # req-b snapshotted before the eviction; only req-a's chain broke.
+        assert queue.admit(op_b) is AdmitResult.ADMITTED
+
+    def test_content_admittable_again_after_short_prefix_drop(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().dropped_short_prefix) == 1
+        result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
+        assert result is AdmitResult.ADMITTED
+
+    def test_content_admittable_again_after_drop_request(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        assert queue.drop_request("req-a") == 1
+        result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
+        assert result is AdmitResult.ADMITTED
 
 
 class TestDrainOrderingAndCap:

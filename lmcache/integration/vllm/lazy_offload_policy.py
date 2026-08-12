@@ -128,11 +128,17 @@ class AdmitResult(enum.Enum):
     - REJECTED_PREFIX_BROKEN: an earlier chunk of this request was already
       dropped, so this chunk would be unreachable on retrieval. The
       connector must skip the store entirely.
+    - DEDUPLICATED: identical content (same salt, range, and block-hash
+      chain) is already buffered under another request. Nothing to do: the
+      content will be stored -- or dropped -- with the operation that
+      buffered it, and this operation must not defer its own request's
+      session teardown.
     """
 
     ADMITTED = enum.auto()
     REJECTED_UNHASHED_BLOCK = enum.auto()
     REJECTED_PREFIX_BROKEN = enum.auto()
+    DEDUPLICATED = enum.auto()
 
 
 @dataclass
@@ -151,12 +157,28 @@ class PendingStoreOp:
         prefix_end_tokens: Token index one past the end of this operation's
             range, i.e. the request-prefix length covered once this
             operation and all earlier ones are stored.
+        cache_salt: The request's cache salt, part of the operation's
+            content identity for deduplication (two requests with the same
+            block hashes but different salts store under different keys).
     """
 
     request_id: str
     store_metadata: "LMCacheMPRequestMetadata"
     block_hashes: dict[int, "BlockHashWithGroupId"]
     prefix_end_tokens: int
+    cache_salt: str = ""
+
+
+def _content_key(
+    op: PendingStoreOp,
+) -> tuple[str, int, tuple["BlockHashWithGroupId", ...]]:
+    """Content identity of an operation, independent of its request.
+
+    Two operations with equal keys cover the same token range with the same
+    cached content: the block-hash chain encodes the token prefix, and the
+    salt separates cache namespaces.
+    """
+    return (op.cache_salt, op.prefix_end_tokens, tuple(op.block_hashes.values()))
 
 
 @dataclass(frozen=True)
@@ -213,6 +235,7 @@ class LazyOffloadCounters:
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
     dropped_on_request_drop: int = 0
+    deduplicated: int = 0
 
 
 @dataclass
@@ -251,6 +274,16 @@ class EvictionAwareStoreQueue:
     triggers a drain; operations whose blocks are evicted before they come
     due are dropped and counted, never stored stale.
 
+    Admission deduplicates by content: an operation whose salt, range, and
+    block-hash chain match a pending operation of another request is not
+    buffered again. This bounds the queue by the amount of unique cached
+    content on the GPU -- without it, every request over a hot shared
+    prefix (blocks that never enter the free queue, so never come due)
+    would buffer its own copy indefinitely. Deduplication is optimistic:
+    if the covering operation is later dropped, chunks the deduplicated
+    request stores past that point are unreachable until a future request
+    re-buffers the missing prefix -- wasted storage, never corruption.
+
     Not thread-safe: all methods must be called from the scheduler thread
     (the vLLM connector scheduler-side call pattern).
     """
@@ -277,6 +310,15 @@ class EvictionAwareStoreQueue:
         # further emissions for these requests are held back until
         # notify_stored().
         self._in_flight: set[str] = set()
+        # Content keys of the pending operations. An operation whose content
+        # is already buffered under another request is deduplicated at
+        # admission: without this, every request over a hot shared prefix
+        # (blocks that never enter the free queue) would buffer its own copy
+        # and the queue would grow without bound. With deduplication the
+        # queue is bounded by the amount of unique cached content on the GPU.
+        self._pending_content: set[
+            tuple[str, int, tuple["BlockHashWithGroupId", ...]]
+        ] = set()
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
@@ -299,7 +341,12 @@ class EvictionAwareStoreQueue:
         if any(block_hash is None for block_hash in op.block_hashes.values()):
             self._counters.rejected_unhashed += 1
             return AdmitResult.REJECTED_UNHASHED_BLOCK
+        content_key = _content_key(op)
+        if content_key in self._pending_content:
+            self._counters.deduplicated += 1
+            return AdmitResult.DEDUPLICATED
         self._pending.setdefault(op.request_id, []).append(op)
+        self._pending_content.add(content_key)
         self._counters.admitted += 1
         return AdmitResult.ADMITTED
 
@@ -364,6 +411,7 @@ class EvictionAwareStoreQueue:
             The number of operations discarded.
         """
         dropped = self._pending.pop(request_id, [])
+        self._forget_content(dropped)
         self._counters.dropped_on_request_drop += len(dropped)
         self._finished.discard(request_id)
         self._prefix_broken.discard(request_id)
@@ -419,6 +467,7 @@ class EvictionAwareStoreQueue:
                 # front is about to die, which breaks the prefix chain for
                 # the rest -- drop everything, not just the due segment.
                 result.dropped_short_prefix.extend(surviving)
+                self._forget_content(surviving)
                 self._counters.rejected_short_prefix += len(surviving)
                 self._prefix_broken.add(request_id)
                 self._replace_pending(request_id, [], result)
@@ -435,6 +484,7 @@ class EvictionAwareStoreQueue:
             emitted = due_ops[:budget]
             budget -= len(emitted)
             result.to_store.extend(emitted)
+            self._forget_content(emitted)
             self._counters.emitted += len(emitted)
             # Mark in flight before updating pending state so that a request
             # fully drained by this emission is not released until the store
@@ -503,6 +553,7 @@ class EvictionAwareStoreQueue:
             return ops
         dropped = ops[first_lost:]
         result.dropped_evicted.extend(dropped)
+        self._forget_content(dropped)
         self._counters.dropped_evicted += len(dropped)
         self._prefix_broken.add(request_id)
         surviving = ops[:first_lost]
@@ -550,6 +601,16 @@ class EvictionAwareStoreQueue:
             return False
         known_prefix = ops[-1].prefix_end_tokens
         return known_prefix < self._config.min_prefix_tokens
+
+    def _forget_content(self, ops: list[PendingStoreOp]) -> None:
+        """Release the content keys of operations leaving the pending queue.
+
+        Must be called on every path that removes operations from
+        ``self._pending`` (emission, eviction drop, gate-3 drop, request
+        drop), so identical content becomes admissible again.
+        """
+        for op in ops:
+            self._pending_content.discard(_content_key(op))
 
     def _replace_pending(
         self,

@@ -51,11 +51,15 @@ class AddOutcome(enum.Enum):
       and must not be stored (lazy offload requires prefix caching).
     - SKIPPED_PREFIX_BROKEN: an earlier chunk of the request was already
       dropped; storing this one would be unreachable on retrieval.
+    - DEDUPLICATED: identical content is already buffered under another
+      request; it will be stored (or dropped) with that operation, so
+      nothing is buffered for this request.
     """
 
     BUFFERED = enum.auto()
     SKIPPED_UNHASHED = enum.auto()
     SKIPPED_PREFIX_BROKEN = enum.auto()
+    DEDUPLICATED = enum.auto()
 
 
 @dataclass
@@ -301,10 +305,13 @@ class LazyOffloadPendingStore:
             # admit() rejects any None value in the snapshot.
             block_hashes=cast("dict[int, BlockHashWithGroupId]", block_hashes),
             prefix_end_tokens=meta.op.end,
+            cache_salt=meta.cache_salt,
         )
         admit = queue.admit(op)
         if admit is AdmitResult.ADMITTED:
             return AddOutcome.BUFFERED
+        if admit is AdmitResult.DEDUPLICATED:
+            return AddOutcome.DEDUPLICATED
         if admit is AdmitResult.REJECTED_UNHASHED_BLOCK:
             logger.warning(
                 "Lazy offload: skipping store for request %s tokens [%d, %d): "
