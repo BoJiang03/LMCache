@@ -32,6 +32,9 @@ import pytest
 
 pytest.importorskip("vllm", reason="MP connector imports vLLM at module top")
 
+# Third Party
+from vllm.v1.request import RequestStatus  # noqa: E402
+
 # First Party
 from lmcache.integration.vllm.lazy_offload_pending_store import (  # noqa: E402
     LazyOffloadPendingStore,
@@ -44,6 +47,8 @@ from lmcache.integration.vllm.lmcache_mp_connector import (  # noqa: E402
 from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
     LMCacheMPConnectorMetadata,
     LMCacheMPRequestMetadata,
+    LMCacheMPRequestState,
+    LMCacheMPRequestTracker,
     LMCacheMPWorkerMetadata,
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
@@ -742,6 +747,75 @@ def test_lifecycle_store_completes_with_balanced_pins_and_one_teardown() -> None
     # with no reference left behind.
     assert harness.pool.free_block_ids() == [1, 2]
     assert harness.pool.blocks[1].ref_cnt == 0
+
+
+####
+# Preemption: tracker reset must drop stale buffered ops
+####
+
+
+def _preempt_reset(harness: _Harness, request_id: str, num_tokens: int = 64) -> None:
+    """Replay the scheduler seeing a preempted request again.
+
+    ``get_num_new_matched_tokens`` calls ``_get_or_create_request_tracker``
+    with the request in PREEMPTED status; a stale (non-fresh) tracker is
+    reset there. Plants such a tracker first, then triggers the reset.
+    """
+    request = SimpleNamespace(
+        request_id=request_id,
+        status=RequestStatus.PREEMPTED,
+        cache_salt="",
+        all_token_ids=list(range(num_tokens)),
+    )
+    stale = LMCacheMPRequestTracker(request)  # type: ignore[arg-type]
+    stale.state = LMCacheMPRequestState.READY
+    harness.connector.request_trackers[request_id] = stale
+    harness.connector._get_or_create_request_tracker(request)  # type: ignore[arg-type]
+
+
+def test_preemption_reset_drops_buffered_ops_so_resume_cannot_overlap() -> None:
+    """After preempt+resume the recreated tracker restarts at
+    ``num_stored_tokens=0`` and re-produces store metadata from token zero.
+    The pre-preemption ops must be dropped at tracker reset; otherwise the
+    next pressure drain coalesces overlapping ranges and raises, killing
+    the scheduler step."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    _admit_op(harness, "req", [[3, 4]], 32, 64)
+
+    _preempt_reset(harness, "req")
+
+    # Resume: APC resurrected the same blocks (hashes still match) and the
+    # fresh tracker re-emits the first chunk.
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    harness.pool.make_free([1, 2, 3, 4])
+
+    metadata = _drain(harness, total_num_scheduled_tokens=4 * TOKENS_PER_BLOCK)
+
+    assert len(metadata) == 1
+    op = metadata.requests[0].op
+    assert (op.start, op.end) == (0, 32)
+
+
+def test_preemption_reset_keeps_in_flight_batch_and_its_pins() -> None:
+    """A batch already drained when the preemption hits stays in flight:
+    its blocks remain pinned until the receipt, and no second batch may be
+    submitted meanwhile (the worker keys store futures by request id)."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    harness.pool.make_free([1, 2])
+    assert len(_drain(harness)) == 1  # in flight, blocks pinned
+
+    _preempt_reset(harness, "req")
+    _admit_op(harness, "req", [[3, 4]], 0, 32)
+    harness.pool.make_free([3, 4])
+
+    assert len(_drain(harness)) == 0, "second batch while one is in flight"
+    assert harness.pool.blocks[1].ref_cnt == 1
+
+    _report_store_complete(harness, "req")
+    assert harness.pool.blocks[1].ref_cnt == 0
+    assert len(_drain(harness)) == 1
 
 
 ####

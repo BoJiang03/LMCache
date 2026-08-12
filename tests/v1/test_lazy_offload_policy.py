@@ -336,3 +336,26 @@ class TestRequestLifecycle:
         assert queue.drop_request("req") == 2
         assert queue.num_pending_ops() == 0
         assert queue.stats().dropped_on_request_drop == 2
+
+    def test_drop_request_keeps_in_flight_batch_tracked(self) -> None:
+        """Dropping a request's pending ops must not forget its in-flight
+        batch: an op re-admitted afterwards (e.g. after a preemption
+        resume) stays blocked until the completion receipt arrives via
+        ``notify_stored`` -- the worker allows one outstanding store per
+        request."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        # horizon covers both queue ranks: block 2 is due at every step.
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1  # now in flight
+        assert queue.drop_request("req") == 0  # nothing left pending
+
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert queue.collect_due().to_store == []  # held back
+
+        assert queue.notify_stored("req") is False
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1

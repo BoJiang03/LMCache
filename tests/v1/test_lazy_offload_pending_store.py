@@ -152,6 +152,21 @@ class TestFIFOOffloadPolicy:
         policy = FIFOOffloadPolicy()
         assert policy.select_items(5) == []
 
+    def test_drop_request_discards_items_and_finished_count(self):
+        policy = FIFOOffloadPolicy({"lmcache.mp.lazy_offload_threshold": 1})
+        policy.add(_make_meta("req-0", num_blocks=1), _make_block_hashes([0]))
+        policy.add(_make_meta("req-0", num_blocks=2), _make_block_hashes([0, 1]))
+        policy.mark_req_finished("req-0")
+        assert policy.should_offload() is True
+
+        assert policy.drop_request("req-0") == 2
+        assert policy.should_offload() is False
+        assert policy.select_items(10) == []
+
+    def test_drop_request_unknown_is_noop(self):
+        policy = FIFOOffloadPolicy()
+        assert policy.drop_request("nonexistent") == 0
+
 
 # ===========================================================================
 # Tests for LazyOffloadPendingStore
@@ -361,3 +376,10 @@ class TestEvictionAwareMode:
     def test_mark_req_finished_without_pending_allows_teardown(self):
         store, _ = self._setup()
         assert store.mark_req_finished("req-unknown") is False
+
+    def test_drop_request_discards_buffered_ops(self):
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=2))
+        assert store.drop_request("req-0") == 1
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert store.collect_due().to_store == []

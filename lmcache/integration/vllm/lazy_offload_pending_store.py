@@ -101,6 +101,18 @@ class OffloadPolicy(ABC):
         ...
 
     @abstractmethod
+    def drop_request(self, req_id: str) -> int:
+        """Discard the request's buffered operations.
+
+        Args:
+            req_id: The request to discard.
+
+        Returns:
+            The number of buffered store operations discarded.
+        """
+        ...
+
+    @abstractmethod
     def should_offload(self) -> bool:
         """Determine whether the queue should be drained.
 
@@ -158,6 +170,14 @@ class FIFOOffloadPolicy(OffloadPolicy):
             self._finished_requests_count += 1
             return True
         return False
+
+    def drop_request(self, req_id: str) -> int:
+        item = self._pending_items.pop(req_id, None)
+        if item is None:
+            return 0
+        if item.is_finished:
+            self._finished_requests_count -= 1
+        return len(item.metadatas)
 
     def should_offload(self) -> bool:
         return self._finished_requests_count >= self._threshold
@@ -374,6 +394,25 @@ class LazyOffloadPendingStore:
         if self._eviction_queue is not None:
             return self._eviction_queue.mark_request_finished(req_id)
         return self._require_fifo_policy().mark_req_finished(req_id)
+
+    def drop_request(self, req_id: str) -> int:
+        """Discard the request's buffered (not yet drained) operations.
+
+        Called when the buffered state becomes stale -- e.g. the connector
+        resets a preempted request's tracker, which after resume re-produces
+        store metadata from token zero, overlapping anything still buffered.
+        A batch already drained and submitted is unaffected: its blocks stay
+        pinned until the completion receipt arrives.
+
+        Args:
+            req_id: The request whose buffered operations are discarded.
+
+        Returns:
+            The number of buffered operations discarded.
+        """
+        if self._eviction_queue is not None:
+            return self._eviction_queue.drop_request(req_id)
+        return self._require_fifo_policy().drop_request(req_id)
 
     def _require_eviction_queue(self) -> EvictionAwareStoreQueue:
         if self._eviction_queue is None:

@@ -1424,6 +1424,19 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             # state, i.e., PREFETCHING
             if tracker.state != LMCacheMPRequestState.PREFETCHING:
                 self.request_trackers.pop(request_id)
+                if self.lazy_offload:
+                    # The recreated tracker restarts at num_stored_tokens=0
+                    # and re-produces store metadata from token zero after
+                    # resume; anything still buffered for the request would
+                    # overlap it.
+                    dropped = self._pending_store.drop_request(request_id)
+                    if dropped:
+                        logger.info(
+                            "Lazy offload: dropped %d buffered store op(s) "
+                            "of preempted request %s",
+                            dropped,
+                            request_id,
+                        )
 
         if request_id not in self.request_trackers:
             new_tracker = LMCacheMPRequestTracker(request)
