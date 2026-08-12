@@ -1406,6 +1406,12 @@ class LMCacheMPWorkerAdapter:
         """
         Submit a KV cache store request to LMCache
 
+        In lazy offload mode every call produces exactly one completion
+        receipt from this rank: a call that creates no store future (a
+        non-writer rank, or a drop while the server is unhealthy) reports
+        completion immediately, because the scheduler unpins the request's
+        blocks only after collecting one receipt per worker rank.
+
         Args:
             request_id: The ID of the request
             op: The LoadStoreOp describing the store operation.
@@ -1416,9 +1422,20 @@ class LMCacheMPWorkerAdapter:
         self._ensure_heartbeat_started()
 
         if not self.is_kv_writer:
+            # Non-writer ranks (MLA) never store anything.
+            if self.lazy_offload:
+                self._completed_store_requests[request_id] = 1
             return
 
         if not self.is_healthy:
+            if self.lazy_offload:
+                logger.warning(
+                    "Dropping store for request %s while the server is "
+                    "unhealthy; reporting it as completed so its blocks "
+                    "are unpinned",
+                    request_id,
+                )
+                self._completed_store_requests[request_id] = 1
             return
 
         assert op.token_ids is not None
