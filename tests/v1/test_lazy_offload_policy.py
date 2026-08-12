@@ -484,6 +484,49 @@ class TestContentDeduplication:
         result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
 
+    def test_dead_covering_op_does_not_deduplicate_live_copy(self) -> None:
+        """A dedup hit must verify the covering op's snapshot is still live.
+        The covering op can already be a corpse while it waits in the pending
+        list (its blocks recycled by this step's allocation, or its cleanup
+        skipped while its request holds an in-flight batch); deduplicating
+        against it would discard the only live copy of the content."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool)
+        corpse = make_op("req-a", [1], pool, prefix_end_tokens=256)
+        assert queue.admit(corpse) is AdmitResult.ADMITTED
+        # Block 1 evicted; req-b recomputed the same content into block 2
+        # (block hashes are content-derived, so the chains are equal).
+        content_hash = pool.hashes[1]
+        pool.evict(1)
+        pool.hashes[2] = content_hash
+        live = make_op("req-b", [2], pool, prefix_end_tokens=256)
+        assert queue.admit(live) is AdmitResult.ADMITTED
+        assert queue.num_pending_ops() == 2
+
+    def test_corpse_drop_keeps_live_copy_deduplicating(self) -> None:
+        """Dropping the corpse must not release the live copy's content key:
+        a third identical admission still deduplicates against the live op."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        content_hash = pool.hashes[1]
+        pool.evict(1)
+        pool.hashes[2] = content_hash
+        assert (
+            queue.admit(make_op("req-b", [2], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.dropped_evicted) == 1  # req-a's corpse
+        assert (
+            queue.admit(make_op("req-c", [2], pool, prefix_end_tokens=256))
+            is AdmitResult.DEDUPLICATED
+        )
+        assert queue.num_pending_ops() == 1
+
     def test_content_admittable_again_after_drop_request(self) -> None:
         pool = FakePoolView()
         seed_blocks(pool, [1], free=False)

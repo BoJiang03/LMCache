@@ -48,10 +48,16 @@ admitted op whose blocks come under eviction pressure.
      teardown). Deduplication is what bounds the queue: without it every
      request over a hot shared prefix (blocks never in the free queue, so
      never due) would buffer its own copy indefinitely; with it the queue is
-     bounded by the unique cached content on the GPU. It is optimistic: if
-     the covering op is later dropped, chunks the deduplicated request stores
-     past that point are unreachable until a future request re-buffers the
-     prefix — wasted storage, never corruption. A deduplicated chunk also
+     bounded by the unique cached content on the GPU. A hit is validated
+     against the pool: if the covering op's block snapshot is no longer
+     intact (its blocks were recycled while it waited for its eviction
+     drop — e.g. behind an in-flight batch, or by this very step's
+     allocation), the new op is admitted instead and takes over the content
+     key; a dead op never absorbs a live copy. Past that check it is
+     optimistic: if the covering op is dropped later, chunks the
+     deduplicated request stores past that point are unreachable until a
+     future request re-buffers the prefix — wasted storage, never
+     corruption. A deduplicated chunk also
      leaves a *hole* in its request's pending list; emission never spans a
      hole (each batch is coalesced into one contiguous store op), so the ops
      on each side go out in separate batches.
