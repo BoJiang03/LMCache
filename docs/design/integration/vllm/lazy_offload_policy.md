@@ -30,19 +30,28 @@ admitted op whose blocks come under eviction pressure.
 1. Route each `GetStoreMetadata` result to `admit(op)` instead of the step
    metadata. Handle the outcome:
    - `ADMITTED` → nothing now.
-   - `REJECTED_UNHASHED_BLOCK` → **store eagerly** (a hash-less block's later
+   - `REJECTED_UNHASHED_BLOCK` → **skip and warn** (a hash-less block's later
      eviction is undetectable: evicted-and-reallocated also reads `None`).
+     Cannot occur for chunk-aligned ranges while prefix caching is on; lazy
+     offload requires prefix caching (enforced at connector init).
    - `REJECTED_PREFIX_BROKEN` → **skip** (an earlier chunk was dropped; this
      chunk would be unreachable on retrieval).
 2. Once per step: `observe_step(gross_blocks_allocated, est_next_step_blocks)`
    then `collect_due()`.
-3. For every op in `DrainResult.to_store` (already ordered): re-verify + pin
-   (`touch`) its blocks, put its metadata into this step's connector metadata,
-   and unpin (`free_blocks(prepend=True)`) when the worker reports the store
-   complete. `dropped_*` lists need no action beyond accounting.
-4. On `request_finished`: call `mark_request_finished(id)`; if it returns
-   True, defer `end_session` until the id appears in a later
-   `DrainResult.released_requests`. On abort/error paths use
+3. For every op in `DrainResult.to_store` (already ordered): pin (`touch`)
+   its blocks, **coalesce each request's released ops into one store op**
+   (the worker adapter tracks a single in-flight store future per request),
+   and put it into this step's connector metadata. `dropped_*` lists need no
+   action beyond accounting.
+4. On the store-completion receipt: unpin with `free_blocks(prepend=True)`
+   (a stored block has a copy below the GPU, so among free blocks it should
+   die first) and call `notify_stored(id)` — the queue holds back a
+   request's remaining ops while a batch is in flight; a True return means
+   the request is finished and fully drained, so its session may end.
+5. On `request_finished`: call `mark_request_finished(id)`; True means
+   stores are pending or in flight — defer `end_session` until the id
+   appears in `DrainResult.released_requests` (remaining ops all dropped) or
+   `notify_stored` returns True (stored). On abort/error paths use
    `drop_request(id)`.
 
 ## Decision rule
