@@ -52,8 +52,10 @@ admitted op whose blocks come under eviction pressure.
      against the pool: if the covering op's block snapshot is no longer
      intact (its blocks were recycled while it waited for its eviction
      drop — e.g. behind an in-flight batch, or by this very step's
-     allocation), the new op is admitted instead and takes over the content
-     key; a dead op never absorbs a live copy. Past that check it is
+     allocation), or an earlier pending op of the covering op's request has
+     lost a block (the next drain then prefix-closes over the cover too),
+     the new op is admitted instead and takes over the content key; a
+     doomed op never absorbs a live copy. Past that check it is
      optimistic: if the covering op is dropped later, chunks the
      deduplicated request stores past that point are unreachable until a
      future request re-buffers the prefix — wasted storage, never

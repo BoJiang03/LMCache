@@ -536,6 +536,59 @@ class TestContentDeduplication:
         result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
 
+    def test_cover_doomed_by_prefix_closure_does_not_deduplicate(self) -> None:
+        """The dedup liveness check must cover the whole prefix chain, not
+        just the covering op: a cover whose earlier sibling is already a
+        corpse is deterministically dropped by prefix closure on the next
+        drain, so it must not absorb a live copy either. Requires the front
+        block to die before the tail block, which hybrid/sliding-window
+        block freeing can produce."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-a", [2], pool, prefix_end_tokens=512))
+        # Front block recycled (corpse), tail block intact. req-b recomputed
+        # the same content into fresh blocks (hashes are content-derived,
+        # so the chains are equal).
+        front_hash, tail_hash = pool.hashes[1], pool.hashes[2]
+        pool.evict(1)
+        pool.hashes[11] = front_hash
+        pool.hashes[12] = tail_hash
+        assert (
+            queue.admit(make_op("req-b", [11], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        assert (
+            queue.admit(make_op("req-b", [12], pool, prefix_end_tokens=512))
+            is AdmitResult.ADMITTED
+        )
+        # req-a's doomed chain is swept; req-b now owns both content keys,
+        # so a third identical request deduplicates against the live copy.
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        assert len(queue.collect_due().dropped_evicted) == 2
+        assert (
+            queue.admit(make_op("req-c", [12], pool, prefix_end_tokens=512))
+            is AdmitResult.DEDUPLICATED
+        )
+
+    def test_corpse_after_cover_does_not_block_deduplication(self) -> None:
+        """Only corpses before the cover doom it: a later sibling's loss
+        prefix-closes from its own position, leaving the cover storable, so
+        the cover remains a valid deduplication target."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-a", [2], pool, prefix_end_tokens=512))
+        front_hash = pool.hashes[1]
+        pool.evict(2)  # tail corpse; the front op survives prefix closure
+        pool.hashes[11] = front_hash
+        assert (
+            queue.admit(make_op("req-b", [11], pool, prefix_end_tokens=256))
+            is AdmitResult.DEDUPLICATED
+        )
+
 
 class TestEmissionContiguity:
     """An emitted batch is coalesced into one contiguous store operation, so

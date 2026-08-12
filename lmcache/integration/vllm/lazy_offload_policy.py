@@ -305,9 +305,10 @@ class EvictionAwareStoreQueue:
     content on the GPU -- without it, every request over a hot shared
     prefix (blocks that never enter the free queue, so never come due)
     would buffer its own copy indefinitely. A hit is validated against the
-    pool: an operation whose covering op's snapshot is no longer intact
-    (blocks recycled while it waits for its eviction drop) is admitted, not
-    deduplicated, and takes over the content key. Deduplication is still
+    pool: the covering op -- and every earlier pending op of its request,
+    whose loss would prefix-close over the cover on the next drain -- must
+    still hold its admission-time snapshot; otherwise the new copy is
+    admitted instead and takes over the content key. Deduplication is still
     optimistic past that check: if the covering operation is dropped later,
     chunks the deduplicated request stores past that point are unreachable
     until a future request re-buffers the missing prefix -- wasted storage,
@@ -387,12 +388,13 @@ class EvictionAwareStoreQueue:
             return AdmitResult.REJECTED_UNHASHED_BLOCK
         content_key = _content_key(op)
         covering = self._pending_content.get(content_key)
-        if covering is not None and self._snapshot_intact(covering):
+        if covering is not None and self._chain_intact(covering):
             self._counters.deduplicated += 1
             return AdmitResult.DEDUPLICATED
-        # No covering op, or it is a corpse (blocks recycled while it waits
-        # for its eviction drop): buffer the live copy and make it the new
-        # cover. The corpse stays pending and is dropped by collect_due().
+        # No covering op, or it is doomed (its own blocks were recycled, or
+        # an earlier sibling's were, so the next drain prefix-closes over
+        # it): buffer the live copy and make it the new cover. The doomed
+        # op stays pending and is dropped by collect_due().
         self._pending.setdefault(op.request_id, []).append(op)
         self._pending_content[content_key] = op
         self._counters.admitted += 1
@@ -708,6 +710,25 @@ class EvictionAwareStoreQueue:
             self._pool.block_hash(block_id) == snapshot
             for block_id, snapshot in op.block_hashes.items()
         )
+
+    def _chain_intact(self, op: PendingStoreOp) -> bool:
+        """Whether the op and its pending prefix chain are all intact.
+
+        A valid deduplication cover must be more than intact itself: if an
+        earlier pending op of its request has lost a block, the next drain
+        drops the cover too (prefix closure), so it must not absorb a live
+        copy of the content. Later siblings do not matter: their loss
+        prefix-closes from their own position, leaving the cover storable.
+        """
+        for sibling in self._pending.get(op.request_id, []):
+            if not self._snapshot_intact(sibling):
+                return False
+            if sibling is op:
+                return True
+        # Unreachable while the _pending_content invariant holds (every
+        # cover is a pending op of its request); a missing cover is treated
+        # as doomed, the safe direction.
+        return False
 
     def _forget_content(self, ops: list[PendingStoreOp]) -> None:
         """Release the content keys of operations leaving the pending queue.
