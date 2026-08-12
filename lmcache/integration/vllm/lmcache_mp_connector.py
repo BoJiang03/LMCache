@@ -1473,6 +1473,21 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                         )
 
         if request_id not in self.request_trackers:
+            if self.lazy_offload and self._pending_store.reclaim_finished_request(
+                request_id
+            ):
+                # A finished request leaves vLLM's request table immediately
+                # in lazy mode (request_finished returns False), so a new
+                # request can legally reuse its id while its teardown is
+                # still deferred behind buffered ops. Release the
+                # predecessor before the successor's first operation.
+                logger.info(
+                    "Lazy offload: request id %s reused while its "
+                    "predecessor's teardown was deferred; released the "
+                    "predecessor's session",
+                    request_id,
+                )
+                self.scheduler_adapter.end_session(request_id)
             new_tracker = LMCacheMPRequestTracker(request)
             self.request_trackers[request_id] = new_tracker
         return self.request_trackers[request_id]

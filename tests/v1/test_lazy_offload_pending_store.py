@@ -103,6 +103,25 @@ class TestFIFOOffloadPolicy:
         policy = FIFOOffloadPolicy()
         assert policy.mark_req_finished("nonexistent") is False
 
+    def test_reclaim_finished_request_drops_predecessor_item(self):
+        """A new request reusing a finished predecessor's id must not
+        inherit its buffered item; the caller ends the old session."""
+        policy = FIFOOffloadPolicy({"lmcache.mp.lazy_offload_threshold": 1})
+        policy.add(_make_meta("req-0"), _make_block_hashes([0]))
+        policy.mark_req_finished("req-0")
+        assert policy.reclaim_finished_request("req-0") is True
+        assert policy.should_offload() is False
+        # The successor buffers fresh, unconflated state.
+        policy.add(_make_meta("req-0"), _make_block_hashes([1]))
+        assert len(policy.select_items(10)) == 0  # not finished yet
+
+    def test_reclaim_finished_request_ignores_live_and_unknown_ids(self):
+        policy = FIFOOffloadPolicy()
+        policy.add(_make_meta("req-0"), _make_block_hashes([0]))
+        assert policy.reclaim_finished_request("req-0") is False
+        assert "req-0" in policy._pending_items
+        assert policy.reclaim_finished_request("nonexistent") is False
+
     def test_select_items_returns_only_finished(self):
         policy = FIFOOffloadPolicy({"lmcache.mp.lazy_offload_threshold": 2})
         policy.add(_make_meta("req-0"), _make_block_hashes([0]))
@@ -389,6 +408,14 @@ class TestEvictionAwareMode:
         store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
         store.add(_make_meta("req-0", num_blocks=2))
         assert store.drop_request("req-0") == 1
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert store.collect_due().to_store == []
+
+    def test_reclaim_finished_request_routes_to_eviction_queue(self):
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=2))
+        assert store.mark_req_finished("req-0") is True
+        assert store.reclaim_finished_request("req-0") is True
         store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
         assert store.collect_due().to_store == []
 

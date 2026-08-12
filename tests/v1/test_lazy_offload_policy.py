@@ -728,3 +728,76 @@ class TestRequestLifecycle:
         assert queue.notify_stored("req") is False
         queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
         assert len(queue.collect_due().to_store) == 1
+
+
+class TestIdReuseReclaim:
+    """vLLM frees a finished lazy request's id immediately, so a client may
+    reuse it while the predecessor's teardown is still deferred. The caller
+    reclaims the residual state when it first sees the successor."""
+
+    def test_reclaim_releases_pending_predecessor(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        assert queue.mark_request_finished("req") is True
+        # The caller must end the predecessor's session now; its buffered
+        # op is discarded and its content key released.
+        assert queue.reclaim_finished_request("req") is True
+        assert queue.num_pending_ops() == 0
+        assert queue.stats().dropped_id_reuse == 1
+        assert (
+            queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        # The successor's own lifecycle is unaffected by the reclaim.
+        assert queue.mark_request_finished("req") is True
+
+    def test_reclaim_without_finished_marker_is_a_noop(self) -> None:
+        """A live request's state must never be reclaimed: only an id whose
+        previous owner finished with deferred teardown carries residue."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        assert queue.reclaim_finished_request("req") is False
+        assert queue.num_pending_ops() == 1
+        assert queue.reclaim_finished_request("unknown") is False
+
+    def test_reclaim_with_in_flight_batch_defers_release_to_receipt(self) -> None:
+        """An in-flight batch keeps the session alive: the reclaim marks it
+        stale (its failure must not blacklist the successor) and the
+        teardown still rides the completion receipt."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1  # in flight
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))  # held back
+        assert queue.mark_request_finished("req") is True
+
+        assert queue.reclaim_finished_request("req") is False
+        assert queue.num_pending_ops() == 0  # held-back op discarded
+        # The stale batch's failure does not break the successor's chain.
+        assert queue.mark_store_failed("req") == 0
+        assert (
+            queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        # The receipt arrives with the successor's op pending: the merged
+        # session now rides the successor's lifecycle, not the corpse's.
+        assert queue.notify_stored("req") is False
+
+    def test_reclaim_with_in_flight_batch_and_no_successor_ops(self) -> None:
+        """Without successor admissions, the receipt itself tears down the
+        merged session."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.mark_request_finished("req") is True
+        assert queue.reclaim_finished_request("req") is False
+        assert queue.notify_stored("req") is True

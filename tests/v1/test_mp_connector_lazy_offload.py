@@ -958,6 +958,102 @@ def test_stale_batch_failure_receipt_spares_resumed_request() -> None:
 
 
 ####
+# Request-id reuse after a finished-deferred teardown
+####
+
+
+def _arrive_new_request(
+    harness: _Harness, request_id: str, num_tokens: int = 64
+) -> None:
+    """Replay the scheduler seeing a brand-new request.
+
+    In lazy mode a finished request leaves vLLM's request table immediately
+    (``request_finished`` returns False), so a client-supplied id may return
+    while the predecessor's teardown is still deferred. The first connector
+    touchpoint of a new request is the tracker creation inside
+    ``get_num_new_matched_tokens``.
+    """
+    request = SimpleNamespace(
+        request_id=request_id,
+        status=RequestStatus.WAITING,
+        cache_salt="",
+        all_token_ids=list(range(num_tokens)),
+    )
+    harness.connector._get_or_create_request_tracker(request)  # type: ignore[arg-type]
+
+
+def test_id_reuse_arrival_releases_predecessor_and_protects_successor() -> None:
+    """A new request reusing a finished-deferred id must end the
+    predecessor's session at arrival and discard its buffered ops.
+    Otherwise the two requests' pending lists conflate: the predecessor's
+    eviction drop prefix-closes over the successor's intact ops and fires
+    end_session while the successor is live."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "X", [[1, 2]], 0, 32)
+    finished, _ = _finish_request(harness, "X")
+    assert finished is False
+    assert harness.adapter.ended_sessions == []  # teardown deferred
+
+    _arrive_new_request(harness, "X")
+    assert harness.adapter.ended_sessions == ["X"]  # released at arrival
+
+    # The successor buffers its own first chunk; the predecessor's blocks
+    # recycle; the drain must not touch the successor's state.
+    _admit_op(harness, "X", [[3, 4]], 0, 32)
+    harness.pool.set_hash(1, b"recycled")
+    assert len(_drain(harness)) == 0
+    assert harness.adapter.ended_sessions == ["X"]  # no second teardown
+
+    # The successor's chunk is intact, chained, and storable under pressure.
+    harness.pool.make_free([3, 4])
+    metadata = _drain(harness)
+    assert len(metadata) == 1
+    assert (metadata.requests[0].op.start, metadata.requests[0].op.end) == (0, 32)
+
+
+def test_id_reuse_then_preemption_cannot_swallow_predecessor_release() -> None:
+    """With the arrival reclaim in place, a preemption of the successor
+    finds no finished-deferred state under the id (drop_request's
+    precondition holds), so the predecessor's release is never swallowed
+    and the successor's own teardown stays independent."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "X", [[1, 2]], 0, 32)
+    _finish_request(harness, "X")
+    _arrive_new_request(harness, "X")
+    assert harness.adapter.ended_sessions == ["X"]
+
+    _admit_op(harness, "X", [[3, 4]], 0, 32)
+    _preempt_reset(harness, "X")  # successor preempted: a plain reset
+
+    # Resumed successor re-buffers from token zero and finishes cleanly.
+    _admit_op(harness, "X", [[3, 4]], 0, 32)
+    harness.pool.make_free([3, 4])
+    assert len(_drain(harness, total_num_scheduled_tokens=4 * TOKENS_PER_BLOCK)) == 1
+    _report_store_complete(harness, "X")
+    finished, _ = _finish_request(harness, "X")
+    assert finished is False
+    assert harness.adapter.ended_sessions == ["X", "X"]
+
+
+def test_id_reuse_with_in_flight_batch_defers_release_to_receipt() -> None:
+    """The session must outlive an in-flight store: when the predecessor's
+    batch is still awaiting its receipt at reuse time, the release rides
+    the receipt instead of firing at arrival."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "X", [[1, 2]], 0, 32)
+    harness.pool.make_free([1, 2])
+    assert len(_drain(harness)) == 1  # in flight
+    finished, _ = _finish_request(harness, "X")
+    assert finished is False
+
+    _arrive_new_request(harness, "X")
+    assert harness.adapter.ended_sessions == []  # receipt still outstanding
+
+    _report_store_complete(harness, "X")
+    assert harness.adapter.ended_sessions == ["X"]
+
+
+####
 # Count-triggered FIFO drain
 ####
 

@@ -117,6 +117,18 @@ class OffloadPolicy(ABC):
         ...
 
     @abstractmethod
+    def reclaim_finished_request(self, req_id: str) -> bool:
+        """Release a finished predecessor's buffered state on id reuse.
+
+        Args:
+            req_id: The reused request id.
+
+        Returns:
+            True if the caller must end the predecessor's session now.
+        """
+        ...
+
+    @abstractmethod
     def should_offload(self) -> bool:
         """Determine whether the queue should be drained.
 
@@ -182,6 +194,28 @@ class FIFOOffloadPolicy(OffloadPolicy):
         if item.is_finished:
             self._finished_requests_count -= 1
         return len(item.metadatas)
+
+    def reclaim_finished_request(self, req_id: str) -> bool:
+        """Drop a finished predecessor's buffered item on id reuse.
+
+        A new request may legally reuse a finished request's id; inheriting
+        the predecessor's buffered item would conflate the two requests'
+        chunks into one drained store.
+
+        Args:
+            req_id: The reused request id.
+
+        Returns:
+            True if a finished item was dropped (the caller must end the
+            predecessor's session now); False if the id carries no finished
+            item.
+        """
+        item = self._pending_items.get(req_id)
+        if item is None or not item.is_finished:
+            return False
+        del self._pending_items[req_id]
+        self._finished_requests_count -= 1
+        return True
 
     def should_offload(self) -> bool:
         return self._finished_requests_count >= self._threshold
@@ -439,6 +473,28 @@ class LazyOffloadPendingStore:
         if self._eviction_queue is not None:
             return self._eviction_queue.drop_request(req_id)
         return self._require_fifo_policy().drop_request(req_id)
+
+    def reclaim_finished_request(self, req_id: str) -> bool:
+        """Release a finished predecessor's residual state on id reuse.
+
+        In lazy mode the engine frees a finished request's id immediately,
+        so a new request may arrive under an id whose previous owner still
+        has buffered state (teardown deferred). Call this when a new
+        request's id is first seen; see
+        :meth:`EvictionAwareStoreQueue.reclaim_finished_request` for the
+        conflation hazards this prevents.
+
+        Args:
+            req_id: The reused request id.
+
+        Returns:
+            True if the caller must end the predecessor's session now;
+            False if there was nothing to reclaim or (EVICTION_AWARE) the
+            teardown rides an outstanding completion receipt.
+        """
+        if self._eviction_queue is not None:
+            return self._eviction_queue.reclaim_finished_request(req_id)
+        return self._require_fifo_policy().reclaim_finished_request(req_id)
 
     def mark_store_failed(self, req_id: str) -> int:
         """Record that the request's in-flight store batch failed.

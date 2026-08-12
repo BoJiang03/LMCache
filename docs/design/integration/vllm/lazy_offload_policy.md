@@ -97,6 +97,19 @@ admitted op whose blocks come under eviction pressure.
    marked stale by `drop_request` is ignored: ops admitted after the reset
    were re-produced from token zero and do not depend on the failed prefix.
    `notify_stored` clears the stale mark along with the in-flight marker.
+8. When a **new** request's id is first seen (tracker creation): call
+   `reclaim_finished_request(id)`. In lazy mode a finished request leaves
+   vLLM's request table immediately (`request_finished` returns False), so a
+   client-supplied id can return while its previous owner's teardown is
+   still deferred; without the reclaim the two requests' pending lists
+   conflate (the predecessor's eviction drop prefix-closes over the
+   successor's intact ops, and the deferred release fires while the
+   successor is live). The reclaim discards the predecessor's buffered ops;
+   a True return means the caller must `end_session(id)` now, before the
+   successor's first operation. With an in-flight predecessor batch it
+   returns False instead: the batch is marked stale and the teardown rides
+   its completion receipt (the id-keyed session then covers both requests
+   and ends once).
 
 ## Decision rule
 

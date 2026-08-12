@@ -260,6 +260,7 @@ class LazyOffloadCounters:
     rejected_prefix_broken: int = 0
     dropped_on_request_drop: int = 0
     dropped_failed_store: int = 0
+    dropped_id_reuse: int = 0
     deduplicated: int = 0
 
 
@@ -463,7 +464,10 @@ class EvictionAwareStoreQueue:
         yet). The drop discards the finished marker without emitting a
         release, so violating this would leak the caller's session. The only
         call site today -- the preemption tracker reset -- satisfies it:
-        a finished request is never rescheduled, hence never preempted.
+        a finished request is never rescheduled, hence never preempted, and
+        a reused id is stripped of its predecessor's marker by
+        :meth:`reclaim_finished_request` before the successor can be
+        preempted.
 
         Args:
             request_id: The request to discard.
@@ -479,6 +483,46 @@ class EvictionAwareStoreQueue:
         if request_id in self._in_flight:
             self._stale_in_flight.add(request_id)
         return len(dropped)
+
+    def reclaim_finished_request(self, request_id: str) -> bool:
+        """Release a finished predecessor's residual state on id reuse.
+
+        In lazy mode the engine frees a finished request's id immediately
+        (``request_finished`` returns False), so a client may submit a new
+        request under an id whose previous owner still has buffered
+        operations or an in-flight batch (teardown deferred). Must be
+        called when the caller first sees such a new request; without it
+        the two requests' state conflates: the predecessor's eviction drop
+        would prefix-close over the successor's intact operations, and the
+        deferred session release would fire while the successor is live.
+
+        The predecessor's buffered operations are discarded. An in-flight
+        batch is marked stale and the finished marker is kept, so the
+        teardown still arrives through the batch's completion receipt
+        (:meth:`notify_stored`); the session under this id then covers both
+        requests and ends once. Otherwise the marker is discarded and the
+        caller must end the predecessor's session now, before the
+        successor's first operation.
+
+        Args:
+            request_id: The reused request id.
+
+        Returns:
+            True if the caller must end the predecessor's session now;
+            False if there was nothing to reclaim or the teardown rides an
+            outstanding completion receipt.
+        """
+        if request_id not in self._finished:
+            return False
+        dropped = self._pending.pop(request_id, [])
+        self._forget_content(dropped)
+        self._counters.dropped_id_reuse += len(dropped)
+        self._prefix_broken.discard(request_id)
+        if request_id in self._in_flight:
+            self._stale_in_flight.add(request_id)
+            return False
+        self._finished.discard(request_id)
+        return True
 
     def mark_store_failed(self, request_id: str) -> int:
         """Record that the request's in-flight store batch failed.
