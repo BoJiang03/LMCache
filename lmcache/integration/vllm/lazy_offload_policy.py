@@ -122,8 +122,9 @@ class AdmitResult(enum.Enum):
     - ADMITTED: nothing to do now; the operation will be emitted later.
     - REJECTED_UNHASHED_BLOCK: a covered block has no hash, so eviction of
       that block could not be detected later (a reallocated block would also
-      read None, masking the loss). The connector must fall back to an eager
-      store for this operation.
+      read None, masking the loss). The connector must skip the store and
+      warn: chunk-aligned ranges cannot cover unhashed blocks while prefix
+      caching is on, and lazy offload requires prefix caching.
     - REJECTED_PREFIX_BROKEN: an earlier chunk of this request was already
       dropped, so this chunk would be unreachable on retrieval. The
       connector must skip the store entirely.
@@ -271,6 +272,11 @@ class EvictionAwareStoreQueue:
         # Requests reported finished by the engine; used to compute
         # DrainResult.released_requests.
         self._finished: set[str] = set()
+        # Requests with an emitted batch whose store completion has not been
+        # reported yet. The worker tracks one in-flight store per request, so
+        # further emissions for these requests are held back until
+        # notify_stored().
+        self._in_flight: set[str] = set()
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
@@ -333,7 +339,7 @@ class EvictionAwareStoreQueue:
             :class:`DrainResult`'s ``released_requests``); False if nothing
             is pending and the caller may tear down immediately.
         """
-        if request_id in self._pending:
+        if request_id in self._pending or request_id in self._in_flight:
             self._finished.add(request_id)
             return True
         self._prefix_broken.discard(request_id)
@@ -352,6 +358,7 @@ class EvictionAwareStoreQueue:
         self._counters.dropped_on_request_drop += len(dropped)
         self._finished.discard(request_id)
         self._prefix_broken.discard(request_id)
+        self._in_flight.discard(request_id)
         return len(dropped)
 
     def num_pending_ops(self) -> int:
@@ -388,6 +395,10 @@ class EvictionAwareStoreQueue:
         # Iterate over a copy: helpers may drop entries from self._pending.
         due_segments: list[tuple[int, str, list[PendingStoreOp]]] = []
         for request_id, ops in list(self._pending.items()):
+            if request_id in self._in_flight:
+                # One in-flight store batch per request (worker constraint);
+                # held-back ops are re-examined once notify_stored() arrives.
+                continue
             surviving = self._drop_evicted_suffix(request_id, ops, result)
             if not surviving:
                 continue
@@ -417,9 +428,35 @@ class EvictionAwareStoreQueue:
             budget -= len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
+            # Mark in flight before updating pending state so that a request
+            # fully drained by this emission is not released until the store
+            # completion arrives via notify_stored().
+            self._in_flight.add(request_id)
             remaining = self._pending[request_id][len(emitted) :]
             self._replace_pending(request_id, remaining, result)
         return result
+
+    def notify_stored(self, request_id: str) -> bool:
+        """Record that a request's in-flight store batch completed (or was
+        drained by an unhealthy worker).
+
+        Re-enables emission of the request's remaining pending operations.
+
+        Args:
+            request_id: The request whose store completion was reported.
+
+        Returns:
+            True if the request is finished and has nothing pending -- the
+            caller may now safely tear down its session; False otherwise.
+        """
+        self._in_flight.discard(request_id)
+        if request_id in self._pending:
+            return False
+        if request_id in self._finished:
+            self._finished.discard(request_id)
+            self._prefix_broken.discard(request_id)
+            return True
+        return False
 
     def _danger_depth(self) -> int:
         """Free-queue depth considered at risk within the horizon.
@@ -517,7 +554,7 @@ class EvictionAwareStoreQueue:
             self._pending[request_id] = remaining
             return
         self._pending.pop(request_id, None)
-        if request_id in self._finished:
+        if request_id in self._finished and request_id not in self._in_flight:
             self._finished.discard(request_id)
             self._prefix_broken.discard(request_id)
             result.released_requests.append(request_id)

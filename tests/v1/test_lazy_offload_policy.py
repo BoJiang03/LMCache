@@ -275,13 +275,14 @@ class TestDrainOrderingAndCap:
         first = queue.collect_due()
         assert [op.prefix_end_tokens for op in first.to_store] == [256]
         assert queue.num_pending_ops() == 1
+        queue.notify_stored("req")  # first batch completes
         queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
         second = queue.collect_due()
         assert [op.prefix_end_tokens for op in second.to_store] == [512]
 
 
 class TestRequestLifecycle:
-    def test_finished_request_released_after_last_op_drains(self) -> None:
+    def test_finished_request_released_only_after_store_completes(self) -> None:
         pool = FakePoolView()
         seed_blocks(pool, [1], free=True)
         queue = make_queue(pool, horizon_steps=1.0)
@@ -290,7 +291,37 @@ class TestRequestLifecycle:
         queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
         result = queue.collect_due()
         assert len(result.to_store) == 1
-        assert result.released_requests == ["req"]
+        # The emitted batch is in flight: not released until completion.
+        assert result.released_requests == []
+        assert queue.notify_stored("req") is True
+
+    def test_finish_while_in_flight_defers_release(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        # Request finishes while its only batch is still in flight.
+        assert queue.mark_request_finished("req") is True
+        assert queue.notify_stored("req") is True
+
+    def test_in_flight_request_held_back_until_notify(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_drain_per_step=1)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
+        first = queue.collect_due()
+        assert [op.prefix_end_tokens for op in first.to_store] == [256]
+        # Second op is due but the request has a batch in flight.
+        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
+        assert queue.collect_due().to_store == []
+        assert queue.notify_stored("req") is False  # still one op pending
+        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
+        second = queue.collect_due()
+        assert [op.prefix_end_tokens for op in second.to_store] == [512]
 
     def test_finish_with_nothing_pending_releases_immediately(self) -> None:
         queue = make_queue(FakePoolView())
