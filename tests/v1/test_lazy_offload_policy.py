@@ -315,6 +315,49 @@ class TestStoreFailure:
         result = queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
 
+    def test_stale_batch_failure_spares_post_reset_ops(self) -> None:
+        """A failure receipt for a batch emitted before a drop_request reset
+        must not touch ops admitted after the reset: they were re-produced
+        from token zero and do not depend on the failed prefix."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1  # batch in flight
+        queue.drop_request("req")  # preemption tracker reset
+
+        seed_blocks(pool, [2], free=False)
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+
+        assert queue.mark_store_failed("req") == 0
+        assert queue.num_pending_ops() == 1
+        seed_blocks(pool, [3], free=False)
+        result = queue.admit(make_op("req", [3], pool, prefix_end_tokens=512))
+        assert result is AdmitResult.ADMITTED
+
+    def test_failure_of_fresh_batch_after_stale_cycle_is_honored(self) -> None:
+        """The stale mark must not outlive its batch's receipt: a failure of
+        a batch emitted after the reset breaks the chain as usual."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        queue.drop_request("req")
+        queue.notify_stored("req")  # stale batch's receipt clears the mark
+
+        seed_blocks(pool, [2], free=True)
+        seed_blocks(pool, [3], free=False)
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [3], pool, prefix_end_tokens=512))
+        assert len(queue.collect_due().to_store) == 1  # fresh batch in flight
+
+        assert queue.mark_store_failed("req") == 1  # held-back op dropped
+        result = queue.admit(make_op("req", [3], pool, prefix_end_tokens=768))
+        assert result is AdmitResult.REJECTED_PREFIX_BROKEN
+
 
 class TestContentDeduplication:
     """One pending op per unique content: requests sharing a hot prefix

@@ -335,6 +335,10 @@ class EvictionAwareStoreQueue:
         # further emissions for these requests are held back until
         # notify_stored().
         self._in_flight: set[str] = set()
+        # In-flight batches invalidated by drop_request (preemption reset).
+        # Ops admitted after the reset are re-produced from token zero and do
+        # not depend on such a batch, so its failure must not drop them.
+        self._stale_in_flight: set[str] = set()
         # Content keys of the pending operations. An operation whose content
         # is already buffered under another request is deduplicated at
         # admission: without this, every request over a hot shared prefix
@@ -427,7 +431,9 @@ class EvictionAwareStoreQueue:
         stays tracked until its completion receipt arrives via
         :meth:`notify_stored`, so an operation re-admitted after the drop
         cannot be emitted while the worker still holds an outstanding
-        store for the request (one in-flight batch per request).
+        store for the request (one in-flight batch per request). Such a
+        batch is marked stale: operations admitted after the reset do not
+        depend on it, so its failure no longer breaks their prefix chain.
 
         Args:
             request_id: The request to discard.
@@ -440,6 +446,8 @@ class EvictionAwareStoreQueue:
         self._counters.dropped_on_request_drop += len(dropped)
         self._finished.discard(request_id)
         self._prefix_broken.discard(request_id)
+        if request_id in self._in_flight:
+            self._stale_in_flight.add(request_id)
         return len(dropped)
 
     def mark_store_failed(self, request_id: str) -> int:
@@ -452,12 +460,18 @@ class EvictionAwareStoreQueue:
         that accompanies the failure still tears the request down through
         :meth:`notify_stored` as usual.
 
+        A failure of a batch made stale by :meth:`drop_request` is ignored:
+        operations admitted after the reset were re-produced from token
+        zero and do not depend on the failed prefix.
+
         Args:
             request_id: The request whose store failed.
 
         Returns:
             The number of pending operations dropped.
         """
+        if request_id in self._stale_in_flight:
+            return 0
         dropped = self._pending.pop(request_id, [])
         self._forget_content(dropped)
         self._counters.dropped_failed_store += len(dropped)
@@ -563,6 +577,7 @@ class EvictionAwareStoreQueue:
             caller may now safely tear down its session; False otherwise.
         """
         self._in_flight.discard(request_id)
+        self._stale_in_flight.discard(request_id)
         if request_id in self._pending:
             return False
         if request_id in self._finished:

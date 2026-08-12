@@ -933,6 +933,30 @@ def test_preemption_reset_keeps_in_flight_batch_and_its_pins() -> None:
     assert len(_drain(harness)) == 1
 
 
+def test_stale_batch_failure_receipt_spares_resumed_request() -> None:
+    """The failure receipt of a batch emitted before the preemption must
+    not drop the ops the resumed request re-buffered from token zero, nor
+    reject its later chunks -- they do not depend on the failed prefix."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "req", [[1, 2]], 0, 32)
+    harness.pool.make_free([1, 2])
+    assert len(_drain(harness)) == 1  # batch in flight
+
+    _preempt_reset(harness, "req")
+    _admit_op(harness, "req", [[3, 4]], 0, 32)  # resumed, from token zero
+
+    _report_store_failed(harness, "req")  # the stale batch's receipt
+    assert harness.pool.blocks[1].ref_cnt == 0  # receipt still unpins
+
+    harness.pool.make_free([3, 4])
+    metadata = _drain(harness)
+    assert len(metadata) == 1, "post-resume op dropped by the stale failure"
+    for bid in (5, 6):
+        harness.pool.set_hash(bid, f"hash-{bid}".encode())
+    outcome = harness.pending_store.add(_make_store_metadata("req", [[5, 6]], 32, 64))
+    assert outcome is AddOutcome.BUFFERED
+
+
 ####
 # Count-triggered FIFO drain
 ####
