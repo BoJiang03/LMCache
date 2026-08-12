@@ -1005,6 +1005,16 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if not isinstance(meta, LMCacheMPWorkerMetadata):
             return
         for req_id, count in meta.completed_store_requests.items():
+            if not self._pending_store.has_in_flight_store(req_id):
+                # Duplicate or stale receipt (e.g. a resend after the batch
+                # was fully processed): the blocks are no longer pinned and
+                # the session may already be gone, so there is nothing to do.
+                logger.warning(
+                    "Ignoring store-completion receipt for request %s with "
+                    "no in-flight store batch",
+                    req_id,
+                )
+                continue
             if self.scheduler_adapter.update_pending_store_count(req_id, count):
                 gpu_block_ids = self._pending_store.get_request_gpu_block_ids(req_id)
                 # Unpin to the HEAD of the free queue: a stored block has a

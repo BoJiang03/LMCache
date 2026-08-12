@@ -388,6 +388,23 @@ class LazyOffloadPendingStore:
             raise ValueError("FIFO policy unavailable in EVICTION_AWARE mode")
         return self._fifo_policy
 
+    def has_in_flight_store(self, req_id: str) -> bool:
+        """Whether a drained store batch of the request awaits its receipt.
+
+        True from the drain that pinned and submitted the request's batch
+        until the full set of worker completion receipts has been processed.
+        A receipt for a request outside this window is a duplicate or stale
+        resend and must be ignored (processing it would unpin blocks that
+        are no longer pinned and tear the session down twice).
+
+        Args:
+            req_id: The request to check.
+
+        Returns:
+            True if a submitted store batch is awaiting completion.
+        """
+        return req_id in self._request_block_ids
+
     def update_request_gpu_block_ids(self, req_id: str, block_ids: list[int]):
         self._request_block_ids[req_id].extend(block_ids)
 
