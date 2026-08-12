@@ -1010,6 +1010,21 @@ def test_fifo_drain_skips_request_with_reallocated_block() -> None:
     assert harness.pool.freed == [([1, 2], False)]
 
 
+def test_fifo_drain_drops_chunk_with_unhashed_block() -> None:
+    """A block with no hash at buffering time cannot prove at drain time
+    that its content survived: None == None must fail validation, not pass
+    it (an evicted-and-reallocated block also reads None)."""
+    harness = _make_fifo_harness()
+    # Bypass the hash-seeding helper: blocks 1-2 keep block_hash=None.
+    harness.pending_store.add(_make_store_metadata("req", [[1, 2]], 0, 32))
+    _finish_request(harness, "req")
+
+    metadata = _drain(harness)
+
+    assert len(metadata) == 0
+    assert harness.adapter.ended_sessions == ["req"]
+
+
 def test_fifo_drain_coalesces_chunks_into_one_store() -> None:
     """A request's buffered chunks must go out as one store: the worker
     keys its in-flight store future by request id, so per-chunk submission

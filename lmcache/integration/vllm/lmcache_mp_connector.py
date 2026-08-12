@@ -1347,9 +1347,15 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     bid: self._gpu_block_pool.blocks[bid].block_hash
                     for bid in gpu_block_ids
                 }
-                if old_block_hashes != new_block_hashes:
+                # A None current hash can never validate the chunk: an
+                # evicted-and-reallocated block also reads None, so
+                # None == None would store unverifiable data.
+                if (
+                    any(h is None for h in new_block_hashes.values())
+                    or old_block_hashes != new_block_hashes
+                ):
                     logger.warning(
-                        "Part block hashes mismatch for request %s, "
+                        "Block hashes missing or mismatched for request %s, "
                         "dropping its remaining chunks",
                         request_id,
                     )

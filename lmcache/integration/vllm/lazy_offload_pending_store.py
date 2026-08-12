@@ -491,11 +491,32 @@ class LazyOffloadPendingStore:
         return req_id in self._request_block_ids
 
     def update_request_gpu_block_ids(self, req_id: str, block_ids: list[int]):
+        """Record blocks pinned for the request's submitted store batch.
+
+        Opens the request's receipt window (``has_in_flight_store``).
+
+        Args:
+            req_id: The request whose batch was submitted.
+            block_ids: The GPU blocks pinned for the batch.
+        """
         self._request_block_ids[req_id].extend(block_ids)
 
     def get_request_gpu_block_ids(self, req_id: str) -> list[int]:
-        return self._request_block_ids[req_id]
+        """Return the blocks pinned for the request's in-flight batch.
+
+        A read never creates state: an unknown request yields an empty
+        list and leaves ``has_in_flight_store`` False.
+
+        Args:
+            req_id: The request to look up.
+        """
+        return self._request_block_ids.get(req_id, [])
 
     def remove_request_gpu_block_ids(self, req_id: str):
+        """Close the request's receipt window after its receipt completes.
+
+        Args:
+            req_id: The request whose receipt was processed.
+        """
         if req_id in self._request_block_ids:
             del self._request_block_ids[req_id]

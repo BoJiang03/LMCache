@@ -268,6 +268,14 @@ class TestLazyOffloadPendingStore:
         store = LazyOffloadPendingStore()
         assert store.get_request_gpu_block_ids("nonexistent") == []
 
+    def test_unknown_request_lookup_does_not_open_receipt_window(self):
+        """A read of an unknown id must not create state: were
+        has_in_flight_store to flip True, a stale or duplicate receipt
+        would unpin blocks that are not pinned and end the session twice."""
+        store = LazyOffloadPendingStore()
+        store.get_request_gpu_block_ids("ghost")
+        assert store.has_in_flight_store("ghost") is False
+
     def test_end_to_end_flow(self):
         """Test full add -> mark_finished -> should_offload -> select_items."""
         configs = {
