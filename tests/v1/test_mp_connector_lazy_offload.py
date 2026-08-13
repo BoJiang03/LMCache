@@ -149,6 +149,7 @@ class _FakeSchedulerAdapter:
     def __init__(self, expected_worker_count: int = 1) -> None:
         self.ended_sessions: list[str] = []
         self.shutdown_calls: int = 0
+        self.lookup_result: int | None = 0
         self._expected = expected_worker_count
         self._counts: dict[str, int] = {}
 
@@ -157,6 +158,14 @@ class _FakeSchedulerAdapter:
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1
+
+    def maybe_submit_lookup_request(
+        self, request_id: str, token_ids: list[int], cache_salt: str
+    ) -> None:
+        pass
+
+    def check_lookup_result(self, request_id: str) -> int | None:
+        return self.lookup_result
 
     def update_pending_store_count(self, req_id: str, count: int) -> bool:
         total = self._counts.get(req_id, 0) + count
@@ -236,6 +245,7 @@ def _make_lazy_connector(
     connector.lazy_offload = True
     connector.request_trackers = {}
     connector._group_tokens_per_block = group_tokens_per_block or [TOKENS_PER_BLOCK]
+    connector._hit_alignment_tokens = TOKENS_PER_BLOCK
     pool = _FakeBlockPool(num_blocks)
     pending_store = LazyOffloadPendingStore(dict(extra_config or {}))
     pending_store.bind_gpu_block_pool(pool)  # type: ignore[arg-type]
@@ -1065,6 +1075,59 @@ def test_id_reuse_with_in_flight_batch_defers_release_to_successor_finish() -> N
     finished, _ = _finish_request(harness, "X")
     assert finished is False
     assert harness.adapter.ended_sessions == ["X"]
+
+
+def test_lookup_miss_still_records_the_vllm_prefix_hit() -> None:
+    """A follower request over a hot GPU-cached prefix typically misses
+    LMCache in lazy mode (the predecessor's ops are only buffered, not
+    stored). The vLLM prefix-cache hit must be recorded anyway: without
+    it GetStoreMetadata never covers the hit tokens, so the follower
+    buffers nothing -- its chunks can neither deduplicate against the
+    predecessor's pending ops nor re-buffer the prefix once those drop."""
+    harness = _make_lazy_connector()
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="F",
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+
+    need_to_load, is_async = harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=3 * TOKENS_PER_BLOCK + 4
+    )
+
+    assert (need_to_load, is_async) == (0, False)
+    tracker = harness.connector.request_trackers["F"]
+    assert tracker.num_vllm_hit_tokens == 3 * TOKENS_PER_BLOCK  # aligned down
+    assert tracker.num_lmcache_hit_tokens == 0
+
+
+def test_store_metadata_covers_the_vllm_hit_tokens() -> None:
+    """The staging range includes prefix-cache-hit tokens: their KV is
+    computed but never scheduled for this request, and skipping them
+    would strand the follower's suffix without its prefix."""
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="F",
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+    tracker = LMCacheMPRequestTracker(request)
+    tracker.allocated_block_ids = {0: [1, 2, 3, 4]}
+    tracker.num_scheduled_tokens = 2  # only the un-hit tail was scheduled
+    tracker.num_vllm_hit_tokens = 3 * TOKENS_PER_BLOCK
+
+    metadata = LMCacheMPRequestMetadata.GetStoreMetadata(
+        tracker,
+        lmcache_tokens_per_chunk=TOKENS_PER_BLOCK,
+        group_tokens_per_block=[TOKENS_PER_BLOCK],
+    )
+
+    assert metadata is not None
+    assert (metadata.op.start, metadata.op.end) == (0, 3 * TOKENS_PER_BLOCK)
 
 
 def test_shutdown_logs_the_final_counter_ledger(

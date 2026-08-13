@@ -856,6 +856,23 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if ret is None:
             return None, True
 
+        # Save the vLLM hit count even when LMCache misses (ret == 0):
+        # GetStoreMetadata needs it to cover the prefix-cache-hit tokens,
+        # whose KV is computed but was never scheduled for this request.
+        # Without it a follower request over a hot cached prefix stores
+        # nothing -- in lazy mode its chunks then never enter the pending
+        # queue, so they can neither deduplicate against the predecessor's
+        # buffered ops nor re-buffer the prefix after those are dropped.
+        # The count is rounded down to a boundary aligned for every engine
+        # group (e.g. a full-prompt APC hit reports
+        # ``num_prompt_tokens - 1``), so the retrieve-skip range stays
+        # paged-chunk-aligned in all groups.
+        tracker.num_vllm_hit_tokens = (
+            num_computed_tokens
+            // self._hit_alignment_tokens
+            * self._hit_alignment_tokens
+        )
+
         if ret == 0:
             return 0, False
 
@@ -864,15 +881,6 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         # Update num stored tokens for the tracker
         tracker.increase_num_stored_tokens(ret)
 
-        # Save the vllm and lmcache hit tokens. The vLLM hit count is
-        # rounded down to a boundary aligned for every engine group (e.g.
-        # a full-prompt APC hit reports ``num_prompt_tokens - 1``), so the
-        # retrieve-skip range stays paged-chunk-aligned in all groups.
-        tracker.num_vllm_hit_tokens = (
-            num_computed_tokens
-            // self._hit_alignment_tokens
-            * self._hit_alignment_tokens
-        )
         tracker.num_lmcache_hit_tokens = ret
 
         need_to_load = max(0, ret - num_computed_tokens)
