@@ -205,10 +205,24 @@ policy does not live). Three hooks, all on the pending-store facade:
 - every drain re-logs the whole ledger as one greppable `key=value` line
   (`Lazy offload counters: admitted=... emitted=... pending=N`) when the
   counters changed, throttled to one line per 5s. `pending` is the queue
-  depth at the same instant, which closes the line as an equation —
-  `admitted == pending + emitted + every drop counter` — so a reader can
-  separate an operation still waiting for pressure from one that left the
-  queue without incrementing any outcome counter;
+  depth at the same instant, which closes the line as an equation over
+  exactly six outcome counters:
+
+  ```
+  admitted == pending + emitted + dropped_evicted + rejected_short_prefix
+              + dropped_on_request_drop + dropped_failed_store
+              + dropped_id_reuse
+  ```
+
+  so a reader can separate an operation still waiting for pressure from one
+  that left the queue without incrementing any outcome counter. The set is
+  neither "every `dropped_*` counter" nor "every drop and reject":
+  `rejected_short_prefix` belongs in it although it is not named `dropped_*`
+  (gate 3 discards ops that were admitted), while `rejected_unhashed`,
+  `rejected_prefix_broken` and `deduplicated` must stay out of it — those ops
+  are turned away at admission and never counted in `admitted`. Summing by
+  name instead of by this list makes the equation fail the moment gate 3
+  fires;
 - connector `shutdown()` (invoked by vLLM's scheduler shutdown) calls
   `log_final_stats()`, which emits the exact final ledger
   (`Lazy offload final counters: ...`). Best-effort: `vllm serve` under

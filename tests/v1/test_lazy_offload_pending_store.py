@@ -552,6 +552,36 @@ class TestEvictionAwareMode:
         assert "dropped 1 store op(s)" in line
         assert "req-0 (prefix 256)" in line
 
+    def test_drop_line_reports_the_ops_it_could_not_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A drain that drops more ops than the line samples must say so.
+
+        The line names at most eight ops, and the count of the rest is the
+        only thing between "these are the ops that were lost" and a reader
+        (or a per-request-id grep) concluding that nothing else was. The
+        truncation itself is untested at every other layer: on hardware the
+        aggregate lines are asserted never to truncate, precisely so that
+        the greps stay sound."""
+        store, _ = self._setup(
+            {
+                "lmcache.mp.lazy_offload_horizon_steps": 1.0,
+                "lmcache.mp.lazy_offload_min_prefix_tokens": 4096,
+            }
+        )
+        messages = _spy_logger_info(monkeypatch)
+        for block_id in range(10):
+            meta = _make_meta(f"req-{block_id}", end=256)
+            meta.op.flat_block_ids = [block_id]
+            store.add(meta)
+        store.observe_step(new_blocks_allocated=40, est_next_step_blocks=0)
+        result = store.collect_due()
+        assert len(result.dropped_short_prefix) == 10
+        (line,) = [m for m in messages if "below the break-even length" in m]
+        assert "dropped 10 store op(s)" in line
+        assert line.count("(prefix 256)") == 8
+        assert "+2 more" in line
+
     def test_skip_of_a_broken_request_logs_at_debug_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -592,11 +622,17 @@ class TestEvictionAwareMode:
         assert len(ledgers) == 1
         assert "admitted=1" in ledgers[0]
         assert "emitted=1" in ledgers[0]
+        # The depth belongs on the periodic line, not only on the shutdown
+        # one: a force-killed engine never reaches log_final_stats, so this
+        # is the line an operator (and the GPU harness) actually reads, and
+        # without pending it does not close as an equation.
+        assert "pending=0" in ledgers[0]
         clock[0] += 6.0
         store.collect_due()  # throttle lapsed, change pending -> logs again
         ledgers = [m for m in messages if m.startswith("Lazy offload counters:")]
         assert len(ledgers) == 2
         assert "admitted=2" in ledgers[1]
+        assert "pending=0" in ledgers[1]
 
     def test_log_final_stats_emits_the_counter_ledger(
         self, monkeypatch: pytest.MonkeyPatch
