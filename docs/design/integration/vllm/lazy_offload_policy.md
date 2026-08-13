@@ -63,6 +63,31 @@ admitted op whose blocks come under eviction pressure.
      leaves a *hole* in its request's pending list; emission never spans a
      hole (each batch is coalesced into one contiguous store op), so the ops
      on each side go out in separate batches.
+
+     **Range equality is required, and a capped step budget breaks it.** An
+     op covers the range one step made known, so the same tokens produce
+     different ops depending on how the prefill was chunked. Measured with
+     the same 1965-token prompt sent twice: with `max_num_batched_tokens`
+     capped at 512 the first request admits four per-step ops
+     (512/1024/1536/1792) while the repeat prefix-cache-hits the whole
+     prompt in one step and admits a single op over the whole range —
+     `deduplicated` stays 0 and the content is buffered twice, under two
+     different chunkings. Uncapped (one step per prefill), the two match and
+     the repeat deduplicates. So the queue is bounded by the distinct
+     (range, content) pairs resident, not by the request count: still a
+     bound that does not grow with load, but the constant is the number of
+     distinct chunkings of a hot prefix, not 1.
+
+     A consequence for the doomed-cover check above: on vLLM it is defensive
+     rather than load-bearing. `add()` runs before `collect_due()` in a step,
+     so an op that becomes doomed in a step is dropped in that same step
+     unless its request holds an in-flight batch — and the follower whose op
+     could hit a doomed cover has to share its exact range, which (per the
+     paragraph above) means an uncapped step budget, where a request has a
+     single op and so never holds a batch in flight with siblings pending.
+     The two conditions pull against each other; the branch is covered at
+     layer 0 (`test_lazy_offload_policy.py`) and was not reachable on
+     hardware.
 2. Once per step: `observe_step(gross_blocks_allocated, est_next_step_blocks)`
    then `collect_due()`.
 3. For every op in `DrainResult.to_store` (already ordered): pin (`touch`)
@@ -174,6 +199,19 @@ vLLM hit instead of 0 on a lookup miss.
   bounds the per-step D2H burst. The cap may split a request's due segment,
   but only ever emits a front slice of it, so within-request prefix order is
   preserved and the remainder stays pending.
+- **Sizing the cap.** It bounds emissions per step while a prefilling request
+  *admits* one op per step, and a request with a batch in flight is skipped
+  entirely until its receipt arrives (one more step). So the cap has to sit
+  above the concurrent prefill admission rate, or the queue cannot work off
+  a backlog and buffered ops are lost to eviction instead of stored.
+  Measured on a 448-block pool with a 512-token step budget, one 4-op
+  request buffered ahead of five prefilling fillers: at the default 64 the
+  workload emitted 21 of 24 admitted ops, dropped 1 and left none pending;
+  at 1 it emitted 11 of 26, dropped 6 and left 9 pending at shutdown, and
+  the buffered request stored its first two ops while losing the other two
+  (prefix closure held — the replay retrieved exactly the surviving 1024 of
+  1792 tokens). A cap near 1 is a steady-state loss setting, not a
+  burst-shaping one.
 - **Idle consequences**: receipts travel in worker metadata, which only
   flows on steps that schedule tokens. If the engine goes idle with a
   batch in flight, its pins and its request's session stay held until the
