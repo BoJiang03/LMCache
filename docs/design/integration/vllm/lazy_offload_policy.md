@@ -104,12 +104,17 @@ admitted op whose blocks come under eviction pressure.
    still deferred; without the reclaim the two requests' pending lists
    conflate (the predecessor's eviction drop prefix-closes over the
    successor's intact ops, and the deferred release fires while the
-   successor is live). The reclaim discards the predecessor's buffered ops;
-   a True return means the caller must `end_session(id)` now, before the
-   successor's first operation. With an in-flight predecessor batch it
-   returns False instead: the batch is marked stale and the teardown rides
-   its completion receipt (the id-keyed session then covers both requests
-   and ends once).
+   successor is live). The reclaim discards the predecessor's buffered ops
+   and its finished marker; a True return means the caller must
+   `end_session(id)` now, before the successor's first operation. With an
+   in-flight predecessor batch it returns False instead: the batch is
+   marked stale and the id-keyed session, which now covers both requests,
+   ends once through the successor's own lifecycle — the predecessor's
+   receipt only clears the in-flight hold. The marker must not ride the
+   receipt: the successor is live when the reclaim fires, so any teardown
+   the marker later authorizes (the predecessor's receipt, the successor's
+   own receipt, or an eviction drop landing the id in
+   `released_requests`) would end a running request's session.
 
 ## Decision rule
 

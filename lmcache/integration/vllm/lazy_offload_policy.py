@@ -496,21 +496,25 @@ class EvictionAwareStoreQueue:
         would prefix-close over the successor's intact operations, and the
         deferred session release would fire while the successor is live.
 
-        The predecessor's buffered operations are discarded. An in-flight
-        batch is marked stale and the finished marker is kept, so the
-        teardown still arrives through the batch's completion receipt
-        (:meth:`notify_stored`); the session under this id then covers both
-        requests and ends once. Otherwise the marker is discarded and the
-        caller must end the predecessor's session now, before the
-        successor's first operation.
+        The predecessor's buffered operations are discarded along with its
+        finished marker. An in-flight batch is additionally marked stale.
+        The marker must not survive the reclaim: the successor is live by
+        definition (the reclaim is triggered by its arrival), so a kept
+        marker would authorize a premature session teardown at the batch's
+        completion receipt -- or, worse, ride until the successor's own
+        receipt or eviction drop and tear down mid-request. The id-keyed
+        session instead covers both requests and ends once, through the
+        successor's own lifecycle (:meth:`mark_request_finished` re-creates
+        the marker when the successor finishes); the predecessor's receipt
+        only clears the in-flight hold.
 
         Args:
             request_id: The reused request id.
 
         Returns:
             True if the caller must end the predecessor's session now;
-            False if there was nothing to reclaim or the teardown rides an
-            outstanding completion receipt.
+            False if there was nothing to reclaim or the session teardown
+            merges into the successor's lifecycle (in-flight batch).
         """
         if request_id not in self._finished:
             return False
@@ -518,10 +522,10 @@ class EvictionAwareStoreQueue:
         self._forget_content(dropped)
         self._counters.dropped_id_reuse += len(dropped)
         self._prefix_broken.discard(request_id)
+        self._finished.discard(request_id)
         if request_id in self._in_flight:
             self._stale_in_flight.add(request_id)
             return False
-        self._finished.discard(request_id)
         return True
 
     def mark_store_failed(self, request_id: str) -> int:

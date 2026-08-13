@@ -826,8 +826,8 @@ class TestIdReuseReclaim:
 
     def test_reclaim_with_in_flight_batch_defers_release_to_receipt(self) -> None:
         """An in-flight batch keeps the session alive: the reclaim marks it
-        stale (its failure must not blacklist the successor) and the
-        teardown still rides the completion receipt."""
+        stale (its failure must not blacklist the successor) and the merged
+        session rides the successor's lifecycle."""
         pool = FakePoolView()
         seed_blocks(pool, [1, 2], free=True)
         queue = make_queue(pool, horizon_steps=2.0)
@@ -849,9 +849,11 @@ class TestIdReuseReclaim:
         # session now rides the successor's lifecycle, not the corpse's.
         assert queue.notify_stored("req") is False
 
-    def test_reclaim_with_in_flight_batch_and_no_successor_ops(self) -> None:
-        """Without successor admissions, the receipt itself tears down the
-        merged session."""
+    def test_receipt_after_reclaim_never_tears_down_the_live_successor(self) -> None:
+        """The successor is live when the reclaim fires, so the
+        predecessor's receipt must not authorize a teardown even when the
+        successor has admitted nothing yet; the merged session ends through
+        the successor's own finish."""
         pool = FakePoolView()
         seed_blocks(pool, [1], free=True)
         queue = make_queue(pool, horizon_steps=1.0)
@@ -860,4 +862,93 @@ class TestIdReuseReclaim:
         assert len(queue.collect_due().to_store) == 1
         assert queue.mark_request_finished("req") is True
         assert queue.reclaim_finished_request("req") is False
+        assert queue.notify_stored("req") is False
+        # The successor finishes with nothing buffered: immediate teardown.
+        assert queue.mark_request_finished("req") is False
+
+    def test_successor_receipt_not_poisoned_by_predecessor_marker(self) -> None:
+        """The predecessor's stale finished marker must not survive the
+        reclaim: the successor's own batch receipt would otherwise return
+        True and end a running request's session."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.mark_request_finished("req") is True
+        assert queue.reclaim_finished_request("req") is False
+
+        # The live successor buffers a chunk; the predecessor's receipt
+        # arrives while it is pending (no teardown, marker consumed).
+        seed_blocks(pool, [2], free=True)
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+        assert queue.notify_stored("req") is False
+
+        # The successor's own chunk is emitted and its receipt arrives
+        # while the successor is still running: no teardown.
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.notify_stored("req") is False
+
+    def test_successor_eviction_drop_not_poisoned_by_predecessor_marker(
+        self,
+    ) -> None:
+        """An eviction drop of the live successor's pending op must not
+        release the request (the connector would end a running request's
+        session) and must leave the successor blacklisted for its now
+        unreachable later chunks."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=2.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.mark_request_finished("req") is True
+        assert queue.reclaim_finished_request("req") is False
+
+        seed_blocks(pool, [2], free=True)
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=256))
+        assert queue.notify_stored("req") is False
+
+        # The successor's block dies before its op comes due.
+        pool.evict(2)
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.dropped_evicted) == 1
+        assert result.released_requests == []
+        # The lost chunk blacklists the successor's later (unreachable)
+        # chunks; the drop must not wipe that mark.
+        seed_blocks(pool, [3], free=True)
+        assert (
+            queue.admit(
+                make_op(
+                    "req",
+                    [3],
+                    pool,
+                    prefix_start_tokens=256,
+                    prefix_end_tokens=512,
+                )
+            )
+            is AdmitResult.REJECTED_PREFIX_BROKEN
+        )
+
+    def test_successor_finishing_during_the_stale_flight_tears_down_on_receipt(
+        self,
+    ) -> None:
+        """A marker set by the successor's own finish while the
+        predecessor's batch is still in flight is legitimate: the receipt
+        is then the last event and must tear the merged session down."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.mark_request_finished("req") is True
+        assert queue.reclaim_finished_request("req") is False
+
+        # The successor finishes before the predecessor's receipt lands;
+        # the in-flight hold defers its teardown to the receipt.
+        assert queue.mark_request_finished("req") is True
         assert queue.notify_stored("req") is True

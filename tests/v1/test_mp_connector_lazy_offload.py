@@ -1035,10 +1035,11 @@ def test_id_reuse_then_preemption_cannot_swallow_predecessor_release() -> None:
     assert harness.adapter.ended_sessions == ["X", "X"]
 
 
-def test_id_reuse_with_in_flight_batch_defers_release_to_receipt() -> None:
-    """The session must outlive an in-flight store: when the predecessor's
-    batch is still awaiting its receipt at reuse time, the release rides
-    the receipt instead of firing at arrival."""
+def test_id_reuse_with_in_flight_batch_defers_release_to_successor_finish() -> None:
+    """The session must outlive an in-flight store AND the live successor:
+    when the predecessor's batch is still awaiting its receipt at reuse
+    time, the merged session ends through the successor's own finish, not
+    at the receipt (the successor is running when it lands)."""
     harness = _make_lazy_connector()
     _admit_op(harness, "X", [[1, 2]], 0, 32)
     harness.pool.make_free([1, 2])
@@ -1049,7 +1050,13 @@ def test_id_reuse_with_in_flight_batch_defers_release_to_receipt() -> None:
     _arrive_new_request(harness, "X")
     assert harness.adapter.ended_sessions == []  # receipt still outstanding
 
+    # The receipt lands while the successor is running: no teardown yet.
     _report_store_complete(harness, "X")
+    assert harness.adapter.ended_sessions == []
+
+    # The successor's own finish ends the merged session, exactly once.
+    finished, _ = _finish_request(harness, "X")
+    assert finished is False
     assert harness.adapter.ended_sessions == ["X"]
 
 
