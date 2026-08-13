@@ -114,7 +114,12 @@ admitted op whose blocks come under eviction pressure.
    receipt: the successor is live when the reclaim fires, so any teardown
    the marker later authorizes (the predecessor's receipt, the successor's
    own receipt, or an eviction drop landing the id in
-   `released_requests`) would end a running request's session.
+   `released_requests`) would end a running request's session. Note which
+   deployments can produce the duplicate at all: vLLM's input processor
+   appends 8 random characters to every externally supplied id
+   (`assign_request_id`), so an HTTP client cannot force one unless the
+   engine runs with `VLLM_DISABLE_REQUEST_ID_RANDOMIZATION=1`; callers that
+   drive the engine core directly with their own ids always can.
 
 **Prerequisite for 1 and the dedup path**: the connector must record vLLM's
 prefix-cache hit in the tracker even when the LMCache lookup misses. In lazy
