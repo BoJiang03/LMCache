@@ -774,7 +774,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         """
         return self.worker_adapter.get_block_ids_with_load_errors()
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """
         Shutdown the connector. This is called when the owning process
         (worker or scheduler) is shutting down to ensure that all the async

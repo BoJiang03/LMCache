@@ -34,6 +34,9 @@ logger = lmcache_init_logger(__name__)
 #: Minimum seconds between periodic counter-ledger log lines.
 _STATS_LOG_INTERVAL_S = 5.0
 
+#: Most dropped ops named in the aggregate drop line; the rest are counted.
+_DROP_LOG_SAMPLE_OPS = 8
+
 
 def _format_ledger(counters: LazyOffloadCounters) -> str:
     """Render the counters as one greppable ``key=value`` line body."""
@@ -418,16 +421,33 @@ class LazyOffloadPendingStore:
         """
         queue = self._require_eviction_queue()
         result = queue.collect_due()
-        for dropped_op in result.dropped_evicted:
-            # INFO, not DEBUG: each line is one unit of cache-quality loss
+        if result.dropped_evicted:
+            # INFO, not DEBUG: each drop is one unit of cache-quality loss
             # (the gate-1 drop-rate sensor), and production logs rarely run
-            # at DEBUG. Bounded by the number of admitted operations.
-            logger.info(
-                "Lazy offload: dropped store for request %s (prefix %d): "
-                "blocks evicted before drain",
-                dropped_op.request_id,
-                dropped_op.prefix_end_tokens,
+            # at DEBUG. One aggregate line per drain: a burst that evicts a
+            # large pending queue at once must not emit thousands of
+            # synchronous lines on the scheduler hot path. Per-op detail
+            # stays at DEBUG.
+            sample = ", ".join(
+                f"{op.request_id} (prefix {op.prefix_end_tokens})"
+                for op in result.dropped_evicted[:_DROP_LOG_SAMPLE_OPS]
             )
+            omitted = len(result.dropped_evicted) - _DROP_LOG_SAMPLE_OPS
+            if omitted > 0:
+                sample += f", +{omitted} more"
+            logger.info(
+                "Lazy offload: dropped %d store op(s): blocks evicted "
+                "before drain (%s)",
+                len(result.dropped_evicted),
+                sample,
+            )
+            for dropped_op in result.dropped_evicted:
+                logger.debug(
+                    "Lazy offload: dropped store for request %s (prefix %d): "
+                    "blocks evicted before drain",
+                    dropped_op.request_id,
+                    dropped_op.prefix_end_tokens,
+                )
         self._maybe_log_stats(queue)
         return result
 

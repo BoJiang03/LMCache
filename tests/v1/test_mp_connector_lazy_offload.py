@@ -1104,6 +1104,33 @@ def test_lookup_miss_still_records_the_vllm_prefix_hit() -> None:
     assert tracker.num_lmcache_hit_tokens == 0
 
 
+def test_lookup_miss_records_the_vllm_prefix_hit_in_eager_mode_too() -> None:
+    """The recording is deliberately mode-independent: in eager mode an
+    APC-hit request whose lookup misses (store in flight, or evicted from
+    LMCache) stores its full prefix at once, backfilling the under-store
+    the old early return left behind (see the design doc's per-step
+    protocol prerequisite note)."""
+    harness = _make_lazy_connector()
+    harness.connector.lazy_offload = False
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="E",
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+
+    need_to_load, is_async = harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=3 * TOKENS_PER_BLOCK + 4
+    )
+
+    assert (need_to_load, is_async) == (0, False)
+    tracker = harness.connector.request_trackers["E"]
+    assert tracker.num_vllm_hit_tokens == 3 * TOKENS_PER_BLOCK
+    assert tracker.num_lmcache_hit_tokens == 0
+
+
 def test_store_metadata_covers_the_vllm_hit_tokens() -> None:
     """The staging range includes prefix-cache-hit tokens: their KV is
     computed but never scheduled for this request, and skipping them

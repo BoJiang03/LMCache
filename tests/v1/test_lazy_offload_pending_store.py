@@ -498,22 +498,29 @@ class TestEvictionAwareMode:
     def test_evicted_drop_is_logged_at_info(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One INFO line per lost op: the drop ledger must be visible in
-        production logs, which rarely run at DEBUG."""
+        """One aggregate INFO line per drain with the drop count: the drop
+        ledger must be visible in production logs (which rarely run at
+        DEBUG) without flooding the scheduler path when a burst evicts a
+        large queue at once."""
         store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
         messages = _spy_logger_info(monkeypatch)
         store.add(_make_meta("req-0", num_blocks=1))
         gpu_pool.blocks[0].block_hash = b"reallocated"
         store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
         store.collect_due()
-        assert any("dropped store for request req-0" in m for m in messages)
+        (line,) = [m for m in messages if "blocks evicted before drain" in m]
+        assert "dropped 1 store op(s)" in line
+        assert "req-0" in line
 
     def test_drain_logs_the_ledger_periodically(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """collect_due logs a ledger line when the counters changed, at
-        most once per throttle interval: a force-killed engine that never
-        reaches the shutdown hook still leaves a near-final ledger."""
+        most once per throttle interval, and logs AGAIN once the interval
+        lapses: the log must converge to the true ledger even when a
+        force-killed engine never reaches the shutdown hook."""
+        clock = [1000.0]
+        monkeypatch.setattr(pending_store_mod.time, "monotonic", lambda: clock[0])
         store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
         messages = _spy_logger_info(monkeypatch)
         store.add(_make_meta("req-0", num_blocks=1))
@@ -526,6 +533,11 @@ class TestEvictionAwareMode:
         assert len(ledgers) == 1
         assert "admitted=1" in ledgers[0]
         assert "emitted=1" in ledgers[0]
+        clock[0] += 6.0
+        store.collect_due()  # throttle lapsed, change pending -> logs again
+        ledgers = [m for m in messages if m.startswith("Lazy offload counters:")]
+        assert len(ledgers) == 2
+        assert "admitted=2" in ledgers[1]
 
     def test_log_final_stats_emits_the_counter_ledger(
         self, monkeypatch: pytest.MonkeyPatch

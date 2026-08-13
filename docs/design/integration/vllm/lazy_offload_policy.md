@@ -116,6 +116,23 @@ admitted op whose blocks come under eviction pressure.
    own receipt, or an eviction drop landing the id in
    `released_requests`) would end a running request's session.
 
+**Prerequisite for 1 and the dedup path**: the connector must record vLLM's
+prefix-cache hit in the tracker even when the LMCache lookup misses. In lazy
+mode a follower over a hot APC-shared prefix always misses the lookup (the
+predecessor's ops are buffered, not stored); without the vllm-hit share,
+`GetStoreMetadata` stages under one chunk and the follower never reaches
+`admit` — deduplication is dead code for followers, and a dropped
+predecessor op is never re-buffered while APC keeps hitting. The recording
+is mode-independent by design: in eager mode, an APC-hit request whose
+lookup misses (predecessor's store in flight, or data evicted from LMCache)
+now issues a store covering its full prefix at once instead of accreting it
+over decode steps. That backfills the under-store the old behavior left
+when LMCache had really evicted the data, at the cost of duplicate stores
+in the in-flight window (eager has no client-side dedup; content-addressed
+keys make them idempotent server-side). It also makes the
+`cached_token_stats` reported through `kv_transfer_params` show the true
+vLLM hit instead of 0 on a lookup miss.
+
 ## Decision rule
 
 - **Danger depth** = `ceil(max(EMA(gross allocation/step), next-step
@@ -171,9 +188,11 @@ The counters surface in the scheduler process log, not in vLLM's
 `get_kv_connector_stats` plumbing (that hook is polled worker-side, where the
 policy does not live). Three hooks, all on the pending-store facade:
 
-- each `dropped_evicted` op logs one INFO line at drain time
-  (`dropped store for request ... blocks evicted before drain`), so the drop
-  ledger is visible without running at DEBUG;
+- each drain that dropped ops logs one aggregate INFO line
+  (`dropped N store op(s): blocks evicted before drain (req (prefix P), ...)`,
+  naming at most 8 ops and counting the rest), so the drop ledger is visible
+  without running at DEBUG while a burst that evicts a large queue cannot
+  flood the scheduler hot path; per-op detail logs at DEBUG;
 - every drain re-logs the whole ledger as one greppable `key=value` line
   (`Lazy offload counters: admitted=... emitted=...`) when the counters
   changed, throttled to one line per 5s;
