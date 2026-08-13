@@ -3,9 +3,10 @@
 # Standard
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, cast
 import enum
+import time
 
 # First Party
 from lmcache.integration.vllm.lazy_offload_policy import (
@@ -13,6 +14,7 @@ from lmcache.integration.vllm.lazy_offload_policy import (
     DrainResult,
     EvictionAwareStoreQueue,
     GPUBlockPoolView,
+    LazyOffloadCounters,
     LazyOffloadPolicyConfig,
     PendingStoreOp,
 )
@@ -28,6 +30,14 @@ if TYPE_CHECKING:
 
 
 logger = lmcache_init_logger(__name__)
+
+#: Minimum seconds between periodic counter-ledger log lines.
+_STATS_LOG_INTERVAL_S = 5.0
+
+
+def _format_ledger(counters: LazyOffloadCounters) -> str:
+    """Render the counters as one greppable ``key=value`` line body."""
+    return " ".join(f"{name}={value}" for name, value in asdict(counters).items())
 
 
 class LazyOffloadMode(enum.Enum):
@@ -270,6 +280,10 @@ class LazyOffloadPendingStore:
         self._fifo_policy: FIFOOffloadPolicy | None = None
         # Built when the GPU block pool is bound (it needs the pool view).
         self._eviction_queue: EvictionAwareStoreQueue | None = None
+        # Periodic counter-ledger logging state: the last snapshot written
+        # to the log and when it was written (see _maybe_log_stats).
+        self._last_logged_stats = LazyOffloadCounters()
+        self._last_stats_log_time = 0.0
         self._eviction_config = LazyOffloadPolicyConfig(
             horizon_steps=float(
                 configs.get("lmcache.mp.lazy_offload_horizon_steps", 2.0)
@@ -405,12 +419,16 @@ class LazyOffloadPendingStore:
         queue = self._require_eviction_queue()
         result = queue.collect_due()
         for dropped_op in result.dropped_evicted:
-            logger.debug(
+            # INFO, not DEBUG: each line is one unit of cache-quality loss
+            # (the gate-1 drop-rate sensor), and production logs rarely run
+            # at DEBUG. Bounded by the number of admitted operations.
+            logger.info(
                 "Lazy offload: dropped store for request %s (prefix %d): "
                 "blocks evicted before drain",
                 dropped_op.request_id,
                 dropped_op.prefix_end_tokens,
             )
+        self._maybe_log_stats(queue)
         return result
 
     def notify_store_complete(self, req_id: str) -> bool:
@@ -427,6 +445,53 @@ class LazyOffloadPendingStore:
         # FIFO drains a request's buffered ops all at once, so the receipt
         # always ends the session.
         return True
+
+    def stats(self) -> LazyOffloadCounters:
+        """Return a copy of the cumulative policy counters.
+
+        Returns:
+            A snapshot of the eviction-aware policy's counters (admissions,
+            emissions, drops by cause, deduplications).
+
+        Raises:
+            ValueError: If called in FIFO mode or before the pool is bound.
+        """
+        return self._require_eviction_queue().stats()
+
+    def log_final_stats(self) -> None:
+        """Log the cumulative policy counters as one INFO ``key=value`` line.
+
+        Called at connector shutdown so the drop ledger (notably
+        ``dropped_evicted``, the gate-1 quality sensor) closes with an
+        exact final value. Best-effort: a force-killed engine process may
+        die before reaching it, which is why :meth:`collect_due` also logs
+        the ledger periodically. No-op in FIFO mode or when the pool was
+        never bound: nothing was counted.
+        """
+        if self._eviction_queue is None:
+            return
+        logger.info(
+            "Lazy offload final counters: %s",
+            _format_ledger(self._eviction_queue.stats()),
+        )
+
+    def _maybe_log_stats(self, queue: EvictionAwareStoreQueue) -> None:
+        """Log the counter ledger if it changed and the throttle allows.
+
+        Runs on every drain (the engine calls ``collect_due`` each step),
+        so the log converges to the true ledger whenever the engine takes
+        a step at least ``_STATS_LOG_INTERVAL_S`` after the last change --
+        the shutdown hook alone is unreliable under a force-killed engine.
+        """
+        stats = queue.stats()
+        if stats == self._last_logged_stats:
+            return
+        now = time.monotonic()
+        if now - self._last_stats_log_time < _STATS_LOG_INTERVAL_S:
+            return
+        logger.info("Lazy offload counters: %s", _format_ledger(stats))
+        self._last_logged_stats = stats
+        self._last_stats_log_time = now
 
     def should_offload(self) -> bool:
         """Check if the queue should be drained (FIFO mode only)."""

@@ -776,13 +776,17 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
     def shutdown(self):
         """
-        Shutdown the connector. This is called when the worker process
-        is shutting down to ensure that all the async operations are
-        completed and the connector is cleaned up properly.
+        Shutdown the connector. This is called when the owning process
+        (worker or scheduler) is shutting down to ensure that all the async
+        operations are completed and the connector is cleaned up properly.
+        On the scheduler side it also logs the lazy-offload counter ledger
+        so the drop rate is auditable from the log.
         """
         if hasattr(self, "worker_adapter"):
             self.worker_adapter.shutdown()
         if hasattr(self, "scheduler_adapter"):
+            if self.lazy_offload:
+                self._pending_store.log_final_stats()
             self.scheduler_adapter.shutdown()
         return None
 

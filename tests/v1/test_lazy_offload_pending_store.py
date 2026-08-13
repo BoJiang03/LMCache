@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 # First Party
+from lmcache.integration.vllm import lazy_offload_pending_store as pending_store_mod
 from lmcache.integration.vllm.lazy_offload_pending_store import (
     AddOutcome,
     FIFOOffloadPolicy,
@@ -23,6 +24,22 @@ from lmcache.integration.vllm.lazy_offload_pending_store import (
 )
 
 FIFO_CONFIG = {"lmcache.mp.lazy_offload_policy": "FIFO"}
+
+
+def _spy_logger_info(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Capture the module logger's INFO lines.
+
+    The lmcache logger does not propagate to the root logger
+    (``propagate=False``), so pytest's ``caplog`` never sees its records;
+    spy on the method instead.
+    """
+    messages: list[str] = []
+
+    def spy(msg: object, *args: object, **kwargs: object) -> None:
+        messages.append(str(msg) % args if args else str(msg))
+
+    monkeypatch.setattr(pending_store_mod.logger, "info", spy)
+    return messages
 
 
 def _make_meta(
@@ -451,6 +468,92 @@ class TestEvictionAwareMode:
         assert store.mark_store_failed("req-0") == 1
         store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
         assert store.collect_due().to_store == []
+
+    def test_stats_reports_the_cumulative_counters(self) -> None:
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=1))
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        store.collect_due()
+        stats = store.stats()
+        assert stats.admitted == 1
+        assert stats.emitted == 1
+        assert stats.dropped_evicted == 0
+
+    def test_stats_counts_a_drop_of_evicted_blocks(self) -> None:
+        store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=1))
+        gpu_pool.blocks[0].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert store.collect_due().to_store == []
+        assert store.stats().dropped_evicted == 1
+
+    def test_stats_unavailable_in_fifo_mode_or_before_bind(self) -> None:
+        with pytest.raises(ValueError, match="EVICTION_AWARE queue unavailable"):
+            LazyOffloadPendingStore().stats()
+        fifo = LazyOffloadPendingStore(dict(FIFO_CONFIG))
+        fifo.bind_gpu_block_pool(_make_gpu_pool())
+        with pytest.raises(ValueError, match="EVICTION_AWARE queue unavailable"):
+            fifo.stats()
+
+    def test_evicted_drop_is_logged_at_info(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One INFO line per lost op: the drop ledger must be visible in
+        production logs, which rarely run at DEBUG."""
+        store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        messages = _spy_logger_info(monkeypatch)
+        store.add(_make_meta("req-0", num_blocks=1))
+        gpu_pool.blocks[0].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        store.collect_due()
+        assert any("dropped store for request req-0" in m for m in messages)
+
+    def test_drain_logs_the_ledger_periodically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """collect_due logs a ledger line when the counters changed, at
+        most once per throttle interval: a force-killed engine that never
+        reaches the shutdown hook still leaves a near-final ledger."""
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        messages = _spy_logger_info(monkeypatch)
+        store.add(_make_meta("req-0", num_blocks=1))
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        store.collect_due()  # changed since start -> logs
+        store.collect_due()  # unchanged -> silent
+        store.add(_make_meta("req-1", num_blocks=2))
+        store.collect_due()  # changed, but inside the throttle -> silent
+        ledgers = [m for m in messages if m.startswith("Lazy offload counters:")]
+        assert len(ledgers) == 1
+        assert "admitted=1" in ledgers[0]
+        assert "emitted=1" in ledgers[0]
+
+    def test_log_final_stats_emits_the_counter_ledger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=1))
+        gpu_pool.blocks[0].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        store.collect_due()
+        messages = _spy_logger_info(monkeypatch)
+        store.log_final_stats()
+        (line,) = [m for m in messages if "final counters" in m]
+        assert "admitted=1" in line
+        assert "emitted=0" in line
+        assert "dropped_evicted=1" in line
+
+    def test_log_final_stats_is_silent_when_nothing_counted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unbound or FIFO stores have no counters; shutdown must neither
+        raise nor log a bogus ledger."""
+        messages = _spy_logger_info(monkeypatch)
+        LazyOffloadPendingStore().log_final_stats()
+        fifo = LazyOffloadPendingStore(dict(FIFO_CONFIG))
+        fifo.bind_gpu_block_pool(_make_gpu_pool())
+        fifo.log_final_stats()
+        # The constructor's own banner may log; the ledger line must not.
+        assert [m for m in messages if "final counters" in m] == []
 
     def test_rebind_same_pool_is_idempotent(self) -> None:
         store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})

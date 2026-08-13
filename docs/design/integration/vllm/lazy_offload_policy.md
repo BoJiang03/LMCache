@@ -166,3 +166,20 @@ admitted op whose blocks come under eviction pressure.
 (drop rate: data lost before we drained — lower the horizon is too tight);
 `emitted / admitted` is store precision's denominator; `rejected_short_prefix`
 audits gate 3. Tests: `tests/v1/test_lazy_offload_policy.py` (pure, no vLLM).
+
+The counters surface in the scheduler process log, not in vLLM's
+`get_kv_connector_stats` plumbing (that hook is polled worker-side, where the
+policy does not live). Three hooks, all on the pending-store facade:
+
+- each `dropped_evicted` op logs one INFO line at drain time
+  (`dropped store for request ... blocks evicted before drain`), so the drop
+  ledger is visible without running at DEBUG;
+- every drain re-logs the whole ledger as one greppable `key=value` line
+  (`Lazy offload counters: admitted=... emitted=...`) when the counters
+  changed, throttled to one line per 5s;
+- connector `shutdown()` (invoked by vLLM's scheduler shutdown) calls
+  `log_final_stats()`, which emits the exact final ledger
+  (`Lazy offload final counters: ...`). Best-effort: `vllm serve` under
+  SIGINT force-kills the engine core (abort mode) and can beat scheduler
+  shutdown to it -- that is why the periodic line exists. A log reader
+  should take the last line matching `Lazy offload (final )?counters:`.

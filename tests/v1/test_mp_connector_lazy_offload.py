@@ -36,6 +36,9 @@ pytest.importorskip("vllm", reason="MP connector imports vLLM at module top")
 from vllm.v1.request import RequestStatus  # noqa: E402
 
 # First Party
+from lmcache.integration.vllm import (  # noqa: E402
+    lazy_offload_pending_store as pending_store_mod,
+)
 from lmcache.integration.vllm.lazy_offload_pending_store import (  # noqa: E402
     AddOutcome,
     LazyOffloadPendingStore,
@@ -145,11 +148,15 @@ class _FakeSchedulerAdapter:
 
     def __init__(self, expected_worker_count: int = 1) -> None:
         self.ended_sessions: list[str] = []
+        self.shutdown_calls: int = 0
         self._expected = expected_worker_count
         self._counts: dict[str, int] = {}
 
     def end_session(self, request_id: str) -> None:
         self.ended_sessions.append(request_id)
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
 
     def update_pending_store_count(self, req_id: str, count: int) -> bool:
         total = self._counts.get(req_id, 0) + count
@@ -1058,6 +1065,33 @@ def test_id_reuse_with_in_flight_batch_defers_release_to_successor_finish() -> N
     finished, _ = _finish_request(harness, "X")
     assert finished is False
     assert harness.adapter.ended_sessions == ["X"]
+
+
+def test_shutdown_logs_the_final_counter_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scheduler-side shutdown emits the policy counter summary (the only
+    run-wide drop-ledger hook in the log) and then stops the adapter. The
+    lmcache logger does not propagate, so the test spies on it instead of
+    ``caplog``."""
+    harness = _make_lazy_connector()
+    _admit_op(harness, "X", [[1, 2]], 0, 32)
+    harness.pool.make_free([1, 2])
+    assert len(_drain(harness)) == 1
+
+    messages: list[str] = []
+
+    def spy(msg: object, *args: object, **kwargs: object) -> None:
+        messages.append(str(msg) % args if args else str(msg))
+
+    monkeypatch.setattr(pending_store_mod.logger, "info", spy)
+    harness.connector.shutdown()
+
+    (line,) = [m for m in messages if "final counters" in m]
+    assert "admitted=1" in line
+    assert "emitted=1" in line
+    assert "dropped_evicted=0" in line
+    assert harness.adapter.shutdown_calls == 1
 
 
 ####
