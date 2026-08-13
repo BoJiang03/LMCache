@@ -574,6 +574,15 @@ class EvictionAwareStoreQueue:
         batch is coalesced into one contiguous store operation, so ops past
         the hole wait for a later batch.
 
+        Emitting a segment pins its blocks out of the free queue, which
+        moves every block behind them toward the head by the segment's size
+        before the next step's allocation runs. Each candidate is therefore
+        checked against ``danger_depth`` extended by the blocks emitted
+        earlier in this call, so a request that an emission teleports into
+        the danger window drains now instead of losing the race to the next
+        allocation. The first emission still requires a plain
+        ``danger_depth`` hit: an idle system never starts draining.
+
         Returns:
             The operations to store and to drop this step; see
             :class:`DrainResult`.
@@ -585,9 +594,9 @@ class EvictionAwareStoreQueue:
         ranks = self._pool.free_queue_ranks()
         danger_depth = self._danger_depth()
 
-        # Per request: (min due rank, ops released from the front).
+        # Per request: (min in-queue rank, request id, surviving ops).
         # Iterate over a copy: helpers may drop entries from self._pending.
-        due_segments: list[tuple[int, str, list[PendingStoreOp]]] = []
+        candidates: list[tuple[int, str, list[PendingStoreOp]]] = []
         for request_id, ops in list(self._pending.items()):
             if request_id in self._in_flight:
                 # One in-flight store batch per request (worker constraint);
@@ -596,39 +605,57 @@ class EvictionAwareStoreQueue:
             surviving = self._drop_evicted_suffix(request_id, ops, result)
             if not surviving:
                 continue
-            segment = self._due_front_segment(surviving, ranks, danger_depth)
-            if segment is None:
+            op_ranks = [
+                rank
+                for op in surviving
+                for block_id in op.block_hashes
+                if (rank := ranks.get(block_id)) is not None
+            ]
+            if not op_ranks:
+                # No block in the free queue (all in use or pinned): the
+                # request cannot be due, shifted or not.
                 continue
-            min_rank, due_ops = segment
+            candidates.append((min(op_ranks), request_id, surviving))
+
+        # Most imminent requests first. The cap may split a segment, but the
+        # emitted part is a front slice of it, so within-request prefix order
+        # is never violated; the rest stays pending for a later step.
+        candidates.sort(key=lambda cand: cand[0])
+        budget = self._config.max_drain_per_step
+        emitted_blocks = 0
+        for min_rank, request_id, surviving in candidates:
+            if budget <= 0:
+                break
+            segment = self._due_front_segment(
+                surviving, ranks, danger_depth + emitted_blocks
+            )
+            if segment is None:
+                # Candidates are rank-ordered and the threshold only grows
+                # with emissions, so no later candidate can be due either.
+                break
+            _, due_ops = segment
             # Never emit across a deduplication hole: the batch is coalesced
-            # into one contiguous store. The request keeps its due urgency
-            # (min_rank); the post-hole ops follow in a later batch.
+            # into one contiguous store. The request keeps its due urgency;
+            # the post-hole ops follow in a later batch.
             due_ops = _contiguous_front_run(due_ops)
             if self._fails_economy_gate(surviving):
                 # Gate 3: the whole known prefix is below break-even. The due
                 # front is about to die, which breaks the prefix chain for
                 # the rest -- drop everything, not just the due segment.
+                # Dropped blocks stay in the free queue, so they do not
+                # extend the emission shift.
                 result.dropped_short_prefix.extend(surviving)
                 self._forget_content(surviving)
                 self._counters.rejected_short_prefix += len(surviving)
                 self._prefix_broken.add(request_id)
                 self._replace_pending(request_id, [], result)
                 continue
-            due_segments.append((min_rank, request_id, due_ops))
-
-        # Most imminent requests first. The cap may split a segment, but the
-        # emitted part is a front slice of it, so within-request prefix order
-        # is never violated; the rest stays pending for a later step.
-        due_segments.sort(key=lambda seg: seg[0])
-        budget = self._config.max_drain_per_step
-        for _, request_id, due_ops in due_segments:
-            if budget <= 0:
-                break
             emitted = due_ops[:budget]
             budget -= len(emitted)
             result.to_store.extend(emitted)
             self._forget_content(emitted)
             self._counters.emitted += len(emitted)
+            emitted_blocks += sum(len(op.block_hashes) for op in emitted)
             # Mark in flight before updating pending state so that a request
             # fully drained by this emission is not released until the store
             # completion arrives via notify_stored().

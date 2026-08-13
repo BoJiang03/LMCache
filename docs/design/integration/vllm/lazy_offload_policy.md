@@ -120,6 +120,17 @@ admitted op whose blocks come under eviction pressure.
   inverted-gate-1 anti-pattern, decision model §6).
 - An op is **due** when any covered block's rank < danger depth. Blocks not
   in the free queue (in use / resurrected) are not at risk.
+- **Pin-cascade shift**: emitting a segment pins its blocks out of the free
+  queue, moving every block behind them toward the head by the segment's
+  size before the next step's allocation runs. Within one `collect_due`
+  call, each later candidate is therefore checked against
+  `danger depth + blocks emitted so far in this call`; without this, a
+  candidate teleported into the danger window by an earlier emission loses
+  its tail to the next allocation before the next drain can see it
+  (observed as `dropped_evicted` under back-to-back drains). The first
+  emission still requires a plain danger-depth hit, so this never opens
+  the gate on an idle system; dropped (unpinned) segments do not extend
+  the shift.
 - **Prefix closure** (amendment A1): a due op releases the request's ops from
   the front through the last due one; a data-loss drop (hash mismatch) drops
   from the first lost op through the tail and blacklists the request's later

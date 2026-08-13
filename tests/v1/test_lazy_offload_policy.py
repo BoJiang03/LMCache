@@ -650,6 +650,66 @@ class TestDrainOrderingAndCap:
         assert [op.prefix_end_tokens for op in second.to_store] == [512]
 
 
+class TestPinCascadeShift:
+    """Emitting a segment pins its blocks out of the free queue, shifting
+    every block behind them toward the head before the next allocation runs.
+    collect_due extends the due threshold by the blocks already emitted in
+    the same call so shifted candidates drain now instead of losing the race.
+    """
+
+    def test_emission_shift_pulls_next_candidate_into_the_window(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4, 5], free=True)  # ranks 0..4
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req-a", [1, 2, 3], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-b", [4, 5], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        # danger_depth = 1: req-a is due (rank 0). Pinning its 3 blocks
+        # will move req-b (min rank 3) to rank 0 before the next step's
+        # allocation, so req-b must drain in the same call.
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["req-a", "req-b"]
+
+    def test_shift_never_opens_the_gate_by_itself(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req-a", [2, 3], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-b", [4], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        # danger_depth = 1 but no candidate reaches it (min ranks 1 and 3):
+        # with no first emission there is no shift, and nothing drains.
+        result = queue.collect_due()
+        assert result.to_store == []
+        assert queue.num_pending_ops() == 2
+
+    def test_candidate_beyond_the_shifted_window_stays_pending(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-b", [3, 4], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        # danger_depth = 1, req-a due at rank 0 and pins one block; req-b's
+        # min rank 2 is exactly at the shifted threshold (1 + 1), not below.
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["req-a"]
+        assert queue.num_pending_ops() == 1
+
+    def test_drain_cap_stops_the_cascade(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_drain_per_step=1)
+        queue.admit(make_op("req-a", [1, 2, 3], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req-b", [4], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        # req-b sits inside the shifted window (3 < 1 + 3) but the per-step
+        # cap is exhausted by req-a's op, so req-b waits for the next step.
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["req-a"]
+        assert queue.num_pending_ops() == 1
+
+
 class TestRequestLifecycle:
     def test_finished_request_released_only_after_store_completes(self) -> None:
         pool = FakePoolView()
