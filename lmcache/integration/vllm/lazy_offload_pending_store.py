@@ -38,9 +38,44 @@ _STATS_LOG_INTERVAL_S = 5.0
 _DROP_LOG_SAMPLE_OPS = 8
 
 
-def _format_ledger(counters: LazyOffloadCounters) -> str:
-    """Render the counters as one greppable ``key=value`` line body."""
-    return " ".join(f"{name}={value}" for name, value in asdict(counters).items())
+def _format_ledger(counters: LazyOffloadCounters, num_pending: int) -> str:
+    """Render the ledger as one greppable ``key=value`` line body.
+
+    Args:
+        counters: The cumulative policy counters.
+        num_pending: Operations still buffered at the same instant. It makes
+            the line close as an equation -- ``admitted == pending +
+            emitted + every drop counter`` -- so a reader can tell an
+            operation still waiting for pressure from one that left the
+            queue without incrementing any outcome counter. Without it the
+            strongest available check is ``outcomes <= admitted``, which
+            catches over-counting only.
+
+    Returns:
+        The rendered ``key=value`` body, pending depth last.
+    """
+    fields = " ".join(f"{name}={value}" for name, value in asdict(counters).items())
+    return f"{fields} pending={num_pending}"
+
+
+def _format_drop_sample(dropped: list[PendingStoreOp]) -> str:
+    """Render dropped ops for the aggregate drop line, truncating the tail.
+
+    Args:
+        dropped: The operations dropped by one drain, in drop order.
+
+    Returns:
+        ``request (prefix N)`` for at most ``_DROP_LOG_SAMPLE_OPS`` ops,
+        with a ``+N more`` suffix when the list was truncated.
+    """
+    sample = ", ".join(
+        f"{op.request_id} (prefix {op.prefix_end_tokens})"
+        for op in dropped[:_DROP_LOG_SAMPLE_OPS]
+    )
+    omitted = len(dropped) - _DROP_LOG_SAMPLE_OPS
+    if omitted > 0:
+        sample += f", +{omitted} more"
+    return sample
 
 
 class LazyOffloadMode(enum.Enum):
@@ -392,6 +427,18 @@ class LazyOffloadPendingStore:
                 meta.op.end,
             )
             return AddOutcome.SKIPPED_UNHASHED
+        # DEBUG, not INFO: this is the tail of an already reported event.
+        # Every site that breaks a request's chain logs the cause at INFO or
+        # WARNING (eviction drop, gate-3 drop, unhashed blocks, failed
+        # store), and one broken request rejects every later chunk it
+        # produces -- at INFO that would bury its own cause.
+        logger.debug(
+            "Lazy offload: skipping store for request %s tokens [%d, %d): "
+            "the request's prefix chain is already broken",
+            meta.request_id,
+            meta.op.start,
+            meta.op.end,
+        )
         return AddOutcome.SKIPPED_PREFIX_BROKEN
 
     def observe_step(
@@ -428,23 +475,34 @@ class LazyOffloadPendingStore:
             # large pending queue at once must not emit thousands of
             # synchronous lines on the scheduler hot path. Per-op detail
             # stays at DEBUG.
-            sample = ", ".join(
-                f"{op.request_id} (prefix {op.prefix_end_tokens})"
-                for op in result.dropped_evicted[:_DROP_LOG_SAMPLE_OPS]
-            )
-            omitted = len(result.dropped_evicted) - _DROP_LOG_SAMPLE_OPS
-            if omitted > 0:
-                sample += f", +{omitted} more"
             logger.info(
                 "Lazy offload: dropped %d store op(s): blocks evicted "
                 "before drain (%s)",
                 len(result.dropped_evicted),
-                sample,
+                _format_drop_sample(result.dropped_evicted),
             )
             for dropped_op in result.dropped_evicted:
                 logger.debug(
                     "Lazy offload: dropped store for request %s (prefix %d): "
                     "blocks evicted before drain",
+                    dropped_op.request_id,
+                    dropped_op.prefix_end_tokens,
+                )
+        if result.dropped_short_prefix:
+            # Same shape and level as the eviction path above, for the same
+            # reason: a gate-3 drop is cache-quality loss the operator has
+            # to be able to attribute to a request, and the counter alone
+            # cannot say which one lost its prefix.
+            logger.info(
+                "Lazy offload: dropped %d store op(s): request prefix below "
+                "the break-even length (%s)",
+                len(result.dropped_short_prefix),
+                _format_drop_sample(result.dropped_short_prefix),
+            )
+            for dropped_op in result.dropped_short_prefix:
+                logger.debug(
+                    "Lazy offload: dropped store for request %s (prefix %d): "
+                    "request prefix below the break-even length",
                     dropped_op.request_id,
                     dropped_op.prefix_end_tokens,
                 )
@@ -492,7 +550,10 @@ class LazyOffloadPendingStore:
             return
         logger.info(
             "Lazy offload final counters: %s",
-            _format_ledger(self._eviction_queue.stats()),
+            _format_ledger(
+                self._eviction_queue.stats(),
+                self._eviction_queue.num_pending_ops(),
+            ),
         )
 
     def _maybe_log_stats(self, queue: EvictionAwareStoreQueue) -> None:
@@ -502,6 +563,11 @@ class LazyOffloadPendingStore:
         so the log converges to the true ledger whenever the engine takes
         a step at least ``_STATS_LOG_INTERVAL_S`` after the last change --
         the shutdown hook alone is unreliable under a force-killed engine.
+
+        The change test looks at the counters only, not at the pending depth
+        the line also carries: every mutation of the pending queue moves a
+        counter with it (admission, emission, each drop cause), so a changed
+        depth always shows up as changed counters.
         """
         stats = queue.stats()
         if stats == self._last_logged_stats:
@@ -509,7 +575,10 @@ class LazyOffloadPendingStore:
         now = time.monotonic()
         if now - self._last_stats_log_time < _STATS_LOG_INTERVAL_S:
             return
-        logger.info("Lazy offload counters: %s", _format_ledger(stats))
+        logger.info(
+            "Lazy offload counters: %s",
+            _format_ledger(stats, queue.num_pending_ops()),
+        )
         self._last_logged_stats = stats
         self._last_stats_log_time = now
 

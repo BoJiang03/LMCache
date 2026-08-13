@@ -193,14 +193,22 @@ The counters surface in the scheduler process log, not in vLLM's
 `get_kv_connector_stats` plumbing (that hook is polled worker-side, where the
 policy does not live). Three hooks, all on the pending-store facade:
 
-- each drain that dropped ops logs one aggregate INFO line
-  (`dropped N store op(s): blocks evicted before drain (req (prefix P), ...)`,
-  naming at most 8 ops and counting the rest), so the drop ledger is visible
-  without running at DEBUG while a burst that evicts a large queue cannot
-  flood the scheduler hot path; per-op detail logs at DEBUG;
+- each drain that dropped ops logs one aggregate INFO line **per cause**
+  (`dropped N store op(s): blocks evicted before drain (req (prefix P), ...)`
+  and `dropped N store op(s): request prefix below the break-even length
+  (...)`, each naming at most 8 ops and counting the rest), so both kinds of
+  cache-quality loss are attributable to a request without running at DEBUG,
+  while a burst that evicts a large queue cannot flood the scheduler hot
+  path; per-op detail logs at DEBUG. The later chunks a broken request keeps
+  producing are rejected at admission and log at DEBUG only: their cause was
+  already reported, and one broken request produces many of them;
 - every drain re-logs the whole ledger as one greppable `key=value` line
-  (`Lazy offload counters: admitted=... emitted=...`) when the counters
-  changed, throttled to one line per 5s;
+  (`Lazy offload counters: admitted=... emitted=... pending=N`) when the
+  counters changed, throttled to one line per 5s. `pending` is the queue
+  depth at the same instant, which closes the line as an equation —
+  `admitted == pending + emitted + every drop counter` — so a reader can
+  separate an operation still waiting for pressure from one that left the
+  queue without incrementing any outcome counter;
 - connector `shutdown()` (invoked by vLLM's scheduler shutdown) calls
   `log_final_stats()`, which emits the exact final ledger
   (`Lazy offload final counters: ...`). Best-effort: `vllm serve` under

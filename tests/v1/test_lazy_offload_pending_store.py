@@ -26,20 +26,39 @@ from lmcache.integration.vllm.lazy_offload_pending_store import (
 FIFO_CONFIG = {"lmcache.mp.lazy_offload_policy": "FIFO"}
 
 
-def _spy_logger_info(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Capture the module logger's INFO lines.
+def _spy_logger(monkeypatch: pytest.MonkeyPatch, method: str) -> list[str]:
+    """Capture the module logger's lines emitted through one method.
 
     The lmcache logger does not propagate to the root logger
     (``propagate=False``), so pytest's ``caplog`` never sees its records;
     spy on the method instead.
+
+    Args:
+        monkeypatch: The fixture used to install the spy.
+        method: The logger method to capture, e.g. ``"info"``.
+
+    Returns:
+        A list that accumulates the formatted messages as they are logged.
     """
     messages: list[str] = []
 
     def spy(msg: object, *args: object, **kwargs: object) -> None:
         messages.append(str(msg) % args if args else str(msg))
 
-    monkeypatch.setattr(pending_store_mod.logger, "info", spy)
+    monkeypatch.setattr(pending_store_mod.logger, method, spy)
     return messages
+
+
+def _spy_logger_info(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Capture the module logger's INFO lines.
+
+    Args:
+        monkeypatch: The fixture used to install the spy.
+
+    Returns:
+        A list that accumulates the formatted messages as they are logged.
+    """
+    return _spy_logger(monkeypatch, "info")
 
 
 def _make_meta(
@@ -512,6 +531,46 @@ class TestEvictionAwareMode:
         assert "dropped 1 store op(s)" in line
         assert "req-0" in line
 
+    def test_short_prefix_drop_is_logged_at_info(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A gate-3 drop is cache-quality loss too, so it gets the same
+        aggregate INFO line as the eviction path: the counter alone cannot
+        say which request lost its prefix."""
+        store, _ = self._setup(
+            {
+                "lmcache.mp.lazy_offload_horizon_steps": 1.0,
+                "lmcache.mp.lazy_offload_min_prefix_tokens": 4096,
+            }
+        )
+        messages = _spy_logger_info(monkeypatch)
+        store.add(_make_meta("req-0", num_blocks=1, end=256))
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        result = store.collect_due()
+        assert len(result.dropped_short_prefix) == 1
+        (line,) = [m for m in messages if "below the break-even length" in m]
+        assert "dropped 1 store op(s)" in line
+        assert "req-0 (prefix 256)" in line
+
+    def test_skip_of_a_broken_request_logs_at_debug_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken request keeps producing chunks and every one of them is
+        rejected; at INFO those would bury the one line that reported the
+        cause, so the tail logs at DEBUG."""
+        store, gpu_pool = self._setup()
+        gpu_pool.blocks[0].block_hash = None
+        assert store.add(_make_meta("req-0", num_blocks=1)) is (
+            AddOutcome.SKIPPED_UNHASHED
+        )
+        info = _spy_logger_info(monkeypatch)
+        debug = _spy_logger(monkeypatch, "debug")
+        assert store.add(_make_meta("req-0", num_blocks=2)) is (
+            AddOutcome.SKIPPED_PREFIX_BROKEN
+        )
+        assert [m for m in info if "req-0" in m] == []
+        assert [m for m in debug if "prefix chain is already broken" in m] != []
+
     def test_drain_logs_the_ledger_periodically(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -553,6 +612,32 @@ class TestEvictionAwareMode:
         assert "admitted=1" in line
         assert "emitted=0" in line
         assert "dropped_evicted=1" in line
+
+    def test_ledger_reports_the_pending_depth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ledger carries the queue depth at the same instant as the
+        counters, so the line closes as an equation: an op that left the
+        queue without incrementing any outcome counter would show up as
+        admitted > pending + outcomes."""
+        store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        store.add(_make_meta("req-0", num_blocks=1))
+        store.add(_make_meta("req-1", num_blocks=1))
+        messages = _spy_logger_info(monkeypatch)
+        store.log_final_stats()
+        (held,) = [m for m in messages if "final counters" in m]
+        assert "admitted=2" in held
+        assert "emitted=0" in held
+        assert "pending=2" in held
+
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        assert len(store.collect_due().to_store) == 2
+        messages.clear()
+        store.log_final_stats()
+        (drained,) = [m for m in messages if "final counters" in m]
+        assert "admitted=2" in drained
+        assert "emitted=2" in drained
+        assert "pending=0" in drained
 
     def test_log_final_stats_is_silent_when_nothing_counted(
         self, monkeypatch: pytest.MonkeyPatch
