@@ -425,8 +425,13 @@ class LazyOffloadPendingStore:
         if admit is AdmitResult.REJECTED_UNHASHED_BLOCK:
             logger.warning(
                 "Lazy offload: skipping store for request %s tokens [%d, %d): "
-                "covered blocks lack prefix-cache hashes (is prefix caching "
-                "enabled?)",
+                "covered blocks carry no prefix-cache hash. Either prefix "
+                "caching is off, or the model uses sliding-window or hybrid "
+                "attention and these positions have fallen outside the "
+                "attention window, where vLLM leaves a hash-less null block "
+                "that holds no KV. Later chunks of this request are skipped "
+                "too; rejected_unhashed and rejected_prefix_broken count the "
+                "recurrence.",
                 meta.request_id,
                 meta.op.start,
                 meta.op.end,

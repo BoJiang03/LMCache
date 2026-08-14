@@ -40,6 +40,21 @@ admitted op whose blocks come under eviction pressure.
      plain prefix caching (enforced at connector init) chunk-aligned ranges
      never cover unhashed blocks, but hybrid-attention models (sliding
      window, mamba) can place hash-less null blocks in block tables.
+
+     Measured on `google/gemma-3-270m-it` (18 layers, 5 sliding-window
+     layers of 512 tokens for every full-attention layer, so vLLM builds
+     six kernel groups). The case that reaches it is not the long request
+     itself — its blocks are in the window as each chunk is buffered — but a
+     request whose prefix comes back from vLLM's *own* prefix cache:
+     `SlidingWindowManager.find_longest_cache_hit` prepends
+     `block_pool.null_block` for every out-of-window position, and those
+     positions hold no KV for the sliding-window layers. The eager path has
+     no admission step and stores them: on a 2166-token prompt replayed
+     against an empty LMCache, 7 of the prefix's 8 chunks came back with
+     different bytes under the same content-addressed key (the one that
+     matched is the chunk still inside the attention window). This is what
+     the rejection avoids, and why it is a skip rather than a best-effort
+     store. Both counters are exercised by layer-1 scenario S18.
    - `REJECTED_PREFIX_BROKEN` → **skip** (an earlier chunk was dropped; this
      chunk would be unreachable on retrieval).
    - `DEDUPLICATED` → nothing now (identical content — same salt, range, and

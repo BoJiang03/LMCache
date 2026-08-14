@@ -430,6 +430,29 @@ class TestEvictionAwareMode:
             AddOutcome.SKIPPED_UNHASHED
         )
 
+    def test_unhashed_skip_names_both_of_its_causes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The warning has to name sliding-window attention, not only
+        disabled prefix caching. A hash-less block reaches admission in two
+        ways, and on a hybrid-attention model prefix caching is on: an
+        operator told to check that setting finds it already correct and has
+        nothing left to look at."""
+        store, gpu_pool = self._setup()
+        gpu_pool.blocks[0].block_hash = None
+        warnings = _spy_logger(monkeypatch, "warning")
+        meta = _make_meta("req-0", num_blocks=1, end=512)
+        # _make_meta leaves `start` a MagicMock, which the warning's %d
+        # cannot format; the real logger swallows that, the spy here does
+        # not.
+        meta.op.start = 0
+        assert store.add(meta) is AddOutcome.SKIPPED_UNHASHED
+        assert len(warnings) == 1
+        assert "req-0" in warnings[0]
+        assert "[0, 512)" in warnings[0]
+        assert "prefix caching is off" in warnings[0]
+        assert "sliding-window" in warnings[0]
+
     def test_fifo_entry_points_raise(self) -> None:
         store, _ = self._setup()
         with pytest.raises(ValueError, match="FIFO policy unavailable"):
