@@ -218,7 +218,13 @@ class LazyOffloadPolicyConfig:
             whose known prefix is shorter than this when its blocks come due
             is dropped instead of stored. 0 disables the gate.
         max_drain_per_step: Upper bound on operations emitted per step, to
-            bound the D2H burst. Must be >= 1.
+            bound the D2H burst. Must be >= 1. There is no safe static
+            lower bound: a prefilling request buffers about one operation
+            per step, so a cap below the number of concurrently prefilling
+            requests cannot keep up and the backlog is lost to eviction
+            rather than merely delayed. Sizing it therefore needs the
+            workload, and the runtime sensor for having sized it wrong is
+            ``LazyOffloadCounters.throttled_drains``.
     """
 
     horizon_steps: float = 2.0
@@ -250,6 +256,16 @@ class LazyOffloadCounters:
     ``dropped_evicted`` is the gate-1 quality sensor (drop rate): operations
     lost because their blocks were evicted before the policy drained them.
     ``rejected_short_prefix`` counts gate-3 rejections.
+
+    ``throttled_drains`` is the sizing sensor for
+    :attr:`LazyOffloadPolicyConfig.max_drain_per_step`: drains that left a
+    due operation unemitted because the cap ran out. One of these is
+    harmless -- the operation is emitted a step later -- but a cap below
+    the number of concurrently prefilling requests never works the backlog
+    off, so the count rising alongside ``dropped_evicted`` is the signature
+    of a cap set too low. Counted per drain, not per operation, so it is
+    comparable with the number of steps rather than with the other
+    counters.
     """
 
     admitted: int = 0
@@ -262,6 +278,7 @@ class LazyOffloadCounters:
     dropped_failed_store: int = 0
     dropped_id_reuse: int = 0
     deduplicated: int = 0
+    throttled_drains: int = 0
 
 
 @dataclass
@@ -281,12 +298,19 @@ class DrainResult:
         released_requests: Finished requests that no longer have any pending
             operations after this drain; the connector may now end their
             sessions.
+        ops_held_back: Operations this drain found due but did not emit
+            because ``max_drain_per_step`` ran out. They stay pending and
+            are emitted by a later drain if their blocks survive that long.
+            Counts only the segment the cap cut, so it is a lower bound:
+            candidates the loop never reached are not counted, their
+            due-ness being unevaluated.
     """
 
     to_store: list[PendingStoreOp] = field(default_factory=list)
     dropped_evicted: list[PendingStoreOp] = field(default_factory=list)
     dropped_short_prefix: list[PendingStoreOp] = field(default_factory=list)
     released_requests: list[str] = field(default_factory=list)
+    ops_held_back: int = 0
 
 
 class EvictionAwareStoreQueue:
@@ -655,6 +679,7 @@ class EvictionAwareStoreQueue:
                 self._replace_pending(request_id, [], result)
                 continue
             emitted = due_ops[:budget]
+            result.ops_held_back += len(due_ops) - len(emitted)
             budget -= len(emitted)
             result.to_store.extend(emitted)
             self._forget_content(emitted)
@@ -666,6 +691,8 @@ class EvictionAwareStoreQueue:
             self._in_flight.add(request_id)
             remaining = self._pending[request_id][len(emitted) :]
             self._replace_pending(request_id, remaining, result)
+        if result.ops_held_back:
+            self._counters.throttled_drains += 1
         return result
 
     def notify_stored(self, request_id: str) -> bool:

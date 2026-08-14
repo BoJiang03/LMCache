@@ -582,6 +582,73 @@ class TestEvictionAwareMode:
         assert line.count("(prefix 256)") == 8
         assert "+2 more" in line
 
+    def test_throttled_drain_that_also_loses_ops_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cap that holds ops back while the queue is dying is a sizing
+        error, and the only place it is visible before the cache-hit rate
+        falls. Warned once per process: the misconfiguration lasts the whole
+        run, so repeating it every step would add noise, and the
+        throttled_drains counter carries the recurrence."""
+        store, gpu_pool = self._setup(
+            {
+                "lmcache.mp.lazy_offload_horizon_steps": 1.0,
+                "lmcache.mp.lazy_offload_max_drain_per_step": 1,
+            }
+        )
+        warnings = _spy_logger(monkeypatch, "warning")
+        # The two live ops must form one contiguous range, or the drain
+        # cuts at the gap instead of at the cap and the test would pass on
+        # the wrong mechanism.
+        for block_id, start, end in ((0, 0, 256), (1, 256, 512)):
+            meta = _make_meta("req-live", end=end)
+            meta.op.start = start
+            meta.op.flat_block_ids = [block_id]
+            store.add(meta)
+        doomed = _make_meta("req-doomed", end=256)
+        doomed.op.start = 0
+        doomed.op.flat_block_ids = [2]
+        store.add(doomed)
+        gpu_pool.blocks[2].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=40, est_next_step_blocks=0)
+
+        result = store.collect_due()
+        assert result.ops_held_back == 1
+        assert len(result.dropped_evicted) == 1
+        (line,) = [m for m in warnings if "max_drain_per_step" in m]
+        assert "held back 1 due store op(s)" in line
+        assert "1 op(s) were lost to eviction" in line
+
+        # Same symptoms again, one line total.
+        third = _make_meta("req-live", end=768)
+        third.op.start = 512
+        third.op.flat_block_ids = [4]
+        store.add(third)
+        again = _make_meta("req-doomed2", end=256)
+        again.op.start = 0
+        again.op.flat_block_ids = [3]
+        store.add(again)
+        gpu_pool.blocks[3].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=40, est_next_step_blocks=0)
+        store.collect_due()
+        assert len([m for m in warnings if "max_drain_per_step" in m]) == 1
+
+    def test_healthy_drain_does_not_warn_about_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Losing ops without the cap binding is ordinary pressure, not a
+        misconfiguration: warning on it would train operators to raise a
+        knob that had nothing to do with the loss."""
+        store, gpu_pool = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
+        warnings = _spy_logger(monkeypatch, "warning")
+        store.add(_make_meta("req-0", num_blocks=1))
+        gpu_pool.blocks[0].block_hash = b"reallocated"
+        store.observe_step(new_blocks_allocated=4, est_next_step_blocks=0)
+        result = store.collect_due()
+        assert len(result.dropped_evicted) == 1
+        assert result.ops_held_back == 0
+        assert [m for m in warnings if "max_drain_per_step" in m] == []
+
     def test_skip_of_a_broken_request_logs_at_debug_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

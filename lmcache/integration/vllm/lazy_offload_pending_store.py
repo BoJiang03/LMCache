@@ -322,6 +322,11 @@ class LazyOffloadPendingStore:
         # to the log and when it was written (see _maybe_log_stats).
         self._last_logged_stats = LazyOffloadCounters()
         self._last_stats_log_time = 0.0
+        # The throttle-versus-loss warning is emitted once per process (see
+        # collect_due): it names a misconfiguration that persists for the
+        # whole run, so repeating it every step would add noise without
+        # adding information. The counters carry the recurrence.
+        self._warned_throttled_loss = False
         self._eviction_config = LazyOffloadPolicyConfig(
             horizon_steps=float(
                 configs.get("lmcache.mp.lazy_offload_horizon_steps", 2.0)
@@ -468,6 +473,29 @@ class LazyOffloadPendingStore:
         """
         queue = self._require_eviction_queue()
         result = queue.collect_due()
+        if (
+            result.ops_held_back
+            and result.dropped_evicted
+            and not self._warned_throttled_loss
+        ):
+            # The two symptoms together are what distinguishes a cap that
+            # merely delays a burst from one set below the workload's
+            # steady-state admission rate: the drain is capped *and* the
+            # queue it could not work off is dying. WARNING, and once:
+            # neither counter alone justifies telling an operator their
+            # configuration is wrong.
+            self._warned_throttled_loss = True
+            logger.warning(
+                "Lazy offload: max_drain_per_step=%d held back %d due store "
+                "op(s) while %d op(s) were lost to eviction in the same "
+                "step. A cap below the number of concurrently prefilling "
+                "requests loses the backlog instead of delaying it; raise "
+                "lmcache.mp.lazy_offload_max_drain_per_step. "
+                "throttled_drains counts the recurrence.",
+                self._eviction_config.max_drain_per_step,
+                result.ops_held_back,
+                len(result.dropped_evicted),
+            )
         if result.dropped_evicted:
             # INFO, not DEBUG: each drop is one unit of cache-quality loss
             # (the gate-1 drop-rate sensor), and production logs rarely run

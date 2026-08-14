@@ -649,6 +649,36 @@ class TestDrainOrderingAndCap:
         second = queue.collect_due()
         assert [op.prefix_end_tokens for op in second.to_store] == [512]
 
+    def test_cap_reports_what_it_held_back(self) -> None:
+        """The sizing sensor: a drain the cap cut reports the ops it did not
+        emit, and counts itself once regardless of how many it held."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_drain_per_step=1)
+        for index, block in enumerate([1, 2, 3]):
+            queue.admit(
+                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
+            )
+        queue.observe_step(new_blocks_allocated=3, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.to_store) == 1
+        assert result.ops_held_back == 2
+        assert queue.stats().throttled_drains == 1
+
+    def test_uncapped_drain_holds_nothing_back(self) -> None:
+        """The sensor must stay silent on the default cap, or it would read
+        as a misconfiguration on every healthy deployment."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.to_store) == 2
+        assert result.ops_held_back == 0
+        assert queue.stats().throttled_drains == 0
+
 
 class TestPinCascadeShift:
     """Emitting a segment pins its blocks out of the free queue, shifting

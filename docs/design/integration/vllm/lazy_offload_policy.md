@@ -212,6 +212,18 @@ vLLM hit instead of 0 on a lookup miss.
   (prefix closure held — the replay retrieved exactly the surviving 1024 of
   1792 tokens). A cap near 1 is a steady-state loss setting, not a
   burst-shaping one.
+
+  There is no static validation for this: the break-even depends on how
+  many requests prefill concurrently, which the policy learns only at
+  runtime. The sensor is therefore a runtime one. `DrainResult.ops_held_back`
+  reports what a drain found due and did not emit (a lower bound: candidates
+  the loop never reached are not counted, their due-ness being unevaluated),
+  `throttled_drains` counts the drains that held anything back, and the
+  pending store logs one WARNING per process the first time a drain both
+  held ops back and lost ops to eviction — the pair that separates a cap
+  merely delaying a burst from one below the workload's admission rate.
+  Neither symptom alone warns: ops lost without the cap binding is ordinary
+  pressure, and a cap that binds without loss is the knob doing its job.
 - **Idle consequences**: receipts travel in worker metadata, which only
   flows on steps that schedule tokens. If the engine goes idle with a
   batch in flight, its pins and its request's session stay held until the
@@ -260,7 +272,9 @@ policy does not live). Three hooks, all on the pending-store facade:
   `rejected_prefix_broken` and `deduplicated` must stay out of it — those ops
   are turned away at admission and never counted in `admitted`. Summing by
   name instead of by this list makes the equation fail the moment gate 3
-  fires;
+  fires. `throttled_drains` stays out for a different reason: it counts
+  drains, not operations, so it belongs alongside the step count rather
+  than in an equation over ops;
 - connector `shutdown()` (invoked by vLLM's scheduler shutdown) calls
   `log_final_stats()`, which emits the exact final ledger
   (`Lazy offload final counters: ...`). Best-effort: `vllm serve` under
