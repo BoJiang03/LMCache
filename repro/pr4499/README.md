@@ -6,7 +6,7 @@ the LMCache source tree.
 
 ## Source identity
 
-- Production code under test: `f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd`
+- Production code under test: `8e4e851f91316bb7994be3d096966f0d1ef0b52b`
 - The reproduction commit is printed in the PR description and should be
   checked out by hash, not by the mutable branch name.
 - `results/` contains the raw JSON retained from the reported H200 runs.

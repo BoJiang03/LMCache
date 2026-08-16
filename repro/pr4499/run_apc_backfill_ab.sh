@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CODE_SHA="f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd"
+CODE_SHA="8e4e851f91316bb7994be3d096966f0d1ef0b52b"
 ROOT="$(git rev-parse --show-toplevel)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${SMOKE_PYTHON:-python3}"
