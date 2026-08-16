@@ -1,0 +1,169 @@
+# PR title
+
+```text
+[MP] Add an eviction-aware policy for lazy offload
+```
+
+# PR description
+
+## Summary
+
+This PR adds an opt-in eviction-aware drain policy for MP lazy offload.
+
+The existing FIFO policy submits buffered stores after a fixed number of
+requests finish. The new policy waits until the GPU blocks holding an operation
+approach eviction, avoiding stores that vLLM's GPU prefix cache can still serve.
+This reduces host-cache writes and prevents useful cold prefixes from being
+displaced by hot KV that did not need a lower-tier copy.
+
+FIFO remains the default for backward compatibility. Enable the new policy with:
+
+```text
+lmcache.mp.lazy_offload = true
+lmcache.mp.lazy_offload_policy = EVICTION_AWARE
+lmcache.mp.lazy_offload_horizon_steps = 2.5
+```
+
+## Design
+
+Scheduler-side lazy offload is isolated behind `LazyOffloadManager`; the MP
+connector only forwards lifecycle events and applies explicit store/session
+actions.
+
+- `LazyOffloadRequestRegistry` owns request phase, request/store epochs, and
+  submitted batches.
+- Reset, request-ID reuse, and stale receipts are handled as epoch transitions.
+  An old receipt still releases its pins but cannot break a successor's prefix
+  or end its session.
+- FIFO and eviction-aware backends return the same policy-neutral drain plan.
+- The controller is the only owner of block pinning, receipt interpretation,
+  and session teardown.
+- Worker-side failures are reported with completion receipts. A failed current-
+  epoch store breaks the prefix chain, preventing unreachable suffix stores.
+
+The eviction-aware backend provides:
+
+- pressure-triggered draining from vLLM free-queue ranks;
+- admission-time block snapshots and prefix-integrity validation;
+- prefix-closed, eviction-imminence-ordered drains;
+- content deduplication across request IDs;
+- a configurable minimum-prefix economy heuristic;
+- bounded scheduler-step candidate discovery using allocation deltas and a
+  block-to-request reverse index.
+
+This phase implements eviction timing and the current economy heuristic. Reuse
+prediction is intentionally left for a later phase; unknown reuse preserves the
+current eviction-only behavior.
+
+## Compatibility and behavior changes
+
+- `FIFO` remains the default policy; `EVICTION_AWARE` is explicit opt-in.
+- Lazy offload requires vLLM prefix caching because eviction validation depends
+  on block hashes.
+- Requests shorter than one LMCache chunk can finish without a pending store and
+  release their session immediately.
+- Store completion is aggregated across worker ranks before blocks are unpinned.
+- The connector now records aligned vLLM APC hits even when LMCache misses. This
+  fixes eager under-store: GPU-resident APC KV can be copied to LMCache before
+  eviction instead of being silently omitted from store coverage. Existing
+  LMCache-covered ranges are not stored twice.
+
+## Performance
+
+All reported runs used Qwen3-8B on one NVIDIA H200 with the LMCache MP connector
+and CPU L1.
+
+### Hot/cold long documents
+
+The workload has three hot documents that remain GPU-resident and eleven cold
+documents whose reuse requires a lower-tier copy: 38.5 GiB of distinct KV,
+20 GiB GPU KV pool, 40 GiB L1, 14 warmup requests, and 120 measured requests.
+
+Representative final-tree run:
+
+| policy | external hit | total coverage | wall time | L1 eviction cycles |
+| --- | ---: | ---: | ---: | ---: |
+| eager | 0.000 | 0.725 | 43.1s | 14 |
+| eviction-aware | 0.838 | 0.955 | 27.1s | 3 |
+
+Across repeated runs, eager took 41--43 seconds with 14--15 L1 eviction cycles;
+eviction-aware took 27--31 seconds with 3--6 cycles. The improvement comes from
+not writing the GPU-resident hot set into L1, preserving capacity for cold
+prefixes that actually need retrieval.
+
+### GSM8K correctness
+
+The correctness workload runs 120 questions twice (cold then cached),
+concurrency four, with approximately 51 GiB of KV against a 68 GiB L1.
+Strict scores stayed within the existing 0.900--0.925 run-to-run range. A
+representative cached run produced:
+
+| policy | strict score | external coverage | cached wall time |
+| --- | ---: | ---: | ---: |
+| eager | 0.908 | 0.961 | 21.7s |
+| eviction-aware | 0.908 | 0.961 | 22.3s |
+
+This workload is intentionally unfavorable to deferral because reuse distances
+exceed GPU residency; it verifies retrieval correctness and bounds the cost when
+the eviction gate has little work to eliminate.
+
+### Eager APC backfill
+
+An isolated hardware A/B used identical production code except for disabling
+eager APC-hit accounting in the baseline. After clearing L1, replaying a
+2565-token APC-resident prompt, displacing it from GPU, and requesting it again:
+
+- the PR rebuilt 10 L1 objects and retrieved 2560 tokens in every repetition;
+- the one-line baseline rebuilt no objects and recomputed the prefix;
+- all generated outputs matched, with no warnings or tracebacks;
+- two five-repeat runs reduced median third-request latency by 16--26%
+  (approximately 1.19--1.35x speedup).
+
+The extra store is intentional eager behavior. Eviction-aware lazy offload is
+where future Reuse and Economy gates can avoid paying that cost for dead KV.
+
+## Validation
+
+- 178 relevant unit/contract tests passed.
+- The suite covers policy invariants, epoch transitions, stale failures,
+  request-ID reuse, FIFO compatibility, connector delegation, worker receipt
+  aggregation, and eager APC backfill behavior.
+- Ruff check, Ruff format, compileall, and `git diff --check` pass.
+- GSM8K, hot/cold performance, and eager APC-backfill A/B were rerun on the
+  final production tree with no warnings or tracebacks.
+
+## Reproduction
+
+The hardware harness is intentionally kept outside the merge diff because it is
+one-off experiment infrastructure.
+
+- Production code: [`f4c77ed4`](https://github.com/BoJiang03/LMCache/commit/f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd)
+- Immutable reproduction package: [`a5be6d74`](https://github.com/BoJiang03/LMCache/tree/a5be6d7417cbfe3ff4c69176d69e9e63a9f18b82/repro/pr4499)
+- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/a5be6d7417cbfe3ff4c69176d69e9e63a9f18b82/repro/pr4499/README.md)
+- Raw JSON from the reported runs is included in the package.
+
+Exact hot/cold comparison:
+
+```bash
+export SMOKE_GPU=0
+export SMOKE_MODEL=Qwen/Qwen3-8B
+export SMOKE_HORIZON=2.5
+./repro/pr4499/run_hot_cold.sh
+```
+
+Eager APC-backfill isolated A/B:
+
+```bash
+export SMOKE_GPU=0
+export SMOKE_MODEL=Qwen/Qwen3-0.6B
+./repro/pr4499/run_apc_backfill_ab.sh
+```
+
+The scripts record source/environment identity, verify the selected mode and
+workload guards, reject warnings or tracebacks, and emit machine-readable JSON.
+
+## Documentation
+
+- `docs/design/integration/vllm/lazy_offload_decision_model.md`
+- `docs/design/integration/vllm/lazy_offload_policy/eviction_aware.md`
+- `docs/design/integration/vllm/lazy_offload.md`
