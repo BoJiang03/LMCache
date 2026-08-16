@@ -8,7 +8,8 @@
 
 ## Summary
 
-This PR adds an opt-in eviction-aware drain policy for MP lazy offload.
+This PR adds an eviction-aware drain policy for MP lazy offload and makes it
+the default when lazy offload is enabled.
 
 The existing FIFO policy submits buffered stores after a fixed number of
 requests finish. The new policy waits until the GPU blocks holding an operation
@@ -16,13 +17,15 @@ approach eviction, avoiding stores that vLLM's GPU prefix cache can still serve.
 This reduces host-cache writes and prevents useful cold prefixes from being
 displaced by hot KV that did not need a lower-tier copy.
 
-FIFO remains the default for backward compatibility. Enable the new policy with:
+Eviction-aware draining is the default when lazy offload is enabled:
 
 ```text
 lmcache.mp.lazy_offload = true
-lmcache.mp.lazy_offload_policy = EVICTION_AWARE
 lmcache.mp.lazy_offload_horizon_steps = 2.5
 ```
+
+Set `lmcache.mp.lazy_offload_policy = FIFO` explicitly to retain the legacy
+count-triggered fallback.
 
 ## Design
 
@@ -57,7 +60,8 @@ current eviction-only behavior.
 
 ## Compatibility and behavior changes
 
-- `FIFO` remains the default policy; `EVICTION_AWARE` is explicit opt-in.
+- `EVICTION_AWARE` is the default policy; `FIFO` remains an explicit legacy
+  fallback.
 - Lazy offload requires vLLM prefix caching because eviction validation depends
   on block hashes.
 - Requests shorter than one LMCache chunk can finish without a pending store and
@@ -84,7 +88,7 @@ Representative final-tree run:
 | policy | external hit | total coverage | wall time | L1 eviction cycles |
 | --- | ---: | ---: | ---: | ---: |
 | eager | 0.000 | 0.725 | 43.1s | 14 |
-| eviction-aware | 0.838 | 0.955 | 27.1s | 3 |
+| eviction-aware | 0.677 | 0.911 | 30.3s | 5 |
 
 Across repeated runs, eager took 41--43 seconds with 14--15 L1 eviction cycles;
 eviction-aware took 27--31 seconds with 3--6 cycles. The improvement comes from
@@ -137,9 +141,9 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
 The hardware harness is intentionally kept outside the merge diff because it is
 one-off experiment infrastructure.
 
-- Production code: [`f4c77ed4`](https://github.com/BoJiang03/LMCache/commit/f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd)
-- Immutable reproduction package: [`a5be6d74`](https://github.com/BoJiang03/LMCache/tree/a5be6d7417cbfe3ff4c69176d69e9e63a9f18b82/repro/pr4499)
-- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/a5be6d7417cbfe3ff4c69176d69e9e63a9f18b82/repro/pr4499/README.md)
+- Production code: [`8e4e851f`](https://github.com/BoJiang03/LMCache/commit/8e4e851f91316bb7994be3d096966f0d1ef0b52b)
+- Immutable reproduction package: [`5476816a`](https://github.com/BoJiang03/LMCache/tree/5476816ae7f1ae72a9d5af88bfd109a91acd877b/repro/pr4499)
+- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/5476816ae7f1ae72a9d5af88bfd109a91acd877b/repro/pr4499/README.md)
 - Raw JSON from the reported runs is included in the package.
 
 Exact hot/cold comparison:
