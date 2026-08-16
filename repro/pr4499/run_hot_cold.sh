@@ -10,6 +10,9 @@ export SMOKE_HORIZON="${SMOKE_HORIZON:-2.5}"
 for mode in eager lazy; do
   for ((rep=0; rep<REPETITIONS; rep++)); do
     "$PYTHON" "$HERE/longdoc.py" run "$mode" "$rep" "$L1_GB"
+    "$PYTHON" "$HERE/validate_result.py" \
+      "$HERE/logs/ld_L_${mode}_h3c11_${rep}.json" \
+      --mode "$mode" --kind hot-cold --requests 120
   done
 done
 "$PYTHON" "$HERE/longdoc.py" table

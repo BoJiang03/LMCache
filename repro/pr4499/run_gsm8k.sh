@@ -13,6 +13,9 @@ for mode in eager lazy; do
   for ((rep=0; rep<REPETITIONS; rep++)); do
     "$PYTHON" "$HERE/accuracy.py" run \
       "$mode" "$rep" "$QUESTIONS" "$CONCURRENCY" "$L1_GB"
+    "$PYTHON" "$HERE/validate_result.py" \
+      "$HERE/logs/ac_A_${mode}_n${QUESTIONS}_l${L1_GB}_${rep}.json" \
+      --mode "$mode" --kind gsm8k --requests "$QUESTIONS"
   done
 done
 "$PYTHON" "$HERE/accuracy.py" table
