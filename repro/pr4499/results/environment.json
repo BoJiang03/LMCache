@@ -1,0 +1,11 @@
+{
+  "code_under_test": "f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd",
+  "gpu": "NVIDIA H200",
+  "gpu_memory_mib": 143771,
+  "driver": "580.173.02",
+  "python": "3.12.13",
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "vllm": "0.23.0",
+  "lmcache": "0.5.4.dev147"
+}

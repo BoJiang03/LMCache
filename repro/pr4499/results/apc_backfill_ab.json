@@ -1,0 +1,33 @@
+{
+  "code_under_test": "f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd",
+  "repetitions": 5,
+  "with_backfill": {
+    "rebuilt_objects": [10, 10, 10, 10, 10],
+    "retrieved_token_ranges": [2560, 2560, 2560, 2560, 2560],
+    "third_request_seconds": [
+      0.37535253586247563,
+      0.36924221087247133,
+      0.4071491479407996,
+      0.39246584801003337,
+      0.3652539390604943
+    ],
+    "median_seconds": 0.37535253586247563
+  },
+  "without_backfill": {
+    "rebuilt_objects": [0, 0, 0, 0, 0],
+    "retrieved_token_ranges": [],
+    "third_request_seconds": [
+      0.5278076941613108,
+      0.5040528799872845,
+      0.48019958403892815,
+      0.5064910671208054,
+      0.5415408241096884
+    ],
+    "median_seconds": 0.5064910671208054
+  },
+  "latency_reduction_percent": 25.89157830636554,
+  "speedup": 1.349374304763928,
+  "all_outputs_identical": true,
+  "warnings": 0,
+  "tracebacks": 0
+}

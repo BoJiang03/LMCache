@@ -1,0 +1,115 @@
+# PR 4499 lazy-offload reproduction package
+
+This package is intentionally kept on a non-merge branch. It reproduces the
+hardware results reported by PR 4499 without adding one-off workload code to
+the LMCache source tree.
+
+## Source identity
+
+- Production code under test: `f4c77ed4808e00cd90047daaf7d6d0455ea6f3dd`
+- The reproduction commit is printed in the PR description and should be
+  checked out by hash, not by the mutable branch name.
+- `results/` contains the raw JSON retained from the reported H200 runs.
+
+The reproduction commit changes no file under `lmcache/` relative to the code
+SHA above. `run_apc_backfill_ab.sh` checks that invariant before running.
+
+## Environment
+
+Reported runs used one NVIDIA H200, vLLM 0.23.0, PyTorch 2.11.0+cu130, CUDA
+13.0, and Python 3.12.13. See `results/environment.json`.
+
+Use the Python environment in which the PR source and vLLM are installed:
+
+```bash
+export SMOKE_PYTHON="$(command -v python3)"
+export SMOKE_VLLM="$(command -v vllm)"
+export SMOKE_GPU=0
+python repro/pr4499/capture_environment.py
+```
+
+The scripts start and stop both the LMCache MP HTTP server and `vllm serve`.
+They use ports 26555, 28085, and 28100 by default; override them with
+`SMOKE_MP_PORT`, `SMOKE_HTTP_PORT`, and `SMOKE_VLLM_PORT` when necessary.
+Models are downloaded through the normal Hugging Face/vLLM path.
+
+## 1. Primary hot/cold workload
+
+This is the performance claim in the PR. It runs eager and eviction-aware lazy
+offload against the same code and workload. The exact preset uses Qwen3-8B,
+a 20 GiB GPU KV pool, 40 GiB of L1, 14 warmup requests, and 120 measured
+requests.
+
+```bash
+export SMOKE_MODEL=Qwen/Qwen3-8B
+export SMOKE_HORIZON=2.5
+export REPETITIONS=3
+export L1_GB=40
+./repro/pr4499/run_hot_cold.sh
+```
+
+Each run writes JSON under `repro/pr4499/logs/` and checks the actual connector
+mode, request count, metrics, counter ledger, warnings, and tracebacks. On the
+reported H200, eager took approximately 41--43 seconds with 14--15 L1 eviction
+cycles; eviction-aware took approximately 27--31 seconds with 3--6 cycles.
+
+For a shorter functional run, set `REPETITIONS=1`. It verifies behavior but is
+not enough to support a stable timing comparison.
+
+## 2. GSM8K retrieval correctness
+
+The included GSM8K train/test JSONL files make prompt generation deterministic.
+The exact preset runs 120 questions twice (cold and cached), concurrency four,
+using Qwen3-8B and a 68 GiB L1.
+
+```bash
+export SMOKE_MODEL=Qwen/Qwen3-8B
+export REPETITIONS=3
+export QUESTIONS=120
+export CONCURRENCY=4
+export L1_GB=68
+./repro/pr4499/run_gsm8k.sh
+```
+
+For a smoke run, use `QUESTIONS=20 REPETITIONS=1`; do not compare its accuracy
+or timing directly with the full table in the PR.
+
+## 3. Eager APC-backfill isolated A/B
+
+This script compares two temporary worktrees built from the same production
+SHA. The baseline differs by one visible source patch: eager mode does not
+record an APC hit when LMCache misses. The script prints that diff before
+starting either engine.
+
+```bash
+export SMOKE_MODEL=Qwen/Qwen3-0.6B
+./repro/pr4499/run_apc_backfill_ab.sh
+```
+
+The sequence is:
+
+1. populate both vLLM APC and LMCache;
+2. clear LMCache while leaving vLLM alive;
+3. replay the prompt from APC;
+4. displace it from GPU with four distinct prompts;
+5. request it again and measure retrieve versus recompute.
+
+Five reported repetitions rebuilt 10 L1 objects and retrieved 2560 tokens with
+the fix. The one-line baseline rebuilt nothing and retrieved nothing. Median
+third-request latency was 375 ms versus 506 ms (25.9% lower, 1.35x speedup).
+All outputs matched and both variants had zero warnings and tracebacks.
+
+## Reading results
+
+Treat a run as invalid if any of these guards fail:
+
+- the requested mode is absent from the vLLM log;
+- request counts differ from the preset;
+- a traceback is present;
+- the lazy counter ledger does not close;
+- the hot/cold workload does not create the documented cache pressure;
+- APC-backfill outputs differ across the three passes.
+
+Absolute timings depend on GPU, model cache state, and server load. The useful
+review signal is the same-machine A/B together with the non-vacuity guards and
+raw JSON, not one isolated wall-clock number.
