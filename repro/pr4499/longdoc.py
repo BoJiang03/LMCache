@@ -97,7 +97,7 @@ from driver import (
     wait_for,
 )
 from accuracy import CONFIGS, L1Sampler, eviction_cycles
-from workload import MODEL, _CONNECTOR_CONFIGS, _metrics, start_server_sized
+from workload import MODEL, TP_SIZE, _CONNECTOR_CONFIGS, _metrics, start_server_sized
 
 #: KV bytes per token for this model: 36 layers * 8 KV heads * 128 dims * 2
 #: tensors * 2 bytes. Every size below is derived from it.
@@ -247,6 +247,8 @@ def start_engine(scenario: str, config: str) -> subprocess.Popen:
         "--gpu-memory-utilization", "0.75",
         "--num-gpu-blocks-override", str(POOL_BLOCKS),
     ]
+    if TP_SIZE > 1:
+        cmd += ["--tensor-parallel-size", str(TP_SIZE)]
     if config != "off":
         kv_cfg = {
             "kv_connector": "LMCacheMPConnector",
@@ -430,6 +432,7 @@ def run(config: str, rep: int = 0, l1_gb: int = 0) -> dict:
         "document_tokens": DOCUMENT_TOKENS, "query_requests": QUERY_REQUESTS,
         "hot_run_length": HOT_RUN_LENGTH, "inflight": INFLIGHT, "output_len": OUTPUT_LEN,
         "pool_blocks": POOL_BLOCKS, "l1_gb": L1_GB,
+        "tensor_parallel_size": TP_SIZE,
         "pool_gib": POOL_BLOCKS * 16 * KV_BYTES_PER_TOKEN / (1 << 30),
         "hot_gib": HOT_DOCUMENTS * per_document_gib,
         "cold_gib": COLD_DOCUMENTS * per_document_gib,

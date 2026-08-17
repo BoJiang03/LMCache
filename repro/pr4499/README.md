@@ -31,7 +31,18 @@ python repro/pr4499/capture_environment.py
 The scripts start and stop both the LMCache MP HTTP server and `vllm serve`.
 They use ports 26555, 28085, and 28100 by default; override them with
 `SMOKE_MP_PORT`, `SMOKE_HTTP_PORT`, and `SMOKE_VLLM_PORT` when necessary.
-Models are downloaded through the normal Hugging Face/vLLM path.
+Models are downloaded through the normal Hugging Face/vLLM path. Set
+`HF_HUB_CACHE` to a non-home model volume when appropriate.
+
+For tensor parallel runs, list the visible GPUs and set the matching TP size:
+
+```bash
+export SMOKE_GPU=0,1
+export SMOKE_TP=2
+```
+
+Both workload JSON formats retain `tensor_parallel_size`; TP=1 remains the
+default.
 
 ## 1. Primary hot/cold workload
 
@@ -54,7 +65,9 @@ reported H200, eager took approximately 41--43 seconds with 14--15 L1 eviction
 cycles; eviction-aware took approximately 27--31 seconds with 3--6 cycles.
 
 For a shorter functional run, set `REPETITIONS=1`. It verifies behavior but is
-not enough to support a stable timing comparison.
+not enough to support a stable timing comparison. The same script supports TP=2
+by setting `SMOKE_GPU=0,1 SMOKE_TP=2`; see
+[`TP2.md`](TP2.md) for the retained two-GPU validation.
 
 ## 2. GSM8K retrieval correctness
 

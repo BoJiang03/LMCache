@@ -59,6 +59,9 @@ from driver import (
 
 LOGDIR = driver.LOGDIR
 MODEL = "Qwen/Qwen3-8B"
+TP_SIZE = int(os.environ.get("SMOKE_TP", "1"))
+if TP_SIZE < 1:
+    raise ValueError("SMOKE_TP must be at least 1")
 
 #: L1 (host memory) budget for the MP server. At 144 KB/token this is about
 #: 450k tokens, comfortably more than any working set below; the host has
@@ -274,6 +277,8 @@ def start_engine(
     ]
     if pool:
         cmd += ["--num-gpu-blocks-override", str(pool)]
+    if TP_SIZE > 1:
+        cmd += ["--tensor-parallel-size", str(TP_SIZE)]
     if config != "off":
         extra = dict(_CONNECTOR_CONFIGS[config])
         if config == "lazy":

@@ -93,7 +93,7 @@ from driver import (
     server_status,
     teardown,
 )
-from workload import MODEL, _metrics, start_engine, start_server_sized
+from workload import MODEL, TP_SIZE, _metrics, start_engine, start_server_sized
 
 CONFIGS = ("off", "eager", "lazy")
 
@@ -596,7 +596,7 @@ def run(
         "config": config, "tag": tag, "rep": rep, "model": MODEL,
         "n_questions": N_QUESTIONS, "n_shots": N_SHOTS, "l1_gb": L1_GB,
         "pool_blocks": POOL_BLOCKS, "concurrency": CONCURRENCY,
-        "max_tokens": MAX_TOKENS,
+        "tensor_parallel_size": TP_SIZE, "max_tokens": MAX_TOKENS,
     }
     print(f"[ac] === {tag}")
     server = start_server_sized(tag, L1_GB)
