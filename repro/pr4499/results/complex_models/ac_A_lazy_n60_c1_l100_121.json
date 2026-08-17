@@ -1,0 +1,1327 @@
+{
+ "config": "lazy",
+ "tag": "A_lazy_n60_c1_l100_121",
+ "rep": 121,
+ "model": "google/gemma-3-12b-it",
+ "n_questions": 60,
+ "n_shots": 20,
+ "l1_gb": 100,
+ "pool_blocks": 8192,
+ "concurrency": 1,
+ "max_tokens": 320,
+ "prompt_tokens": [
+  3962,
+  3226,
+  3375
+ ],
+ "passes": {
+  "cold": {
+   "requests": 60,
+   "seconds": 59.93881678581238,
+   "score_strict": 0.9,
+   "score_lenient": 0.9,
+   "no_final_line": 0,
+   "ttft_p50": 165.21835327148438,
+   "ttft_p90": 182.5859546661377,
+   "ttft_p10": 148.6072540283203,
+   "ttft_mean": 167.6808993021647,
+   "ttft_ms": [
+    303.0269145965576,
+    159.49153900146484,
+    181.4429759979248,
+    165.21835327148438,
+    198.67944717407227,
+    174.06916618347168,
+    181.22005462646484,
+    202.78191566467285,
+    165.44198989868164,
+    166.46122932434082,
+    176.00250244140625,
+    145.5059051513672,
+    153.46384048461914,
+    168.33186149597168,
+    162.0156764984131,
+    169.90017890930176,
+    163.03324699401855,
+    187.58201599121094,
+    169.42071914672852,
+    140.7604217529297,
+    164.6883487701416,
+    139.33634757995605,
+    160.4022979736328,
+    182.5859546661377,
+    182.34872817993164,
+    145.6284523010254,
+    153.73635292053223,
+    147.44830131530762,
+    166.44620895385742,
+    159.50298309326172,
+    148.79941940307617,
+    159.33942794799805,
+    180.4959774017334,
+    156.5566062927246,
+    168.12992095947266,
+    149.86610412597656,
+    163.97905349731445,
+    157.65666961669922,
+    167.6013469696045,
+    168.86210441589355,
+    162.50371932983398,
+    159.35039520263672,
+    147.51172065734863,
+    160.06207466125488,
+    174.49069023132324,
+    152.10580825805664,
+    168.05315017700195,
+    181.17666244506836,
+    148.73886108398438,
+    157.3202610015869,
+    154.15167808532715,
+    157.67908096313477,
+    176.9106388092041,
+    175.9204864501953,
+    175.07219314575195,
+    163.79356384277344,
+    179.24976348876953,
+    172.54114151000977,
+    188.3542537689209,
+    148.6072540283203
+   ],
+   "mean_chars": 221.51666666666668,
+   "counters": {
+    "apc_queries": 188340.0,
+    "apc_hits": 0.0,
+    "ext_queries": 188340.0,
+    "ext_hits": 0.0,
+    "preemptions": 0.0
+   },
+   "objects_before": 0,
+   "objects_after": 699,
+   "l1_usage_ratio": 0.6553125,
+   "l1_total_gb": 100.0,
+   "l1_locked_after": {
+    "write_locked": 0,
+    "read_locked": 0,
+    "temporary": 0
+   },
+   "l1_trace": {
+    "peak_ratio": 0.6553125,
+    "min_ratio": 0.0,
+    "final_ratio": 0.6553125,
+    "mean_ratio": 0.3470357142857143,
+    "peak_used_gb": 65.53125,
+    "final_used_gb": 65.53125,
+    "peak_objects": 699,
+    "final_objects": 699,
+    "n_samples": 70,
+    "poll_failures": 0,
+    "samples": [
+     {
+      "t": 0.006896495819091797,
+      "ratio": 0.0,
+      "used_gb": 0.0,
+      "objects": 0.0
+     },
+     {
+      "t": 1.0113184452056885,
+      "ratio": 0.0,
+      "used_gb": 0.0,
+      "objects": 0.0
+     },
+     {
+      "t": 2.0154523849487305,
+      "ratio": 0.0,
+      "used_gb": 0.0,
+      "objects": 0.0
+     },
+     {
+      "t": 3.0200347900390625,
+      "ratio": 0.0,
+      "used_gb": 0.0,
+      "objects": 0.0
+     },
+     {
+      "t": 4.02541971206665,
+      "ratio": 0.0,
+      "used_gb": 0.0,
+      "objects": 0.0
+     },
+     {
+      "t": 5.031266689300537,
+      "ratio": 0.0478125,
+      "used_gb": 4.78125,
+      "objects": 51.0
+     },
+     {
+      "t": 6.037088632583618,
+      "ratio": 0.0478125,
+      "used_gb": 4.78125,
+      "objects": 51.0
+     },
+     {
+      "t": 7.043118953704834,
+      "ratio": 0.0478125,
+      "used_gb": 4.78125,
+      "objects": 51.0
+     },
+     {
+      "t": 8.04811143875122,
+      "ratio": 0.0825,
+      "used_gb": 8.25,
+      "objects": 88.0
+     },
+     {
+      "t": 9.052614688873291,
+      "ratio": 0.0825,
+      "used_gb": 8.25,
+      "objects": 88.0
+     },
+     {
+      "t": 10.057352781295776,
+      "ratio": 0.0825,
+      "used_gb": 8.25,
+      "objects": 88.0
+     },
+     {
+      "t": 11.062294483184814,
+      "ratio": 0.0825,
+      "used_gb": 8.25,
+      "objects": 88.0
+     },
+     {
+      "t": 12.066885232925415,
+      "ratio": 0.106875,
+      "used_gb": 10.6875,
+      "objects": 114.0
+     },
+     {
+      "t": 13.071345567703247,
+      "ratio": 0.106875,
+      "used_gb": 10.6875,
+      "objects": 114.0
+     },
+     {
+      "t": 14.075822114944458,
+      "ratio": 0.106875,
+      "used_gb": 10.6875,
+      "objects": 114.0
+     },
+     {
+      "t": 15.080308198928833,
+      "ratio": 0.1509375,
+      "used_gb": 15.09375,
+      "objects": 161.0
+     },
+     {
+      "t": 16.084747791290283,
+      "ratio": 0.1509375,
+      "used_gb": 15.09375,
+      "objects": 161.0
+     },
+     {
+      "t": 17.08968758583069,
+      "ratio": 0.1509375,
+      "used_gb": 15.09375,
+      "objects": 161.0
+     },
+     {
+      "t": 18.094205141067505,
+      "ratio": 0.1509375,
+      "used_gb": 15.09375,
+      "objects": 161.0
+     },
+     {
+      "t": 19.09932279586792,
+      "ratio": 0.1509375,
+      "used_gb": 15.09375,
+      "objects": 161.0
+     },
+     {
+      "t": 20.104079723358154,
+      "ratio": 0.1978125,
+      "used_gb": 19.78125,
+      "objects": 211.0
+     },
+     {
+      "t": 21.10864782333374,
+      "ratio": 0.1978125,
+      "used_gb": 19.78125,
+      "objects": 211.0
+     },
+     {
+      "t": 22.113445520401,
+      "ratio": 0.1978125,
+      "used_gb": 19.78125,
+      "objects": 211.0
+     },
+     {
+      "t": 23.11818790435791,
+      "ratio": 0.1978125,
+      "used_gb": 19.78125,
+      "objects": 211.0
+     },
+     {
+      "t": 24.123503923416138,
+      "ratio": 0.2109375,
+      "used_gb": 21.09375,
+      "objects": 225.0
+     },
+     {
+      "t": 25.128503799438477,
+      "ratio": 0.25125,
+      "used_gb": 25.125,
+      "objects": 268.0
+     },
+     {
+      "t": 26.133403301239014,
+      "ratio": 0.25125,
+      "used_gb": 25.125,
+      "objects": 268.0
+     },
+     {
+      "t": 27.13836097717285,
+      "ratio": 0.25125,
+      "used_gb": 25.125,
+      "objects": 268.0
+     },
+     {
+      "t": 28.143341541290283,
+      "ratio": 0.25125,
+      "used_gb": 25.125,
+      "objects": 268.0
+     },
+     {
+      "t": 29.148274183273315,
+      "ratio": 0.3009375,
+      "used_gb": 30.09375,
+      "objects": 321.0
+     },
+     {
+      "t": 30.153335571289062,
+      "ratio": 0.3009375,
+      "used_gb": 30.09375,
+      "objects": 321.0
+     },
+     {
+      "t": 31.15828585624695,
+      "ratio": 0.3009375,
+      "used_gb": 30.09375,
+      "objects": 321.0
+     },
+     {
+      "t": 32.163464069366455,
+      "ratio": 0.320625,
+      "used_gb": 32.0625,
+      "objects": 342.0
+     },
+     {
+      "t": 33.16856145858765,
+      "ratio": 0.320625,
+      "used_gb": 32.0625,
+      "objects": 342.0
+     },
+     {
+      "t": 34.17377710342407,
+      "ratio": 0.320625,
+      "used_gb": 32.0625,
+      "objects": 342.0
+     },
+     {
+      "t": 35.178937673568726,
+      "ratio": 0.3646875,
+      "used_gb": 36.46875,
+      "objects": 389.0
+     },
+     {
+      "t": 36.183873414993286,
+      "ratio": 0.3646875,
+      "used_gb": 36.46875,
+      "objects": 389.0
+     },
+     {
+      "t": 37.18901991844177,
+      "ratio": 0.3646875,
+      "used_gb": 36.46875,
+      "objects": 389.0
+     },
+     {
+      "t": 38.194106340408325,
+      "ratio": 0.4096875,
+      "used_gb": 40.96875,
+      "objects": 437.0
+     },
+     {
+      "t": 39.19923949241638,
+      "ratio": 0.4096875,
+      "used_gb": 40.96875,
+      "objects": 437.0
+     },
+     {
+      "t": 40.20454525947571,
+      "ratio": 0.4096875,
+      "used_gb": 40.96875,
+      "objects": 437.0
+     },
+     {
+      "t": 41.209721088409424,
+      "ratio": 0.4096875,
+      "used_gb": 40.96875,
+      "objects": 437.0
+     },
+     {
+      "t": 42.21499991416931,
+      "ratio": 0.4096875,
+      "used_gb": 40.96875,
+      "objects": 437.0
+     },
+     {
+      "t": 43.22033405303955,
+      "ratio": 0.455625,
+      "used_gb": 45.5625,
+      "objects": 486.0
+     },
+     {
+      "t": 44.225677728652954,
+      "ratio": 0.455625,
+      "used_gb": 45.5625,
+      "objects": 486.0
+     },
+     {
+      "t": 45.23084282875061,
+      "ratio": 0.455625,
+      "used_gb": 45.5625,
+      "objects": 486.0
+     },
+     {
+      "t": 46.23700666427612,
+      "ratio": 0.49875,
+      "used_gb": 49.875,
+      "objects": 532.0
+     },
+     {
+      "t": 47.24237823486328,
+      "ratio": 0.49875,
+      "used_gb": 49.875,
+      "objects": 532.0
+     },
+     {
+      "t": 48.247679710388184,
+      "ratio": 0.49875,
+      "used_gb": 49.875,
+      "objects": 532.0
+     },
+     {
+      "t": 49.25298738479614,
+      "ratio": 0.49875,
+      "used_gb": 49.875,
+      "objects": 532.0
+     },
+     {
+      "t": 50.25841045379639,
+      "ratio": 0.5315625,
+      "used_gb": 53.15625,
+      "objects": 567.0
+     },
+     {
+      "t": 51.26373767852783,
+      "ratio": 0.5315625,
+      "used_gb": 53.15625,
+      "objects": 567.0
+     },
+     {
+      "t": 52.26903223991394,
+      "ratio": 0.5315625,
+      "used_gb": 53.15625,
+      "objects": 567.0
+     },
+     {
+      "t": 53.274367809295654,
+      "ratio": 0.5634375,
+      "used_gb": 56.34375,
+      "objects": 601.0
+     },
+     {
+      "t": 54.28019165992737,
+      "ratio": 0.5634375,
+      "used_gb": 56.34375,
+      "objects": 601.0
+     },
+     {
+      "t": 55.28571128845215,
+      "ratio": 0.5634375,
+      "used_gb": 56.34375,
+      "objects": 601.0
+     },
+     {
+      "t": 56.29569935798645,
+      "ratio": 0.609375,
+      "used_gb": 60.9375,
+      "objects": 650.0
+     },
+     {
+      "t": 57.304720878601074,
+      "ratio": 0.609375,
+      "used_gb": 60.9375,
+      "objects": 650.0
+     },
+     {
+      "t": 58.31038546562195,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 59.315791845321655,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 60.32299447059631,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 61.32935571670532,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 62.33951258659363,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 63.34732103347778,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 64.35480856895447,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 65.36243319511414,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 66.36990785598755,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 67.3763062953949,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 68.38304042816162,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 69.39034008979797,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     }
+    ]
+   },
+   "eviction_cycles": 0,
+   "completions": [
+    " Janet\u2019s ducks lay 16 eggs per day.\nShe eats 3 eggs for breakfast and uses 4 eggs for muffins, so she uses 3+4=7 eggs.\nShe sells 16-7=9 eggs at the farmers' market.\nShe sells the eggs for $2 per egg, so she makes 9*2=$18 per day.\n#### 18\n",
+    " The robe takes 2 bolts of blue fiber and half that much white fiber, which is 2/2 = 1 bolt of white fiber.\nIn total, the robe takes 2 + 1 = 3 bolts of fiber.\n#### 3\n",
+    " The house was worth $80,000 + $50,000 = $130,000 after repairs.\nThe value increased by 150% of the original price, so the increase was 1.5 * $80,000 = $120,000.\nThe new value of the house is $80,000 + $120,000 = $200,000.\nJosh's profit is $200,000 - $130,000 = $70,000.\n#### 70,000\n",
+    " He runs 3 sprints * 60 meters per sprint = 180 meters per session.\nHe runs 180 meters per session * 3 sessions per week = 540 meters per week.\n#### 540\n",
+    " Wendi needs to give her chickens 3 cups of feed each, so she needs to give 20 chickens * 3 cups/chicken = 60 cups of feed per day.\nShe has already given 15 + 25 = 40 cups of feed.\nSo she needs to give 60 - 40 = 20 cups of feed in the final meal.\n#### 20\n",
+    " Kylar buys 16 glasses, so he buys 16/2 = 8 glasses at full price and 8 glasses at a discounted price.\nThe cost of 8 glasses at full price is 8 * $5 = $40.\nThe discounted price of a glass is $5 * 0.60 = $3.\nThe cost of 8 glasses at the discounted price is 8 * $3 = $24.\nThe total cost of the glasses is $40 + $24 = $64.\n#### 64\n",
+    " Charleston has 4 * 20 = 80 sheep.\nToulouse has 2 * 80 = 160 sheep.\nTogether, they have 20 + 80 + 160 = 260 sheep.\n#### 260\n",
+    " The file is 200 GB, and she downloads 2 GB/minute, so it would normally take 200/2 = 100 minutes.\n40% of the way through the download is 200 * 0.4 = 80 GB.\nIt takes 80/2 = 40 minutes to download 80 GB.\nThen Windows forces a restart, which takes 20 minutes.\nThen Carla has to restart the download from the beginning, which takes another 100 minutes.\nSo the total time is 40 + 20 + 100 = 160 minutes.\n#### 160\n",
+    " John drives for 3 hours at 60 mph, so he travels 3*60 = 180 miles.\nHe spends 2 hours in standstill traffic, so he travels 0 miles.\nHe spends 0.5 hours driving at 30 mph, so he travels 0.5*30 = 15 miles.\nHe spends the remaining 4 - 2 - 0.5 = 1.5 hours driving at 80 mph, so he travels 1.5*80 = 120 miles.\nIn total, John travels 180 + 15 + 120 = 315 miles.\nSince he drove 180 miles away from home, he is 315 - 180 = 135 miles from home.\n#### 135\n",
+    " Eliza worked 45-40 = 5 hours of overtime.\nHer overtime rate is 1.2 * $10 = $12 per hour.\nHer earnings for the first 40 hours are 40 * $10 = $400.\nHer earnings for the 5 hours of overtime are 5 * $12 = $60.\nHer total earnings for the week are $400 + $60 = $460.\n#### 460\n",
+    " The number of downloads in the second month was 60 * 3 = 180\nThe number of downloads in the third month was 180 * 0.7 = 126\nThe total number of downloads over the three months was 60 + 180 + 126 = 366\n#### 366\n",
+    " The cost of the donuts is 3 * 68 = $204.\nThe cost of the mini cupcakes is 2 * 80 = $160.\nThe cost of the mini cheesecakes is 6 * 55 = $330.\nThe total cost is 204 + 160 + 330 = $694.\n#### 694\n",
+    " Each year, Carlos earns 7 lemons * $1.5/lemon = $10.50 from selling lemons.\nEach year, it costs $3 to water and feed the tree.\nSo each year, Carlos earns $10.50 - $3 = $7.50.\nTo earn back the $90 planting cost, it will take $90 / $7.50/year = 12 years.\n#### 12\n",
+    " Let x be the number of vacuum cleaners Melanie started with.\nAt the green house, she sold x/3 vacuum cleaners.\nShe sold 2 more to the red house, so she sold 2 vacuum cleaners.\nThe number of vacuum cleaners left after selling to the green house and red house is x - x/3 - 2 = (2x/3) - 2.\nAt the orange house, she sold half of what was left, so she sold ((2x/3) - 2)/2 = x/3 - 1.\nThe number of vacuum cleaners left after selling to the green house, red house, and orange house is (2x/3) - 2 - (x/3 - 1) = x/3 - 1.\nWe are given that Melanie has 5 vacuum cleaners left, so x/3 - 1 = 5.\nAdding 1 to both sides gives x/3 = 6.\nMultiplying both sides by 3 gives x = 18.\n#### 18\n",
+    " 20% of 20 students is 20 * 0.20 = 4 students in contemporary dance.\nThe remaining students are 20 - 4 = 16 students.\n25% of the remaining students is 16 * 0.25 = 4 students in jazz dance.\nThe rest of the students are 16 - 4 = 12 students in hip-hop dance.\nThe percentage of students in hip-hop dance is 12 / 20 = 0.60 = 60%.\n#### 60\n",
+    " The profit from the jewelry market would be $5,000 * 0.025 = $125.\nThe profit from the electronic gadgets market would be $8,000 * 0.012 = $96.\nThe merchant should choose the jewelry market to maximize profit, which would be $125.\n#### 125\n",
+    " The distance covered by each train in the two days is 80 + 150 = 230 miles.\n#### 230\n",
+    " Jill makes $20*35 = $700 per week as a teacher.\nShe makes $30*15 = $450 per week as a coach.\nShe makes $700 + $450 = $1150 per week.\nShe makes $1150*50 = $57,500 per year.\n#### 57,500\n",
+    " Claire eats 3 eggs per day.\nIn 4 weeks, she will eat 4 weeks x 7 days/week = 28 days.\nSo, she will eat 28 days x 3 eggs/day = 84 eggs.\nSince there are 12 eggs in a dozen, she will eat 84 eggs / 12 eggs/dozen = 7 dozens of eggs.\n#### 7\n",
+    " Marissa has 12 - 4 - 2 = 6 miles left to hike.\nShe has already hiked for 1 + 1 = 2 hours.\nShe wants to hike the entire trail in 12 miles / 4 miles per hour = 3 hours.\nShe has 3 - 2 = 1 hour left to hike.\nShe needs to walk the remaining 6 miles in 1 hour, so she needs to walk at a speed of 6 miles per hour.\n#### 6\n",
+    " The orange drink is two-thirds water, so it has (2/3) * 10 = 20/3 liters of water.\nAfter spilling one liter, there are 9 liters of orange drink left, so it has (2/3) * 9 = 6 liters of water.\nThe pineapple drink is three-fifths water, so it has (3/5) * 15 = 9 liters of water.\nThe total amount of water is 6 + 9 = 15 liters.\n#### 15\n",
+    " Samantha is 31, and Raymond was born 6 years before her, so Raymond is 31 - 6 = 25 years old.\nRaymond had a son at the age of 23, so Raymond's son is 25 - 23 = 2 years old.\nTherefore, Raymond's son was born 2 years ago.\n#### 2\n",
+    " The first 3 customers buy 3 DVDs.\nThe next 2 customers buy 2*2 = 4 DVDs.\nThe last 3 customers buy 0 DVDs.\nBilly sold 3 + 4 + 0 = 7 DVDs.\n#### 7\n",
+    " The candle burns from 1:00 PM to 5:00 PM, which is a total of 4 hours.\nSince the candle melts by 2 centimeters every hour, after 4 hours it will be 4 * 2 = 8 centimeters shorter.\n#### 8\n",
+    " Let the original price be x.\nThen x - 0.25x = 19.50\n0.75x = 19.50\nx = 19.50 / 0.75 = 26\n#### 26\n",
+    " The cost of the chicken meal is $12.\nThe cost of the milk is 5 * $3 = $15.\nThe cost of the apples is 4 * $1.50 = $6.\nThe total cost of the chicken meal, milk, and apples is $12 + $15 + $6 = $33.\nThe amount Marie spent on pizza is $50 - $33 = $17.\nThe number of boxes of pizza Marie ordered is $17 / $8.50 = 2.\n#### 2\n",
+    " Mishka spent 3 * $16.50 = $49.50 on shorts.\nMishka spent 3 * $22.50 = $67.50 on pants.\nMishka spent 3 * $42 = $126 on shoes.\nMishka spent $49.50 + $67.50 + $126 = $243 on all the clothing items.\n#### 243\n",
+    " Cynthia eats 1 serving of ice cream per night, so after 60 days, she will have eaten 60 servings of ice cream.\nEach carton has 15 servings, so she will need 60/15 = 4 cartons of ice cream.\nEach carton costs $4.00, so she will spend 4 * $4.00 = $16.00 on ice cream.\n#### 16\n",
+    " Henry's second stop was 15 miles before the end of the trip, so he stopped at 60 - 15 = 45 miles.\nHe first stopped after 20 miles, so he traveled 45 - 20 = 25 miles between his first and second stops.\n#### 25\n",
+    " The two pairs of heels cost $33 + $66 = $99.\nThe boots cost $99 + $5 = $104.\n#### 104\n",
+    " Let Darrell's age be 7x and Allen's age be 11x.\n7x+11x=162\n18x=162\nx=9\nAllen's age is 11*9=99.\nAllen's age 10 years from now is 99+10=109.\n#### 109\n",
+    " The second friend says 20 more than half the first one, so they say (80/2) + 20 = 40 + 20 = 60.\nThe third friend says 25% more than the first one, so they say 80 + (0.25 * 80) = 80 + 20 = 100.\nThe average guess is (80 + 60 + 100) / 3 = 240 / 3 = 80.\n#### 80\n",
+    " John spends 10 dogs * .5 hours/dog = 5 hours a day taking care of dogs.\nHe spends 5 hours/day * 7 days/week = 35 hours a week taking care of dogs.\n#### 35\n",
+    " Let x = the number of silver coins.\nThen x + 30 = the number of gold coins.\nx + x + 30 = 110\n2x + 30 = 110\n2x = 80\nx = 40\nThe number of gold coins is 40 + 30 = 70.\n#### 70\n",
+    " Half of Raymond's jewels is 40/2 = 20 jewels.\nAaron has 5 more jewels than that, so Aaron has 20 + 5 = 25 jewels.\nSiobhan has 2 fewer jewels than Aaron, so Siobhan has 25 - 2 = 23 jewels.\n#### 23\n",
+    " 25% of 4 is 4 * 0.25 = 1.\nSo in the second 20 minutes, he scored 4 + 1 = 5 points.\nIn total, he scored 4 + 5 = 9 points.\n#### 9\n",
+    " Terry eats 2 yogurts a day, so over 30 days he eats 2 * 30 = 60 yogurts.\nSince 4 yogurts cost $5.00, then 1 yogurt costs $5.00 / 4 = $1.25.\nSo 60 yogurts cost 60 * $1.25 = $75.00.\n#### 75\n",
+    " John sold 13 lego sets for $15 each, so he made 13 * $15 = $195.\nHe bought 8 video games for $20 each, so he spent 8 * $20 = $160.\nHe had $5 left, so he had $195 - $160 - $5 = $30 left.\nSince he sold all his lego sets, he has 0 lego sets left.\n#### 0\n",
+    " John runs 60 miles a week and runs 3 days a week, so he runs 60/3 = 20 miles per day.\nHe runs 3 hours the first day, so he runs 20 miles in 3 hours.\nHis speed is 20 miles / 3 hours = 6.666666666666667 miles per hour.\n#### 6.67\n",
+    " Dana can skip at 3 miles per hour, so she can run at 3 * 2 = 6 miles per hour.\nShe can walk at 6 / 4 = 1.5 miles per hour.\nShe spends one-third of the time running, so she runs for 6 * (1/3) = 2 hours.\nShe spends two-thirds of the time walking, so she walks for 6 * (2/3) = 4 hours.\nIn 2 hours, she runs 6 * 2 = 12 miles.\nIn 4 hours, she walks 1.5 * 4 = 6 miles.\nIn total, she travels 12 + 6 = 18 miles.\n#### 18\n",
+    " Ben's iPhone is 2 * 1 = 2 years old.\nBrandon's iPhone is 4 * 2 = 8 years old.\n#### 8\n",
+    " When holding the gemstone, Polly can throw the javelin 400 * 3 = 1200 feet.\nPolly can stand 1200 - 1000 = 200 feet outside of the dragon's flames and still hit the dragon.\n#### 200\n",
+    " There were 5 pies * 8 pieces/pie = 40 pieces of pie.\nThe guests took 40 - 14 = 26 pieces of pie.\n#### 26\n",
+    " The bag has 5 servings, and each serving has 250 calories, so the bag has 5 * 250 = 1250 calories.\nJanet's daily calorie target is 2000, and she has already consumed 1800 calories, so she can eat 2000 - 1800 = 200 more calories.\nEach serving has 250 calories, so she can eat 200 / 250 = 0.8 servings.\nThe bag is 300g, and it has 5 servings, so each serving is 300 / 5 = 60g.\nJanet can eat 0.8 * 60 = 48g.\n#### 48\n",
+    " Charlie can make 20 candles / 10 candles/pound = 2 pounds of beeswax\nThe cost of supplies is 2 pounds * $10.00/pound = $20.00\nThe revenue from selling 20 candles is 20 candles * $2.00/candle = $40.00\nThe net profit is $40.00 - $20.00 = $20.00\n#### 20\n",
+    " On Tuesday, she wrote 5 * (2/5) = 2 articles.\nOn Wednesday, she wrote 2 * 2 = 4 articles.\nIn total, she wrote 5 + 2 + 4 = 11 articles.\nShe spent 11 * 4 = 44 hours writing articles.\n#### 44\n",
+    " Candice used 220 post-it notes at work.\nShe started with 80 post-it notes and ended with 23 post-it notes.\nSo she used 80 - 23 = 57 post-it notes.\nShe used 220 post-it notes at work, so she purchased 220 - 57 = 163 post-it notes.\n#### 163\n",
+    " John bought $200/$40 = 5 blue ties.\nHe bought 2 * 5 = 10 red ties.\nThe red ties cost $40 * 1.5 = $60 each.\nHe spent 10 * $60 = $600 on red ties.\nHe spent $200 + $600 = $800 on ties.\n#### 800\n",
+    " There are 12 inches in a foot, so the wire was 4*12=48 inches long.\nThe wire was cut into pieces 6 inches long, so she obtained 48/6=8 pieces.\n#### 8\n",
+    " The total number of units in the building is 15 floors * 8 units/floor = 120 units.\nThe number of occupied units is (3/4) * 120 units = 90 units.\nThe number of unoccupied units is 120 units - 90 units = 30 units.\n#### 30\n",
+    " Lloyd makes 252 eggs per day.\nThere are 7 days in a week, so he makes 252*7=1764 eggs per week.\nThere are 12 eggs in a dozen, so he sells 1764/12=147 dozens of eggs per week.\nHe sells each dozen for $2, so he makes 147*2=$294 per week.\n#### 294\n",
+    " Tom travels for 3 hours.\nLet the distance be d.\nd = 10 * 3 = 30 miles.\nTime to return = distance / speed = 30 / 6 = 5 hours.\n#### 5\n",
+    " 30 comic books weigh 30 * (1/4) = 7.5 pounds.\nHe needs to remove 15 - 7.5 = 7.5 pounds of toys.\nEach toy weighs 1/2 pound, so he needs to remove 7.5 / (1/2) = 7.5 * 2 = 15 toys.\n#### 15\n",
+    " On Thursday, the mechanic earned 6 * 60 + 4 * 40 = 360 + 160 = $520.\nOn Friday, the mechanic earned 12 * 40 = $480.\nThe difference in revenue is 520 - 480 = $40.\n#### 40\n",
+    " Patchy has had 3*7 = 21 kittens.\nTrixie has had 12 kittens.\nThe Doubtfire family now has 7+21+12 = 40 kittens.\n#### 40\n",
+    " Jean starts with 30 lollipops and eats 2, so she has 30-2=28 lollipops left.\nIf she puts 2 lollipops in each bag, she can fill 28/2=14 bags.\n#### 14\n",
+    " Each time Peter goes to the movies, it costs $7 + $7 = $14.\nPeter can go to the movies 42 / 14 = 3 times.\n#### 3\n",
+    " The maximum weight the truck can carry is 5000 - 3755 = 1245 pounds.\nThe maximum number of boxes is 1245 / 15 = 83 boxes.\n#### 83\n",
+    " The 25% fee on the $40.00 bill is 0.25 * $40.00 = $10.00.\nThe total bill before delivery and tip is $40.00 + $10.00 = $50.00.\nAdding the delivery fee, the total is $50.00 + $3.00 = $53.00.\nAdding the tip, the final price is $53.00 + $4.00 = $57.00.\n#### 57\n",
+    " 6 clusters of 20 fruit each is 6 * 20 = 120 raspberries.\nThere are 120 + 67 = 187 raspberries total.\n#### 187\n"
+   ],
+   "answers": [
+    "18",
+    "3",
+    "70000",
+    "540",
+    "20",
+    "64",
+    "260",
+    "160",
+    "135",
+    "460",
+    "366",
+    "694",
+    "12",
+    "18",
+    "60",
+    "125",
+    "230",
+    "57500",
+    "7",
+    "6",
+    "15",
+    "2",
+    "7",
+    "8",
+    "26",
+    "2",
+    "243",
+    "16",
+    "25",
+    "104",
+    "109",
+    "80",
+    "35",
+    "70",
+    "23",
+    "9",
+    "75",
+    "0",
+    "6.67",
+    "18",
+    "8",
+    "200",
+    "26",
+    "48",
+    "20",
+    "44",
+    "163",
+    "800",
+    "8",
+    "30",
+    "294",
+    "5",
+    "15",
+    "40",
+    "40",
+    "14",
+    "3",
+    "83",
+    "57",
+    "187"
+   ]
+  },
+  "cached": {
+   "requests": 60,
+   "seconds": 56.93528962135315,
+   "score_strict": 0.9,
+   "score_lenient": 0.9,
+   "no_final_line": 0,
+   "ttft_p50": 95.56460380554199,
+   "ttft_p90": 139.75262641906738,
+   "ttft_p10": 80.80196380615234,
+   "ttft_mean": 107.08668231964111,
+   "ttft_ms": [
+    172.85418510437012,
+    137.45379447937012,
+    139.2831802368164,
+    129.69970703125,
+    139.51969146728516,
+    129.07099723815918,
+    139.6620273590088,
+    157.60540962219238,
+    87.20684051513672,
+    95.56460380554199,
+    89.36738967895508,
+    83.40930938720703,
+    82.34882354736328,
+    84.42044258117676,
+    87.71514892578125,
+    87.13793754577637,
+    87.42618560791016,
+    90.20543098449707,
+    89.7362232208252,
+    75.76227188110352,
+    85.69574356079102,
+    80.80196380615234,
+    82.48424530029297,
+    100.24881362915039,
+    148.70715141296387,
+    120.22781372070312,
+    139.01758193969727,
+    120.16582489013672,
+    144.78778839111328,
+    129.18663024902344,
+    129.70542907714844,
+    139.75262641906738,
+    132.13539123535156,
+    137.0394229888916,
+    145.04384994506836,
+    126.79409980773926,
+    133.27550888061523,
+    117.30694770812988,
+    129.5762062072754,
+    96.83680534362793,
+    86.41862869262695,
+    81.65287971496582,
+    80.3372859954834,
+    79.15616035461426,
+    85.89816093444824,
+    85.8771800994873,
+    89.50161933898926,
+    89.17617797851562,
+    73.21333885192871,
+    89.40839767456055,
+    80.73043823242188,
+    79.60271835327148,
+    93.19567680358887,
+    87.07284927368164,
+    88.29712867736816,
+    112.57338523864746,
+    127.59613990783691,
+    99.48897361755371,
+    109.6799373626709,
+    82.08441734313965
+   ],
+   "mean_chars": 227.4,
+   "counters": {
+    "apc_queries": 188340.0,
+    "apc_hits": 0.0,
+    "ext_queries": 188340.0,
+    "ext_hits": 180992.0,
+    "preemptions": 0.0
+   },
+   "objects_before": 699,
+   "objects_after": 727,
+   "l1_usage_ratio": 0.6815625,
+   "l1_total_gb": 100.0,
+   "l1_locked_after": {
+    "write_locked": 0,
+    "read_locked": 0,
+    "temporary": 0
+   },
+   "l1_trace": {
+    "peak_ratio": 0.6815625,
+    "min_ratio": 0.6553125,
+    "final_ratio": 0.6815625,
+    "mean_ratio": 0.6763712686567164,
+    "peak_used_gb": 68.15625,
+    "final_used_gb": 68.15625,
+    "peak_objects": 727,
+    "final_objects": 727,
+    "n_samples": 67,
+    "poll_failures": 0,
+    "samples": [
+     {
+      "t": 0.005767345428466797,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 1.012242078781128,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 2.0191447734832764,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 3.0262234210968018,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 4.032709121704102,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 5.039462327957153,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 6.046255588531494,
+      "ratio": 0.6553125,
+      "used_gb": 65.53125,
+      "objects": 699.0
+     },
+     {
+      "t": 7.054056406021118,
+      "ratio": 0.6675,
+      "used_gb": 66.75,
+      "objects": 712.0
+     },
+     {
+      "t": 8.060010433197021,
+      "ratio": 0.6675,
+      "used_gb": 66.75,
+      "objects": 712.0
+     },
+     {
+      "t": 9.06581735610962,
+      "ratio": 0.6675,
+      "used_gb": 66.75,
+      "objects": 712.0
+     },
+     {
+      "t": 10.072064399719238,
+      "ratio": 0.6675,
+      "used_gb": 66.75,
+      "objects": 712.0
+     },
+     {
+      "t": 11.077721357345581,
+      "ratio": 0.6778125,
+      "used_gb": 67.78125,
+      "objects": 723.0
+     },
+     {
+      "t": 12.083209037780762,
+      "ratio": 0.6778125,
+      "used_gb": 67.78125,
+      "objects": 723.0
+     },
+     {
+      "t": 13.088874340057373,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 14.094477415084839,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 15.100231170654297,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 16.105730295181274,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 17.11133885383606,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 18.116929054260254,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 19.12260150909424,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 20.128337621688843,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 21.134055137634277,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 22.139933109283447,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 23.14585542678833,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 24.153362035751343,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 25.180489540100098,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 26.187694787979126,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 27.19484829902649,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 28.201702117919922,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 29.208765268325806,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 30.215845108032227,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 31.22293472290039,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 32.229154109954834,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 33.23630499839783,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 34.24310064315796,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 35.25080990791321,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 36.257447719573975,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 37.26480031013489,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 38.27221727371216,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 39.27803015708923,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 40.2840530872345,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 41.28971552848816,
+      "ratio": 0.67875,
+      "used_gb": 67.875,
+      "objects": 724.0
+     },
+     {
+      "t": 42.29523038864136,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 43.30079984664917,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 44.30628752708435,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 45.31205177307129,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 46.31786632537842,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 47.32346868515015,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 48.32927417755127,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 49.339457511901855,
+      "ratio": 0.6796875,
+      "used_gb": 67.96875,
+      "objects": 725.0
+     },
+     {
+      "t": 50.34526824951172,
+      "ratio": 0.680625,
+      "used_gb": 68.0625,
+      "objects": 726.0
+     },
+     {
+      "t": 51.35127639770508,
+      "ratio": 0.680625,
+      "used_gb": 68.0625,
+      "objects": 726.0
+     },
+     {
+      "t": 52.35697269439697,
+      "ratio": 0.680625,
+      "used_gb": 68.0625,
+      "objects": 726.0
+     },
+     {
+      "t": 53.36341571807861,
+      "ratio": 0.680625,
+      "used_gb": 68.0625,
+      "objects": 726.0
+     },
+     {
+      "t": 54.369446992874146,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 55.375388622283936,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 56.38127064704895,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 57.38919758796692,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 58.39695453643799,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 59.404547929763794,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 60.412198305130005,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 61.418827295303345,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 62.42552924156189,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 63.43320441246033,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 64.43996286392212,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 65.44633769989014,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     },
+     {
+      "t": 66.45358490943909,
+      "ratio": 0.6815625,
+      "used_gb": 68.15625,
+      "objects": 727.0
+     }
+    ]
+   },
+   "eviction_cycles": 0,
+   "completions": [
+    " Janet\u2019s ducks lay 16 eggs per day.\nShe eats 3 eggs for breakfast and uses 4 eggs for muffins, so she uses 3+4=7 eggs.\nShe sells 16-7=9 eggs at the farmers' market.\nShe sells the eggs for $2 per egg, so she makes 9*2=$18 per day.\n#### 18\n",
+    " The robe takes 2 bolts of blue fiber and half that much white fiber, which is 2/2 = 1 bolt of white fiber.\nIn total, the robe takes 2 + 1 = 3 bolts of fiber.\n#### 3\n",
+    " The house was worth $80,000 + $50,000 = $130,000 after repairs.\nThe value increased by 150% of the original price, so the increase was 1.5 * $80,000 = $120,000.\nThe new value of the house is $80,000 + $120,000 = $200,000.\nJosh's profit is $200,000 - $130,000 = $70,000.\n#### 70,000\n",
+    " He runs 3 sprints * 60 meters per sprint = 180 meters per session.\nHe runs 180 meters per session * 3 sessions per week = 540 meters per week.\n#### 540\n",
+    " Wendi needs to give her chickens a total of 3 cups/chicken * 20 chickens = 60 cups of feed per day.\nShe has already given them 15 + 25 = 40 cups of feed.\nSo she needs to give them 60 - 40 = 20 cups of feed in the final meal.\n#### 20\n",
+    " Kylar buys 16 glasses, so he buys 16/2 = 8 glasses at full price and 8 glasses at a discounted price.\nThe cost of 8 glasses at full price is 8 * $5 = $40.\nThe discounted price of a glass is $5 * 0.60 = $3.\nThe cost of 8 glasses at the discounted price is 8 * $3 = $24.\nThe total cost of the glasses is $40 + $24 = $64.\n#### 64\n",
+    " Charleston has 4 * 20 = 80 sheep.\nToulouse has 2 * 80 = 160 sheep.\nTogether, they have 20 + 80 + 160 = 260 sheep.\n#### 260\n",
+    " The file is 200 GB, and she downloads 2 GB/minute, so it would normally take 200/2 = 100 minutes.\n40% of the way through the download is 200 * 0.4 = 80 GB.\nIt takes 80/2 = 40 minutes to download 80 GB.\nThen Windows forces a restart, which takes 20 minutes.\nThen Carla has to restart the download from the beginning, which takes another 100 minutes.\nSo the total time is 40 + 20 + 100 = 160 minutes.\n#### 160\n",
+    " John drives for 3 hours at 60 mph, so he travels 3*60 = 180 miles.\nHe spends 2 hours in standstill traffic, so he travels 0 miles.\nHe spends 0.5 hours driving at 30 mph, so he travels 0.5*30 = 15 miles.\nHe spends the remaining 4 - 2 - 0.5 = 1.5 hours driving at 80 mph, so he travels 1.5*80 = 120 miles.\nIn total, John travels 180 + 15 + 120 = 315 miles.\nSince he drove 180 miles away from home, he is 315 - 180 = 135 miles from home.\n#### 135\n",
+    " Eliza worked 45-40 = 5 hours of overtime.\nHer overtime rate is 1.2 * $10 = $12 per hour.\nHer earnings for the first 40 hours are 40 * $10 = $400.\nHer earnings for the 5 hours of overtime are 5 * $12 = $60.\nHer total earnings for the week are $400 + $60 = $460.\n#### 460\n",
+    " The number of downloads in the second month was 60 * 3 = 180\nThe number of downloads in the third month was 180 * 0.7 = 126\nThe total number of downloads over the three months was 60 + 180 + 126 = 366\n#### 366\n",
+    " The cost of the donuts is 3 * 68 = $204.\nThe cost of the mini cupcakes is 2 * 80 = $160.\nThe cost of the mini cheesecakes is 6 * 55 = $330.\nThe total cost is 204 + 160 + 330 = $694.\n#### 694\n",
+    " Each year, Carlos earns 7 lemons * $1.5/lemon = $10.50 from selling lemons.\nEach year, it costs $3 to water and feed the tree.\nSo each year, Carlos earns $10.50 - $3 = $7.50.\nTo earn back the $90 planting cost, it will take $90 / $7.50/year = 12 years.\n#### 12\n",
+    " Let x be the number of vacuum cleaners Melanie started with.\nAt the green house, she sold x/3 vacuum cleaners.\nShe sold 2 more to the red house, so she sold 2 vacuum cleaners.\nThe number of vacuum cleaners left after selling to the green house and red house is x - x/3 - 2 = (2x/3) - 2.\nAt the orange house, she sold half of what was left, so she sold ((2x/3) - 2)/2 = x/3 - 1.\nThe number of vacuum cleaners left after selling to the green house, red house, and orange house is (2x/3) - 2 - (x/3 - 1) = x/3 - 1.\nWe are given that Melanie has 5 vacuum cleaners left, so x/3 - 1 = 5.\nAdding 1 to both sides gives x/3 = 6.\nMultiplying both sides by 3 gives x = 18.\n#### 18\n",
+    " 20% of 20 students is 20 * 0.20 = 4 students in contemporary dance.\nThe remaining students are 20 - 4 = 16 students.\n25% of the remaining students is 16 * 0.25 = 4 students in jazz dance.\nThe rest of the students are 16 - 4 = 12 students in hip-hop dance.\nThe percentage of students in hip-hop dance is 12 / 20 = 0.60 = 60%.\n#### 60\n",
+    " The profit from the jewelry market would be $5,000 * 0.025 = $125.\nThe profit from the electronic gadgets market would be $8,000 * 0.012 = $96.\nThe merchant would maximize profit by choosing the jewelry market, with a profit of $125.\n#### 125\n",
+    " The distance covered by each train in the two days is 80 + 150 = 230 miles.\n#### 230\n",
+    " Jill makes $20*35 = $700 per week as a teacher.\nShe makes $30*15 = $450 per week as a coach.\nShe makes $700 + $450 = $1150 per week.\nShe makes $1150*50 = $57,500 per year.\n#### 57,500\n",
+    " Claire eats 3 eggs per day.\nIn 4 weeks, she will eat 4 weeks x 7 days/week = 28 days.\nSo, she will eat 28 days x 3 eggs/day = 84 eggs.\nSince there are 12 eggs in a dozen, she will eat 84 eggs / 12 eggs/dozen = 7 dozens of eggs.\n#### 7\n",
+    " Marissa has 12 - 4 - 2 = 6 miles left to hike.\nShe has already hiked for 1 + 1 = 2 hours.\nShe wants to hike the entire trail in 12 miles / 4 miles per hour = 3 hours.\nShe has 3 - 2 = 1 hour left to hike.\nShe needs to walk the remaining 6 miles in 1 hour, so she needs to walk at a speed of 6 miles per hour.\n#### 6\n",
+    " The orange drink is two-thirds water, so it has (2/3) * 10 = 20/3 liters of water.\nAfter spilling one liter, there are 9 liters of orange drink left, so it has (2/3) * 9 = 6 liters of water.\nThe pineapple drink is three-fifths water, so it has (3/5) * 15 = 9 liters of water.\nThe total amount of water is 6 + 9 = 15 liters.\n#### 15\n",
+    " Samantha is 31, and Raymond was born 6 years before her, so Raymond is 31 - 6 = 25 years old.\nRaymond had a son at the age of 23, so Raymond's son is 25 - 23 = 2 years old.\nTherefore, Raymond's son was born 2 years ago.\n#### 2\n",
+    " The first 3 customers buy 3 DVDs.\nThe next 2 customers buy 2*2 = 4 DVDs.\nThe last 3 customers buy 0 DVDs.\nBilly sold 3 + 4 + 0 = 7 DVDs.\n#### 7\n",
+    " The candle burns from 1:00 PM to 5:00 PM, which is a total of 4 hours.\nSince the candle melts by 2 centimeters every hour, after 4 hours it will be 4 * 2 = 8 centimeters shorter.\n#### 8\n",
+    " Let the original price be x.\nThen x - 0.25x = 19.50\n0.75x = 19.50\nx = 19.50 / 0.75 = 26\n#### 26\n",
+    " The cost of the chicken meal is $12.\nThe cost of the milk is 5 * $3 = $15.\nThe cost of the apples is 4 * $1.50 = $6.\nThe total cost of the chicken meal, milk, and apples is $12 + $15 + $6 = $33.\nThe amount Marie spent on pizza is $50 - $33 = $17.\nThe number of boxes of pizza Marie ordered is $17 / $8.50 = 2.\n#### 2\n",
+    " Mishka spent 3 * $16.50 = $49.50 on shorts.\nMishka spent 3 * $22.50 = $67.50 on pants.\nMishka spent 3 * $42 = $126 on shoes.\nMishka spent $49.50 + $67.50 + $126 = $243 on all the clothing items.\n#### 243\n",
+    " Cynthia eats 1 serving of ice cream per night, so after 60 days, she will have eaten 60 servings of ice cream.\nEach carton has 15 servings, so she will need 60/15 = 4 cartons of ice cream.\nEach carton costs $4.00, so she will spend 4 * $4.00 = $16.00 on ice cream.\n#### 16\n",
+    " Henry's second stop was 15 miles before the end of the trip, so it was 60 - 15 = 45 miles from the start.\nHe first stopped after 20 miles, so he traveled 45 - 20 = 25 miles between his first and second stops.\n#### 25\n",
+    " The two pairs of heels cost $33 + $66 = $99.\nThe boots cost $99 + $5 = $104.\n#### 104\n",
+    " Let Darrell's age be 7x and Allen's age be 11x.\n7x+11x=162\n18x=162\nx=9\nAllen's age is 11*9=99.\nAllen's age 10 years from now is 99+10=109.\n#### 109\n",
+    " The second friend says 20 more than half the first one, so they say (80/2) + 20 = 40 + 20 = 60.\nThe third friend says 25% more than the first one, so they say 80 + (0.25 * 80) = 80 + 20 = 100.\nThe average guess is (80 + 60 + 100) / 3 = 240 / 3 = 80.\n#### 80\n",
+    " John spends 10 dogs * .5 hours/dog = 5 hours a day taking care of dogs.\nHe spends 5 hours/day * 7 days/week = 35 hours a week taking care of dogs.\n#### 35\n",
+    " Let x = the number of silver coins.\nThen x + 30 = the number of gold coins.\nx + (x + 30) = 110\n2x + 30 = 110\n2x = 80\nx = 40\nThe number of silver coins is 40.\nThe number of gold coins is 40 + 30 = 70.\n#### 70\n",
+    " Half of Raymond's jewels is 40/2 = 20 jewels.\nAaron has 5 more jewels than that, so Aaron has 20 + 5 = 25 jewels.\nSiobhan has 2 fewer jewels than Aaron, so Siobhan has 25 - 2 = 23 jewels.\n#### 23\n",
+    " 25% of 4 is 4 * 0.25 = 1.\nSo in the second 20 minutes, he scored 4 + 1 = 5 points.\nIn total, he scored 4 + 5 = 9 points.\n#### 9\n",
+    " Terry eats 2 yogurts a day, so over 30 days he eats 2 * 30 = 60 yogurts.\nSince 4 yogurts cost $5.00, then 1 yogurt costs $5.00 / 4 = $1.25.\nSo 60 yogurts cost 60 * $1.25 = $75.00.\n#### 75\n",
+    " John sold 13 lego sets for $15 each, so he made 13 * $15 = $195.\nHe bought 8 video games for $20 each, so he spent 8 * $20 = $160.\nHe had $5 left, so he had $195 - $160 - $5 = $30 left.\nSince he sold all his lego sets, he has 0 lego sets left.\n#### 0\n",
+    " John runs 60 miles a week and runs 3 days a week, so he runs 60/3 = 20 miles per day.\nHe runs 3 hours the first day, so he runs 20 miles in 3 hours.\nHis speed is 20/3 = 6.666666666666667 miles per hour.\nThe other two days he runs half as much time, so he runs 3/2 = 1.5 hours each day.\nHe runs 20 miles in 1.5 hours, so his speed is 20/1.5 = 13.333333333333334 miles per hour.\nThe problem states that he runs at a constant speed, so we must assume that the first day is not a special case.\nThe total time he runs is 3 + 1.5 + 1.5 = 6 hours.\nThe total distance he runs is 20 + 20 + 20 = 60 miles.\nHis speed is 60/6 = 10 miles per hour.\n#### 10\n",
+    " Dana can skip at 3 miles per hour, so she can run at 3 * 2 = 6 miles per hour.\nShe can walk at 6 / 4 = 1.5 miles per hour.\nShe spends one-third of the time running, so she runs for 6 * (1/3) = 2 hours.\nShe spends two-thirds of the time walking, so she walks for 6 * (2/3) = 4 hours.\nIn 2 hours, she runs 6 * 2 = 12 miles.\nIn 4 hours, she walks 1.5 * 4 = 6 miles.\nIn total, she travels 12 + 6 = 18 miles.\n#### 18\n",
+    " Ben's iPhone is 2 * 1 = 2 years old.\nBrandon's iPhone is 4 * 2 = 8 years old.\n#### 8\n",
+    " When holding the gemstone, Polly can throw the javelin 400 * 3 = 1200 feet.\nPolly can stand 1200 - 1000 = 200 feet outside of the dragon's flames and still hit the dragon.\n#### 200\n",
+    " There were 5 pies * 8 pieces/pie = 40 pieces of pie.\nThe guests took 40 - 14 = 26 pieces of pie.\n#### 26\n",
+    " The bag of chips has 5 servings, and each serving has 250 calories, so the bag has 5 * 250 = 1250 calories.\nJanet's daily calorie target is 2000, and she has already consumed 1800 calories, so she can eat 2000 - 1800 = 200 more calories.\nThe bag of chips has 1250 calories, and Janet can eat 200 more calories, so she can eat 200/250 = 0.8 servings.\nEach serving is 300g/5 = 60g, so she can eat 0.8 * 60 = 48g.\n#### 48\n",
+    " Charlie can make 20 candles / 10 candles/pound = 2 pounds of beeswax\nThe cost of supplies is 2 pounds * $10/pound = $20\nThe revenue from selling 20 candles is 20 candles * $2/candle = $40\nThe net profit is $40 - $20 = $20\n#### 20\n",
+    " On Tuesday, she wrote 5 * (2/5) = 2 articles.\nOn Wednesday, she wrote 2 * 2 = 4 articles.\nIn total, she wrote 5 + 2 + 4 = 11 articles.\nShe spent 11 * 4 = 44 hours writing articles.\n#### 44\n",
+    " Candice used 220 post-it notes at work, so she had 80 - 220 = -140 post-it notes.\nThis means she purchased 140 post-it notes.\n#### 140\n",
+    " John bought 200/40 = 5 blue ties.\nHe bought 2 * 5 = 10 red ties.\nThe red ties cost 40 * 1.5 = $60 each.\nHe spent 10 * 60 = $600 on red ties.\nHe spent 5 * 40 = $200 on blue ties.\nHe spent 600 + 200 = $800 on ties.\n#### 800\n",
+    " There are 12 inches in a foot, so 4 feet is 4*12=48 inches.\nTracy cut the wire into 6-inch pieces, so she obtained 48/6=8 pieces.\n#### 8\n",
+    " The total number of units in the building is 15 floors * 8 units/floor = 120 units.\nThe number of occupied units is (3/4) * 120 units = 90 units.\nThe number of unoccupied units is 120 units - 90 units = 30 units.\n#### 30\n",
+    " Lloyd makes 252 eggs per day.\nThere are 7 days in a week, so he makes 252*7=1764 eggs per week.\nThere are 12 eggs in a dozen, so he sells 1764/12=147 dozens of eggs per week.\nHe sells each dozen for $2, so he makes 147*2=$294 per week.\n#### 294\n",
+    " Tom travels for 3 hours.\nLet the distance be d.\nd = 10 * 3 = 30 miles.\nTime to return = distance / speed = 30 / 6 = 5 hours.\n#### 5\n",
+    " 30 comic books weigh 30 * (1/4) = 7.5 pounds.\nHe needs to remove 15 - 7.5 = 7.5 pounds of toys.\nEach toy weighs 1/2 pound, so he needs to remove 7.5 / (1/2) = 7.5 * 2 = 15 toys.\n#### 15\n",
+    " On Thursday, the mechanic earned 6 * 60 + 4 * 40 = 360 + 160 = $520.\nOn Friday, the mechanic earned 12 * 40 = $480.\nThe difference in revenue is 520 - 480 = $40.\n#### 40\n",
+    " Patchy has had 3*7 = 21 kittens.\nTrixie has had 12 kittens.\nThe Doubtfire family now has 7+21+12 = 40 kittens.\n#### 40\n",
+    " Jean starts with 30 lollipops and eats 2, so she has 30-2=28 lollipops left.\nIf she puts 2 lollipops in each bag, she can fill 28/2=14 bags.\n#### 14\n",
+    " Each time Peter goes to the movies, it costs $7 + $7 = $14.\nPeter can go to the movies 42 / 14 = 3 times.\n#### 3\n",
+    " The maximum weight the truck can carry is 5000 - 3755 = 1245 pounds.\nThe maximum number of boxes is 1245 / 15 = 83 boxes.\n#### 83\n",
+    " The 25% fee on the $40.00 bill is 0.25 * $40.00 = $10.00.\nThe total bill before delivery and tip is $40.00 + $10.00 = $50.00.\nAfter adding the delivery fee, the total is $50.00 + $3.00 = $53.00.\nAfter adding the tip, the final price is $53.00 + $4.00 = $57.00.\n#### 57\n",
+    " 6 clusters of 20 fruit each is 6 * 20 = 120 raspberries.\nThere are 120 + 67 = 187 raspberries total.\n#### 187\n"
+   ],
+   "answers": [
+    "18",
+    "3",
+    "70000",
+    "540",
+    "20",
+    "64",
+    "260",
+    "160",
+    "135",
+    "460",
+    "366",
+    "694",
+    "12",
+    "18",
+    "60",
+    "125",
+    "230",
+    "57500",
+    "7",
+    "6",
+    "15",
+    "2",
+    "7",
+    "8",
+    "26",
+    "2",
+    "243",
+    "16",
+    "25",
+    "104",
+    "109",
+    "80",
+    "35",
+    "70",
+    "23",
+    "9",
+    "75",
+    "0",
+    "10",
+    "18",
+    "8",
+    "200",
+    "26",
+    "48",
+    "20",
+    "44",
+    "140",
+    "800",
+    "8",
+    "30",
+    "294",
+    "5",
+    "15",
+    "40",
+    "40",
+    "14",
+    "3",
+    "83",
+    "57",
+    "187"
+   ]
+  }
+ },
+ "rc_engine": 0,
+ "rc_server": -2,
+ "eviction": {
+  "policy": "LRU",
+  "trigger_watermark": 0.8,
+  "eviction_ratio": 0.2
+ },
+ "mode_lines": [
+  "(EngineCore pid=871625) \u001b[32;20m[2026-08-17 01:42:36,398] LMCache INFO:\u001b[0m lazy offload enabled with EVICTION_AWARE policy: LazyOffloadPolicyConfig(horizon_steps=2.5, min_prefix_tokens=0, max_drain_p"
+ ],
+ "ledger": {
+  "admitted": 95,
+  "emitted": 90,
+  "dropped_evicted": 0,
+  "rejected_short_prefix": 0,
+  "rejected_unhashed": 0,
+  "rejected_prefix_broken": 0,
+  "dropped_on_request_drop": 0,
+  "dropped_failed_store": 0,
+  "dropped_id_reuse": 0,
+  "deduplicated": 0,
+  "throttled_drains": 0,
+  "pending": 5
+ },
+ "tracebacks": [],
+ "warnings": [
+  "A_lazy_n60_c1_l100_121_vllm.log:16: (APIServer pid=870619) WARNING 08-17 01:41:13 [cuda.py:243] Forcing --disable_chunked_mm_input for models with multimodal-bidirectional attention."
+ ]
+}
