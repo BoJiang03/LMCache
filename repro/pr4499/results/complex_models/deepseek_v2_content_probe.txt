@@ -1,0 +1,34 @@
+[driver] mp-server ready after 8s
+[driver] vllm ready after 88s
+[driver] teardown done, exit codes: [0]
+[check] PASS: lazy vllm shut down within the SIGINT grace window (rc=0)
+[check] FAIL: the lazy run stored most of the four prefixes' chunks (n=15, floor=23)
+[check] PASS: no stored object is an empty buffer (empty=0)
+[check] PASS: every stored chunk has distinct bytes (unique=15, objects=15)
+[check] PASS: a counter ledger was logged (4 lines)
+[S6] ledger lines: periodic=4 final=0
+[S6] ledger: admitted=16 emitted=8 dropped_evicted=0 rejected_short_prefix=0 rejected_unhashed=0 rejected_prefix_broken=0 dropped_on_request_drop=0 dropped_failed_store=0 dropped_id_reuse=0 deduplicated=0 throttled_drains=0 pending=8
+[check] PASS: the ledger carries exactly the expected keys (missing=[], unexpected=[])
+[check] PASS: the periodic ledger line -- the one every check here reads -- was logged (4 lines)
+[check] PASS: ledger closes as an equation (admitted=16, pending=8, outcomes=8)
+[check] PASS: aggregate eviction-drop INFO lines sum to the ledger (sum=0, dropped_evicted=0)
+[check] PASS: aggregate gate-3 drop INFO lines sum to the ledger (sum=0, rejected_short_prefix=0)
+[check] PASS: eviction drops stay within this scenario's bound (dropped_evicted=0, max=2)
+[check] PASS: cache cleared between runs
+[driver] vllm ready after 46s
+[driver] teardown done, exit codes: [0]
+[check] PASS: eager vllm shut down within the SIGINT grace window (rc=0)
+[check] PASS: the eager run stored every chunk (n=31, expected=31)
+[check] PASS: greedy outputs identical across lazy/eager runs
+[check] PASS: [S6] every lazy key exists in the eager run (lazy-only=[])
+[check] PASS: [S6] every lazy chunk is under comparison (common=15, lazy=15)
+[check] PASS: [S6] stored KV bytes identical on all 15 common chunks (mismatched=0)
+[driver] teardown done, exit codes: [-2]
+[check] PASS: mp-server shut down within the SIGINT grace window (rc=-2)
+[check] FAIL: only this scenario's sub-chunk requests ended a session the server never created (warnings=0, sub-chunk requests=1)
+[check] FAIL: 3 unexpected WARNING lines in logs:
+    S6_server.log:85: [33;20m[2026-08-17 02:39:49,314] LMCache WARNING:[0m Session cmpl-80070a8dbfff0642-0-84eb5bcd has no lookup ipc key, skipping touch [3m(lookup.py:565:lmcache
+    S6_vllm.log:55: (EngineCore pid=943185) WARNING 08-17 02:39:07 [fused_moe.py:1071] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/bo
+    S6b_vllm.log:48: (EngineCore pid=945965) WARNING 08-17 02:40:25 [fused_moe.py:1071] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/bo
+[driver] S6: 20 assertions executed (min 20)
+[driver] S6: FAILURES: the lazy run stored most of the four prefixes' chunks (n=15, floor=23); only this scenario's sub-chunk requests ended a session the server never created (warnings=0, sub-chunk requests=1); 3 unexpected WARNING lines in logs
