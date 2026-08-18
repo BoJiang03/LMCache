@@ -1,0 +1,774 @@
+{
+  "config": "fifo",
+  "tag": "L_fifo_h3c11_451",
+  "rep": 451,
+  "model": "Qwen/Qwen3-8B",
+  "hot_documents": 3,
+  "cold_documents": 11,
+  "document_tokens": 20000,
+  "query_requests": 120,
+  "hot_run_length": 3,
+  "inflight": 2,
+  "output_len": 32,
+  "pool_blocks": 9102,
+  "l1_gb": 40,
+  "pool_gib": 19.99951171875,
+  "hot_gib": 8.23974609375,
+  "cold_gib": 30.21240234375,
+  "prompt_tokens": 20001,
+  "phases": {
+    "warmup": {
+      "requests": 14,
+      "seconds": 4.877925395965576,
+      "ttft_ms": [
+        513.6699676513672,
+        716.6032791137695,
+        388.19003105163574,
+        580.4073810577393,
+        382.0035457611084,
+        574.7928619384766,
+        383.9612007141113,
+        575.836181640625,
+        391.8459415435791,
+        582.0634365081787,
+        384.84978675842285,
+        576.8294334411621,
+        384.31262969970703,
+        577.2688388824463
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ],
+      "all": {
+        "n": 14,
+        "mean_ms": 500.90246541159496,
+        "p50_ms": 544.2314147949219,
+        "p90_ms": 582.0634365081787,
+        "max_ms": 716.6032791137695
+      },
+      "hot": {
+        "n": 3,
+        "mean_ms": 539.4877592722574,
+        "p50_ms": 513.6699676513672,
+        "p90_ms": 716.6032791137695,
+        "max_ms": 716.6032791137695
+      },
+      "cold": {
+        "n": 11,
+        "mean_ms": 490.37920344959605,
+        "p50_ms": 574.7928619384766,
+        "p90_ms": 580.4073810577393,
+        "max_ms": 582.0634365081787
+      },
+      "counters": {
+        "apc_queries": 280018.0,
+        "apc_hits": 0.0,
+        "ext_queries": 280018.0,
+        "ext_hits": 0.0,
+        "preemptions": 0.0
+      },
+      "objects_before": 0,
+      "objects_after": 0,
+      "l1_usage_ratio": 0.0,
+      "l1_used_gb": 0.0,
+      "l1_trace": {
+        "peak_ratio": 0.0,
+        "min_ratio": 0.0,
+        "final_ratio": 0.0,
+        "mean_ratio": 0.0,
+        "peak_used_gb": 0.0,
+        "final_used_gb": 0.0,
+        "peak_objects": 0,
+        "final_objects": 0,
+        "n_samples": 20,
+        "poll_failures": 0,
+        "samples": [
+          {
+            "t": 0.006734371185302734,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 1.0109083652496338,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 2.0153563022613525,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 3.0201454162597656,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 4.024568796157837,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 5.029077053070068,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 6.034102916717529,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 7.039808750152588,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 8.045847415924072,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 9.051645040512085,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 10.057231664657593,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 11.063095331192017,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 12.070014476776123,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 13.075794458389282,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 14.081360340118408,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 15.086932897567749,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 16.092273712158203,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 17.097588062286377,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 18.10347294807434,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 19.10929560661316,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          }
+        ]
+      },
+      "eviction_cycles": 0,
+      "ledger": {}
+    },
+    "query": {
+      "requests": 120,
+      "seconds": 21.521782875061035,
+      "ttft_ms": [
+        479.5188903808594,
+        675.2383708953857,
+        394.7441577911377,
+        585.5956077575684,
+        95.5803394317627,
+        148.1497287750244,
+        100.25215148925781,
+        366.83201789855957,
+        119.41766738891602,
+        128.92818450927734,
+        118.67046356201172,
+        380.94496726989746,
+        113.85154724121094,
+        125.88286399841309,
+        99.02477264404297,
+        361.9081974029541,
+        103.95479202270508,
+        114.08138275146484,
+        98.01888465881348,
+        358.64949226379395,
+        104.61211204528809,
+        121.56367301940918,
+        101.95302963256836,
+        365.9334182739258,
+        105.79967498779297,
+        114.49551582336426,
+        114.14051055908203,
+        378.1886100769043,
+        107.17630386352539,
+        116.28007888793945,
+        101.10640525817871,
+        360.4307174682617,
+        105.98158836364746,
+        112.46013641357422,
+        100.01301765441895,
+        361.79637908935547,
+        108.35981369018555,
+        117.17653274536133,
+        112.30993270874023,
+        372.0552921295166,
+        109.52973365783691,
+        121.5977668762207,
+        103.39498519897461,
+        364.849328994751,
+        108.4287166595459,
+        119.05026435852051,
+        105.70120811462402,
+        370.3150749206543,
+        107.55395889282227,
+        116.7604923248291,
+        103.45625877380371,
+        368.87502670288086,
+        107.55252838134766,
+        116.67943000793457,
+        100.00824928283691,
+        372.14064598083496,
+        107.06233978271484,
+        112.59269714355469,
+        125.50568580627441,
+        393.89920234680176,
+        112.19596862792969,
+        119.71139907836914,
+        112.78319358825684,
+        379.99558448791504,
+        112.84971237182617,
+        119.18926239013672,
+        98.87933731079102,
+        360.7497215270996,
+        103.51824760437012,
+        115.62824249267578,
+        101.03344917297363,
+        361.480712890625,
+        116.55259132385254,
+        124.17745590209961,
+        111.57727241516113,
+        373.5842704772949,
+        107.27047920227051,
+        113.16776275634766,
+        100.15583038330078,
+        360.9037399291992,
+        104.94875907897949,
+        117.30313301086426,
+        113.59953880310059,
+        374.07994270324707,
+        104.15530204772949,
+        116.48726463317871,
+        108.77776145935059,
+        372.3583221435547,
+        107.24639892578125,
+        117.1870231628418,
+        99.87568855285645,
+        361.99355125427246,
+        123.48103523254395,
+        133.96453857421875,
+        117.63763427734375,
+        375.90932846069336,
+        137.9861831665039,
+        213.92059326171875,
+        128.88216972351074,
+        366.0242557525635,
+        194.6265697479248,
+        243.60370635986328,
+        103.39593887329102,
+        351.9864082336426,
+        99.38168525695801,
+        107.94353485107422,
+        110.74495315551758,
+        367.093563079834,
+        103.83844375610352,
+        121.63853645324707,
+        103.91879081726074,
+        365.1864528656006,
+        104.8431396484375,
+        117.89917945861816,
+        100.27790069580078,
+        361.0649108886719,
+        106.59217834472656,
+        119.47512626647949,
+        97.9769229888916,
+        362.05267906188965
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2,
+        4,
+        0,
+        1,
+        2,
+        5,
+        0,
+        1,
+        2,
+        6,
+        0,
+        1,
+        2,
+        7,
+        0,
+        1,
+        2,
+        8,
+        0,
+        1,
+        2,
+        9,
+        0,
+        1,
+        2,
+        10,
+        0,
+        1,
+        2,
+        11,
+        0,
+        1,
+        2,
+        12,
+        0,
+        1,
+        2,
+        13,
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2,
+        4,
+        0,
+        1,
+        2,
+        5,
+        0,
+        1,
+        2,
+        6,
+        0,
+        1,
+        2,
+        7,
+        0,
+        1,
+        2,
+        8,
+        0,
+        1,
+        2,
+        9,
+        0,
+        1,
+        2,
+        10,
+        0,
+        1,
+        2,
+        11,
+        0,
+        1,
+        2,
+        12,
+        0,
+        1,
+        2,
+        13,
+        0,
+        1,
+        2,
+        3,
+        0,
+        1,
+        2,
+        4,
+        0,
+        1,
+        2,
+        5,
+        0,
+        1,
+        2,
+        6,
+        0,
+        1,
+        2,
+        7,
+        0,
+        1,
+        2,
+        8,
+        0,
+        1,
+        2,
+        9,
+        0,
+        1,
+        2,
+        10
+      ],
+      "all": {
+        "n": 120,
+        "mean_ms": 190.25661746660867,
+        "p50_ms": 116.71996116638184,
+        "p90_ms": 372.3583221435547,
+        "max_ms": 675.2383708953857
+      },
+      "hot": {
+        "n": 90,
+        "mean_ms": 128.59907415178088,
+        "p50_ms": 112.38503456115723,
+        "p90_ms": 133.96453857421875,
+        "max_ms": 675.2383708953857
+      },
+      "cold": {
+        "n": 30,
+        "mean_ms": 375.2292474110921,
+        "p50_ms": 366.4281368255615,
+        "p90_ms": 380.94496726989746,
+        "max_ms": 585.5956077575684
+      },
+      "counters": {
+        "apc_queries": 2400129.0,
+        "apc_hits": 1700000.0,
+        "ext_queries": 700129.0,
+        "ext_hits": 39936.0,
+        "preemptions": 0.0
+      },
+      "objects_before": 0,
+      "objects_after": 936,
+      "l1_usage_ratio": 0.2056640625,
+      "l1_used_gb": 8.2265625,
+      "l1_trace": {
+        "peak_ratio": 0.2056640625,
+        "min_ratio": 0.0,
+        "final_ratio": 0.2056640625,
+        "mean_ratio": 0.10561127533783785,
+        "peak_used_gb": 8.2265625,
+        "final_used_gb": 8.2265625,
+        "peak_objects": 936,
+        "final_objects": 936,
+        "n_samples": 37,
+        "poll_failures": 0,
+        "samples": [
+          {
+            "t": 0.010350465774536133,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 1.0148580074310303,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 2.0194122791290283,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 3.023914098739624,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 4.028500556945801,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 5.032843828201294,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 6.037240982055664,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 7.041570663452148,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 8.045890092849731,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 9.05207896232605,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 10.056706666946411,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 11.061028957366943,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 12.065477132797241,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 13.069970607757568,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 14.074657201766968,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 15.079066038131714,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 16.083313703536987,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 17.08771777153015,
+            "ratio": 0.0,
+            "used_gb": 0.0,
+            "objects": 0.0
+          },
+          {
+            "t": 18.0942165851593,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 19.10519289970398,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 20.11120343208313,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 21.119537591934204,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 22.126051664352417,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 23.135071992874146,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 24.14317512512207,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 25.150171518325806,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 26.157136917114258,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 27.16440749168396,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 28.171706438064575,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 29.17994713783264,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 30.187453031539917,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 31.19468879699707,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 32.20239782333374,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 33.21006655693054,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 34.218026876449585,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 35.225303649902344,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          },
+          {
+            "t": 36.23301839828491,
+            "ratio": 0.2056640625,
+            "used_gb": 8.2265625,
+            "objects": 936.0
+          }
+        ]
+      },
+      "eviction_cycles": 0,
+      "ledger": {}
+    }
+  },
+  "rc_engine": 0,
+  "rc_server": -2,
+  "mode_lines": [
+    "(EngineCore pid=2326750) \u001b[32;20m[2026-08-17 18:12:52,187] LMCache INFO:\u001b[0m lazy offload enabled with FIFO policy, offload threshold: 100 \u001b[3m(fifo.py:27:lmcache.integration.vllm.lazy_offload_policy."
+  ],
+  "ledger": {},
+  "ledger_lines": 0,
+  "tracebacks": [],
+  "warnings": [
+    "L_fifo_h3c11_451_vllm.log:57: (Worker_TP0 pid=2327008) WARNING 08-17 18:12:29 [allreduce_rms_fusion.py:930] Flashinfer is not installed or comm module not found, skipping allreduce fusion pa",
+    "L_fifo_h3c11_451_vllm.log:58: (Worker_TP3 pid=2327011) WARNING 08-17 18:12:29 [allreduce_rms_fusion.py:930] Flashinfer is not installed or comm module not found, skipping allreduce fusion pa",
+    "L_fifo_h3c11_451_vllm.log:59: (Worker_TP1 pid=2327009) WARNING 08-17 18:12:30 [allreduce_rms_fusion.py:930] Flashinfer is not installed or comm module not found, skipping allreduce fusion pa",
+    "L_fifo_h3c11_451_vllm.log:60: (Worker_TP2 pid=2327010) WARNING 08-17 18:12:30 [allreduce_rms_fusion.py:930] Flashinfer is not installed or comm module not found, skipping allreduce fusion pa",
+    "L_fifo_h3c11_451_vllm.log:401: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,784] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-930863200d7d4f90-0-a9bedb15,",
+    "L_fifo_h3c11_451_vllm.log:402: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,785] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-9f3e8cae572c1f7e-0-99487532,",
+    "L_fifo_h3c11_451_vllm.log:403: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,785] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-aeb0fb5eb17bc36a-0-955d8912,",
+    "L_fifo_h3c11_451_vllm.log:404: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,785] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-b3001a785bf582da-0-8bfc6b71,",
+    "L_fifo_h3c11_451_vllm.log:405: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,785] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-adc5d8d6b7e6f6a3-0-a601943d,",
+    "L_fifo_h3c11_451_vllm.log:406: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,786] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-8186703fb8b1ac76-0-8f44038c,",
+    "L_fifo_h3c11_451_vllm.log:407: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,786] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-a8e5bbe896a9707c-0-be941900,",
+    "L_fifo_h3c11_451_vllm.log:408: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,786] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-9aa6771834457277-0-b0676c98,",
+    "L_fifo_h3c11_451_vllm.log:409: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,786] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-b79538dc69ba163c-0-85ffca63,",
+    "L_fifo_h3c11_451_vllm.log:410: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:35,786] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-b75b80719bb6ae2d-0-9082a5d6,",
+    "L_fifo_h3c11_451_vllm.log:421: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:37,641] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-bf00b295a1614d3f-0-985be82c,",
+    "L_fifo_h3c11_451_vllm.log:422: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:37,641] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-9d027a4ac78fa1aa-0-989029da,",
+    "L_fifo_h3c11_451_vllm.log:423: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:37,641] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-ad22650bd81d5a43-0-8fcd5bbb,",
+    "L_fifo_h3c11_451_vllm.log:424: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:37,642] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-ab99bf91521efb3f-0-84878f2a,",
+    "L_fifo_h3c11_451_vllm.log:425: (EngineCore pid=2326750) \u001b[33;20m[2026-08-17 18:13:37,643] LMCache WARNING:\u001b[0m Block hashes missing or mismatched for request cmpl-b178586b6d89a805-0-af6f576b,"
+  ],
+  "tensor_parallel_size": 4,
+  "cuda_visible_devices": "2,3,4,6"
+}

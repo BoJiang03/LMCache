@@ -1,0 +1,8 @@
+# FIFO startup and stale-snapshot evidence
+A_fifo_n120_l68_500: lazy offload enabled with FIFO policy, offload threshold: 100 stale_snapshot_warnings=140
+L_fifo_h3c11_500: lazy offload enabled with FIFO policy, offload threshold: 100 stale_snapshot_warnings=15
+L_fifo_h3c11_501: lazy offload enabled with FIFO policy, offload threshold: 100 stale_snapshot_warnings=15
+L_fifo10_h3c11_510: lazy offload enabled with FIFO policy, offload threshold: 10 stale_snapshot_warnings=17
+L_fifo10_h3c11_511: lazy offload enabled with FIFO policy, offload threshold: 10 stale_snapshot_warnings=14
+L_fifo_h3c11_450: lazy offload enabled with FIFO policy, offload threshold: 100 stale_snapshot_warnings=15
+L_fifo_h3c11_451: lazy offload enabled with FIFO policy, offload threshold: 100 stale_snapshot_warnings=15
