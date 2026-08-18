@@ -65,9 +65,9 @@ reported H200, eager took approximately 41--43 seconds with 14--15 L1 eviction
 cycles; eviction-aware took approximately 27--31 seconds with 3--6 cycles.
 
 For a shorter functional run, set `REPETITIONS=1`. It verifies behavior but is
-not enough to support a stable timing comparison. The same script supports TP=2
-by setting `SMOKE_GPU=0,1 SMOKE_TP=2`; see
-[`TP2.md`](TP2.md) for the retained two-GPU validation.
+not enough to support a stable timing comparison. The same script supports
+multi-GPU runs through `SMOKE_GPU` and `SMOKE_TP`; see the retained
+[`TP2.md`](TP2.md) and [`TP4.md`](TP4.md) validations.
 
 ## 2. GSM8K retrieval correctness
 

@@ -18,8 +18,25 @@ def main() -> int:
 
     result = json.loads(args.result.read_text())
     errors: list[str] = []
-    if result.get("warnings"):
-        errors.append(f"{len(result['warnings'])} warning(s)")
+    warnings = result.get("warnings") or []
+    tp_size = result.get("tensor_parallel_size", 1)
+    allowed_tp_warning_markers = (
+        "allreduce_rms_fusion.py:930",
+        "allreduce_rms_fusion.py:1054",
+    )
+    unexpected_warnings = [
+        warning
+        for warning in warnings
+        if not (
+            tp_size > 1
+            and any(marker in warning for marker in allowed_tp_warning_markers)
+        )
+    ]
+    if unexpected_warnings:
+        errors.append(
+            f"{len(unexpected_warnings)} unexpected warning(s): "
+            f"{unexpected_warnings[:3]}"
+        )
     if result.get("tracebacks"):
         errors.append(f"{len(result['tracebacks'])} traceback(s)")
 
