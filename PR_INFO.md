@@ -102,6 +102,14 @@ lifetime. A tuned 10/10 FIFO reduced median time to 33.1 seconds but still had
 lower coverage (0.715) than eviction-aware (0.933). At TP=4, eviction-aware was
 11.9% faster than default FIFO with coverage 0.948 versus 0.725.
 
+The trade-off is foreground interference: at TP=1, hot TTFT p50 was 130ms for
+eager/default FIFO, 157ms for tuned FIFO, and 160ms for eviction-aware; at TP=4
+it was 118ms, 114ms, and 161ms, respectively. Default FIFO keeps hot latency low
+because it performs almost no useful lower-tier work. Eviction-aware overlaps
+real cold retrieval/drain work with adjacent hot requests, raising hot p50 while
+cutting cold p50 from 785ms to 270ms at TP=1 and 369ms to 204ms versus FIFO at
+TP=4.
+
 ### GSM8K correctness
 
 The correctness workload runs 120 questions twice (cold then cached),
