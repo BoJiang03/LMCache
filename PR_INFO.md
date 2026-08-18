@@ -138,9 +138,10 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
 - A supplemental architecture matrix covers Gemma 3 12B hybrid attention and
   DeepSeek V2 Lite MLA/MoE. Two-run hot/cold medians improved by 33.1% and
   13.9%, respectively; byte-level eager/lazy KV comparisons also matched.
-- TP=2 validation registered both worker adapters and GPU caches. GSM8K cached
-  score/coverage matched eager, and the two-run hot/cold median improved by
-  24.3% with no failed store or request-drop loss.
+- TP=2 and TP=4 validation registered every worker adapter and GPU cache.
+  GSM8K cached score/coverage matched eager at both sizes; two-run hot/cold
+  medians improved by 24.3% and 18.4% with no failed store or request-drop
+  loss.
 
 ## Reproduction
 
@@ -153,6 +154,7 @@ one-off experiment infrastructure.
 - Raw JSON from the reported runs is included in the package.
 - Additional model matrix: [`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/47d40c49afe7e806c2f580b94427c4975de56fb6/repro/pr4499/COMPLEX_MODELS.md)
 - TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/0c7d26db0d9d7ac46b068208095c13f67726c446/repro/pr4499/TP2.md)
+- TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/bd543fe03736f0f6a629afda1803b3881d19844c/repro/pr4499/TP4.md)
 
 Exact hot/cold comparison:
 
