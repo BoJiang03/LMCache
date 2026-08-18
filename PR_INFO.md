@@ -95,6 +95,13 @@ eviction-aware took 27--31 seconds with 3--6 cycles. The improvement comes from
 not writing the GPU-resident hot set into L1, preserving capacity for cold
 prefixes that actually need retrieval.
 
+For comparison, legacy FIFO with its default `threshold=100/select_count=10`
+took 41.9--42.0 seconds and left total coverage at 0.725. Snapshot validation
+rejected 15 stale request batches per run after FIFO waited past their GPU block
+lifetime. A tuned 10/10 FIFO reduced median time to 33.1 seconds but still had
+lower coverage (0.715) than eviction-aware (0.933). At TP=4, eviction-aware was
+11.9% faster than default FIFO with coverage 0.948 versus 0.725.
+
 ### GSM8K correctness
 
 The correctness workload runs 120 questions twice (cold then cached),
@@ -142,6 +149,9 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
   GSM8K cached score/coverage matched eager at both sizes; two-run hot/cold
   medians improved by 24.3% and 18.4% with no failed store or request-drop
   loss.
+- Eager/default-FIFO/tuned-FIFO/eviction-aware A/B confirms that FIFO's request
+  count is not a proxy for GPU block lifetime: default FIFO produced no usable
+  GSM8K stores, while eviction-aware remained faster at TP=1 and TP=4.
 
 ## Reproduction
 
@@ -155,6 +165,7 @@ one-off experiment infrastructure.
 - Additional model matrix: [`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/47d40c49afe7e806c2f580b94427c4975de56fb6/repro/pr4499/COMPLEX_MODELS.md)
 - TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/0c7d26db0d9d7ac46b068208095c13f67726c446/repro/pr4499/TP2.md)
 - TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/bd543fe03736f0f6a629afda1803b3881d19844c/repro/pr4499/TP4.md)
+- Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c28dd7761239848fde601e39d6e6cd81c0295377/repro/pr4499/POLICY_COMPARISON.md)
 
 Exact hot/cold comparison:
 
