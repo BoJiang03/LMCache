@@ -128,6 +128,28 @@ versus 0.001 for eager and reduced returning-session E2E p50 by 28% in both
 orders. Benefits declined as the working set exceeded L1, and a 23 GiB set that
 fit comfortably showed no E2E p50 improvement.
 
+## 5. Agentic session replay
+
+[`AGENTIC_WORKLOAD.md`](AGENTIC_WORKLOAD.md) replays real SWE-agent
+trajectories as growing-prefix agent sessions at TP=4, sweeping the cohort
+from 8 to 48 concurrent sessions (10.8 to 69.9 GiB of distinct KV) against
+the same 20 GiB GPU pool and 40 GiB L1 as the other workloads. Two
+repetitions per point with reversed policy order, plus a decision-loop
+attribution set and a drain-budget follow-up.
+
+```bash
+source repro/pr4499/agentic/env.sh   # see agentic/README.md for the variables
+AGENTIC_SWEEP_SIZES=8,16,24,32,48 AGENTIC_SWEEP_REP=0 \
+python repro/pr4499/agentic/run_agentic_sweep.py
+```
+
+It reproduces the capacity result in a third workload shape -- coverage
+0.598--0.657 versus eager's 0.385 at the largest working set, with 16 L1
+eviction cycles against 39 -- and isolates a per-scheduler-step cost that
+scales with the pending queue and is removed by lowering
+`lazy_offload_max_drain_per_step`. Raw per-run JSON is under
+[`results/agentic/`](results/agentic/).
+
 ## Reading results
 
 Treat a run as invalid if any of these guards fail:
