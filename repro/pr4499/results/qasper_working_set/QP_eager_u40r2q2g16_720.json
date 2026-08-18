@@ -1,0 +1,19 @@
+{
+  "tag": "QP_eager_u40r2q2g16_720",
+  "config": "eager",
+  "users": 40,
+  "qps": 2,
+  "revisit_gap": 16,
+  "duration": 43,
+  "rc": 0,
+  "elapsed": 45.85028266906738,
+  "delta": {
+    "apc_queries": 819190.0,
+    "apc_hits": 944.0,
+    "ext_queries": 818246.0,
+    "ext_hits": 0.0,
+    "preemptions": 0.0
+  },
+  "csv": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_eager_u40r2q2g16_720.csv",
+  "bench_log": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_eager_u40r2q2g16_720.bench.log"
+}

@@ -74,8 +74,9 @@ current eviction-only behavior.
 
 ## Performance
 
-All reported runs used Qwen3-8B on one NVIDIA H200 with the LMCache MP connector
-and CPU L1.
+Reported TP=1 runs used one NVIDIA H200; tensor-parallel runs used the
+corresponding number of H200 GPUs. All runs used the LMCache MP connector and
+CPU L1.
 
 ### Hot/cold long documents
 
@@ -111,6 +112,31 @@ unconstrained 64 GiB L1 measured 136ms. The 161ms result requires concurrent
 cold retrieval/drain work under the original 40 GiB L1 pressure; non-adjacent
 hot requests remain at baseline. That interference cuts cold p50 from 369ms to
 204ms versus FIFO and still reduces total wall time by 18.4% versus eager.
+
+### Real long-context paper QA
+
+A supplemental TP=4 sweep used the original AllenAI QASPER v0.3 data: each
+session sends a real 8K--16K-token research paper and question, then returns 16
+seconds later with a human-written follow-up question. The fixed workload used
+QPS 2, 20 GiB GPU KV, 40 GiB L1, and two repetitions per point with policy
+order reversed.
+
+| distinct KV working set | eager coverage | eviction-aware coverage | returning E2E p50 improvement | returning E2E p90 improvement |
+| ---: | ---: | ---: | ---: | ---: |
+| 23.0 GiB | 0.492 | 0.492 | -7.4% to -5.3% | 1.6%--6.4% |
+| 34.6 GiB | 0.001 | 0.461 | 28.2%--28.3% | 13.6%--14.3% |
+| 45.5 GiB | 0.001 | 0.200--0.268 | 14.3%--20.9% | 11.2%--14.9% |
+| 55.7 GiB | 0.001 | 0.152--0.172 | 12.5%--15.8% | 5.9%--16.3% |
+| 67.0 GiB | 0.001 | 0.057--0.119 | 5.6%--7.3% | 7.0%--9.1% |
+
+The operating envelope is explicit: there is no E2E p50 win when both policies
+fit comfortably in L1; the largest gain occurs when the unique reusable set is
+near L1 capacity but eager's repeated incremental snapshots churn it. Benefits
+decline as the reusable set grows far beyond L1. Returning TTFT p90 is less
+stable than E2E because lower-tier work can overlap foreground execution. A
+separate 4.3K-token ShareGPT multi-round trial similarly raised coverage without
+improving typical latency, confirming that short TP=4 recomputation can already
+be cheaper than retrieval.
 
 ### GSM8K correctness
 
@@ -162,6 +188,11 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
 - Eager/default-FIFO/tuned-FIFO/eviction-aware A/B confirms that FIFO's request
   count is not a proxy for GPU block lifetime: default FIFO produced no usable
   GSM8K stores, while eviction-aware remained faster at TP=1 and TP=4.
+- A real QASPER TP=4 working-set sweep completed 20 fixed-cohort runs with
+  reversed policy order. It reproduced a 28% returning-session E2E p50 gain
+  near L1 capacity and bounded the no-gain and over-capacity regimes. The MP
+  server emitted a mode-independent missing-touch-key warning, so these
+  supplemental runs are not described as warning-free.
 
 ## Reproduction
 
@@ -177,6 +208,7 @@ one-off experiment infrastructure.
 - TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/bd543fe03736f0f6a629afda1803b3881d19844c/repro/pr4499/TP4.md)
 - Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c28dd7761239848fde601e39d6e6cd81c0295377/repro/pr4499/POLICY_COMPARISON.md)
 - Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/8df519590b31715d2eab420e1b9ba81c435aed23/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
+- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](repro/pr4499/QASPER_WORKING_SET.md)
 
 Exact hot/cold comparison:
 

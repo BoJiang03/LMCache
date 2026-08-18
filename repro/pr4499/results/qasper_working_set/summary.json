@@ -1,0 +1,698 @@
+{
+  "schema_version": 1,
+  "production_commit": "8e4e851f91316bb7994be3d096966f0d1ef0b52b",
+  "dataset": {
+    "name": "QASPER v0.3 train",
+    "source": "https://huggingface.co/datasets/ag2435/qasper/resolve/a8de10174c66470ee25cd1a5af9f34a494b60ab6/original_data/qasper-train-dev-v0.3/qasper-train-v0.3.json",
+    "source_sha256": "9458bfe76074a8fa8d1685af02bcc73537aa6d338ad20591dfaff1946bc88bf4",
+    "selected_sha256": "12408dd492f77a43d1de800e598d4b3618af17c2528bc04e66f4fe280b7a5362",
+    "paper_token_filter": [
+      8000,
+      16000
+    ]
+  },
+  "config": {
+    "model": "Qwen/Qwen3-8B",
+    "tensor_parallel_size": 4,
+    "gpu_kv_gib": 20,
+    "l1_gib": 40,
+    "qps": 2,
+    "revisit_gap_seconds": 16,
+    "rounds": 2,
+    "max_output_tokens": 64,
+    "duration_seconds": 43,
+    "gpu_indices": [
+      1,
+      2,
+      4,
+      7
+    ]
+  },
+  "points": [
+    {
+      "users": 16,
+      "paper_tokens": 167608,
+      "estimated_kv_gib": 23.0174560546875,
+      "repetitions": [
+        {
+          "id": "720",
+          "order": [
+            "eager",
+            "lazy"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 32,
+              "aggregate_coverage": 0.4922939073382516,
+              "apc_coverage": 0.0007073865897187254,
+              "external_hit_rate": 0.4919345086229527,
+              "round2": {
+                "requests": 16,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 157.488465309143,
+                  "p90": 212.39829063415522,
+                  "p99": 224.74348545074463
+                },
+                "e2e_ms": {
+                  "p50": 233.7656021118164,
+                  "p90": 373.8754987716675,
+                  "p99": 388.5106563568115
+                }
+              },
+              "counters": {
+                "apc_queries": 339277.0,
+                "apc_hits": 240.0,
+                "ext_queries": 339037.0,
+                "ext_hits": 166784.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 32,
+              "aggregate_coverage": 0.4922939073382516,
+              "apc_coverage": 0.06706024870533517,
+              "external_hit_rate": 0.4557996998657294,
+              "round2": {
+                "requests": 16,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 148.24593067169184,
+                  "p90": 209.2773914337158,
+                  "p99": 232.02232122421262
+                },
+                "e2e_ms": {
+                  "p50": 250.99945068359375,
+                  "p90": 367.9584264755249,
+                  "p99": 408.523690700531
+                }
+              },
+              "counters": {
+                "apc_queries": 339277.0,
+                "apc_hits": 22752.0,
+                "ext_queries": 316525.0,
+                "ext_hits": 144272.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        },
+        {
+          "id": "721",
+          "order": [
+            "lazy",
+            "eager"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 32,
+              "aggregate_coverage": 0.4922939073382516,
+              "apc_coverage": 0.0007073865897187254,
+              "external_hit_rate": 0.4919345086229527,
+              "round2": {
+                "requests": 16,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 185.47987937927246,
+                  "p90": 234.7878217697143,
+                  "p99": 242.8025603294372
+                },
+                "e2e_ms": {
+                  "p50": 224.0607738494873,
+                  "p90": 393.63133907318115,
+                  "p99": 436.18454933166504
+                }
+              },
+              "counters": {
+                "apc_queries": 339277.0,
+                "apc_hits": 240.0,
+                "ext_queries": 339037.0,
+                "ext_hits": 166784.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 32,
+              "aggregate_coverage": 0.4922939073382516,
+              "apc_coverage": 0.21254609065748636,
+              "external_hit_rate": 0.3552561151348418,
+              "round2": {
+                "requests": 16,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 140.05947113037104,
+                  "p90": 219.40279006958005,
+                  "p99": 264.5241737365722
+                },
+                "e2e_ms": {
+                  "p50": 235.96811294555664,
+                  "p90": 368.2798147201538,
+                  "p99": 456.3147783279419
+                }
+              },
+              "counters": {
+                "apc_queries": 339277.0,
+                "apc_hits": 72112.0,
+                "ext_queries": 267165.0,
+                "ext_hits": 94912.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "users": 24,
+      "paper_tokens": 251963,
+      "estimated_kv_gib": 34.60185241699219,
+      "repetitions": [
+        {
+          "id": "720",
+          "order": [
+            "eager",
+            "lazy"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 48,
+              "aggregate_coverage": 0.0009422277011018176,
+              "apc_coverage": 0.0009422277011018176,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 24,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 236.69695854187006,
+                  "p90": 306.11526966094965,
+                  "p99": 316.8060803413391
+                },
+                "e2e_ms": {
+                  "p50": 349.3921756744385,
+                  "p90": 447.6295471191406,
+                  "p99": 503.99277925491333
+                }
+              },
+              "counters": {
+                "apc_queries": 509431.0,
+                "apc_hits": 480.0,
+                "ext_queries": 508951.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 48,
+              "aggregate_coverage": 0.4607807534288255,
+              "apc_coverage": 0.0009108201110650903,
+              "external_hit_rate": 0.4602891739543035,
+              "round2": {
+                "requests": 24,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 167.8211688995361,
+                  "p90": 206.0796737670898,
+                  "p99": 235.13637781143188
+                },
+                "e2e_ms": {
+                  "p50": 250.63753128051758,
+                  "p90": 386.67595386505127,
+                  "p99": 482.59125471115107
+                }
+              },
+              "counters": {
+                "apc_queries": 509431.0,
+                "apc_hits": 464.0,
+                "ext_queries": 508967.0,
+                "ext_hits": 234272.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        },
+        {
+          "id": "721",
+          "order": [
+            "lazy",
+            "eager"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 48,
+              "aggregate_coverage": 0.0009422277011018176,
+              "apc_coverage": 0.0009422277011018176,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 24,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 234.2194318771362,
+                  "p90": 301.73208713531494,
+                  "p99": 318.0314016342163
+                },
+                "e2e_ms": {
+                  "p50": 346.5505838394165,
+                  "p90": 445.66407203674316,
+                  "p99": 498.40118408203125
+                }
+              },
+              "counters": {
+                "apc_queries": 509431.0,
+                "apc_hits": 480.0,
+                "ext_queries": 508951.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 48,
+              "aggregate_coverage": 0.4607807534288255,
+              "apc_coverage": 0.0009108201110650903,
+              "external_hit_rate": 0.4602891739543035,
+              "round2": {
+                "requests": 24,
+                "prompt_tokens_median": 10220.5,
+                "ttft_ms": {
+                  "p50": 157.11712837219235,
+                  "p90": 195.5000400543213,
+                  "p99": 223.93521308898923
+                },
+                "e2e_ms": {
+                  "p50": 248.94726276397705,
+                  "p90": 381.9889307022095,
+                  "p99": 485.92253446578974
+                }
+              },
+              "counters": {
+                "apc_queries": 509431.0,
+                "apc_hits": 464.0,
+                "ext_queries": 508967.0,
+                "ext_hits": 234272.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "users": 32,
+      "paper_tokens": 331405,
+      "estimated_kv_gib": 45.51155090332031,
+      "repetitions": [
+        {
+          "id": "720",
+          "order": [
+            "eager",
+            "lazy"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 64,
+              "aggregate_coverage": 0.0010748514614994178,
+              "apc_coverage": 0.0010748514614994178,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 32,
+                "prompt_tokens_median": 9903.5,
+                "ttft_ms": {
+                  "p50": 228.8069725036621,
+                  "p90": 306.49061203002924,
+                  "p99": 325.51357507705694
+                },
+                "e2e_ms": {
+                  "p50": 348.6896753311157,
+                  "p90": 431.5251350402832,
+                  "p99": 501.86966419219976
+                }
+              },
+              "counters": {
+                "apc_queries": 669860.0,
+                "apc_hits": 720.0,
+                "ext_queries": 669140.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 64,
+              "aggregate_coverage": 0.20028065565939152,
+              "apc_coverage": 0.001027080285432777,
+              "external_hit_rate": 0.19945843520051645,
+              "round2": {
+                "requests": 32,
+                "prompt_tokens_median": 9903.5,
+                "ttft_ms": {
+                  "p50": 196.06661796569819,
+                  "p90": 285.61387062072754,
+                  "p99": 306.17669582366943
+                },
+                "e2e_ms": {
+                  "p50": 298.966646194458,
+                  "p90": 383.40349197387695,
+                  "p99": 458.6947464942933
+                }
+              },
+              "counters": {
+                "apc_queries": 669860.0,
+                "apc_hits": 688.0,
+                "ext_queries": 669172.0,
+                "ext_hits": 133472.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        },
+        {
+          "id": "721",
+          "order": [
+            "lazy",
+            "eager"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 64,
+              "aggregate_coverage": 0.0010748514614994178,
+              "apc_coverage": 0.0010748514614994178,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 32,
+                "prompt_tokens_median": 9903.5,
+                "ttft_ms": {
+                  "p50": 217.4758911132812,
+                  "p90": 290.14430046081543,
+                  "p99": 343.1927347183228
+                },
+                "e2e_ms": {
+                  "p50": 333.6907625198364,
+                  "p90": 440.6756162643433,
+                  "p99": 492.5363993644715
+                }
+              },
+              "counters": {
+                "apc_queries": 669860.0,
+                "apc_hits": 720.0,
+                "ext_queries": 669140.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 64,
+              "aggregate_coverage": 0.2678290986176216,
+              "apc_coverage": 0.001027080285432777,
+              "external_hit_rate": 0.2670763271625232,
+              "round2": {
+                "requests": 32,
+                "prompt_tokens_median": 9903.5,
+                "ttft_ms": {
+                  "p50": 182.61981010437012,
+                  "p90": 279.52399253845215,
+                  "p99": 302.2874474525452
+                },
+                "e2e_ms": {
+                  "p50": 263.93675804138184,
+                  "p90": 374.8195171356202,
+                  "p99": 458.5207033157349
+                }
+              },
+              "counters": {
+                "apc_queries": 669860.0,
+                "apc_hits": 688.0,
+                "ext_queries": 669172.0,
+                "ext_hits": 178720.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "users": 40,
+      "paper_tokens": 405315,
+      "estimated_kv_gib": 55.66154479980469,
+      "repetitions": [
+        {
+          "id": "720",
+          "order": [
+            "eager",
+            "lazy"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 80,
+              "aggregate_coverage": 0.0011523578168678816,
+              "apc_coverage": 0.0011523578168678816,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 40,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 239.66729640960688,
+                  "p90": 361.4021301269531,
+                  "p99": 373.2943177223205
+                },
+                "e2e_ms": {
+                  "p50": 325.68418979644775,
+                  "p90": 582.1675777435303,
+                  "p99": 853.6615037918089
+                }
+              },
+              "counters": {
+                "apc_queries": 819190.0,
+                "apc_hits": 944.0,
+                "ext_queries": 818246.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 80,
+              "aggregate_coverage": 0.15187685396550252,
+              "apc_coverage": 0.0011132948400249026,
+              "external_hit_rate": 0.15093159048636282,
+              "round2": {
+                "requests": 40,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 198.0563402175903,
+                  "p90": 318.2379722595214,
+                  "p99": 373.2817077636718
+                },
+                "e2e_ms": {
+                  "p50": 274.2490768432617,
+                  "p90": 487.0825290679932,
+                  "p99": 762.9582905769347
+                }
+              },
+              "counters": {
+                "apc_queries": 819190.0,
+                "apc_hits": 912.0,
+                "ext_queries": 818278.0,
+                "ext_hits": 123504.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        },
+        {
+          "id": "721",
+          "order": [
+            "lazy",
+            "eager"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 80,
+              "aggregate_coverage": 0.0011523578168678816,
+              "apc_coverage": 0.0011523578168678816,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 40,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 224.25651550292963,
+                  "p90": 338.8570547103882,
+                  "p99": 353.47958564758295
+                },
+                "e2e_ms": {
+                  "p50": 323.594331741333,
+                  "p90": 555.0369262695312,
+                  "p99": 818.0910849571226
+                }
+              },
+              "counters": {
+                "apc_queries": 819190.0,
+                "apc_hits": 944.0,
+                "ext_queries": 818246.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 80,
+              "aggregate_coverage": 0.1718380351322648,
+              "apc_coverage": 0.0011132948400249026,
+              "external_hit_rate": 0.1709150191010879,
+              "round2": {
+                "requests": 40,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 208.24372768402094,
+                  "p90": 350.4196882247925,
+                  "p99": 366.8218779563904
+                },
+                "e2e_ms": {
+                  "p50": 283.09106826782227,
+                  "p90": 522.0872163772583,
+                  "p99": 591.4306616783142
+                }
+              },
+              "counters": {
+                "apc_queries": 819190.0,
+                "apc_hits": 912.0,
+                "ext_queries": 818278.0,
+                "ext_hits": 139856.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "users": 48,
+      "paper_tokens": 487917,
+      "estimated_kv_gib": 67.00520324707031,
+      "repetitions": [
+        {
+          "id": "720",
+          "order": [
+            "eager",
+            "lazy"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 96,
+              "aggregate_coverage": 0.0012172175421334781,
+              "apc_coverage": 0.0012172175421334781,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 48,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 236.73236370086664,
+                  "p90": 362.5525712966919,
+                  "p99": 393.0177879333496
+                },
+                "e2e_ms": {
+                  "p50": 351.7434597015381,
+                  "p90": 595.506548881531,
+                  "p99": 903.1174874305727
+                }
+              },
+              "counters": {
+                "apc_queries": 985855.0,
+                "apc_hits": 1200.0,
+                "ext_queries": 984655.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 96,
+              "aggregate_coverage": 0.05740397928701482,
+              "apc_coverage": 0.005031165840818376,
+              "external_hit_rate": 0.052637642153339555,
+              "round2": {
+                "requests": 48,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 235.14425754547113,
+                  "p90": 340.0805473327637,
+                  "p99": 399.56659793853765
+                },
+                "e2e_ms": {
+                  "p50": 332.18657970428467,
+                  "p90": 541.3469314575195,
+                  "p99": 817.9349875450137
+                }
+              },
+              "counters": {
+                "apc_queries": 985855.0,
+                "apc_hits": 4960.0,
+                "ext_queries": 980895.0,
+                "ext_hits": 51632.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        },
+        {
+          "id": "721",
+          "order": [
+            "lazy",
+            "eager"
+          ],
+          "policies": {
+            "eager": {
+              "requests": 96,
+              "aggregate_coverage": 0.0012172175421334781,
+              "apc_coverage": 0.0012172175421334781,
+              "external_hit_rate": 0.0,
+              "round2": {
+                "requests": 48,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 254.9668550491333,
+                  "p90": 352.71706581115717,
+                  "p99": 379.2202067375183
+                },
+                "e2e_ms": {
+                  "p50": 358.2127094268799,
+                  "p90": 567.0228242874147,
+                  "p99": 799.9088835716251
+                }
+              },
+              "counters": {
+                "apc_queries": 985855.0,
+                "apc_hits": 1200.0,
+                "ext_queries": 984655.0,
+                "ext_hits": 0.0,
+                "preemptions": 0.0
+              }
+            },
+            "lazy": {
+              "requests": 96,
+              "aggregate_coverage": 0.11863813643994299,
+              "apc_coverage": 0.0011685288404481389,
+              "external_hit_rate": 0.11760703481151169,
+              "round2": {
+                "requests": 48,
+                "prompt_tokens_median": 9527.5,
+                "ttft_ms": {
+                  "p50": 224.64132308959955,
+                  "p90": 343.9130067825317,
+                  "p99": 399.5211052894593
+                },
+                "e2e_ms": {
+                  "p50": 332.0552110671997,
+                  "p90": 527.1595239639283,
+                  "p99": 620.8158802986145
+                }
+              },
+              "counters": {
+                "apc_queries": 985855.0,
+                "apc_hits": 1152.0,
+                "ext_queries": 984703.0,
+                "ext_hits": 115808.0,
+                "preemptions": 0.0
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

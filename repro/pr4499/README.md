@@ -16,8 +16,10 @@ SHA above. `run_apc_backfill_ab.sh` checks that invariant before running.
 
 ## Environment
 
-Reported runs used one NVIDIA H200, vLLM 0.23.0, PyTorch 2.11.0+cu130, CUDA
-13.0, and Python 3.12.13. See `results/environment.json`.
+Reported TP=1 runs used one NVIDIA H200; tensor-parallel runs used the
+corresponding number of H200 GPUs. The software environment was vLLM 0.23.0,
+PyTorch 2.11.0+cu130, CUDA 13.0, and Python 3.12.13. See
+`results/environment.json`.
 
 Use the Python environment in which the PR source and vLLM are installed:
 
@@ -111,6 +113,20 @@ Five reported repetitions rebuilt 10 L1 objects and retrieved 2560 tokens with
 the fix. The one-line baseline rebuilt nothing and retrieved nothing. Median
 third-request latency was 375 ms versus 506 ms (25.9% lower, 1.35x speedup).
 All outputs matched and both variants had zero warnings and tracebacks.
+
+## 4. QASPER long-context working-set sweep
+
+[`QASPER_WORKING_SET.md`](QASPER_WORKING_SET.md) reports a real 8K--16K-token
+paper-QA workload at TP=4 while sweeping the distinct KV working set from 23 to
+67 GiB against a 40 GiB L1. Every point has two repetitions with reversed
+policy order. The retained per-request CSV and counter JSON are under
+`results/qasper_working_set/`; the 31 MiB source dataset remains outside Git.
+
+The sweep shows the operating envelope rather than a universal speedup. At a
+34.6 GiB unique working set, eviction-aware preserved 0.461 aggregate coverage
+versus 0.001 for eager and reduced returning-session E2E p50 by 28% in both
+orders. Benefits declined as the working set exceeded L1, and a 23 GiB set that
+fit comfortably showed no E2E p50 improvement.
 
 ## Reading results
 
