@@ -1,0 +1,933 @@
+{
+ "source_jsonl": "/raid/data/hub/pr4499_agentic/nebius_raw_1500.jsonl",
+ "model": "Qwen/Qwen3-8B",
+ "steps": 12,
+ "sessions": 48,
+ "scanned_rows": 1034,
+ "cohort_sha256": "04243c35b216d300894f2a07ad01ad74d6cd4aa04e787065be3d85a5d2e6cf51",
+ "final_prompt_tokens": {
+  "min": 8024,
+  "p50": 9981,
+  "max": 19937,
+  "sum": 508786
+ },
+ "first_prompt_tokens": {
+  "min": 1834,
+  "p50": 2009,
+  "max": 3492
+ },
+ "sessions_listed": [
+  {
+   "instance_id": "AnalogJ__lexicon-336",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2252,
+    2633,
+    3965,
+    4802,
+    5492,
+    6064,
+    6672,
+    7295,
+    8713,
+    9107,
+    10412,
+    11781
+   ]
+  },
+  {
+   "instance_id": "Azure__azure-functions-python-worker-890",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1890,
+    2066,
+    3297,
+    3716,
+    5036,
+    5271,
+    6018,
+    6212,
+    6336,
+    7000,
+    8204,
+    8610
+   ]
+  },
+  {
+   "instance_id": "Melevir__cognitive_complexity-15",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2070,
+    2191,
+    3223,
+    3385,
+    4623,
+    4835,
+    5008,
+    5190,
+    5665,
+    5867,
+    6904,
+    8109
+   ]
+  },
+  {
+   "instance_id": "ReproNim__reproman-518",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1839,
+    2144,
+    3325,
+    4696,
+    6052,
+    6312,
+    6895,
+    8048,
+    8259,
+    8618,
+    9869,
+    11385
+   ]
+  },
+  {
+   "instance_id": "ShawHahnLab__igseq-2",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1952,
+    2073,
+    3326,
+    4889,
+    5617,
+    6354,
+    7243,
+    8017,
+    9762,
+    9973,
+    10091,
+    10228
+   ]
+  },
+  {
+   "instance_id": "TACC__agavepy-62",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2103,
+    2836,
+    3348,
+    3571,
+    4282,
+    5437,
+    5579,
+    6785,
+    6935,
+    7056,
+    8687,
+    10263
+   ]
+  },
+  {
+   "instance_id": "TheFriendlyCoder__pyjen-113",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1931,
+    2037,
+    2173,
+    3275,
+    4112,
+    5170,
+    5934,
+    6767,
+    7604,
+    8432,
+    9258,
+    10091
+   ]
+  },
+  {
+   "instance_id": "absent1706__sqlalchemy-mixins-108",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2371,
+    2521,
+    2878,
+    3403,
+    3653,
+    4089,
+    4332,
+    5247,
+    5499,
+    6609,
+    6891,
+    8456
+   ]
+  },
+  {
+   "instance_id": "ahawker__ulid-59",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2256,
+    2387,
+    2653,
+    2747,
+    3037,
+    4075,
+    4345,
+    6586,
+    8674,
+    10608,
+    13580,
+    13691
+   ]
+  },
+  {
+   "instance_id": "airspeed-velocity__asv-702",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    1953,
+    2061,
+    2232,
+    5327,
+    6437,
+    7741,
+    9129,
+    9432,
+    10775,
+    10918,
+    11217,
+    11349
+   ]
+  },
+  {
+   "instance_id": "asottile__pyupgrade-142",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "exit_context",
+   "step_prompt_tokens": [
+    1848,
+    2047,
+    3138,
+    5325,
+    7611,
+    8760,
+    9979,
+    11265,
+    12557,
+    13869,
+    15183,
+    16499
+   ]
+  },
+  {
+   "instance_id": "asottile__pyupgrade-147",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2122,
+    2259,
+    3680,
+    5110,
+    5216,
+    5423,
+    5537,
+    5660,
+    5817,
+    7160,
+    8361,
+    9740
+   ]
+  },
+  {
+   "instance_id": "asottile__pyupgrade-347",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1965,
+    2103,
+    2482,
+    2638,
+    2898,
+    3963,
+    4286,
+    5654,
+    7228,
+    8318,
+    9387,
+    10928
+   ]
+  },
+  {
+   "instance_id": "asottile__pyupgrade-545",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    1891,
+    1986,
+    2205,
+    2290,
+    2575,
+    3807,
+    5270,
+    6826,
+    8115,
+    8319,
+    9692,
+    11187
+   ]
+  },
+  {
+   "instance_id": "auth0__auth0-python-477",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    1951,
+    2186,
+    3234,
+    3576,
+    4285,
+    4929,
+    5571,
+    6199,
+    6829,
+    7460,
+    8720,
+    9465
+   ]
+  },
+  {
+   "instance_id": "aws-cloudformation__cloudformation-cli-python-plugin-236",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2106,
+    2359,
+    2618,
+    3462,
+    4752,
+    5894,
+    6225,
+    6518,
+    7759,
+    8130,
+    9374,
+    10747
+   ]
+  },
+  {
+   "instance_id": "benjamincorcoran__sasdocs-41",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1861,
+    1973,
+    2116,
+    2224,
+    2450,
+    4864,
+    5057,
+    11177,
+    14918,
+    15186,
+    15812,
+    15939
+   ]
+  },
+  {
+   "instance_id": "bihealth__biomedsheets-23",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2858,
+    3142,
+    3282,
+    3525,
+    5166,
+    6900,
+    7051,
+    7539,
+    7697,
+    8117,
+    8235,
+    8679
+   ]
+  },
+  {
+   "instance_id": "casbin__pycasbin-53",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    1863,
+    1964,
+    2059,
+    2150,
+    2239,
+    2341,
+    2911,
+    10833,
+    10975,
+    14245,
+    14844,
+    14986
+   ]
+  },
+  {
+   "instance_id": "cytomining__pycytominer-62",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1897,
+    2031,
+    2930,
+    3100,
+    3215,
+    4710,
+    4882,
+    6139,
+    7289,
+    10043,
+    12186,
+    14539
+   ]
+  },
+  {
+   "instance_id": "dask__dask-jobqueue-563",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2005,
+    2273,
+    3458,
+    3630,
+    3826,
+    5177,
+    5435,
+    6669,
+    7974,
+    8355,
+    9591,
+    9872
+   ]
+  },
+  {
+   "instance_id": "delph-in__pydelphin-362",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1890,
+    2009,
+    2134,
+    3222,
+    3395,
+    4888,
+    5119,
+    5340,
+    6679,
+    7341,
+    8853,
+    8997
+   ]
+  },
+  {
+   "instance_id": "fairlearn__fairlearn-896",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2107,
+    2322,
+    2416,
+    2553,
+    2673,
+    2783,
+    2871,
+    4202,
+    4447,
+    5823,
+    8032,
+    8219
+   ]
+  },
+  {
+   "instance_id": "geopandas__geopandas-3240",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2322,
+    2425,
+    2827,
+    3161,
+    3348,
+    8337,
+    10099,
+    10407,
+    11754,
+    13217,
+    13579,
+    13701
+   ]
+  },
+  {
+   "instance_id": "google__latexify_py-67",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    1875,
+    1999,
+    2137,
+    2477,
+    3544,
+    4713,
+    4957,
+    5155,
+    5267,
+    5551,
+    6705,
+    8446
+   ]
+  },
+  {
+   "instance_id": "google__mobly-472",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1846,
+    2029,
+    3143,
+    4502,
+    5054,
+    5547,
+    6690,
+    7216,
+    8629,
+    8751,
+    8970,
+    9158
+   ]
+  },
+  {
+   "instance_id": "hugovk__pypistats-41",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2378,
+    2619,
+    3770,
+    4661,
+    5668,
+    6706,
+    7875,
+    9223,
+    9480,
+    10267,
+    11452,
+    12757
+   ]
+  },
+  {
+   "instance_id": "iris-hep__func_adl-116",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    3081,
+    3181,
+    3713,
+    3835,
+    6457,
+    7630,
+    8744,
+    8885,
+    9046,
+    10184,
+    10332,
+    11670
+   ]
+  },
+  {
+   "instance_id": "iterative__dvc-3462",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1856,
+    1958,
+    3084,
+    4174,
+    4359,
+    5561,
+    6958,
+    7083,
+    7669,
+    8174,
+    8620,
+    8753
+   ]
+  },
+  {
+   "instance_id": "iterative__dvc-5785",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "exit_context",
+   "step_prompt_tokens": [
+    2089,
+    2200,
+    2372,
+    2592,
+    2802,
+    3853,
+    4046,
+    5280,
+    6274,
+    7144,
+    8012,
+    8885
+   ]
+  },
+  {
+   "instance_id": "iterative__dvc-6303",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2144,
+    2254,
+    3284,
+    3871,
+    4359,
+    4890,
+    5418,
+    6498,
+    6710,
+    7308,
+    8134,
+    9349
+   ]
+  },
+  {
+   "instance_id": "iterative__dvc-7205",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1869,
+    2041,
+    2267,
+    3015,
+    4234,
+    4472,
+    4601,
+    5531,
+    6117,
+    6664,
+    7665,
+    8630
+   ]
+  },
+  {
+   "instance_id": "joke2k__django-environ-358",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2344,
+    2499,
+    3558,
+    4086,
+    5184,
+    6350,
+    6515,
+    6920,
+    7074,
+    7684,
+    8240,
+    8379
+   ]
+  },
+  {
+   "instance_id": "just-work__fffw-100",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1834,
+    1921,
+    2018,
+    2281,
+    2428,
+    2608,
+    3670,
+    4016,
+    5297,
+    7211,
+    7899,
+    9232
+   ]
+  },
+  {
+   "instance_id": "matchms__matchms-187",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1893,
+    2132,
+    2961,
+    4359,
+    4622,
+    4771,
+    4939,
+    5066,
+    8671,
+    8787,
+    8982,
+    9300
+   ]
+  },
+  {
+   "instance_id": "meerk40t__svgelements-183",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1855,
+    1989,
+    2097,
+    2194,
+    2324,
+    2435,
+    4546,
+    6147,
+    7781,
+    9760,
+    9919,
+    10270
+   ]
+  },
+  {
+   "instance_id": "networkx__networkx-7024",
+   "source_model": "swe-agent-llama-8b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2080,
+    2178,
+    2383,
+    2490,
+    2655,
+    3711,
+    4485,
+    5196,
+    5903,
+    6610,
+    7317,
+    8024
+   ]
+  },
+  {
+   "instance_id": "nipy__nipype-2597",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    3492,
+    3589,
+    5413,
+    5807,
+    6190,
+    7970,
+    8090,
+    8695,
+    8822,
+    9199,
+    9323,
+    9704
+   ]
+  },
+  {
+   "instance_id": "nose-devs__nose2-472",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2099,
+    2194,
+    2403,
+    2582,
+    2846,
+    4174,
+    5598,
+    7109,
+    7400,
+    8872,
+    9099,
+    10197
+   ]
+  },
+  {
+   "instance_id": "oasis-open__cti-python-stix2-74",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2227,
+    2340,
+    2597,
+    2819,
+    2929,
+    3048,
+    3203,
+    4495,
+    5928,
+    7309,
+    8008,
+    8187
+   ]
+  },
+  {
+   "instance_id": "pact-foundation__pact-python-94",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2115,
+    2274,
+    2401,
+    2516,
+    3859,
+    5141,
+    6715,
+    8184,
+    8341,
+    8977,
+    10233,
+    10423
+   ]
+  },
+  {
+   "instance_id": "peterbe__premailer-218",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "early_exit",
+   "step_prompt_tokens": [
+    1937,
+    2050,
+    2370,
+    2543,
+    2689,
+    3920,
+    5277,
+    5469,
+    6786,
+    6978,
+    8303,
+    8472
+   ]
+  },
+  {
+   "instance_id": "planetlabs__planet-client-python-621",
+   "source_model": "swe-agent-llama-8b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1841,
+    1970,
+    2069,
+    2952,
+    3876,
+    5070,
+    6639,
+    7419,
+    7599,
+    7870,
+    8966,
+    10240
+   ]
+  },
+  {
+   "instance_id": "ppizarror__pygame-menu-357",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2461,
+    2552,
+    3014,
+    3455,
+    3603,
+    3720,
+    3833,
+    5156,
+    6763,
+    8419,
+    8668,
+    9825
+   ]
+  },
+  {
+   "instance_id": "pre-commit__pre-commit-1707",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    1875,
+    2043,
+    2218,
+    3420,
+    3733,
+    5131,
+    5706,
+    6275,
+    7604,
+    7730,
+    7932,
+    8799
+   ]
+  },
+  {
+   "instance_id": "pvlib__pvlib-python-1296",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    2095,
+    2233,
+    2333,
+    3168,
+    4474,
+    5480,
+    5709,
+    6640,
+    7454,
+    8758,
+    10232,
+    11502
+   ]
+  },
+  {
+   "instance_id": "pydantic__pydantic-1989",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted (exit_context)",
+   "step_prompt_tokens": [
+    3188,
+    3287,
+    3888,
+    4391,
+    4569,
+    6234,
+    7812,
+    8025,
+    8828,
+    9611,
+    10395,
+    11186
+   ]
+  },
+  {
+   "instance_id": "pydantic__pydantic-4350",
+   "source_model": "swe-agent-llama-70b",
+   "exit_status": "submitted",
+   "step_prompt_tokens": [
+    2013,
+    2155,
+    5000,
+    5203,
+    5472,
+    5617,
+    5731,
+    8603,
+    11330,
+    14193,
+    17133,
+    19937
+   ]
+  }
+ ]
+}
