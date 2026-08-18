@@ -104,11 +104,13 @@ lower coverage (0.715) than eviction-aware (0.933). At TP=4, eviction-aware was
 
 The trade-off is foreground interference: at TP=1, hot TTFT p50 was 130ms for
 eager/default FIFO, 157ms for tuned FIFO, and 160ms for eviction-aware; at TP=4
-it was 118ms, 114ms, and 161ms, respectively. Default FIFO keeps hot latency low
-because it performs almost no useful lower-tier work. Eviction-aware overlaps
-real cold retrieval/drain work with adjacent hot requests, raising hot p50 while
-cutting cold p50 from 785ms to 270ms at TP=1 and 369ms to 204ms versus FIFO at
-TP=4.
+it was 118ms, 114ms, and 161ms, respectively. Controlled TP=4 attribution shows
+this is not decision-loop overhead: eviction-aware with all stores suppressed
+measured 120ms, serialized real retrieval/stores measured 125ms, and an
+unconstrained 64 GiB L1 measured 136ms. The 161ms result requires concurrent
+cold retrieval/drain work under the original 40 GiB L1 pressure; non-adjacent
+hot requests remain at baseline. That interference cuts cold p50 from 369ms to
+204ms versus FIFO and still reduces total wall time by 18.4% versus eager.
 
 ### GSM8K correctness
 
@@ -174,6 +176,7 @@ one-off experiment infrastructure.
 - TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/0c7d26db0d9d7ac46b068208095c13f67726c446/repro/pr4499/TP2.md)
 - TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/bd543fe03736f0f6a629afda1803b3881d19844c/repro/pr4499/TP4.md)
 - Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c28dd7761239848fde601e39d6e6cd81c0295377/repro/pr4499/POLICY_COMPARISON.md)
+- Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/8df519590b31715d2eab420e1b9ba81c435aed23/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
 
 Exact hot/cold comparison:
 
