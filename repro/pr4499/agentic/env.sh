@@ -1,0 +1,13 @@
+export SMOKE_GPU=1,2,4,5
+export SMOKE_TP=4
+export SMOKE_MODEL=Qwen/Qwen3-8B
+export SMOKE_HORIZON=2.5
+export HF_HUB_CACHE=/raid/data/hub
+export SMOKE_LOGDIR=/raid/data/hub/pr4499_agentic/logs
+export SMOKE_PYTHON=/home/bo/venvs/vllm-lazy/bin/python
+export SMOKE_VLLM=/home/bo/venvs/vllm-lazy/bin/vllm
+export AGENTIC_COHORT=${AGENTIC_COHORT:-/raid/data/hub/pr4499_agentic/cohort_s12_48.json}
+export AGENTIC_RESULTS=${AGENTIC_RESULTS:-/raid/data/hub/pr4499_agentic/results}
+export AGENTIC_RATE=2.0
+export AGENTIC_L1_GB=40
+export CPATH=/raid/data/hub/pr4499_agentic/pydev/usr/include/python3.12:/raid/data/hub/pr4499_agentic/pydev/usr/include
