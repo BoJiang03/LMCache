@@ -15,19 +15,24 @@ The regime this creates:
 - reuse distance is short in wall-clock but the GPU pool holds only a few
   sessions' contexts, so a step's prefix survives to the next step only when
   no other session displaced it;
-- the sum of all sessions' final contexts is the distinct working set, which
-  the sweep moves across the L1 budget;
+- the sum of every replayed trajectory's final context is the distinct
+  working set, which the sweep moves across the L1 budget;
 - eager offload stores every step's new chunks the moment they exist, so it
   writes the KV of sessions that are still GPU-resident; eviction-aware
   offload writes a session's KV when the GPU is about to drop it.
 
-Load is held fixed while the working set is swept: session `s` releases its
-step `k` at `t0 + (s + k * sessions) / RATE`, so the aggregate step rate is
-`RATE` for every cohort size and every policy, and the per-session gap
-(`sessions / RATE`) is the agent's tool-execution time. A step that cannot
-be released on schedule -- because its own session's previous step is still
-running -- is recorded as schedule lag rather than silently reshaping the
-load.
+Trajectories are replayed whole, and they differ in length -- 3 to 262
+steps in this dataset -- so the run is organised as `sessions` concurrent
+slots, each replaying a queue of whole trajectories back to back until it
+has issued `AGENTIC_SLOT_STEPS` steps. Nothing is cut short, and yet
+concurrency and offered load stay constant for the whole run: slot `s`
+releases its `j`-th step at `t0 + (s + j * sessions) / RATE`, so the
+aggregate step rate is `RATE` for every size and policy, and a slot's own
+gap (`sessions / RATE`) is the agent's tool-execution time. When one
+trajectory ends the next starts on the following tick -- a new session on
+the same slot, first step cold, the finished session's KV now dead weight
+in the cache. A step that cannot be released on schedule is recorded as
+schedule lag rather than silently reshaping the load.
 
 The engine's answer is discarded and the *recorded* action is appended, so
 both policies replay byte-identical request streams.
@@ -93,7 +98,16 @@ POOL_BLOCKS = int(POOL_GIB * (1 << 30)) // KV_BYTES_PER_TOKEN // 16
 L1_GB = int(os.environ.get("AGENTIC_L1_GB", "40"))
 
 #: Context ceiling: the longest selected step prompt plus generation.
-MAX_MODEL_LEN = int(os.environ.get("AGENTIC_MAX_MODEL_LEN", "24576"))
+MAX_MODEL_LEN = int(os.environ.get("AGENTIC_MAX_MODEL_LEN", "40960"))
+#: Steps each slot replays. Trajectories differ in length (3 to 262 steps in
+#: this dataset), so a run that gave every slot one trajectory would spend
+#: most of its wall clock with a handful of slots still going -- the offered
+#: load would decay by the end and the measurement would be about a
+#: different load than it started with. Instead each slot replays a queue of
+#: whole trajectories back to back until it has issued this many steps, so
+#: concurrency and step rate are constant for the whole run and no
+#: trajectory is cut short.
+SLOT_STEPS = int(os.environ.get("AGENTIC_SLOT_STEPS", "60"))
 
 #: Per-request wall-clock ceiling. A step that exceeds it is recorded as a
 #: failure rather than left to stall the session's schedule forever.
@@ -112,32 +126,78 @@ CONFIGS = ("off", "eager", "lazy")
 _LEDGER_GAUGES = frozenset({"pending"})
 
 
-def load_cohort(sessions: int) -> dict:
-    """Read the prepared cohort and take its first `sessions` entries.
-
-    Args:
-        sessions: Number of sessions to replay.
+def load_cohort() -> dict:
+    """Read the prepared trajectory pool.
 
     Returns:
-        The cohort document with `cohort` truncated to the requested size.
-
-    Raises:
-        ValueError: if the file holds fewer sessions than requested.
+        The cohort document; `cohort` is the pool in file order.
     """
     with open(COHORT) as fh:
-        document = json.load(fh)
-    if len(document["cohort"]) < sessions:
+        return json.load(fh)
+
+
+def pack_slots(pool: list[dict], slots: int, slot_steps: int) -> list[list[dict]]:
+    """Deal whole trajectories into `slots` queues of about equal length.
+
+    Longest trajectory first, each to the shortest queue so far: the
+    standard greedy for equal-length queues, and deterministic. Balance is
+    what lets every slot issue its full budget from a pool this small --
+    file order leaves the last queues starved, longest-first does not.
+
+    Args:
+        pool: Trajectories in file order.
+        slots: Number of concurrent sessions.
+        slot_steps: Steps each slot should issue.
+
+    Returns:
+        One list of trajectories per slot.
+
+    Raises:
+        ValueError: if the pool runs out before every slot is filled.
+    """
+    queues: list[list[dict]] = [[] for _ in range(slots)]
+    issued = [0] * slots
+    order = sorted(
+        pool,
+        key=lambda item: (-len(item["step_prompt_tokens"]), item["instance_id"]),
+    )
+    for trajectory in order:
+        hungry = [i for i in range(slots) if issued[i] < slot_steps]
+        if not hungry:
+            return queues
+        target = min(hungry, key=lambda i: (issued[i], i))
+        queues[target].append(trajectory)
+        issued[target] += len(trajectory["step_prompt_tokens"])
+    if any(count < slot_steps for count in issued):
         raise ValueError(
-            f"cohort {COHORT} has {len(document['cohort'])} sessions, need {sessions}"
+            f"pool of {len(pool)} trajectories cannot fill {slots} slots "
+            f"of {slot_steps} steps (shortest slot has {min(issued)})"
         )
-    document["cohort"] = document["cohort"][:sessions]
-    return document
+    return queues
 
 
-def working_set_gib(cohort: list[dict]) -> float:
-    """Distinct KV of a cohort in GiB: every session's final step prompt."""
-    tokens = sum(session["step_prompt_tokens"][-1] for session in cohort)
+def working_set_gib(trajectories: list[dict]) -> float:
+    """Distinct KV in GiB: every replayed trajectory's final step prompt.
+
+    With slots replaying several trajectories in turn this is the total
+    distinct KV the run pushes through the cache, not what is live at any
+    instant; `concurrent_gib` reports the latter.
+    """
+    tokens = sum(item["step_prompt_tokens"][-1] for item in trajectories)
     return tokens * KV_BYTES_PER_TOKEN / (1 << 30)
+
+
+def concurrent_gib(queues: list[list[dict]]) -> float:
+    """KV live at once in GiB: one trajectory per slot, at its final step.
+
+    Each slot holds exactly one live session; the mean over a slot's queue
+    is what it holds on average once the run is going.
+    """
+    total = 0.0
+    for queue in queues:
+        finals = [item["step_prompt_tokens"][-1] for item in queue]
+        total += sum(finals) / len(finals)
+    return total * KV_BYTES_PER_TOKEN / (1 << 30)
 
 
 def start_engine(scenario: str, config: str) -> subprocess.Popen:
@@ -315,40 +375,61 @@ def step(messages: list[dict[str, str]]) -> dict:
     }
 
 
-def run_session(index: int, session: dict, sessions: int, t0: float) -> list[dict]:
-    """Replay one trajectory on its own schedule.
+def run_slot(index: int, queue: list[dict], slots: int, t0: float) -> list[dict]:
+    """Replay one slot's queue of whole trajectories, back to back.
+
+    The slot issues step `j` of its queue -- counting across trajectories --
+    at `t0 + (index + j * slots) / RATE`, so the aggregate step rate is
+    `RATE` and a slot's own gap between steps is `slots / RATE`, the agent's
+    tool-execution time. When a trajectory ends the next one starts on the
+    following tick: that is a new session on the same slot, its first step
+    cold, and the finished session's KV is now dead weight in the cache --
+    the churn a real agent fleet generates.
+
+    A slot stops once it has issued `SLOT_STEPS` steps. That bounds the run,
+    it does not bound a session: trajectories are never selected or trimmed
+    by length, so the prompt lengths the cache sees are the recorded ones.
+    Only the last trajectory of a slot can be left unfinished, identically
+    in both policies since the schedule is deterministic.
 
     Args:
-        index: Session index in the cohort; sets its offset in the schedule.
-        session: One cohort entry.
-        sessions: Cohort size, which sets the per-session step interval.
-        t0: Run start time, shared by every session.
+        index: Slot index; sets its offset in the schedule.
+        queue: Whole trajectories to replay in order.
+        slots: Number of concurrent slots.
+        t0: Run start time, shared by every slot.
 
     Returns:
-        One record per step, in step order.
+        One record per step, in issue order.
     """
-    messages = session["messages"]
-    steps = len(messages) // 2
     records = []
-    for k in range(steps):
-        release = t0 + (index + k * sessions) / RATE
-        lag = time.time() - release
-        if lag < 0:
-            time.sleep(-lag)
-            lag = 0.0
-        record = {
-            "session": index,
-            "instance_id": session["instance_id"],
-            "step": k,
-            "released_s": release - t0,
-            "lag_ms": lag * 1000.0,
-        }
-        try:
-            record.update(step(messages[: 2 + 2 * k]))
-        except Exception as error:  # a failed step must not lose the run
-            record.update({"ok": False, "error": repr(error)[:200]})
-        record["finished_s"] = time.time() - t0
-        records.append(record)
+    issued = 0
+    for position, session in enumerate(queue):
+        if issued >= SLOT_STEPS:
+            break
+        messages = session["messages"]
+        for k in range(len(messages) // 2):
+            if issued >= SLOT_STEPS:
+                break
+            release = t0 + (index + issued * slots) / RATE
+            issued += 1
+            lag = time.time() - release
+            if lag < 0:
+                time.sleep(-lag)
+                lag = 0.0
+            record = {
+                "session": index,
+                "trajectory": position,
+                "instance_id": session["instance_id"],
+                "step": k,
+                "released_s": release - t0,
+                "lag_ms": lag * 1000.0,
+            }
+            try:
+                record.update(step(messages[: 2 + 2 * k]))
+            except Exception as error:  # a failed step must not lose the run
+                record.update({"ok": False, "error": repr(error)[:200]})
+            record["finished_s"] = time.time() - t0
+            records.append(record)
     return records
 
 
@@ -398,8 +479,9 @@ def run(config: str, rep: str = "0", sessions: int = 0, l1_gb: int = 0) -> dict:
         raise KeyError(f"unknown config {config!r}; known: {CONFIGS}")
     count = sessions or SESSIONS
     budget = l1_gb or L1_GB
-    document = load_cohort(count)
-    cohort = document["cohort"]
+    document = load_cohort()
+    queues = pack_slots(document["cohort"], count, SLOT_STEPS)
+    replayed = [item for queue in queues for item in queue]
     tag = f"AG_{config}_s{count}r{RATE:g}_l{budget}_{rep}{TAG_SUFFIX}"
     result: dict = {
         "config": config,
@@ -408,22 +490,31 @@ def run(config: str, rep: str = "0", sessions: int = 0, l1_gb: int = 0) -> dict:
         "model": MODEL,
         "tensor_parallel_size": TP_SIZE,
         "sessions": count,
+        "slot_steps": SLOT_STEPS,
+        "trajectories": len(replayed),
+        "trajectory_steps": [
+            len(item["step_prompt_tokens"]) for item in replayed
+        ],
         "steps": document["steps"],
+        "session_steps": document.get("session_steps"),
         "rate": RATE,
         "session_gap_s": count / RATE,
         "output_len": OUTPUT_LEN,
         "l1_gb": budget,
         "pool_blocks": POOL_BLOCKS,
         "pool_gib": POOL_BLOCKS * 16 * KV_BYTES_PER_TOKEN / (1 << 30),
-        "working_set_gib": working_set_gib(cohort),
+        "working_set_gib": working_set_gib(replayed),
+        "concurrent_gib": concurrent_gib(queues),
         "cohort_sha256": document["cohort_sha256"],
         "extra_config": EXTRA_CONFIG,
-        "expected_requests": count * document["steps"],
+        "expected_requests": count * SLOT_STEPS,
     }
     print(
-        f"[ag] === {tag}: {count} sessions, {result['working_set_gib']:.1f} GiB "
-        f"distinct KV through a {result['pool_gib']:.1f} GiB pool and "
-        f"{budget} GiB of L1, {RATE:g} steps/s"
+        f"[ag] === {tag}: {count} slots x {SLOT_STEPS} steps over "
+        f"{len(replayed)} whole trajectories, {result['concurrent_gib']:.1f} GiB "
+        f"live / {result['working_set_gib']:.1f} GiB distinct KV through a "
+        f"{result['pool_gib']:.1f} GiB pool and {budget} GiB of L1, "
+        f"{RATE:g} steps/s"
     )
     server = start_server_sized(tag, budget)
     try:
@@ -442,8 +533,8 @@ def run(config: str, rep: str = "0", sessions: int = 0, l1_gb: int = 0) -> dict:
         t0 = started + 1.0
         with ThreadPoolExecutor(max_workers=count) as pool:
             futures = [
-                pool.submit(run_session, index, session, count, t0)
-                for index, session in enumerate(cohort)
+                pool.submit(run_slot, index, queue, count, t0)
+                for index, queue in enumerate(queues)
             ]
             for future in futures:
                 records.extend(future.result())
@@ -456,6 +547,14 @@ def run(config: str, rep: str = "0", sessions: int = 0, l1_gb: int = 0) -> dict:
         teardown([engine, server])
     result["elapsed_s"] = elapsed
     result["requests"] = len(records)
+    reached: dict[tuple[int, str], int] = {}
+    for record in records:
+        if record.get("ok"):
+            key = (record["session"], record["instance_id"])
+            reached[key] = max(reached.get(key, 0), record["prompt_tokens"])
+    result["replayed_working_set_gib"] = (
+        sum(reached.values()) * KV_BYTES_PER_TOKEN / (1 << 30)
+    )
     result["failed"] = [record for record in records if not record.get("ok")]
     result["delta"] = {key: after[key] - before[key] for key in before}
     result["first_step"] = _phase_stats(records, lambda record: record["step"] == 0)

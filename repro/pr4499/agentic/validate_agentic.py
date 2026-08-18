@@ -3,7 +3,7 @@
 
 A run is reported invalid when any of these fails:
 
-- the request count differs from `sessions x steps`;
+- the request count differs from the steps the packed slots owe;
 - any step failed or the engine/server exited non-zero;
 - the engine's own prompt-token count for a step differs from the cohort's
   tokenizer count, which would mean the replay did not send the prompts the

@@ -31,10 +31,13 @@ being measured:
 Environment:
     AGENTIC_RAW         input JSONL from extract_trajectories.py
     AGENTIC_COHORT_OUT  output cohort JSON
-    AGENTIC_STEPS       replayed steps per session (default 12)
-    AGENTIC_MIN_TOKENS  minimum final-step prompt tokens (default 8000)
-    AGENTIC_MAX_TOKENS  maximum final-step prompt tokens (default 22000)
-    AGENTIC_SESSIONS    cohort size to select (default 48)
+    AGENTIC_STEPS       replayed steps per session; 0 replays every
+                        recorded step of each trajectory (default 0)
+    AGENTIC_MIN_TOKENS  minimum final-step prompt tokens (default 0)
+    AGENTIC_MAX_TOKENS  maximum final-step prompt tokens, i.e. what the
+                        serving context can hold (default 40928)
+    AGENTIC_SESSIONS    cohort size to select; 0 takes every usable
+                        trajectory in the file (default 0)
     SMOKE_MODEL         tokenizer/model id (default Qwen/Qwen3-8B)
     HF_HUB_CACHE        model cache directory
 """
@@ -49,10 +52,10 @@ from transformers import AutoTokenizer
 
 RAW = os.environ.get("AGENTIC_RAW", "")
 OUT = os.environ.get("AGENTIC_COHORT_OUT", "")
-STEPS = int(os.environ.get("AGENTIC_STEPS", "12"))
-MIN_TOKENS = int(os.environ.get("AGENTIC_MIN_TOKENS", "8000"))
-MAX_TOKENS = int(os.environ.get("AGENTIC_MAX_TOKENS", "22000"))
-SESSIONS = int(os.environ.get("AGENTIC_SESSIONS", "48"))
+STEPS = int(os.environ.get("AGENTIC_STEPS", "0"))
+MIN_TOKENS = int(os.environ.get("AGENTIC_MIN_TOKENS", "0"))
+MAX_TOKENS = int(os.environ.get("AGENTIC_MAX_TOKENS", "40928"))
+SESSIONS = int(os.environ.get("AGENTIC_SESSIONS", "0"))
 MODEL = os.environ.get("SMOKE_MODEL", "Qwen/Qwen3-8B")
 
 #: Tokens of slack allowed between the end of step k's cached prefix and the
@@ -91,17 +94,30 @@ def _common_prefix(left: list[int], right: list[int]) -> int:
     return index
 
 
+def _steps_of(messages: list[dict[str, str]]) -> int:
+    """How many steps this trajectory contributes.
+
+    With `AGENTIC_STEPS` set, that many; with 0, every recorded step, so the
+    replay is the trajectory the agent actually ran rather than a prefix of
+    it. Sessions then differ in length, which is a property of the workload,
+    not of the harness.
+    """
+    available = len(messages) // 2
+    return available if STEPS == 0 else STEPS
+
+
 def _shaped(messages: list[dict[str, str]]) -> bool:
     """Whether a trajectory has the system, user, (assistant, user)* shape."""
-    if len(messages) < 2 * STEPS:
+    steps = _steps_of(messages)
+    if steps < 2 or len(messages) < 2 * steps:
         return False
     if messages[0]["role"] != "system" or messages[1]["role"] != "user":
         return False
-    for index in range(2, 2 * STEPS):
+    for index in range(2, 2 * steps):
         expected = "assistant" if index % 2 == 0 else "user"
         if messages[index]["role"] != expected:
             return False
-    return all(message["content"].strip() for message in messages[: 2 * STEPS])
+    return all(message["content"].strip() for message in messages[: 2 * steps])
 
 
 def main() -> int:
@@ -119,7 +135,7 @@ def main() -> int:
     scanned = 0
     with open(RAW) as fh:
         for line in fh:
-            if len(sessions) >= SESSIONS:
+            if SESSIONS and len(sessions) >= SESSIONS:
                 break
             scanned += 1
             row = json.loads(line)
@@ -128,7 +144,8 @@ def main() -> int:
             messages = row["messages"]
             if not _shaped(messages):
                 continue
-            kept = messages[: 2 * STEPS]
+            steps = _steps_of(messages)
+            kept = messages[: 2 * steps]
             final = _render(tokenizer, kept)
             if not MIN_TOKENS <= len(final) <= MAX_TOKENS:
                 continue
@@ -136,7 +153,7 @@ def main() -> int:
             step_tokens = []
             previous: list[int] = []
             broken = 0
-            for step in range(STEPS):
+            for step in range(steps):
                 current = _render(tokenizer, kept[: 2 + 2 * step])
                 step_tokens.append(len(current))
                 if previous:
@@ -159,18 +176,28 @@ def main() -> int:
                     "messages": kept,
                 }
             )
-    if len(sessions) < SESSIONS:
+    if SESSIONS and len(sessions) < SESSIONS:
         print(f"[cohort] only {len(sessions)} of {SESSIONS} sessions", file=sys.stderr)
+        return 1
+    if not sessions:
+        print("[cohort] no usable trajectories", file=sys.stderr)
         return 1
     finals = [session["step_prompt_tokens"][-1] for session in sessions]
     firsts = [session["step_prompt_tokens"][0] for session in sessions]
+    counts = [len(session["step_prompt_tokens"]) for session in sessions]
     digest = hashlib.sha256(
         json.dumps([s["messages"] for s in sessions], sort_keys=True).encode()
     ).hexdigest()
     document = {
         "source_jsonl": RAW,
         "model": MODEL,
-        "steps": STEPS,
+        "steps": STEPS or None,
+        "session_steps": {
+            "min": min(counts),
+            "p50": int(statistics.median(counts)),
+            "max": max(counts),
+            "sum": sum(counts),
+        },
         "sessions": len(sessions),
         "scanned_rows": scanned,
         "cohort_sha256": digest,
@@ -190,7 +217,8 @@ def main() -> int:
     with open(OUT, "w") as fh:
         json.dump(document, fh)
     print(
-        f"[cohort] {len(sessions)} sessions, {STEPS} steps, "
+        f"[cohort] {len(sessions)} sessions, steps min={min(counts)} "
+        f"p50={int(statistics.median(counts))} max={max(counts)} sum={sum(counts)}, "
         f"final prompt tokens min={min(finals)} p50={int(statistics.median(finals))} "
         f"max={max(finals)} sum={sum(finals)}"
     )

@@ -31,7 +31,12 @@ SWE-agent runs against real GitHub issues, recorded as the full conversation
 
 Selection rejects a trajectory whose role pattern is irregular, whose
 step-12 prompt falls outside the 8K--22K token window, or whose steps are not
-token-prefix-stable under the serving chat template. The engine's own
+token-prefix-stable under the serving chat template. **That 12-step cap and
+token window turn out to decide the latency result** -- they put the median
+request below the length at which a cache can pay for itself. Sections 1--3
+report them as run; [section 4](#4-the-same-trajectories-untruncated)
+removes both caps and is the result to read for whether the policy is worth
+its cost. The engine's own
 prompt-token count matched the cohort's tokenizer count for **every** step of
 every run reported here, so the replay sent exactly the prompts the selection
 reasoned about.
@@ -169,46 +174,179 @@ At 24 and 32 sessions a residual 9%--19% E2E gap remains, so the tuning does
 not make the policy uniformly free -- it removes the part of the cost that
 scaled with the pending queue.
 
-These are single runs per point, not two-repetition results like §1, and
-`throttled_drains` stayed at 0 in all three, so a budget of 4 was never the
-binding constraint here. A cohort with larger per-step operations could
-throttle at 4; the ledger's `throttled_drains` counter is the sensor.
+These are single runs per point, not two-repetition results like §1.
+`throttled_drains` was 2, 2 and 7 at 24, 32 and 48 sessions, so a budget of
+4 did bind occasionally -- rarely enough that coverage did not suffer, and
+at 48 sessions it improved, but it is not the "never binding" case. The
+ledger's `throttled_drains` counter is the sensor for a cohort whose
+per-step operations are larger.
+
+## 4. The same trajectories, untruncated
+
+Sections 1--3 cap every session at 12 steps and keep only trajectories whose
+final prompt lands in an 8K--22K token window. That cap decides the result.
+The paired per-request analysis of the 48-session point shows why: the
+eviction-aware policy costs a fixed ~21.7 ms per request and saves ~4.27 ms
+per 1000 prompt tokens, so it breaks even at about 6000 tokens -- and the
+capped cohort's median continuation prompt is 5635 tokens, just below it.
+More than half of every run sat in the regime where retrieving a prefix
+cannot beat recomputing it, which is why coverage doubled with no median
+latency to show for it.
+
+The cap was the harness, not the data. Re-scanned with the serving
+tokenizer, the dataset's trajectories run to a median of 22 steps and a
+maximum of 158, and their final prompts reach 34591 tokens -- inside
+Qwen3-8B's native 40960 context. Every trajectory in the file passes the
+role, prefix-stability and context guards: nothing has to be dropped.
+
+### Replaying whole sessions at constant load
+
+Trajectory length varies by a factor of forty, so one session per trajectory
+would leave the run trickling: the short ones finish in minutes and the
+offered load decays six-fold before the long ones are done. Instead the run
+is `slots` concurrent slots, each replaying a queue of *whole* trajectories
+back to back until it has issued `AGENTIC_SLOT_STEPS` steps. When a
+trajectory ends the next starts on the following tick -- a new session on
+the same slot, its first step cold, the finished session's KV now dead
+weight in the cache. Concurrency and step rate stay constant for the whole
+run and no session is shortened; only the last trajectory of a slot can be
+left unfinished, identically under both policies. Queues are packed longest
+trajectory first, which is what lets a 74-trajectory pool fill 14 slots of
+158 steps.
+
+- pool: every usable trajectory in the file, 74 of them -- the dataset has
+  1500 rows but only 74 distinct issues, and one trajectory is kept per
+  issue so sessions do not share content;
+- cohort SHA-256:
+  `628ef0c75745371f61dc3c02886fd8579257bdb5fff73d71eac7db3c25b4e131`;
+- steps per trajectory 4--158 (median 22); final prompt 2532--34591 tokens
+  (median 17471);
+- 14 slots x 158 steps = 2212 requests per run, over 71 of the 74
+  trajectories, 12 of which are cut by the slot budget;
+- continuation prompts p25 5637, **p50 11175**, p75 18889, p90 25334 --
+  within 0.4% of the whole population's percentiles, so the packing
+  introduces no length bias;
+- 36.7 GiB live at once, 182.6 GiB of distinct KV pushed through the cache
+  over a run;
+- `--max-model-len 40960`; everything else as in "Fixed settings".
+
+Pressure is swept with the L1 budget rather than the session count, because
+74 trajectories cannot fill more slots. Holding the workload fixed and
+moving the budget also means every point compares the same requests.
+
+### Result
+
+Repetition 1 reverses the variant order; both repetitions of the two valid
+budgets agree to within 0.013 coverage and 2.5 ms of mean paired E2E.
+
+| L1 | live/L1 | variant | coverage | external hit | L1 cycles | TTFT p50 | p90 | E2E p90 | paired E2E vs eager |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 GiB | 0.9x | eager | 0.763 | 0.658 | 132 | 153 | 366 | 477 | -- |
+| | | lazy, `=4` | 0.895 | 0.850 | **42** | 159 | 285 | **377** | **-24.6 ms** |
+| | | lazy, `=64` | 0.899 | 0.855 | 42 | 155 | **281** | 399 | -0.8 ms |
+| 20 GiB | 1.8x | eager | 0.310 | **0.004** | 714 | 189 | 523 | 624 | -- |
+| | | lazy, `=4` | **0.626** | 0.462 | 322 | **170** | 428 | **522** | **-39.4 ms** |
+| | | lazy, `=64` | 0.623 | 0.458 | 290 | 170 | **422** | 529 | -23.3 ms |
+| 10 GiB | 3.7x | eager | 0.308 | **0.000** | 954 | 190 | 509 | 595 | -- |
+| | | lazy, `=4` | 0.398 | 0.111 | 459 | 179 | 500 | 589 | +10.9 ms |
+| | | lazy, `=64` | 0.425 | 0.102 | 313 | 178 | 493 | 586 | +22.8 ms |
+
+Negative means eviction-aware is faster; the paired column is the mean over
+2141 requests whose prompts are token-identical between the two runs.
+
+**The policy now wins on latency, not only on coverage.** At a 20 GiB
+budget it doubles coverage (0.626 against 0.310), halves L1 eviction cycles,
+cuts TTFT p90 by 18% and E2E p90 by 16%, and saves 74.7 s of TTFT across the
+run. The gain is concentrated exactly where the model predicts -- by prompt
+size, TTFT moves +11 ms at 2760 tokens, +1 ms at 9674, and **-112 ms
+(-28%)** at 19134 and **-159 ms (-29%)** at 26231.
+
+**Eager's failure mode is now unmistakable.** At 20 GiB its external hit
+rate is 0.004 and at 10 GiB it is 0.000: its whole 0.31 coverage is the GPU
+prefix cache, and not one token comes back from LMCache. It writes every
+step of 182.6 GiB of KV into a budget that cannot hold it, and its own next
+writes evict what it just stored -- 714 and 954 eviction cycles against the
+policy's 322 and 459.
+
+**The policy has a working range, and it is bounded on both sides.** At
+40 GiB the budget nearly holds the live set, eager already reaches 0.763,
+and the win narrows to the tail (TTFT p90 -22%, p99 -28%). At 10 GiB the
+budget cannot hold even what is worth keeping: eviction-aware reaches only
+0.398 coverage, its long-prompt advantage disappears (-0.3% at 19134 tokens
+against -28% at a 20 GiB budget), and it loses on E2E. Deferring a store
+helps when there is somewhere worth deferring it to.
+
+**`max_drain_per_step` is still worth lowering, for a different reason than
+in §2.** Here concurrency is deep enough to amortize the per-step read --
+the default no longer doubles decode -- but it still costs the whole
+end-to-end gain at a 40 GiB budget: identical coverage and TTFT to `=4`
+(0.899 against 0.895, p90 281 against 285) and a paired E2E of -0.8 ms
+against -24.6 ms.
+
+### What did not pass
+
+Three of the nine runs failed the preemption guard: 12 preemptions in
+`lazy, =64` at 10 GiB, and 2 each in `lazy, =4` at 10 GiB and `lazy, =64` at
+20 GiB. All nine eager runs and both repetitions of `lazy, =4` at 20 and
+40 GiB preempted zero times. The counts are small against 2212 requests, but
+they appear only under the deferring policy and only under budget pressure,
+which is a mechanism rather than noise -- and it is the 10 GiB row, where
+the policy loses, that carries the largest count. That row should be treated
+as unconfirmed until the preemptions are explained; the 20 and 40 GiB rows
+are clean in both repetitions.
 
 ## Verdict
 
-1. **The policy's decisions are right in the agentic shape.** It holds
-   coverage where eager collapses (0.598--0.657 versus 0.385 at a 69.9 GiB
-   working set), writes less, and cuts L1 eviction cycles by more than half.
-   At no pressure it writes nothing at all while serving the same hits.
-2. **Its default per-step cost is real and workload-visible.** In a shape
-   with a long-lived pending queue and low instantaneous concurrency, the
-   bounded free-queue read doubles decode time, which swamps the retrieval
-   win in E2E at every cohort size.
-3. **That cost is a tuning artifact, not the price of deferring.** With
-   `max_drain_per_step = 4` the buffering behaviour is unchanged, the cache
-   benefit is retained or improved, and decode returns to the no-connector
-   baseline.
+1. **The policy's decisions are right in the agentic shape, at every prompt
+   length.** It holds coverage where eager collapses -- 0.626 against 0.310
+   at a 20 GiB budget with whole trajectories, 0.598 against 0.385 at a
+   69.9 GiB working set with 12-step ones -- writes less, and cuts L1
+   eviction cycles by more than half. Where the budget cannot hold the live
+   set at all, eager's external hit rate is 0.000 and every byte it writes
+   is wasted.
+2. **Whether that converts into latency depends on prompt length, and the
+   first cohort was too short to show it.** The policy costs a fixed
+   ~21.7 ms per request and saves ~4.27 ms per 1000 prompt tokens, so it
+   breaks even near 6000 tokens. The 12-step cohort's median continuation
+   prompt was 5635 tokens and its median request therefore could not win;
+   the untruncated one's is 11175, and the same policy cuts TTFT p90 by 18%,
+   E2E p90 by 16%, and long-prompt TTFT by 28--29%.
+3. **The policy has a working range.** It needs a lower tier large enough to
+   be worth deferring to. At a budget that nearly holds the live set the win
+   narrows to the tail; at 0.27x the live set the policy reaches only 0.398
+   coverage and loses on E2E.
+4. **`max_drain_per_step` = 64 is priced for the drain, not for the read
+   that sizing it implies.** At low instantaneous concurrency it doubles
+   decode time (§2); at agentic concurrency with long prompts it merely
+   consumes the entire end-to-end gain (-0.8 ms against -24.6 ms paired E2E
+   at a 40 GiB budget). Lowering it costs nothing measurable in either
+   regime.
 
-The actionable finding for the PR is (3): `max_drain_per_step`'s default of
-64 is priced for the drain, not for the read that sizing it implies, and an
-agentic workload is where that shows. Nothing here contradicts the reported
-hot/cold or QASPER results -- those run at higher instantaneous concurrency,
-where the same per-step cost is amortized across a deeper batch.
+The actionable findings for the PR are (4), and the observation in
+§4 that the deferring policy is the only configuration that preempts under
+budget pressure. Nothing here contradicts the reported hot/cold or QASPER
+results.
 
 ## Guards and raw data
 
-All 22 sweep runs, the 5 attribution runs and the 3 budget runs pass every
-guard in `agentic/validate_agentic.py`: exact request counts, zero failed
-steps, prompt-token counts identical to the cohort's, a closing lazy ledger,
-no tracebacks, and **zero vLLM preemptions**. Schedule lag p90 was 0.0 ms in
-every run, so no run was reshaped by saturation.
+The 22 sweep runs, the 5 attribution runs and the 3 budget runs of
+sections 1--3 pass every guard in `agentic/validate_agentic.py`: exact
+request counts, zero failed steps, prompt-token counts identical to the
+cohort's, a closing lazy ledger, no tracebacks, and zero vLLM preemptions.
+Of section 4's 13 runs, 10 pass; the three that do not are named in "What
+did not pass", and all three failures are preemption counts. Schedule lag
+p90 was 0.0 ms in every run reported here, so no run was reshaped by
+saturation.
 
-The cohort itself (100 MiB of trajectory text) stays on RAID; its identity,
+Both cohorts (100+ MiB of trajectory text) stay on RAID; their identity,
 per-session token profile and instance list are in
-`results/agentic/cohort_manifest.json`.
+`results/agentic/cohort_manifest.json` and
+`results/agentic_full/cohort_manifest.json`.
 
-Reproduce with `agentic/run_agentic_sweep.py`, `agentic/run_attribution.py`
-and the tables in `agentic/agentic_table.py` / `agentic/attribution_table.py`;
-see [`agentic/README.md`](agentic/README.md). Raw per-run JSON (every request
-record, counter delta, L1 series and ledger) is under
-`results/agentic/`.
+Reproduce sections 1--3 with `agentic/run_agentic_sweep.py` and
+`agentic/run_attribution.py`, and section 4 with
+`agentic/run_full_replay.py`; the tables come from
+`agentic/agentic_table.py` / `agentic/attribution_table.py`. See
+[`agentic/README.md`](agentic/README.md). Raw per-run JSON (every request
+record, counter delta, L1 series and ledger) is under `results/agentic/`
+and `results/agentic_full/`.
