@@ -208,7 +208,7 @@ one-off experiment infrastructure.
 - TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/bd543fe03736f0f6a629afda1803b3881d19844c/repro/pr4499/TP4.md)
 - Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c28dd7761239848fde601e39d6e6cd81c0295377/repro/pr4499/POLICY_COMPARISON.md)
 - Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/8df519590b31715d2eab420e1b9ba81c435aed23/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
-- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](repro/pr4499/QASPER_WORKING_SET.md)
+- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/7e1c4ed57e0c131624d0c78f64f64f7c59828a8e/repro/pr4499/QASPER_WORKING_SET.md)
 
 Exact hot/cold comparison:
 
