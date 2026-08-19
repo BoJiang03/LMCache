@@ -226,8 +226,10 @@ def long_prefix_color_request(
 
     Used by the chunked-prefill scenario: the pad pushes the image span deep
     enough into the prompt that a small ``max_num_batched_tokens`` budget
-    places a scheduler-step boundary INSIDE the span. Exempt from baseline
-    comparison (verified by semantic probe and pass-vs-pass equivalence).
+    places a scheduler-step boundary INSIDE the span. Verified against a
+    config-matched plain-vLLM baseline: small models can misname colors
+    behind long pad prefixes even WITHOUT LMCache, so a bare semantic probe
+    would misattribute model weakness to the cache.
 
     Args:
         key: Unique request key.
@@ -245,15 +247,15 @@ def long_prefix_color_request(
         question=COLOR_QUESTION,
         image_indices=(image_index,),
         expected_probe=(image_color_name(image_index),),
-        needs_baseline=False,
+        needs_baseline=True,
     )
 
 
 def eviction_requests(n: int) -> list[MMRequest]:
     """Build the capacity-eviction scenario requests: ``n`` distinct images.
 
-    Baseline-exempt like the pressure requests (verified by semantic probe
-    and re-run-vs-first-run equivalence).
+    Verified against a config-matched plain-vLLM baseline (with probe
+    rescue) plus re-run-vs-first-run equivalence.
 
     Args:
         n: Number of distinct images; sized to overflow the tiny cache.
@@ -268,7 +270,7 @@ def eviction_requests(n: int) -> list[MMRequest]:
             question=COLOR_QUESTION,
             image_indices=(EVICTION_INDEX_BASE + i,),
             expected_probe=(image_color_name(EVICTION_INDEX_BASE + i),),
-            needs_baseline=False,
+            needs_baseline=True,
         )
         for i in range(n)
     ]

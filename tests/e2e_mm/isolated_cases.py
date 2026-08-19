@@ -9,21 +9,23 @@ so each runs in its own subprocess:
 
 The process writes a JSON report {"scenario", "model", "failures", "metrics"}
 and exits nonzero if any check failed. ``test_isolated_paths.py`` wraps this
-in pytest. Verification is semantic-probe and self-equivalence based (no
-plain-vLLM baseline): chunked scheduling changes batch shapes, so exact
-cross-engine token matching would be noise, while a cache-contamination
-failure still flips the probe or the pass-vs-pass equality.
+in pytest. Correctness uses the same oracle as the main suite: a plain-vLLM
+baseline computed in a subprocess under the SAME engine config (semantic
+probe only as nondeterminism rescue). A bare probe is not enough — small
+models misname colors behind long pad prefixes even without LMCache, which
+would misattribute model weakness to the cache.
 """
 
 # Standard
 import json
 import pathlib
 import sys
+import tempfile
 
 # First Party (test-local)
-from catalog import eviction_requests, long_prefix_color_request
+from catalog import MMRequest, eviction_requests, long_prefix_color_request
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
-from harness import MMHarness
+from harness import MMHarness, compute_baselines
 from specs import MODEL_SPECS, ModelSpec
 
 IMAGE_SPAN_MARGIN = 4 * CHUNK
@@ -53,6 +55,20 @@ def _expect(failures: list[str], condition: bool, message: str) -> None:
         failures.append(message)
 
 
+def _check_text(
+    failures: list[str],
+    harness: MMHarness,
+    request: MMRequest,
+    text: str,
+    where: str,
+) -> None:
+    """Run the harness baseline/probe policy, recording instead of raising."""
+    try:
+        harness.check_text(request, text, where)
+    except AssertionError as exc:
+        failures.append(str(exc))
+
+
 def run_chunked_prefill(spec: ModelSpec) -> dict:
     """T0.9: correctness when scheduler steps split an image span.
 
@@ -70,25 +86,32 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
     Returns:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
-    harness = MMHarness(
-        spec,
-        baselines={},
-        extra_engine_kwargs={
-            "gpu_memory_utilization": ISOLATED_GPU_UTILIZATION,
-            "max_num_batched_tokens": CHUNKED_TOKEN_BUDGET,
-            "max_num_seqs": 4,
-        },
-    )
+    engine_kwargs = {
+        "gpu_memory_utilization": ISOLATED_GPU_UTILIZATION,
+        "max_num_batched_tokens": CHUNKED_TOKEN_BUDGET,
+        "max_num_seqs": 4,
+    }
+    pairs = {
+        pad: (
+            long_prefix_color_request(f"t09-p{pad}-A", f"t09c-{pad}", pad, 0),
+            long_prefix_color_request(f"t09-p{pad}-B", f"t09c-{pad}", pad, 2),
+        )
+        for pad in CHUNKED_PAD_PHASES
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        baselines = compute_baselines(
+            spec,
+            [r for pair in pairs.values() for r in pair],
+            pathlib.Path(tmp),
+            extra_engine_kwargs=engine_kwargs,
+        )
+    harness = MMHarness(spec, baselines=baselines, extra_engine_kwargs=engine_kwargs)
     failures: list[str] = []
     metrics: dict[str, dict] = {}
     stored_before = harness.stored_tokens_total()
     total_missed = 0
     try:
-        for pad in CHUNKED_PAD_PHASES:
-            salt = f"t09c-{pad}"
-            req_a = long_prefix_color_request(f"t09-p{pad}-A", salt, pad, 0)
-            req_b = long_prefix_color_request(f"t09-p{pad}-B", salt, pad, 2)
-
+        for pad, (req_a, req_b) in pairs.items():
             a1 = harness.run(req_a)
             _expect(
                 failures,
@@ -102,11 +125,7 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
                 a1.lookup_hits == 0,
                 f"pad {pad}: fresh request hit {a1.lookup_hits} tokens",
             )
-            _expect(
-                failures,
-                harness.probe_ok(req_a, a1.text),
-                f"pad {pad}: miss-path probe failed: {a1.text!r}",
-            )
+            _check_text(failures, harness, req_a, a1.text, f"T0.9 pad {pad} miss A")
 
             a2 = harness.run(req_a)
             _expect(
@@ -122,10 +141,8 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
             )
 
             b1 = harness.run(req_b)
-            _expect(
-                failures,
-                harness.probe_ok(req_b, b1.text),
-                f"pad {pad}: different-image probe failed: {b1.text!r}",
+            _check_text(
+                failures, harness, req_b, b1.text, f"T0.9 pad {pad} different B"
             )
             _expect(
                 failures,
@@ -174,9 +191,17 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     Returns:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
+    requests = eviction_requests(EVICTION_N)
+    with tempfile.TemporaryDirectory() as tmp:
+        baselines = compute_baselines(
+            spec,
+            requests,
+            pathlib.Path(tmp),
+            extra_engine_kwargs={"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION},
+        )
     harness = MMHarness(
         spec,
-        baselines={},
+        baselines=baselines,
         extra_engine_kwargs={"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION},
         max_local_cpu_gb=EVICTION_CAPACITY_GB,
     )
@@ -184,15 +209,10 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     metrics: dict[str, object] = {}
     capacity_bytes = int(EVICTION_CAPACITY_GB * 1024**3)
     try:
-        requests = eviction_requests(EVICTION_N)
         pass1 = [harness.run(r) for r in requests]
 
         for req, res in zip(requests, pass1, strict=True):
-            _expect(
-                failures,
-                harness.probe_ok(req, res.text),
-                f"{req.key}: probe failed under eviction: {res.text!r}",
-            )
+            _check_text(failures, harness, req, res.text, f"T0.10 pass1 {req.key}")
         _expect(
             failures,
             pass1[0].lookup_hits == 0,

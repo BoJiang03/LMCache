@@ -20,7 +20,10 @@ def main(in_path: str, out_path: str) -> None:
     from vllm import LLM, SamplingParams
 
     spec = json.loads(open(in_path).read())
-    llm = LLM(
+    # extra_engine_kwargs lets isolated scenarios (chunked prefill) get a
+    # CONFIG-MATCHED baseline: the correctness oracle must run under the
+    # same scheduling as the engine under test, or numerics diverge.
+    engine_kwargs: dict = dict(
         model=spec["model"],
         max_model_len=spec["max_model_len"],
         gpu_memory_utilization=spec["gpu_memory_utilization"],
@@ -28,6 +31,8 @@ def main(in_path: str, out_path: str) -> None:
         enable_prefix_caching=False,
         limit_mm_per_prompt={"image": 2},
     )
+    engine_kwargs.update(spec.get("extra_engine_kwargs", {}))
+    llm = LLM(**engine_kwargs)
     results: dict[str, str] = {}
     for request in spec["requests"]:
         outputs = llm.chat(

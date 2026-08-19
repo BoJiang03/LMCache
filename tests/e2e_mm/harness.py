@@ -448,7 +448,10 @@ class MMHarness:
 
 
 def compute_baselines(
-    spec: ModelSpec, requests: list[MMRequest], workdir: pathlib.Path
+    spec: ModelSpec,
+    requests: list[MMRequest],
+    workdir: pathlib.Path,
+    extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
 ) -> dict[str, str]:
     """Run all baseline-needing requests on a plain vLLM engine (subprocess).
 
@@ -456,6 +459,9 @@ def compute_baselines(
         spec: The model under certification.
         requests: Requests to run; only those with ``needs_baseline`` run.
         workdir: Directory for the input/output JSON files.
+        extra_engine_kwargs: Additional/overriding engine kwargs, so isolated
+            scenarios get a baseline under the SAME scheduling config as the
+            engine under test (must be JSON-serializable).
 
     Returns:
         Mapping of request key to generated text.
@@ -468,6 +474,7 @@ def compute_baselines(
         "model": spec.hf_id,
         "max_model_len": spec.max_model_len,
         "gpu_memory_utilization": spec.gpu_memory_utilization,
+        "extra_engine_kwargs": dict(extra_engine_kwargs),
         "requests": [
             {"key": r.key, "messages": r.messages(), "max_tokens": r.max_tokens}
             for r in todo
