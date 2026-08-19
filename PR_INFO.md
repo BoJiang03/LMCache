@@ -74,284 +74,181 @@ current eviction-only behavior.
 
 ## Performance
 
-Reported TP=1 runs used one NVIDIA H200; tensor-parallel runs used the
-corresponding number of H200 GPUs. All runs used the LMCache MP connector and
-CPU L1.
+All performance workloads compare three configurations of the same engine on
+byte-identical request streams: `off` (no KV connector at all), `eager` (the MP
+connector's immediate-offload behavior, today's default), and eviction-aware
+lazy offload with this PR's defaults. Every run uses Qwen/Qwen3-8B on NVIDIA
+H200 at TP=4, a fixed 20 GiB GPU KV pool, and the LMCache MP connector with CPU
+L1. Everything below was measured on the final production tree. Latency
+comparisons are paired per request -- same request, same position in the same
+stream -- because the effects are tens of milliseconds on populations whose own
+spread is hundreds.
 
-### Hot/cold long documents
+### Long-context QA: sweeping the working set across L1 capacity
 
-The workload has three hot documents that remain GPU-resident and eleven cold
-documents whose reuse requires a lower-tier copy: 38.5 GiB of distinct KV,
-20 GiB GPU KV pool, 40 GiB L1, 14 warmup requests, and 120 measured requests.
+Real AllenAI QASPER v0.3 research papers (8K--16K tokens each). Each user sends
+one paper and a real question, then returns 16 seconds later with a
+human-written follow-up; QPS 2, L1 fixed at 40 GiB, and the cohort size swept
+so the distinct KV working set crosses L1 capacity. Two repetitions with
+configuration order reversed. Values are median per-user round-2 E2E deltas in
+ms against `off` (rep 1 / rep 2; negative is faster):
 
-Representative final-tree run:
-
-| policy | external hit | total coverage | wall time | L1 eviction cycles |
-| --- | ---: | ---: | ---: | ---: |
-| eager | 0.000 | 0.725 | 43.1s | 14 |
-| eviction-aware | 0.677 | 0.911 | 30.3s | 5 |
-
-Across repeated runs, eager took 41--43 seconds with 14--15 L1 eviction cycles;
-eviction-aware took 27--31 seconds with 3--6 cycles. The improvement comes from
-not writing the GPU-resident hot set into L1, preserving capacity for cold
-prefixes that actually need retrieval.
-
-For comparison, legacy FIFO with its default `threshold=100/select_count=10`
-took 41.9--42.0 seconds and left total coverage at 0.725. Snapshot validation
-rejected 15 stale request batches per run after FIFO waited past their GPU block
-lifetime. A tuned 10/10 FIFO reduced median time to 33.1 seconds but still had
-lower coverage (0.715) than eviction-aware (0.933). At TP=4, eviction-aware was
-11.9% faster than default FIFO with coverage 0.948 versus 0.725.
-
-The trade-off is foreground interference: at TP=1, hot TTFT p50 was 130ms for
-eager/default FIFO, 157ms for tuned FIFO, and 160ms for eviction-aware; at TP=4
-it was 118ms, 114ms, and 161ms, respectively. Controlled TP=4 attribution shows
-this is not decision-loop overhead: eviction-aware with all stores suppressed
-measured 120ms, serialized real retrieval/stores measured 125ms, and an
-unconstrained 64 GiB L1 measured 136ms. The 161ms result requires concurrent
-cold retrieval/drain work under the original 40 GiB L1 pressure; non-adjacent
-hot requests remain at baseline. That interference cuts cold p50 from 369ms to
-204ms versus FIFO and still reduces total wall time by 18.4% versus eager.
-
-### Real long-context paper QA
-
-A supplemental TP=4 sweep used the original AllenAI QASPER v0.3 data: each
-session sends a real 8K--16K-token research paper and question, then returns 16
-seconds later with a human-written follow-up question. The fixed workload used
-QPS 2, 20 GiB GPU KV, 40 GiB L1, and two repetitions per point with policy
-order reversed.
-
-| distinct KV working set | eager coverage | eviction-aware coverage | returning E2E p50 improvement | returning E2E p90 improvement |
-| ---: | ---: | ---: | ---: | ---: |
-| 23.0 GiB | 0.492 | 0.492 | -7.4% to -5.3% | 1.6%--6.4% |
-| 34.6 GiB | 0.001 | 0.461 | 28.2%--28.3% | 13.6%--14.3% |
-| 45.5 GiB | 0.001 | 0.200--0.268 | 14.3%--20.9% | 11.2%--14.9% |
-| 55.7 GiB | 0.001 | 0.152--0.172 | 12.5%--15.8% | 5.9%--16.3% |
-| 67.0 GiB | 0.001 | 0.057--0.119 | 5.6%--7.3% | 7.0%--9.1% |
-
-The operating envelope is explicit: there is no E2E p50 win when both policies
-fit comfortably in L1; the largest gain occurs when the unique reusable set is
-near L1 capacity but eager's repeated incremental snapshots churn it. Benefits
-decline as the reusable set grows far beyond L1. Returning TTFT p90 is less
-stable than E2E because lower-tier work can overlap foreground execution. A
-separate 4.3K-token ShareGPT multi-round trial similarly raised coverage without
-improving typical latency, confirming that short TP=4 recomputation can already
-be cheaper than retrieval.
-
-### Real agentic sessions
-
-A third supplemental TP=4 workload replays published `nebius/SWE-agent-trajectories`
-runs: real SWE-agent sessions against real GitHub issues, where a prompt grows one
-recorded action and one tool observation at a time and the session idles while the
-tool runs. The engine's answer is discarded and the recorded action appended, so both
-policies replay byte-identical request streams. Trajectories are replayed whole -- 4
-to 158 steps, final prompts up to 34591 tokens -- as 14 concurrent slots each issuing
-158 steps from a queue of whole sessions, which holds concurrency and step rate
-constant across a forty-fold spread in session length. 36.7 GiB is live at once and
-182.6 GiB of distinct KV passes through the cache per run; pressure is swept with the
-L1 budget at a fixed 20 GiB GPU KV pool.
-
-| L1 budget | live/L1 | eager coverage | eviction-aware coverage | eager external hit | TTFT p90 improvement | E2E p90 improvement |
+| KV working set | vs L1 | eager coverage | eviction-aware coverage | eager vs off | eviction-aware vs off | eviction-aware vs eager |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 40 GiB | 0.9x | 0.763 | 0.895 | 0.658 | 22.1% | 21.0% |
-| 20 GiB | 1.8x | 0.310 | 0.626 | 0.004 | 18.2% | 16.3% |
-| 10 GiB | 3.7x | 0.308 | 0.429 | 0.000 | 4.2% | 4.5% |
+| 23.2 GiB | 0.6x | 0.492 | 0.44--0.47 | -24.6 / -28.4 | **-67.9 / -71.8** | -38.5 / -36.4 |
+| 34.8 GiB | 0.9x | 0.000 | 0.460 | +61.2 / +46.6 | **-37.8 / -57.1** | -96.5 / -98.8 |
+| 45.8 GiB | 1.1x | 0.000 | 0.23--0.29 | +36.4 / +34.0 | **-43.7 / -6.7** | -68.4 / -44.7 |
+| 56.0 GiB | 1.4x | 0.000 | 0.17--0.18 | +35.4 / +39.8 | +12.7 / +7.9 | -31.1 / -37.1 |
+| 67.5 GiB | 1.7x | 0.000 | 0.07--0.11 | +40.6 / +42.4 | +11.2 / -5.4 | -25.3 / -52.9 |
 
-(The 10 GiB row is measured with the emission-following read described in the
-next section; the pre-change harness had eviction-aware *losing* to eager at
-that budget by 10.9 ms of paired E2E, and the loss was the same prepaid
-read as everything else in that section. Post-change it wins at every
-budget: paired E2E against eager is -29.2 ms at 10 GiB.)
+- Eviction-aware is faster than eager at every point in both repetitions.
+- **At or above L1 capacity, eager is worse than having no connector**
+  (+34 to +61 ms per returning request at 0.000 coverage): it writes every
+  incremental snapshot of a working set the cache cannot hold, and its own
+  next writes evict what it just stored. That is the failure mode this policy
+  exists to prevent; at 0.9x--1.1x, eviction-aware retains 0.23--0.46
+  coverage and stays 7--57 ms faster than no connector.
+- The 23.2 GiB coverage split is a tier upgrade, not lost reuse: total hit
+  tokens are identical in every repetition (167,024 each), with 17k--31k of
+  eviction-aware's served by vLLM's GPU prefix cache instead of external
+  retrieval, because the drain's D2H pin re-ranks its blocks to the free
+  queue's youngest eviction position. No stores were lost
+  (`dropped_evicted=0`).
+- Far above capacity the loss against `off` is bounded (-5 to +13 ms) while
+  eager's is +40; the policy degrades gracefully.
 
-Improvements above are against eager. Measured instead against an engine with no KV
-connector at all, eager is a net loss at the 20 GiB budget while eviction-aware is
-faster than running without a connector; the section below reports that comparison,
-which is the more informative one. Two repetitions with reversed variant order agree to within
-0.013 coverage and 2.5 ms of mean paired E2E at the 20 and 40 GiB budgets. At 20 GiB the mean end-to-end
-latency over 2141 token-identical request pairs improves by 39.4 ms, and L1 eviction
-cycles fall from 714 to 322. Eager's external hit rate of 0.004 at 20 GiB and 0.000
-at 10 GiB is the failure mode this policy exists to prevent: eager writes every step
-of a working set the budget cannot hold, and its own next writes evict what it just
-stored.
+Zero vLLM preemptions in all 30 runs. Per-request data, ledgers and caveats:
+`QASPER_WORKING_SET.md`.
 
-### What the per-step decision costs, and why the drain budget must not set it
+### Real agentic sessions: sweeping L1 pressure at a fixed working set
 
-`collect_due` runs once per scheduler step on the scheduler's critical path, so
-whatever it reads is paid by every request in the run. It compares free-queue ranks
-against the danger depth extended by the blocks the drain itself pins out of the
-queue, and that extension used to be prepaid: `max_drain_per_step x largest pending
-operation`, capped by the pending backlog. Nine full runs of the same 2212-request
-workload at the 20 GiB budget, each varying one thing and all paired against the same
-`off` run (an engine with no KV connector), separate what that cost from what the
-deferral buys.
+Replays of published `nebius/SWE-agent-trajectories` -- real SWE-agent sessions
+against real GitHub issues, where a prompt grows one recorded action and one
+tool observation at a time. Trajectories are replayed whole (4--158 steps,
+final prompts up to 34.6K tokens) as 14 concurrent slots at a constant step
+rate, which holds concurrency fixed across a forty-fold spread in session
+length. 36.7 GiB of KV is live at once and 182.6 GiB of distinct KV passes
+through the cache per run; the L1 budget is swept with everything else fixed.
+Paired means over the same 2212 requests, in ms against `off`:
 
-| variant | TTFT | decode | E2E | coverage | throttled | dropped_evicted |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| eager | +27.8 ms | +29.6 ms | **+57.4 ms** | 0.310 | -- | -- |
-| eviction-aware `=64`, prepaid read | -6.7 | +39.2 | +32.4 | 0.623 | 0 | 138 |
-| eviction-aware `=4`, prepaid read | -8.1 | +25.2 | +17.1 | 0.626 | 134 | 350 |
-| eviction-aware `=1`, prepaid read | -2.9 | +1.7 | -1.2 | 0.600 | 731 | 1017 |
-| `=4`, prepaid, `min_prefix_tokens=12000` | -9.3 | +24.9 | +15.6 | 0.612 | 95 | 242 |
-| **eviction-aware `=64`, read follows emissions** | **-5.9** | **-1.9** | **-7.8** | 0.614 | 0 | 149 |
-| **eviction-aware `=4`, read follows emissions** | **-7.9** | **-0.6** | **-8.5** | 0.622 | 125 | 333 |
+| L1 budget | live/L1 | config | coverage | external hit | TTFT | decode | E2E | preempt |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 GiB | 0.9x | eager | 0.776 | 0.677 | -33.3 | +2.1 | -31.2 | 0 |
+| | | eviction-aware | 0.896 | 0.852 | **-44.2** | **-11.7** | **-55.8** | 0 |
+| 20 GiB | 1.8x | eager | 0.310 | 0.003 | +27.8 | +29.6 | +57.4 | 0 |
+| | | eviction-aware | 0.614 | 0.450 | **-5.9** | **-1.9** | **-7.8** | 1 |
+| 10 GiB | 3.7x | eager | 0.308 | 0.000 | +23.6 | +22.4 | +46.0 | 0 |
+| | | eviction-aware | 0.429 | 0.121 | +13.3 | +3.6 | +16.8 | 11 |
 
-**At this budget eager is worse than having no connector at all, at every prompt
-length.** Its TTFT cost against `off` rises from 10 ms at sub-4000-token prompts to
-57 ms above 24000 -- it writes in proportion to what it reads in -- while its external
-hit rate is 0.004, so none of it comes back. That is 57.4 ms per request of pure loss,
-and it is the baseline the rest of this section measures against.
+(`off` reaches 0.308 coverage from the GPU prefix cache alone; coverage counts
+any cache tier, external hit only LMCache.)
 
-**The cost was the read, and the read was overcharged by orders of magnitude.**
-Decode split into run octiles shows the shape: with the prepaid bound, eviction-aware
-decodes *faster* than no connector for three quarters of a run and then doubles
-(89 ms to 202 ms at `=4`), while `off` and eager stay flat. Lowering
-`max_drain_per_step` to 1 flattened it, which is what identified the read rather than
-the deferral, the pending depth (`=1` ends with 81 pending against `=4`'s 101) or
-context length (the final octile's prompts are the run's shortest). The new cost
-counters put a number on the overcharge: across 70096 drains the policy emits 2794
-operations, **0.04 per drain**, while the prepaid bound sized every drain's read for
-`max_drain_per_step` of them.
+**Where both policies work (40 GiB), eviction-aware nearly doubles eager's
+win** and takes the tail with it: E2E p99 is 556 ms against eager's 1133 and
+off's 1049, and decode octile means run flat at 89--91 ms while off and eager
+spike to 120--131 mid-run. Storing only what eviction threatens cuts L1
+eviction cycles from 123 to 44 and raises the external hit rate from 0.677 to
+0.852.
 
-**The fix is to let the read follow the emissions instead of anticipating them.**
-The free-queue window now opens at the danger depth and widens only by the blocks an
-emission has already pinned out of the queue; whether a pinned block was in the queue
-is asked of the pool in O(1) (`ref_cnt == 0`) rather than of the window, so a pin
-deeper than the window still counts and the widening cannot stall. The semantics are
-unchanged -- the same candidates drain on the same steps, and the policy's ledger is
-identical counter for counter on the layer-1 scenarios -- but the read is now 83.3
-blocks per step. At the default cap this removes the decode cost entirely (+39.2 ms
-to -1.9 ms) and takes end-to-end latency below the no-connector baseline (+32.4 ms to
--7.8 ms). The +73/+103 ms E2E penalty the prepaid read imposed on prompts under 8000
-tokens -- the reason the policy could look worse than eager on short requests -- falls
-to +7/+9 ms, while the gain above 24000 tokens holds at -48 ms.
+**Under pressure (20 GiB) eager is worse than no connector at every prompt
+length** while eviction-aware stays faster than no connector. At 10 GiB the
+0.121 external hit a 0.27x budget can retain no longer repays retrieval, so
+eviction-aware is net cost against `off` (+16.8 ms) -- but still 29.2 ms faster
+than eager, paired. The policy has a working range; below it, it loses least.
 
-**`max_drain_per_step` is now a single-purpose knob.** `=4` and `=64` read to the same
-depth (79.4 against 83.3 blocks per step) and decode the same, while still differing
-in exactly what the cap is for: `=4` throttles 125 drains and loses 333 admitted
-operations to eviction, against 0 and 149 at the default. Before the change the same
-pair differed by 14 ms of decode per request, which is what made the knob look worth
-tuning; lowering it now buys 0.7 ms of E2E, inside the measurement floor, for 184 more
-operations lost.
+**The decision loop's cost is bounded by its own emissions.** The policy's
+free-queue read runs on the scheduler's critical path every step; it opens at
+the eviction danger depth and widens only by the blocks a drain's emission has
+already pinned out of the queue (an O(1) `ref_cnt` check per block). Across
+these budgets it reads 67--95 blocks per step, and the paired decode delta
+against `off` stays between -11.7 and +3.6 ms. Four ledger counters
+(`drain_steps`, `free_queue_blocks_read`, `requests_validated`,
+`blocks_validated`) make that cost readable from the ledger, and the layer-1
+scenarios pin the semantics: the policy ledger is identical counter for
+counter to the previous, prepaid read that this bound replaced.
 
-**Gate 3 does something other than what it looks like.**
-`lmcache.mp.lazy_offload_min_prefix_tokens` defaults to 0, and setting it to 12000
-makes the policy refuse 1108 operations, so a shorter request provably has nothing of
-its own session in L1 to retrieve -- yet its penalty against `off` was unchanged.
-What the gate does instead is stop spending L1 on short prefixes, which grows the
-26231-token TTFT gain from 93 ms to 135 ms for 0.014 of coverage. The residual
-short-prompt cost itself decomposes into a per-request connector overhead that
-eager pays too (+7/+9 ms median against `off`) and, on top of it, retrieval of
-hits too small to pay for themselves: retrieval has a ~9 ms floor, and what a
-short prompt hits is almost always the ~1024-token prefix all sessions share
-(91% of sub-4k hits move <=2048 tokens), which explains why the gate-3 control
-could not remove it. The fix -- a minimum-hit threshold in the connector's
-lookup path -- is common MP-connector code, outside this PR
-(`AGENTIC_WORKLOAD.md` §6).
+**The eviction-aware-only preemptions are the drain's transient pin, and
+`max_drain_per_step` bounds them.** A pending operation's blocks sit in the
+free queue and cost nothing to hold; emission pins them out for the duration
+of the D2H copy, and under budget pressure those bursts coincide with the
+allocation spikes that pressed the queue (sampled pool peaks reach 99.1% where
+the offered load alone never exceeds 38.2%). Capping the drain at 4 cuts the
+peaks to 65.4% and the 10 GiB count from 11 to 1, at the cost of 186 more
+operations lost to eviction and ~10 ms of the E2E win. Every victim resumed
+and finished (worst observed +34 ms of TTFT, ~0.15 ms amortized per request),
+so the default cap stays 64; an operator who cannot tolerate preemptions knows
+which knob bounds them and what it costs.
 
-The panel spans hours, so `off` was run twice, sixteen hours apart on either side of
-the change: paired, the two agree to -1.1 ms TTFT, -0.9 ms decode and -2.0 ms E2E,
-which is the resolution floor for every number above.
+**What a short prompt still pays** (+7 to +15 ms TTFT below 8K tokens)
+decomposes into a per-request connector overhead that eager pays too, plus
+retrieval of hits too small to repay the ~9 ms transfer floor; the measured
+break-even is near 8K tokens. The fix -- a minimum-hit gate in the connector's
+lookup path -- is common MP-connector code, outside this PR.
 
-**The eviction-aware-only vLLM preemptions are the drain's transient pin, and the
-cap bounds them.** Under budget pressure the policy occasionally preempts a vLLM
-request where eager and `off` never do (11 of 2212 requests at 10 GiB with the
-default cap, 1 at 20 GiB). The mechanism, from the run logs: a pending
-operation's blocks sit *in* the free queue and cost nothing to hold -- emission is
-what pins them out of it for the duration of the D2H copy, and under pressure a
-drain emits whole-prefix operations in bursts exactly when allocation demand
-spikes, because the demand is what pressed the queue. The offered load alone
-peaks at 38.2% of the pool (`off` and eager, same request stream, zero
-preemptions); the lazy variant's sampled peaks reach 99.1%. `max_drain_per_step=4`
-bounds the transient -- peaks fall to 65.4% and the preemptions to one -- at the
-cost of 186 more operations lost to eviction and ~10 ms of the E2E win. Each
-victim resumed and finished (worst observed cost +34 ms of TTFT, ~0.15 ms
-amortized per request at the default cap), and its buffered operations are
-correctly dropped, so the default stays right; an operator who cannot tolerate
-preemptions now knows which knob bounds them and what it costs
-(`AGENTIC_WORKLOAD.md` §7).
+Full panels, the short-prompt decomposition, and the preemption census:
+`AGENTIC_WORKLOAD.md` (§5--§8).
 
-### GSM8K correctness
+### GSM8K correctness across configurations
 
-The correctness workload runs 120 questions twice (cold then cached),
-concurrency four, with approximately 51 GiB of KV against a 68 GiB L1.
-Strict scores stayed within the existing 0.900--0.925 run-to-run range. A
-representative cached run produced:
+120 questions, 20-shot, greedy, run twice (cold pass then cached pass) at
+concurrency 4 against a 68 GiB L1 (~51 GiB of KV); three repetitions per
+configuration:
 
-| policy | strict score | external coverage | cached wall time |
-| --- | ---: | ---: | ---: |
-| eager | 0.908 | 0.961 | 21.7s |
-| eviction-aware | 0.908 | 0.961 | 22.3s |
+| config | strict score, cold | strict score, cached | external coverage | cached wall time |
+| --- | ---: | ---: | ---: | ---: |
+| off | 0.917--0.925 | 0.917--0.933 | -- | 15.0--15.1 s |
+| eager | 0.925--0.933 | 0.917--0.925 | 0.961 | 13.5--14.6 s |
+| eviction-aware | 0.917--0.933 | 0.925 | 0.961 | 13.3--14.4 s |
 
-This workload is intentionally unfavorable to deferral because reuse distances
-exceed GPU residency; it verifies retrieval correctness and bounds the cost when
-the eviction gate has little work to eliminate.
-
-Rerun after the emission-following read change, three repetitions per config
-with a no-connector `off` reference added (`run_gsm8k.sh` now sweeps all
-three): every cross-config strict delta against `off` is within one question,
-the same band as `off` against itself (117--118/120 identical answers across
-two `off` runs), and the eviction-aware cached score is 0.925 in all three
-repetitions at the same 0.961 external coverage as eager. All nine runs pass
-every non-vacuity guard and every lazy ledger closes. On the cached pass
-eviction-aware answers 7 ms/question faster than eager (mean TTFT 101 against
-108); both cost against `off` (86), because a ~3.1k-token prompt is below the
-~8k retrieval break-even measured independently on the agentic workload --
-two workloads, one curve.
-
-### Eager APC backfill
-
-An isolated hardware A/B used identical production code except for disabling
-eager APC-hit accounting in the baseline. After clearing L1, replaying a
-2565-token APC-resident prompt, displacing it from GPU, and requesting it again:
-
-- the PR rebuilt 10 L1 objects and retrieved 2560 tokens in every repetition;
-- the one-line baseline rebuilt no objects and recomputed the prefix;
-- all generated outputs matched, with no warnings or tracebacks;
-- two five-repeat runs reduced median third-request latency by 16--26%
-  (approximately 1.19--1.35x speedup).
-
-The extra store is intentional eager behavior. Eviction-aware lazy offload is
-where future Reuse and Economy gates can avoid paying that cost for dead KV.
+Every cross-configuration score delta is within one question -- the same band
+as `off` against itself (two `off` runs agree on 118/120 answers; eager and
+eviction-aware agree with `off` on 116--118). Eviction-aware reaches eager's
+exact external coverage while storing fewer objects (5536 against 5792 on the
+cold pass). All nine runs pass every guard and every ledger closes. Cached
+per-question TTFT (eviction-aware 101 ms mean, eager 108, off 86) sits above
+`off` because a ~3.1K-token prompt is below the ~8K retrieval break-even
+measured on the agentic workload -- two workloads, one curve -- while cached
+wall time still improves about 10% over `off` because prefill savings compound
+at concurrency.
 
 ## Validation
 
-- 178 relevant unit/contract tests passed.
-- The suite covers policy invariants, epoch transitions, stale failures,
-  request-ID reuse, FIFO compatibility, connector delegation, worker receipt
-  aggregation, and eager APC backfill behavior.
-- Ruff check, Ruff format, compileall, and `git diff --check` pass.
-- GSM8K, hot/cold performance, and eager APC-backfill A/B were rerun on the
-  final production tree with no warnings or tracebacks.
-- A supplemental architecture matrix covers Gemma 3 12B hybrid attention and
-  DeepSeek V2 Lite MLA/MoE. Two-run hot/cold medians improved by 33.1% and
-  13.9%, respectively; byte-level eager/lazy KV comparisons also matched.
-- TP=2 and TP=4 validation registered every worker adapter and GPU cache.
-  GSM8K cached score/coverage matched eager at both sizes; two-run hot/cold
-  medians improved by 24.3% and 18.4% with no failed store or request-drop
-  loss.
-- Eager/default-FIFO/tuned-FIFO/eviction-aware A/B confirms that FIFO's request
+- 178 relevant unit/contract tests pass, covering policy invariants, epoch
+  transitions, stale failures, request-ID reuse, FIFO compatibility, connector
+  delegation, worker receipt aggregation, and eager APC backfill. Ruff check,
+  Ruff format, compileall, and `git diff --check` pass.
+- The free-queue read change is pinned by a layer-1 ledger A/B: on the
+  scenarios that exercise pressure and a capped drain, the policy ledger is
+  identical counter for counter, down to per-step store submission sizes.
+- Hot/cold stress test (3 hot + 11 cold documents, 38.5 GiB of KV through a
+  40 GiB L1): eviction-aware finished in 27--31 s against eager's 41--43 s with
+  a third of the L1 eviction cycles, at TP=1 and TP=4. Legacy FIFO's request
   count is not a proxy for GPU block lifetime: default FIFO produced no usable
-  GSM8K stores, while eviction-aware remained faster at TP=1 and TP=4.
-- A real QASPER TP=4 working-set sweep completed 20 fixed-cohort runs with
-  reversed policy order. It reproduced a 28% returning-session E2E p50 gain
-  near L1 capacity and bounded the no-gain and over-capacity regimes. The MP
-  server emitted a mode-independent missing-touch-key warning, so these
-  supplemental runs are not described as warning-free.
-- A real SWE-agent TP=4 replay completed 30 capped-cohort runs and 21
-  whole-trajectory runs. Every run's engine-reported prompt-token count matched
-  the cohort's tokenizer count for every step, so the replay sent exactly the
-  prompts the cohort selection reasoned about, and schedule lag p90 was 0.0 ms
-  throughout. All 30 capped runs and 15 of the 21 whole-trajectory runs pass
-  every harness guard; every exception is a vLLM preemption count, named in
-  the report rather than averaged in, and the mechanism is measured there
-  (the drain's transient pin, bounded by `max_drain_per_step`).
-- The per-step free-queue read was measured, then bounded by the drain's own
-  emissions rather than by `max_drain_per_step`. The layer-1 scenarios pin the
-  behaviour: on the two that exercise pressure and a capped drain, the policy
-  ledger is identical counter for counter before and after the change, down to
-  the per-step store submission sizes. Four new counters (`drain_steps`,
-  `free_queue_blocks_read`, `requests_validated`, `blocks_validated`) make the
-  decision loop's own cost readable from the ledger instead of inferred.
+  GSM8K stores and snapshot validation rejected its stale batches
+  ([`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c16726a0842fac51dfe3a398b0c9de1f2de5339e/repro/pr4499/POLICY_COMPARISON.md),
+  [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/bafbb2c80a806a072609aafd52b1c1003672ee3a/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
+  for the foreground-interference controls).
+- Eager APC-backfill isolated A/B: identical code except the one-line
+  accounting change; the PR rebuilt the displaced prefix's 10 L1 objects and
+  cut median third-request latency by 16--26% with byte-identical outputs.
+- Architecture matrix: Gemma 3 12B (hybrid attention) and DeepSeek V2 Lite
+  (MLA/MoE); two-run hot/cold medians improved 33.1% and 13.9%, and byte-level
+  eager/lazy KV comparisons matched
+  ([`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/517db749ea3ec549fb11c63cd06e2bb7636c581f/repro/pr4499/COMPLEX_MODELS.md)).
+- TP=2 and TP=4 registered every worker adapter and GPU cache; GSM8K cached
+  score and coverage matched eager at both sizes
+  ([`TP2.md`](https://github.com/BoJiang03/LMCache/blob/93d300ae56cd095ba2eae95925d11c064de3ef37/repro/pr4499/TP2.md),
+  [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/46634b7ed0dceef511aad55273ecec81cd9a6dcc/repro/pr4499/TP4.md)).
+- QASPER resweep: 30 of 30 runs rc=0 with zero preemptions; the two known
+  mode-independent caveats (a rate-limited missing-touch-key server warning
+  and the SIGINT teardown traceback) reproduce in `off` runs too, so they are
+  workload artifacts, not policy behavior.
+- Agentic replay: the engine-reported prompt-token count matched the cohort
+  tokenizer for every step of every run, and schedule lag p90 was 0.0 ms
+  throughout, so the replay sent exactly the prompts the cohort selection
+  reasoned about. All 30 capped-cohort runs and 18 of 24 whole-trajectory runs
+  pass every harness guard; every exception is a vLLM preemption count, named
+  in the report rather than averaged in, with the mechanism measured there.
 
 ## Reproduction
 
@@ -359,16 +256,14 @@ The hardware harness is intentionally kept outside the merge diff because it is
 one-off experiment infrastructure.
 
 - Production code: [`df199979`](https://github.com/BoJiang03/LMCache/commit/df199979ae1a70f60d76003beb40b8cec46affc3)
-- Immutable reproduction package: [`99dfc2f4`](https://github.com/BoJiang03/LMCache/tree/99dfc2f4e03ccf425259be89bc0644f49c02b1b7/repro/pr4499)
-- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/99dfc2f4e03ccf425259be89bc0644f49c02b1b7/repro/pr4499/README.md)
-- Raw JSON from the reported runs is included in the package.
-- Additional model matrix: [`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/517db749ea3ec549fb11c63cd06e2bb7636c581f/repro/pr4499/COMPLEX_MODELS.md)
-- TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/93d300ae56cd095ba2eae95925d11c064de3ef37/repro/pr4499/TP2.md)
-- TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/46634b7ed0dceef511aad55273ecec81cd9a6dcc/repro/pr4499/TP4.md)
-- Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c16726a0842fac51dfe3a398b0c9de1f2de5339e/repro/pr4499/POLICY_COMPARISON.md)
-- Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/bafbb2c80a806a072609aafd52b1c1003672ee3a/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
-- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/efd7cdb47aae4bc59573ac59d5137c82f596f212/repro/pr4499/QASPER_WORKING_SET.md)
-- Real agentic session replay: [`AGENTIC_WORKLOAD.md`](https://github.com/BoJiang03/LMCache/blob/a652ceff4e34612551d3e35faca1bee0ac4df8b0/repro/pr4499/AGENTIC_WORKLOAD.md)
+- Reproduction package (harness, raw results, analysis tools): [`10eafd5a`](https://github.com/BoJiang03/LMCache/tree/10eafd5a2d1d5ca5703bff7defa7aa76a5547da5/repro/pr4499)
+- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/10eafd5a2d1d5ca5703bff7defa7aa76a5547da5/repro/pr4499/README.md)
+- Long-context QA report: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/10eafd5a2d1d5ca5703bff7defa7aa76a5547da5/repro/pr4499/QASPER_WORKING_SET.md)
+  (`qasper_panel.py` tabulates the archived per-request data)
+- Agentic replay report: [`AGENTIC_WORKLOAD.md`](https://github.com/BoJiang03/LMCache/blob/10eafd5a2d1d5ca5703bff7defa7aa76a5547da5/repro/pr4499/AGENTIC_WORKLOAD.md)
+  (`agentic/analyze_panel.py` renders the paired panels)
+- GSM8K sweep: `run_gsm8k.sh` (all three configurations, three repetitions,
+  results under `results/`)
 
 Exact hot/cold comparison:
 
