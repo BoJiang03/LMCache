@@ -70,6 +70,24 @@ that guard the suite can silently certify a different source tree.
 | T2.2 | Partial sharing | Request [A] then request [A, C]: shared prefix hits, C computed correctly. |
 | T2.3 | Other modalities | For models with video/audio, T0.1/T0.3 rerun per modality (not yet implemented). |
 
+### T0.6 — Benchmark score parity (`benchmark_parity.py`)
+
+The synthetic matrix proves cache-key isolation; this tier proves the cache
+HIT path does not degrade real model quality. It scores the full **MME**
+benchmark (2374 yes/no questions, standard Perception/Cognition scoring)
+three ways: plain-vLLM baseline, LMCache cold pass (miss path), and an
+identical second pass where every prompt's KV is restored from LMCache (hit
+path). Pass criteria: pass2-vs-pass1 answer flips ≤ 0.5%, |total score
+delta| ≤ 10 points (of 2800), pass2 lookup hit ratio ≥ 0.8.
+
+```bash
+cd tests/e2e_mm && CUDA_VISIBLE_DEVICES=0 python benchmark_parity.py
+```
+
+Long-running (three full benchmark passes); intended for nightly/release
+validation rather than PR CI. Certification for the "supported" level
+requires one recorded parity run per model.
+
 ### T3 — Deployment paths
 
 The same T0+T1 set must pass per path. Currently implemented: in-process

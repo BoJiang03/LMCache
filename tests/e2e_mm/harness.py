@@ -65,6 +65,38 @@ def configure_environment() -> None:
             )
 
 
+def cumulative_lookup_stats(monitor) -> tuple[int, int]:
+    """Cumulative (lookup_tokens, lookup_hits) since engine start.
+
+    LMCache's stats-logger thread periodically moves the monitor's interval
+    counters into Prometheus counters. The sum of the Prometheus counter and
+    the monitor's current (un-cleared) interval is invariant under that move,
+    so deltas of this sum are immune to the logger's clearing. Callers must
+    never clear the monitor themselves.
+
+    Args:
+        monitor: The process-local ``LMCStatsMonitor`` instance.
+
+    Returns:
+        Tuple of cumulative (lookup_tokens, lookup_hits).
+    """
+    # Third Party
+    from prometheus_client import REGISTRY
+
+    totals = {"lmcache:num_lookup_tokens": 0.0, "lmcache:num_lookup_hits": 0.0}
+    for metric in REGISTRY.collect():
+        if metric.name in totals:
+            totals[metric.name] = sum(
+                sample.value
+                for sample in metric.samples
+                if sample.name.endswith("_total")
+            )
+    return (
+        int(totals["lmcache:num_lookup_tokens"]) + monitor.interval_lookup_tokens,
+        int(totals["lmcache:num_lookup_hits"]) + monitor.interval_lookup_hits,
+    )
+
+
 class MMHarness:
     """Drives one model's acceptance run: baselines + LMCache engine + stats.
 
@@ -162,30 +194,7 @@ class MMHarness:
         )
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
-        """Cumulative (lookup_tokens, lookup_hits) since engine start.
-
-        LMCache's stats-logger thread periodically moves the monitor's
-        interval counters into Prometheus counters. The sum of the Prometheus
-        counter and the monitor's current (un-cleared) interval is invariant
-        under that move, so deltas of this sum are immune to the logger's
-        clearing. The harness itself never clears the monitor.
-        """
-        # Third Party
-        from prometheus_client import REGISTRY
-
-        totals = {"lmcache:num_lookup_tokens": 0.0, "lmcache:num_lookup_hits": 0.0}
-        for metric in REGISTRY.collect():
-            if metric.name in totals:
-                totals[metric.name] = sum(
-                    sample.value
-                    for sample in metric.samples
-                    if sample.name.endswith("_total")
-                )
-        return (
-            int(totals["lmcache:num_lookup_tokens"])
-            + self.monitor.interval_lookup_tokens,
-            int(totals["lmcache:num_lookup_hits"]) + self.monitor.interval_lookup_hits,
-        )
+        return cumulative_lookup_stats(self.monitor)
 
     def check_output(self, request: MMRequest, result: StepResult, where: str) -> None:
         """Verify a step's output against baseline and semantic probe.
