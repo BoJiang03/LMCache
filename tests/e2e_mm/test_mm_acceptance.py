@@ -1,0 +1,195 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Multimodal model support acceptance tests (T0-T2).
+
+See README.md in this directory for the acceptance matrix. All tests share
+one session-scoped LMCache engine per model; cache isolation between test
+cases comes from case-unique salts at the start of the system message, so
+each case's very first token chunk is unique and cases cannot hit each
+other's entries.
+
+Hit-count assertion vocabulary (chunk_size = 16):
+- "misses" == lookup_hits is 0 (case salt is fresh, chunk 0 cannot match);
+- "full hit" == lookup_hits >= lookup_tokens - 2 * CHUNK (trailing partial
+  chunk and the recompute-last-token rule);
+- "did not reach the image" == at least IMAGE_SPAN_MARGIN fewer hit tokens
+  than a full hit (test images are 448x448, spans of hundreds of tokens).
+"""
+
+# Third Party
+import pytest
+
+# First Party (test-local)
+from catalog import (
+    BOUNDARY_PHASES,
+    catalog,
+    pressure_requests,
+)
+from conftest import pressure_n
+from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
+
+IMAGE_SPAN_MARGIN = 4 * CHUNK
+
+CATALOG = catalog()
+
+
+def test_t0_cross_image_isolation_and_hit_equivalence(harness):
+    """T0.1 + T0.3 + T1.1 + T1.3 on one image pair."""
+    req_a, req_b = CATALOG["t01-A"], CATALOG["t01-B"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T0.1 first A")
+    assert a1.lookup_hits == 0, "fresh case salt must not hit anything"
+
+    b1 = harness.run(req_b)
+    harness.check_output(req_b, b1, "T0.1 different image B")
+
+    a2 = harness.run(req_a)
+    harness.check_output(req_a, a2, "T0.3 repeat A")
+    assert a2.text == a1.text, "hit path must reproduce the miss-path output"
+    # T1.1 reuse depth + T1.3 non-degenerate: the repeat is a full hit.
+    assert a2.lookup_hits > 0, "MM requests must actually hit (no bypass)"
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
+
+    # T0.1 counter check: B shares only the text prefix with A; if B's hits
+    # reach into the image region, a false hit occurred.
+    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN, (
+        f"image B hit {b1.lookup_hits} tokens, too close to A's full hit "
+        f"{a2.lookup_hits} -- cross-image false hit"
+    )
+
+    b2 = harness.run(req_b)
+    harness.check_output(req_b, b2, "T0.3 repeat B")
+    assert b2.text == b1.text
+    assert b2.lookup_hits >= b2.lookup_tokens - 2 * CHUNK
+
+
+def test_t0_collision_pressure(harness):
+    """T0.2: N distinct same-shape images must never cross-hit.
+
+    Regression for the 16-bit mm_hash truncation (issue #3301): with 16-bit
+    identity, ~300 distinct images give ~50% collision probability; any
+    collision shows up here as a hit count above the text-prefix steady
+    state.
+    """
+    requests = pressure_requests(pressure_n())
+    pass1 = [harness.run(r) for r in requests]
+
+    assert pass1[0].lookup_hits == 0, "fresh case salt must not hit anything"
+    steady = pass1[1].lookup_hits
+    # The steady state is the shared text prefix only, never into the image.
+    assert steady <= pass1[1].lookup_tokens - IMAGE_SPAN_MARGIN
+    for i, res in enumerate(pass1[1:], start=1):
+        same_identifier = [
+            j
+            for j in range(i)
+            if pass1[j].identifiers and pass1[j].identifiers == res.identifiers
+        ]
+        assert res.lookup_hits == steady, (
+            f"pressure request {i}: hit {res.lookup_hits} tokens, steady "
+            f"state is {steady} -- cache-key anomaly (above steady = false "
+            f"hit on another image; below = lookup misbehavior). "
+            f"identifiers={res.identifiers} "
+            f"earlier requests with identical identifiers: {same_identifier}"
+        )
+
+    # Pass 2: every image repeats, must fully hit and reproduce its output.
+    for req, first in zip(requests, pass1, strict=True):
+        second = harness.run(req)
+        assert second.text == first.text, (
+            f"{req.key}: hit-path output diverged from its own first pass"
+        )
+        assert second.lookup_hits >= second.lookup_tokens - 2 * CHUNK
+
+
+@pytest.mark.parametrize("phase", range(BOUNDARY_PHASES))
+def test_t0_chunk_boundary_phases(harness, phase):
+    """T0.4: correctness holds for every span-vs-chunk alignment phase."""
+    req_a = CATALOG[f"t04-p{phase}-A"]
+    req_b = CATALOG[f"t04-p{phase}-B"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, f"T0.4 phase {phase} first A")
+    b1 = harness.run(req_b)
+    harness.check_output(req_b, b1, f"T0.4 phase {phase} different image B")
+    a2 = harness.run(req_a)
+    harness.check_output(req_a, a2, f"T0.4 phase {phase} repeat A")
+
+    assert a2.text == a1.text
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
+    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN
+
+
+def test_t0_mixed_traffic(harness):
+    """T0.5: interleaved text-only and multimodal requests stay isolated."""
+    text_req = CATALOG["t05-text"]
+    req_a, req_b = CATALOG["t05-A"], CATALOG["t05-B"]
+
+    t1 = harness.run(text_req)
+    harness.check_output(text_req, t1, "T0.5 text before MM")
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T0.5 MM A")
+    t2 = harness.run(text_req)
+    harness.check_output(text_req, t2, "T0.5 text repeat")
+    assert t2.text == t1.text
+    assert t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK
+    b1 = harness.run(req_b)
+    harness.check_output(req_b, b1, "T0.5 MM B")
+    a2 = harness.run(req_a)
+    harness.check_output(req_a, a2, "T0.5 MM A repeat")
+    assert a2.text == a1.text
+
+
+def test_t1_prefix_reuse_across_questions(harness):
+    """T1.2: same image + different question reuses the shared prefix."""
+    req_a, req_q2 = CATALOG["t12-A"], CATALOG["t12-A-q2"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T1.2 first question")
+    q2 = harness.run(req_q2)
+    harness.check_output(req_q2, q2, "T1.2 second question")
+
+    # The shared system+image prefix must hit; only the question tail differs.
+    assert q2.lookup_hits >= a1.lookup_tokens - 6 * CHUNK, (
+        f"prefix reuse too shallow: hit {q2.lookup_hits} of "
+        f"~{a1.lookup_tokens} shared-prefix tokens"
+    )
+    assert q2.lookup_hits < q2.lookup_tokens, (
+        "different question must not be a full hit"
+    )
+
+
+def test_t2_multi_image_order(harness):
+    """T2.1: (A, B) and (B, A) must not cross-hit and answer in order."""
+    req_ab, req_ba = CATALOG["t21-AB"], CATALOG["t21-BA"]
+
+    ab1 = harness.run(req_ab)
+    harness.check_output(req_ab, ab1, "T2.1 order AB")
+    ba1 = harness.run(req_ba)
+    harness.check_output(req_ba, ba1, "T2.1 order BA")
+    ab2 = harness.run(req_ab)
+    harness.check_output(req_ab, ab2, "T2.1 repeat AB")
+
+    assert ab2.text == ab1.text
+    assert ab2.lookup_hits >= ab2.lookup_tokens - 2 * CHUNK
+    # Swapped order diverges at the first image: BA must not hit into AB's
+    # image region.
+    assert ba1.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN
+
+
+def test_t2_partial_sharing(harness):
+    """T2.2: request [A] then [A, C]: shared prefix hits, C computed fresh."""
+    req_a, req_ac = CATALOG["t22-A"], CATALOG["t22-AC"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T2.2 single image")
+    ac = harness.run(req_ac)
+    harness.check_output(req_ac, ac, "T2.2 image pair")
+
+    # The hit must reach well into image A's span (the text prefix alone is
+    # a few dozen tokens; the image span is hundreds).
+    assert ac.lookup_hits >= IMAGE_SPAN_MARGIN + CHUNK, (
+        f"shared image prefix not reused: only {ac.lookup_hits} tokens hit"
+    )
+    assert ac.lookup_hits < ac.lookup_tokens, (
+        "the second image is new; a full hit here is a false hit"
+    )
