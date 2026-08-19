@@ -492,7 +492,7 @@ def run(
     result["ledger"] = grep_final_counters(tag) or {}
     result["tracebacks"] = grep_tracebacks(tag)
     result["warnings"] = [
-        w for w in grep_warnings(tag) if driver._WARN_NO_SESSION not in w
+        w for w in grep_warnings(tag) if not driver._is_sessionless_warning(w)
     ]
     out = LOGDIR / f"wl_{tag}.json"
     out.write_text(json.dumps(result, indent=2))

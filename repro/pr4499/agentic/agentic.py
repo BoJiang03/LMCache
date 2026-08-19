@@ -569,7 +569,9 @@ def run(config: str, rep: str = "0", sessions: int = 0, l1_gb: int = 0) -> dict:
     result["ledger_lines"] = len(grep_ledgers(tag))
     result["tracebacks"] = grep_tracebacks(tag)
     result["warnings"] = [
-        warning for warning in grep_warnings(tag) if driver._WARN_NO_SESSION not in warning
+        warning
+        for warning in grep_warnings(tag)
+        if not driver._is_sessionless_warning(warning)
     ]
     out = LOGDIR / f"ag_{tag}.json"
     out.write_text(json.dumps(result, indent=1))
