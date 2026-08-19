@@ -67,8 +67,11 @@ MAX_PIXELS = 768 * 28 * 28
 
 # Parity thresholds: batched GPU inference is not bit-deterministic, so a
 # tiny number of borderline yes/no flips between passes is tolerated.
-MAX_FLIP_FRACTION = 0.005  # pass2 vs pass1 per-item answer flips
-MAX_SCORE_DELTA = 10.0  # |pass2 - pass1| on the 2800-point MME total
+# pass1-vs-baseline is gated too: cross-image contamination (issue #3301)
+# poisons the cache on the COLD pass and then replays deterministically, so
+# pass2-vs-pass1 alone cannot see it.
+MAX_FLIP_FRACTION = 0.005  # per-item answer flips, both comparisons
+MAX_SCORE_DELTA = 10.0  # |score delta| on the 2800-point MME total
 MIN_HIT_RATIO = 0.8  # pass2 lookup hit ratio (else parity is vacuous)
 
 
@@ -283,16 +286,22 @@ def main() -> int:
         json.dump(report, f, indent=2)
 
     print(json.dumps(report, indent=2))
-    score_delta = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
+    max_flips = MAX_FLIP_FRACTION * len(items)
+    delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
+    delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
     ok = (
-        flips_p2_p1 <= MAX_FLIP_FRACTION * len(items)
-        and score_delta <= MAX_SCORE_DELTA
+        flips_p2_p1 <= max_flips
+        and flips_p1_base <= max_flips
+        and delta_p2_p1 <= MAX_SCORE_DELTA
+        and delta_p1_base <= MAX_SCORE_DELTA
         and hit_ratio >= MIN_HIT_RATIO
     )
     print(
         f"[parity] hit_ratio={hit_ratio:.3f} "
-        f"score_delta(pass2-pass1)={score_delta:.2f} "
+        f"score_delta(pass2-pass1)={delta_p2_p1:.2f} "
+        f"score_delta(pass1-baseline)={delta_p1_base:.2f} "
         f"flips(pass2 vs pass1)={flips_p2_p1}/{len(items)} "
+        f"flips(pass1 vs baseline)={flips_p1_base}/{len(items)} "
         f"=> {'PASS' if ok else 'FAIL'}"
     )
     return 0 if ok else 1

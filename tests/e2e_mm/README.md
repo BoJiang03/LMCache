@@ -77,8 +77,12 @@ HIT path does not degrade real model quality. It scores the full **MME**
 benchmark (2374 yes/no questions, standard Perception/Cognition scoring)
 three ways: plain-vLLM baseline, LMCache cold pass (miss path), and an
 identical second pass where every prompt's KV is restored from LMCache (hit
-path). Pass criteria: pass2-vs-pass1 answer flips ≤ 0.5%, |total score
-delta| ≤ 10 points (of 2800), pass2 lookup hit ratio ≥ 0.8.
+path). Pass criteria: answer flips ≤ 0.5% and |total score delta| ≤ 10
+points (of 2800) on BOTH comparisons (pass1 vs baseline, pass2 vs pass1),
+and pass2 lookup hit ratio ≥ 0.8. The pass1-vs-baseline gate matters:
+cross-image contamination poisons the cache on the cold pass and then
+replays deterministically, so the pass2-vs-pass1 comparison alone cannot
+detect it.
 
 ```bash
 cd tests/e2e_mm && CUDA_VISIBLE_DEVICES=0 python benchmark_parity.py
