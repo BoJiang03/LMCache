@@ -41,6 +41,12 @@ cold, approximately 0.5 is the maximum possible value.
 
 ## Results
 
+> These are the original pre-change runs (reps 720/721, production commit
+> `8e4e851f`, before the free-queue read was decoupled from the drain
+> budget, eager/eviction-aware only). The post-change resweep with a
+> no-connector baseline supersedes them; see
+> "Post-change resweep" below.
+
 Ranges are the two same-machine repetitions. Positive latency percentages mean
 eviction-aware is faster.
 
@@ -89,8 +95,68 @@ policy's production benefit is concentrated in long reusable prefixes whose
 working set is near, or moderately above, lower-tier capacity. The hot/cold
 stress-test TTFT regression remains relevant and is not hidden by this result.
 
+## Post-change resweep with a no-connector baseline (reps 900/901)
+
+After the per-step free-queue read was decoupled from the drain budget
+(see `PR_INFO.md`), the full sweep was rerun on the current production
+tree with a third configuration added: `off`, the same engine with no KV
+connector at all. Same dataset, cohorts, QPS, revisit gap, L1 = 40 GiB and
+20 GiB GPU pool; GPUs 1,2,4,5; repetition 901 reverses the configuration
+order. The request stream is byte-identical across configurations and
+repetitions (`apc_queries` matches exactly), so round-2 latencies pair
+per user. `qasper_panel.py` reproduces every number below from the
+archived `QP_*_900/901` files.
+
+Median per-user round-2 deltas against `off`, in ms (rep 900 / rep 901;
+negative is faster than no connector):
+
+| users | KV working set | eager coverage | ev-aware coverage | eager dE2E p50 | ev-aware dE2E p50 | ev-aware vs eager dE2E |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 23.2 GiB | 0.492 | 0.441--0.465 | -24.6 / -28.4 | **-67.9 / -71.8** | -38.5 / -36.4 |
+| 24 | 34.8 GiB | 0.000 | 0.460 | +61.2 / +46.6 | **-37.8 / -57.1** | -96.5 / -98.8 |
+| 32 | 45.8 GiB | 0.000 | 0.231--0.287 | +36.4 / +34.0 | **-43.7 / -6.7** | -68.4 / -44.7 |
+| 40 | 56.0 GiB | 0.000 | 0.167--0.177 | +35.4 / +39.8 | +12.7 / +7.9 | -31.1 / -37.1 |
+| 48 | 67.5 GiB | 0.000 | 0.066--0.112 | +40.6 / +42.4 | +11.2 / -5.4 | -25.3 / -52.9 |
+
+What changed against the pre-change sweep, and what the `off` anchor adds:
+
+1. **Eviction-aware beats eager at every point in both repetitions**
+   (last column, paired per user), by 25--99 ms of round-2 E2E p50.
+   Pre-change, the 23 GiB point was a 5--7% *loss* to eager; that loss was
+   the prepaid free-queue read, and it is gone.
+2. **Eager at or above L1 capacity is worse than having no connector**:
+   +34 to +61 ms per returning request with 0.000 coverage -- its own
+   incremental snapshots churn the 40 GiB L1, so it pays every store and
+   recovers nothing. This is the same failure mode the agentic workload
+   shows at its 20 and 10 GiB budgets.
+3. **The envelope's far end is a bounded, honest loss**: at 56--67 GiB the
+   retained 0.07--0.18 coverage no longer pays for retrieval against `off`
+   (-5 to +13 ms), while still beating eager by 25--53 ms.
+4. **The 23 GiB point's coverage split is a tier upgrade, not lost reuse.**
+   Eviction-aware's external coverage reads lower than eager's
+   (0.44--0.47 vs 0.492), but total reuse is identical in every
+   repetition: 167024 hit tokens each, with 17k--31k of eviction-aware's
+   served by vLLM's GPU prefix cache instead of external retrieval
+   (`apc_hits` 17104/30928 vs eager's 240). The mechanism is in vLLM's
+   block pool: pinning for the drain's D2H copy removes blocks from the
+   free queue and unpinning re-appends them at the tail -- the youngest
+   eviction position -- so exactly the prefixes the policy judged
+   reuse-worthy also survive longer on the GPU. Zero stores were lost at
+   this point (`dropped_evicted=0`, the 4 still-pending operations at
+   shutdown are stores that never became necessary).
+
+All 30 runs returned rc=0 with zero vLLM preemptions. Eviction-aware
+ledgers close with 0--7 operations dropped to eviction per run, all at the
+over-capacity points. The two known mode-independent caveats from the
+original sweep reproduce unchanged: the rate-limited `has no lookup ipc
+key, skipping touch` server warning, and the expected SIGINT teardown
+traceback pair (present in `off` runs too).
+
 ## Raw data
 
-Machine-readable aggregate counters and all 20 per-request CSV/JSON files are
-under [`results/qasper_working_set/`](results/qasper_working_set/). The original
-31 MiB QASPER source and model files remain on RAID and are not committed.
+Machine-readable aggregate counters and all per-request CSV/JSON files are
+under [`results/qasper_working_set/`](results/qasper_working_set/): reps
+720/721 are the pre-change eager/eviction-aware runs, reps 900/901 the
+post-change off/eager/eviction-aware resweep. `qasper_panel.py` (one level
+up) tabulates a resweep repetition from those files. The original 31 MiB
+QASPER source and model files remain on RAID and are not committed.

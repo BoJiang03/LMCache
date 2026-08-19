@@ -1,0 +1,19 @@
+{
+  "tag": "QP_off_u48r2q2g16_901",
+  "config": "off",
+  "users": 48,
+  "qps": 2,
+  "revisit_gap": 16,
+  "duration": 43,
+  "rc": 0,
+  "elapsed": 45.82547473907471,
+  "delta": {
+    "apc_queries": 985855.0,
+    "apc_hits": 1200.0,
+    "ext_queries": 0.0,
+    "ext_hits": 0.0,
+    "preemptions": 0.0
+  },
+  "csv": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_off_u48r2q2g16_901.csv",
+  "bench_log": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_off_u48r2q2g16_901.bench.log"
+}

@@ -1,0 +1,19 @@
+{
+  "tag": "QP_lazy_u32r2q2g16_900",
+  "config": "lazy",
+  "users": 32,
+  "qps": 2,
+  "revisit_gap": 16,
+  "duration": 43,
+  "rc": 0,
+  "elapsed": 45.92623829841614,
+  "delta": {
+    "apc_queries": 669860.0,
+    "apc_hits": 704.0,
+    "ext_queries": 669156.0,
+    "ext_hits": 191776.0,
+    "preemptions": 0.0
+  },
+  "csv": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_lazy_u32r2q2g16_900.csv",
+  "bench_log": "/raid/data/hub/pr4499_sharegpt/qasper_runtime/QP_lazy_u32r2q2g16_900.bench.log"
+}
