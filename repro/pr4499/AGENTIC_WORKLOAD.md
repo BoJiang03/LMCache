@@ -555,6 +555,29 @@ restores is stated under Verdict: the default cap keeps the -29.2 ms E2E
 win and accepts eleven ~30 ms victims; `=4` trades 10 ms of the win for
 their absence.
 
+## 8. The 40 GiB point on the decoupled read
+
+The 40 GiB budget (0.9x live/L1) was the one row still measured only on
+the pre-change harness. The same panel as §5 and §7, without the `-d4`
+variant (the knob story is told at 20 and 10):
+
+| variant | coverage | ext hit | cycles | vs off (TTFT/decode/E2E ms) | vs eager (E2E) | preempt |
+|---|---:|---:|---:|---|---:|---:|
+| off | 0.308 | 0.000 | 0 | -- | +31.2 | 0 |
+| eager | 0.776 | 0.677 | 123 | -33.3 / +2.1 / -31.2 | -- | 0 |
+| lazy | 0.896 | 0.852 | 44 | **-44.2 / -11.7 / -55.8** | **-24.6** | 0 |
+
+At the budget where both policies work, the policy nearly doubles eager's
+paired E2E win over no connector (-55.8 against -31.2 ms/request) and
+takes the tail with it: E2E p99 is 556 ms against eager's 1133 and off's
+1049. Decode is where the difference lives -- lazy's octile means run
+89--91 ms flat while off and eager spike to 120--131 mid-run -- because
+storing only what eviction threatens cuts L1 eviction cycles 123 to 44
+and external hits climb from 0.677 to 0.852. Zero preemptions in all
+three runs. The pre-change harness had measured coverage 0.895 here;
+that number carries over (0.896), confirming the read change altered
+no decision.
+
 ## Verdict
 
 1. **The policy's decisions are right in the agentic shape, at every prompt
@@ -624,7 +647,8 @@ Of section 4's 13 runs, 10 pass; the three that do not are named in "What
 did not pass", and all three failures are preemption counts. Section 5's
 four runs pass every guard except one preemption in `lazy, =64`; §7's four
 pass except the preemptions the section itself is about (11 in `lazy`, 1
-in `lazy-d4`, zero in `off` and `eager`). Schedule lag p90 was 0.0 ms in
+in `lazy-d4`, zero in `off` and `eager`). §8's three runs pass every
+guard with zero preemptions. Schedule lag p90 was 0.0 ms in
 every run reported here, so no run was reshaped by saturation.
 
 Both cohorts (100+ MiB of trajectory text) stay on RAID; their identity,
@@ -644,5 +668,5 @@ plus server log). See
 [`agentic/README.md`](agentic/README.md). Raw per-run JSON (every request
 record, counter delta, L1 series and ledger) is under `results/agentic/`,
 `results/agentic_full/` and `results/agentic_decoupled/`; the latter also
-carries the rendered panels (`panel_l20.txt`, `panel_l10.txt`) and the
-two-run drift control (`drift_control.txt`).
+carries the rendered panels (`panel_l20.txt`, `panel_l10.txt`,
+`panel_l40.txt`) and the two-run drift control (`drift_control.txt`).

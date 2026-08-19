@@ -1,0 +1,21 @@
+variant       cover  exthit  cycles  ttftp50  ttftp90  e2ep50  e2ep90  e2ep99  decode preempt
+off           0.308   0.000       0      164      462     256     546    1049   102.2       0
+eager         0.776   0.677     123      147      336     240     437    1133   104.2       0
+lazy          0.896   0.852      44      156      287     245     372     556    90.5       0
+
+paired means vs off (ms/request)
+variant          n     ttft   decode      e2e
+eager         2212    -33.3      2.1    -31.2
+lazy          2212    -44.2    -11.7    -55.8
+
+paired TTFT / E2E by prompt length vs off (ms)
+  eager        0-4k:+5/+3(410) 4-8k:+1/-0(394) 8-16k:-29/-30(677) 16-24k:-67/-63(451) 24-infk:-94/-76(280)
+  lazy         0-4k:+8/+3(410) 4-8k:+12/+8(394) 8-16k:-25/-28(677) 16-24k:-100/-102(451) 24-infk:-158/-224(280)
+
+mean decode by run octile (ms)
+  off             98    94   121    93   123    93    96   100
+  eager           96    93   131    92   130    96    96   100
+  lazy            98    89    88    89    89    89    91    91
+
+policy ledger
+  lazy         admitted=2190 emitted=1796 evicted=335 throttled=0 pending=59 | drains=70298 read/step=67.3 validated_blocks/step=144.5 validated_reqs/step=0.63
