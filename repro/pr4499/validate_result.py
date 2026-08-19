@@ -11,7 +11,7 @@ from pathlib import Path
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("result", type=Path)
-    parser.add_argument("--mode", choices=("eager", "lazy"), required=True)
+    parser.add_argument("--mode", choices=("off", "eager", "lazy"), required=True)
     parser.add_argument("--kind", choices=("hot-cold", "gsm8k"), required=True)
     parser.add_argument("--requests", type=int, required=True)
     args = parser.parse_args()
@@ -44,8 +44,10 @@ def main() -> int:
     eviction_mode = any("EVICTION_AWARE policy" in line for line in mode_lines)
     if args.mode == "lazy" and not eviction_mode:
         errors.append("EVICTION_AWARE startup evidence is absent")
-    if args.mode == "eager" and mode_lines:
-        errors.append(f"eager run unexpectedly logged lazy mode: {mode_lines}")
+    if args.mode in ("off", "eager") and mode_lines:
+        errors.append(f"{args.mode} run unexpectedly logged lazy mode: {mode_lines}")
+    if args.mode == "off" and result.get("ledger"):
+        errors.append(f"off run unexpectedly carries a policy ledger: {result['ledger']}")
 
     if args.kind == "hot-cold":
         actual = result.get("phases", {}).get("query", {}).get("requests")

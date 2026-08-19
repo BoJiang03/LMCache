@@ -9,7 +9,7 @@ L1_GB="${L1_GB:-68}"
 export SMOKE_REPO="${SMOKE_REPO:-$(git -C "$HERE" rev-parse --show-toplevel)}"
 export SMOKE_HORIZON="${SMOKE_HORIZON:-2.5}"
 
-for mode in eager lazy; do
+for mode in off eager lazy; do
   for ((rep=0; rep<REPETITIONS; rep++)); do
     "$PYTHON" "$HERE/accuracy.py" run \
       "$mode" "$rep" "$QUESTIONS" "$CONCURRENCY" "$L1_GB"
