@@ -8,6 +8,9 @@ outputs against a baseline computed by a plain vLLM engine in a subprocess.
 
 # Standard
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping
+import contextlib
 import json
 import os
 import pathlib
@@ -36,6 +39,25 @@ class StorageSnapshot:
 
 
 @dataclass(frozen=True)
+class BatchResult:
+    """Outcome of one concurrently scheduled batch of requests.
+
+    Lookup counters cannot be attributed per request inside a batch, so only
+    the aggregate deltas are reported; per-request verification inside a
+    batch is output-based (baseline / semantic probe).
+
+    Attributes:
+        texts: Generated texts, in request order.
+        lookup_tokens: Aggregate lookup tokens across the batch.
+        lookup_hits: Aggregate lookup hits across the batch.
+    """
+
+    texts: tuple[str, ...]
+    lookup_tokens: int
+    lookup_hits: int
+
+
+@dataclass(frozen=True)
 class StepResult:
     """Outcome of one request on the LMCache engine.
 
@@ -53,17 +75,23 @@ class StepResult:
     identifiers: tuple[str, ...] = ()
 
 
-def configure_environment() -> None:
+def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
     """Set the env vars the engine runs require. Idempotent.
 
     Must be called before importing vllm or lmcache, and before launching
     the baseline subprocess (which inherits this environment).
+
+    Args:
+        max_local_cpu_gb: LMCache local CPU backend capacity in GB. The
+            default is far above what any test stores, so eviction never
+            interferes; the capacity-eviction scenario passes a tiny value
+            to force it.
     """
     # Keep scheduler+worker in this process so LMCStatsMonitor is shared.
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     os.environ["LMCACHE_CHUNK_SIZE"] = str(LMCACHE_TEST_CHUNK_SIZE)
     os.environ["LMCACHE_LOCAL_CPU"] = "True"
-    os.environ["LMCACHE_MAX_LOCAL_CPU_SIZE"] = "40"
+    os.environ["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(max_local_cpu_gb)
     os.environ.setdefault("PYTHONHASHSEED", "0")
     # Triton JIT compiles small C launchers against Python.h using the
     # sysconfig include dir; when the interpreter's dev headers live in the
@@ -175,22 +203,37 @@ def storage_snapshot() -> StorageSnapshot:
     return StorageSnapshot(num_keys=num_keys, total_bytes=total_bytes)
 
 
+_NO_EXTRA_KWARGS: Mapping[str, object] = MappingProxyType({})
+
+
 class MMHarness:
     """Drives one model's acceptance run: baselines + LMCache engine + stats.
 
     Args:
         spec: The model under certification.
         baselines: Mapping of request key to the plain-vLLM output text.
+        extra_engine_kwargs: Additional/overriding vLLM ``LLM(...)`` kwargs;
+            used by isolated scenarios (chunked prefill, capacity eviction)
+            to reshape the engine while reusing all harness plumbing.
+        max_local_cpu_gb: LMCache local CPU capacity (see
+            ``configure_environment``).
     """
 
-    def __init__(self, spec: ModelSpec, baselines: dict[str, str]):
-        configure_environment()
+    def __init__(
+        self,
+        spec: ModelSpec,
+        baselines: dict[str, str],
+        extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
+        max_local_cpu_gb: float = 40.0,
+    ):
+        configure_environment(max_local_cpu_gb)
         self.spec = spec
         self.baselines = baselines
         # Diagnostic recorder: capture the multimodal identifiers the
         # connector substitutes, so false-hit failures can name the request
         # pair involved. Installed before the engine imports the adapter.
         self._identifier_log: list[str] = []
+        self._identity_blind = False
         self._install_identifier_recorder()
 
         # Third Party
@@ -200,7 +243,7 @@ class MMHarness:
         # First Party
         from lmcache.observability import LMCStatsMonitor
 
-        self.llm = LLM(
+        engine_kwargs: dict[str, object] = dict(
             model=spec.hf_id,
             kv_transfer_config=KVTransferConfig(
                 kv_connector="LMCacheConnectorV1", kv_role="kv_both"
@@ -211,26 +254,50 @@ class MMHarness:
             enable_prefix_caching=False,
             limit_mm_per_prompt={"image": 2},
         )
+        engine_kwargs.update(extra_engine_kwargs)
+        self.llm = LLM(**engine_kwargs)
         self.monitor = LMCStatsMonitor.GetOrCreate()
 
     def _install_identifier_recorder(self) -> None:
         """Wrap the connector's placeholder substitution to log identifiers.
 
-        Read-only observation: the wrapper calls through to the original
-        function unchanged. Must run before vLLM imports the LMCache adapter
-        (which binds the function by name at import time).
+        Normally a read-only observation: the wrapper calls through to the
+        original function unchanged. Under ``identity_blindness()`` it
+        instead skips the substitution, reproducing the ur-failure-mode
+        (cache keys ignore image content) so tests can prove the suite's
+        detectors actually fire. Must run before vLLM imports the LMCache
+        adapter (which binds the function by name at import time).
         """
         # First Party
         import lmcache.integration.vllm.utils as lmc_utils
 
         original = lmc_utils.apply_mm_hashes_to_token_ids
         log = self._identifier_log
+        harness = self
 
         def recording(token_ids, mm_hashes, mm_positions):
             log.extend(mm_hashes)
+            if harness._identity_blind:
+                return token_ids
             return original(token_ids, mm_hashes, mm_positions)
 
         lmc_utils.apply_mm_hashes_to_token_ids = recording
+
+    @contextlib.contextmanager
+    def identity_blindness(self):
+        """Disable MM identity substitution (negative control).
+
+        While active, LMCache keys are computed from the raw placeholder
+        token IDs — exactly the failure mode the substitution exists to
+        prevent — so two different same-shape images collide with certainty.
+        Use with case-unique salts only; entries stored while blind are
+        isolated from other cases by their salt.
+        """
+        self._identity_blind = True
+        try:
+            yield
+        finally:
+            self._identity_blind = False
 
     def close(self) -> None:
         """Tear down the engine and the LMCache engine instance."""
@@ -271,6 +338,33 @@ class MMHarness:
             identifiers=tuple(dict.fromkeys(seen)),
         )
 
+    def run_batch(self, requests: list[MMRequest]) -> BatchResult:
+        """Submit all requests in ONE ``llm.chat`` call (concurrent batch).
+
+        The vLLM scheduler interleaves the requests' prefills and decodes,
+        so LMCache sees concurrent lookup/store traffic — including a store
+        for one request racing the lookup of an identical one. Counters are
+        aggregate only (per-request attribution is impossible in a batch).
+        """
+        # Third Party
+        from vllm import SamplingParams
+
+        tokens_before, hits_before = self._cumulative_lookup_stats()
+        outputs = self.llm.chat(
+            [r.messages() for r in requests],
+            sampling_params=[
+                SamplingParams(temperature=0.0, max_tokens=r.max_tokens, seed=0)
+                for r in requests
+            ],
+            use_tqdm=False,
+        )
+        tokens_after, hits_after = self._cumulative_lookup_stats()
+        return BatchResult(
+            texts=tuple(o.outputs[0].text for o in outputs),
+            lookup_tokens=tokens_after - tokens_before,
+            lookup_hits=hits_after - hits_before,
+        )
+
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
         return cumulative_lookup_stats(self.monitor)
 
@@ -283,7 +377,11 @@ class MMHarness:
         return storage_snapshot()
 
     def check_output(self, request: MMRequest, result: StepResult, where: str) -> None:
-        """Verify a step's output against baseline and semantic probe.
+        """Verify a step's output; see ``check_text`` for the policy."""
+        self.check_text(request, result.text, where)
+
+    def check_text(self, request: MMRequest, text: str, where: str) -> None:
+        """Verify one generated text against baseline and semantic probe.
 
         Policy: exact match against the plain-vLLM baseline is required. If
         the exact match fails but the semantic probe still passes, the step
@@ -291,23 +389,23 @@ class MMHarness:
         this is cross-image contamination and the step fails hard.
 
         Args:
-            request: The request that produced ``result``.
-            result: The step outcome to verify.
+            request: The request that produced ``text``.
+            text: The generated text to verify.
             where: Human-readable context for failure messages.
 
         Raises:
             AssertionError: On baseline mismatch without probe rescue, or on
                 probe failure.
         """
-        probe_ok = self._probe_ok(request, result.text)
+        probe_ok = self.probe_ok(request, text)
         if request.key in self.baselines:
             baseline = self.baselines[request.key]
-            if result.text == baseline:
+            if text == baseline:
                 return
             if probe_ok:
                 warnings.warn(
                     f"[{where}] {request.key}: exact baseline mismatch but "
-                    f"semantic probe passed (got {result.text!r}, "
+                    f"semantic probe passed (got {text!r}, "
                     f"baseline {baseline!r})",
                     stacklevel=2,
                 )
@@ -315,20 +413,27 @@ class MMHarness:
             raise AssertionError(
                 f"[{where}] {request.key}: output diverged from baseline AND "
                 f"semantic probe failed -- cross-image contamination. "
-                f"got={result.text!r} baseline={baseline!r} "
+                f"got={text!r} baseline={baseline!r} "
                 f"expected_probe={request.expected_probe}"
             )
         if not probe_ok:
             raise AssertionError(
                 f"[{where}] {request.key}: semantic probe failed. "
-                f"got={result.text!r} expected_probe={request.expected_probe}"
+                f"got={text!r} expected_probe={request.expected_probe}"
             )
 
-    def _probe_ok(self, request: MMRequest, text: str) -> bool:
+    def probe_ok(self, request: MMRequest, text: str) -> bool:
         """Whether the expected probe words appear in ``text`` IN ORDER.
 
         Order matters for multi-image probes: a swapped-order answer means
         the request hit the other ordering's cache entries.
+
+        Args:
+            request: The request whose ``expected_probe`` to check.
+            text: The generated text.
+
+        Returns:
+            True if every probe word appears in order (or no probe is set).
         """
         if not request.expected_probe:
             return True

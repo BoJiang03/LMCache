@@ -159,8 +159,10 @@ def text_request(key: str, salt: str) -> MMRequest:
 
 
 # Image index allocation: probe-critical cases use dedicated indices with
-# distinct colors WITHIN each case; the pressure test uses indices >= 100.
+# distinct colors WITHIN each case; the pressure test uses indices >= 100,
+# the capacity-eviction scenario indices >= 400.
 PRESSURE_INDEX_BASE = 100
+EVICTION_INDEX_BASE = 400
 
 # Chunk-boundary phases: pad the salt with k extra words to shift where the
 # image span falls relative to LMCache chunk boundaries (chunk_size=16).
@@ -201,6 +203,10 @@ def catalog() -> dict[str, MMRequest]:
         # T2.2: single image, then the same image plus a new one.
         color_request("t22-A", "t22", 1),
         multi_color_request("t22-AC", "t22", (1, 3)),
+        # T0.8: concurrent batch traffic (entries also replayed singly).
+        color_request("t08-A", "t08", 0),
+        color_request("t08-B", "t08", 2),
+        text_request("t08-text", "t08"),
     ]
     # T0.4: per-phase image pair (green=1, yellow=3).
     for phase in range(BOUNDARY_PHASES):
@@ -211,6 +217,61 @@ def catalog() -> dict[str, MMRequest]:
     if len(result) != len(requests):
         raise ValueError("Duplicate request keys in catalog")
     return result
+
+
+def long_prefix_color_request(
+    key: str, salt: str, pad_words: int, image_index: int
+) -> MMRequest:
+    """Single-image color request with a long padded text prefix.
+
+    Used by the chunked-prefill scenario: the pad pushes the image span deep
+    enough into the prompt that a small ``max_num_batched_tokens`` budget
+    places a scheduler-step boundary INSIDE the span. Exempt from baseline
+    comparison (verified by semantic probe and pass-vs-pass equivalence).
+
+    Args:
+        key: Unique request key.
+        salt: Case-unique salt prefix (pad words are appended to it).
+        pad_words: Number of filler words appended to the salt.
+        image_index: Index of the attached image.
+
+    Returns:
+        The built request.
+    """
+    padded = f"{salt} " + " ".join(["pad"] * pad_words)
+    return MMRequest(
+        key=key,
+        salt=padded,
+        question=COLOR_QUESTION,
+        image_indices=(image_index,),
+        expected_probe=(image_color_name(image_index),),
+        needs_baseline=False,
+    )
+
+
+def eviction_requests(n: int) -> list[MMRequest]:
+    """Build the capacity-eviction scenario requests: ``n`` distinct images.
+
+    Baseline-exempt like the pressure requests (verified by semantic probe
+    and re-run-vs-first-run equivalence).
+
+    Args:
+        n: Number of distinct images; sized to overflow the tiny cache.
+
+    Returns:
+        The built requests.
+    """
+    return [
+        MMRequest(
+            key=f"t10-{i}",
+            salt="t10",
+            question=COLOR_QUESTION,
+            image_indices=(EVICTION_INDEX_BASE + i,),
+            expected_probe=(image_color_name(EVICTION_INDEX_BASE + i),),
+            needs_baseline=False,
+        )
+        for i in range(n)
+    ]
 
 
 def pressure_requests(n: int) -> list[MMRequest]:

@@ -1,9 +1,47 @@
 # Multimodal Model Support Acceptance Suite (`tests/e2e_mm`)
 
 This suite defines what it means for LMCache to **support** a multimodal
-model. A model is declared supported only when it passes the full matrix
-below on every claimed deployment path. The suite launches real vLLM engines
-and requires a GPU; it is strictly opt-in.
+model. The claim is operationalized by `certify.py`: one command per model
+that runs every layer and emits a machine-readable certificate whose verdict
+(`SUPPORTED`) — never an individual green test — is the artifact behind the
+support claim. The suite launches real vLLM engines and requires a GPU; it
+is strictly opt-in.
+
+## Why passing implies support (completeness argument)
+
+LMCache's multimodal job decomposes into: compute cache keys that carry
+image identity, look up and retrieve KV without corrupting it, store every
+missed token exactly once, and survive real scheduling (batching, split
+prefills, eviction). The suite is built by enumerating the ways each duty
+can fail and pointing at least one detector at every mode:
+
+| Failure mode | Symptom | Detector |
+|---|---|---|
+| Keys blind or partially blind to image identity (e.g. issue #3301 16-bit truncation) | cross-image KV serving | T0.1 / T0.2 / T0.4 counter margins + semantic probes; MME pass1-vs-baseline gate |
+| Unstable keys (same image, different keys across requests) | no reuse, duplicate stores | T0.3 / T1.1 full-hit floor; T0.7 replay-stores-nothing bound |
+| Placeholder-span misalignment vs chunk boundaries | either of the above at specific alignments | T0.4 (all 16 phase offsets) |
+| KV corrupted on the hit path (retrieve bugs) | wrong output despite correct keys | T0.3 hit-equals-miss output; MME pass2-vs-pass1 gate |
+| MM requests silently bypass the cache | "safe" but useless | T1.1 / T1.3 nonzero-hit floors |
+| Store drops KV (missed tokens never stored / never resident) | wasted recompute, cold cache | T0.7 conservation: store intent vs resident keys/bytes |
+| Store and lookup disagree on keys | stored but never hittable | T1.1 full hit + T0.7 replay re-store bound |
+| Scheduler step splits an image span (chunked prefill) | store-side truncated-span bugs | T0.9 (dedicated small-budget engine) |
+| Concurrent store/lookup races in a batch | contamination or loss under load | T0.8 duplicate-in-batch; MME (2374 batched requests) |
+| Eviction misbehavior (false hit after evict, unbounded growth, corrupt recompute) | wrong output or OOM at capacity | T0.10 (dedicated tiny-capacity engine) |
+| Quality drift only visible on real data (resolutions, aspect ratios, numerics) | statistical score loss | T0.6 MME three-way parity |
+| The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check |
+
+Layering: the synthetic tests are deterministic, minute-scale, and
+localizing — a single false hit trips a counter invariant. MME parity is the
+certification layer for anything only statistically visible. The negative
+control makes a green run self-evidencing: the suite proves its own tripwire
+fires before it certifies anything.
+
+**What a pass does NOT claim** (recorded verbatim in every certificate):
+only the deployment paths listed in the certificate scope are certified —
+currently the in-process `LMCacheConnectorV1` on a single GPU (TP=1) with
+the local CPU backend. The MP connector, TP>1, remote/disk backends, video
+and audio modalities, preemption-driven re-prefill, and allocator-level
+buffer accounting are outside the claim until their tests exist.
 
 ## How to run
 
@@ -54,6 +92,10 @@ that guard the suite can silently certify a different source tree.
 | T0.4 | Chunk-boundary phases | T0.1/T0.3 hold when the image placeholder span crosses chunk boundaries at varying phases (text prefix padded 0..chunk_size-1 words, chunk_size=16). |
 | T0.5 | Mixed traffic | Interleaved text-only and multimodal requests do not contaminate each other. |
 | T0.7 | Storage conservation | On the T0.2 traffic: every token the lookup missed is store-requested and lands as resident chunk keys in the local CPU backend (deficit = silently dropped KV); the full-hit replay stores ~nothing new, never loses resident keys, and resident bytes track keys (growth without keys = a leak). |
+| T0.8 | Concurrent batch | One batch containing duplicate image requests plus mixed traffic: every entry's output verified, and the entry cached during the batch must fully hit afterwards. |
+| T0.9 | Chunked prefill | Dedicated engine with `max_num_batched_tokens` far below the prompt length, pad phases sweeping the step boundary across the image span: miss/full-hit/isolation invariants and store conservation all hold when stores end mid-image (`test_isolated_paths.py` / `isolated_cases.py`). |
+| T0.10 | Capacity eviction | Dedicated engine with a ~50 MB cache overflowed several times by distinct images: no false hits ever, resident bytes stay under the cap, and evicted requests recompute to exactly their first-pass output. |
+| — | Detector negative control | With MM identity substitution deliberately disabled for a fresh salt, the T0.1-style counter check MUST trip (the second image must falsely hit). A failure here invalidates every green counter assertion. |
 
 ### T1 — Effectiveness (the cache must actually work)
 
@@ -108,12 +150,32 @@ remote backend cross-instance.
 - **Phi-4-multimodal**: different LoRA on identical tokens must not share
   cache entries.
 
+## Certification (`certify.py`)
+
+One command produces the support verdict and its evidence:
+
+```bash
+cd tests/e2e_mm
+python certify.py qwen2.5-vl-3b --run-parity            # full certification
+python certify.py qwen2.5-vl-3b --parity-report mme_full.json  # reuse a run
+python certify.py qwen2.5-vl-3b                         # suite only
+```
+
+It runs the entire synthetic suite (including the isolated scenarios and
+the negative control), combines it with an MME parity result, and writes
+`certificate_<model>.json` recording the verdict, the exact commit, the
+certified scope (deployment paths, modalities, backend), all measurements,
+and the known-not-covered list. Exit codes: 0 `SUPPORTED`,
+2 `PROVISIONAL` (suite green, parity not provided), 1 `NOT_SUPPORTED`.
+A skipped or empty suite can never certify (skips are counted as failure).
+
 ## Support levels
 
-- ✅ **Supported**: T0 + T1 + applicable T2 + claimed T3 paths all green.
+- ✅ **Supported**: certificate verdict `SUPPORTED` — synthetic suite green
+  AND MME parity gate passed, for the scope named in the certificate.
 - ⚠️ **Safe but not accelerated**: T0 green with an explicit MM bypass
   (T1.3 waived and documented).
-- ❌ **Not supported**: any T0 failure.
+- ❌ **Not supported**: any T0 failure or a failed parity gate.
 
 ## Adding a model
 

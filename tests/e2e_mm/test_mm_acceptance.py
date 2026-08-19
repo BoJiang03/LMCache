@@ -22,6 +22,7 @@ import pytest
 from catalog import (
     BOUNDARY_PHASES,
     catalog,
+    color_request,
     pressure_requests,
 )
 from conftest import pressure_n
@@ -163,6 +164,65 @@ def test_t0_collision_pressure(harness):
             f"replay grew resident bytes by {bytes_growth} with only "
             f"{new_keys} new keys -- bytes leaking without keys"
         )
+
+
+def test_t0_concurrent_batch(harness):
+    """T0.8: concurrently scheduled batch with duplicate images.
+
+    All prior T0 tests submit requests one at a time; this one hands vLLM a
+    single batch containing two copies of the same image request, a second
+    image, and a text-only request, so LMCache sees interleaved lookups and
+    stores — including the store of one copy racing the lookup of its
+    duplicate. Verification is output-based per batch entry (counters cannot
+    be attributed within a batch), plus a single follow-up run that proves
+    the batch's stores are usable.
+    """
+    req_a, req_b = CATALOG["t08-A"], CATALOG["t08-B"]
+    req_text = CATALOG["t08-text"]
+    batch = [req_a, req_b, req_a, req_text, req_b]
+
+    result = harness.run_batch(batch)
+    for i, (req, text) in enumerate(zip(batch, result.texts, strict=True)):
+        harness.check_text(req, text, f"T0.8 batch entry {i}")
+    assert result.lookup_hits <= result.lookup_tokens
+
+    # The batch's stores must be complete and hittable afterwards.
+    a_after = harness.run(req_a)
+    harness.check_output(req_a, a_after, "T0.8 single run after batch")
+    assert a_after.lookup_hits >= a_after.lookup_tokens - 2 * CHUNK, (
+        f"request cached during a batch only hit {a_after.lookup_hits} of "
+        f"{a_after.lookup_tokens} tokens afterwards"
+    )
+
+
+def test_detector_sensitivity_negative_control(harness):
+    """The suite's tripwire must FIRE when MM identity is deliberately broken.
+
+    A green suite only certifies a model if its detectors are actually
+    sensitive. This negative control disables the mm_hash substitution (the
+    exact failure mode of issue #3301 taken to its extreme: cache keys blind
+    to image content) for a fresh salt and asserts that the T0.1-style
+    counter check DOES trip: the second, different image must falsely hit
+    into the first image's cache entries. If this test fails, counter-based
+    detection is broken and every other green result is meaningless.
+    """
+    req_a = color_request("t0blind-A", "t0blind", 0)
+    req_b = color_request("t0blind-B", "t0blind", 2)
+
+    with harness.identity_blindness():
+        a1 = harness.run(req_a)
+        assert a1.lookup_hits == 0, "fresh case salt must not hit anything"
+        b1 = harness.run(req_b)
+
+    # Under identity blindness B's placeholder tokens are identical to A's,
+    # so B must reach A's full prompt depth -- the false hit the real
+    # detector (IMAGE_SPAN_MARGIN separation) would flag as contamination.
+    assert b1.lookup_hits > b1.lookup_tokens - IMAGE_SPAN_MARGIN, (
+        f"negative control did not trip: with identity substitution "
+        f"disabled, image B hit only {b1.lookup_hits} of "
+        f"{b1.lookup_tokens} tokens -- the counter detector would not have "
+        f"seen a real cross-image collision either"
+    )
 
 
 @pytest.mark.parametrize("phase", range(BOUNDARY_PHASES))
