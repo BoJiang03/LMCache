@@ -319,17 +319,17 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
 The hardware harness is intentionally kept outside the merge diff because it is
 one-off experiment infrastructure.
 
-- Production code: [`2e14632f`](https://github.com/BoJiang03/LMCache/commit/2e14632f296bd338ecea098aded4f3de23f36e0f)
-- Immutable reproduction package: [`21253279`](https://github.com/BoJiang03/LMCache/tree/2125327908cc76ad374d9905a713c1ca3306e500/repro/pr4499)
-- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/2125327908cc76ad374d9905a713c1ca3306e500/repro/pr4499/README.md)
+- Production code: [`df199979`](https://github.com/BoJiang03/LMCache/commit/df199979ae1a70f60d76003beb40b8cec46affc3)
+- Immutable reproduction package: [`99dfc2f4`](https://github.com/BoJiang03/LMCache/tree/99dfc2f4e03ccf425259be89bc0644f49c02b1b7/repro/pr4499)
+- Reproduction guide: [`repro/pr4499/README.md`](https://github.com/BoJiang03/LMCache/blob/99dfc2f4e03ccf425259be89bc0644f49c02b1b7/repro/pr4499/README.md)
 - Raw JSON from the reported runs is included in the package.
-- Additional model matrix: [`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/c6e5caf5492479a0b0ded100fd6a1d183b4288b7/repro/pr4499/COMPLEX_MODELS.md)
-- TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/7e0245fb5c64997206409815397b0c6a5dd733fe/repro/pr4499/TP2.md)
-- TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/0880977308524133d5b16fe536bdf769416d5614/repro/pr4499/TP4.md)
-- Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/00190fc43c44752a112fb127a63f07c39bf0d2a7/repro/pr4499/POLICY_COMPARISON.md)
-- Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/a7ae43ce2a0de5d01db0273882f14f8dc9c49c77/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
-- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/956c1d9cc1eec7100cb8b27cd0a98d7e398e3b67/repro/pr4499/QASPER_WORKING_SET.md)
-- Real agentic session replay: [`AGENTIC_WORKLOAD.md`](https://github.com/BoJiang03/LMCache/blob/713ee0a7166792ed56246dd82304e6a2b4bbb6b0/repro/pr4499/AGENTIC_WORKLOAD.md)
+- Additional model matrix: [`COMPLEX_MODELS.md`](https://github.com/BoJiang03/LMCache/blob/517db749ea3ec549fb11c63cd06e2bb7636c581f/repro/pr4499/COMPLEX_MODELS.md)
+- TP=2 report and raw results: [`TP2.md`](https://github.com/BoJiang03/LMCache/blob/93d300ae56cd095ba2eae95925d11c064de3ef37/repro/pr4499/TP2.md)
+- TP=4 report and raw results: [`TP4.md`](https://github.com/BoJiang03/LMCache/blob/46634b7ed0dceef511aad55273ecec81cd9a6dcc/repro/pr4499/TP4.md)
+- Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c16726a0842fac51dfe3a398b0c9de1f2de5339e/repro/pr4499/POLICY_COMPARISON.md)
+- Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/bafbb2c80a806a072609aafd52b1c1003672ee3a/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
+- Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/efd7cdb47aae4bc59573ac59d5137c82f596f212/repro/pr4499/QASPER_WORKING_SET.md)
+- Real agentic session replay: [`AGENTIC_WORKLOAD.md`](https://github.com/BoJiang03/LMCache/blob/bef74231653ee2cedbdd1eedaea01cde6041c076/repro/pr4499/AGENTIC_WORKLOAD.md)
 
 Exact hot/cold comparison:
 
