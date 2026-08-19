@@ -162,6 +162,45 @@ def mme_scores(items: list[dict], answers: list[str]) -> dict:
     }
 
 
+def parity_gate(report: dict) -> dict:
+    """Evaluate the parity thresholds against a report dict.
+
+    Shared by this script's exit code and by ``certify.py`` when it ingests
+    a previously recorded parity report.
+
+    Args:
+        report: A report as written by ``main`` (needs ``scores``,
+            ``num_questions``, both flip counts and the hit ratio).
+
+    Returns:
+        Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
+        and the thresholds used.
+    """
+    scores = report["scores"]
+    max_flips = MAX_FLIP_FRACTION * report["num_questions"]
+    delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
+    delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
+    hit_ratio = report["pass2_lookup_hit_ratio"]
+    ok = (
+        report["flips_pass2_vs_pass1"] <= max_flips
+        and report["flips_pass1_vs_baseline"] <= max_flips
+        and delta_p2_p1 <= MAX_SCORE_DELTA
+        and delta_p1_base <= MAX_SCORE_DELTA
+        and hit_ratio >= MIN_HIT_RATIO
+    )
+    return {
+        "pass": ok,
+        "max_flips": max_flips,
+        "score_delta_pass2_vs_pass1": delta_p2_p1,
+        "score_delta_pass1_vs_baseline": delta_p1_base,
+        "thresholds": {
+            "max_flip_fraction": MAX_FLIP_FRACTION,
+            "max_score_delta": MAX_SCORE_DELTA,
+            "min_hit_ratio": MIN_HIT_RATIO,
+        },
+    }
+
+
 def run_batch(llm, items: list[dict]) -> list[str]:
     """Run all questions in one batched chat call, order-aligned."""
     # Third Party
@@ -282,29 +321,22 @@ def main() -> int:
         "flips_pass2_vs_pass1": flips_p2_p1,
         "pass2_lookup_hit_ratio": round(hit_ratio, 4),
     }
+    gate = parity_gate(report)
+    report["gate"] = gate
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2)
 
     print(json.dumps(report, indent=2))
-    max_flips = MAX_FLIP_FRACTION * len(items)
-    delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
-    delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
-    ok = (
-        flips_p2_p1 <= max_flips
-        and flips_p1_base <= max_flips
-        and delta_p2_p1 <= MAX_SCORE_DELTA
-        and delta_p1_base <= MAX_SCORE_DELTA
-        and hit_ratio >= MIN_HIT_RATIO
-    )
     print(
         f"[parity] hit_ratio={hit_ratio:.3f} "
-        f"score_delta(pass2-pass1)={delta_p2_p1:.2f} "
-        f"score_delta(pass1-baseline)={delta_p1_base:.2f} "
+        f"score_delta(pass2-pass1)={gate['score_delta_pass2_vs_pass1']:.2f} "
+        f"score_delta(pass1-baseline)="
+        f"{gate['score_delta_pass1_vs_baseline']:.2f} "
         f"flips(pass2 vs pass1)={flips_p2_p1}/{len(items)} "
         f"flips(pass1 vs baseline)={flips_p1_base}/{len(items)} "
-        f"=> {'PASS' if ok else 'FAIL'}"
+        f"=> {'PASS' if gate['pass'] else 'FAIL'}"
     )
-    return 0 if ok else 1
+    return 0 if gate["pass"] else 1
 
 
 if __name__ == "__main__":
