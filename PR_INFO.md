@@ -138,6 +138,92 @@ separate 4.3K-token ShareGPT multi-round trial similarly raised coverage without
 improving typical latency, confirming that short TP=4 recomputation can already
 be cheaper than retrieval.
 
+### Real agentic sessions
+
+A third supplemental TP=4 workload replays published `nebius/SWE-agent-trajectories`
+runs: real SWE-agent sessions against real GitHub issues, where a prompt grows one
+recorded action and one tool observation at a time and the session idles while the
+tool runs. The engine's answer is discarded and the recorded action appended, so both
+policies replay byte-identical request streams. Trajectories are replayed whole -- 4
+to 158 steps, final prompts up to 34591 tokens -- as 14 concurrent slots each issuing
+158 steps from a queue of whole sessions, which holds concurrency and step rate
+constant across a forty-fold spread in session length. 36.7 GiB is live at once and
+182.6 GiB of distinct KV passes through the cache per run; pressure is swept with the
+L1 budget at a fixed 20 GiB GPU KV pool.
+
+| L1 budget | live/L1 | eager coverage | eviction-aware coverage | eager external hit | TTFT p90 improvement | E2E p90 improvement |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 GiB | 0.9x | 0.763 | 0.895 | 0.658 | 22.1% | 21.0% |
+| 20 GiB | 1.8x | 0.310 | 0.626 | 0.004 | 18.2% | 16.3% |
+| 10 GiB | 3.7x | 0.308 | 0.398 | 0.000 | 1.8% | 1.0% |
+
+Improvements above are against eager. Measured instead against an engine with no KV
+connector at all, eager is a net loss at the 20 GiB budget and eviction-aware is
+roughly neutral to positive; the section below reports that comparison, which is the
+more informative one. Two repetitions with reversed variant order agree to within
+0.013 coverage and 2.5 ms of mean paired E2E at the 20 and 40 GiB budgets. At 20 GiB the mean end-to-end
+latency over 2141 token-identical request pairs improves by 39.4 ms, and L1 eviction
+cycles fall from 714 to 322. Eager's external hit rate of 0.004 at 20 GiB and 0.000
+at 10 GiB is the failure mode this policy exists to prevent: eager writes every step
+of a working set the budget cannot hold, and its own next writes evict what it just
+stored.
+
+### Why eviction-aware can lose to eager, and what that costs
+
+Seven full runs of the same 2212-request workload at the 20 GiB budget separate the
+causes, each varying one thing. `off` runs the engine with no KV connector and is the
+baseline; paired means are over the 2141 requests common to every run.
+
+| variant | TTFT | decode | E2E | coverage | throttled | dropped_evicted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| eager | +27.2 ms | +30.5 ms | **+57.7 ms** | 0.310 | -- | -- |
+| eviction-aware, `max_drain_per_step=64` | -6.2 | +40.6 | +34.4 | 0.623 | 0 | 138 |
+| eviction-aware, `=4` | -7.7 | +26.0 | +18.3 | 0.626 | 134 | 350 |
+| eviction-aware, `=1` | -2.1 | **+2.8** | **+0.7** | 0.600 | 731 | 1017 |
+| `=4` with `min_prefix_tokens=12000` | -8.8 | +25.5 | +16.8 | 0.612 | 95 | 242 |
+
+The first row is the important one: **at this budget eager is worse than having no
+connector at all, at every prompt length.** Its TTFT cost against `off` rises from
+6 ms at 2760-token prompts to 66 ms at 26231-token ones -- it writes in proportion to
+what it reads in -- while its external hit rate is 0.004, so none of it comes back.
+Eviction-aware turns that 57.7 ms per-request loss into a 0.7 ms one at
+`max_drain_per_step=1`, with coverage 0.600 against 0.310.
+
+**The residual cost is one bounded read, not the deferral.** `collect_due` reads the
+free queue to `danger_depth + max_drain_per_step x largest live operation` on every
+scheduler step. Split into octiles, eviction-aware decodes *faster* than no connector
+for three quarters of a run and then doubles -- 89 ms rising to 202 ms at `=4` --
+while `off` and eager stay flat. Dropping the multiplier to 1 flattens it completely
+(92 ms in the final octile, +2.8 ms of decode over the whole run). Pending depth is
+not the cause (`=1` ends with 81 pending against `=4`'s 101), and neither is context
+length (the final octile's prompts are the run's shortest).
+
+**That parameter is doing two unrelated jobs, and the two regressions are the
+result.** It sets the drain rate, which decides how much KV survives to be written,
+and it sets the depth of a per-step read. Tuning it down removes the decode cost and
+takes the retrieval benefit with it: at `=1` the 26231-token TTFT gain falls from
+93 ms to 25 ms, 28% of admitted operations are lost to eviction rather than merely
+delayed, and E2E p99 rises to 1031 ms against `=4`'s 905 ms. Tuning it up restores
+the gain and the cost together. Bounding the read independently of the drain
+budget -- by the pending operations' actual block count rather than
+`budget x largest op`, or by a separate cap -- should yield the 100 ms long-prompt
+gain of `=64` together with the flat decode of `=1`. That is the actionable finding
+here; it is a production change and was not attempted in this measurement.
+
+**Gate 3 does not address the short-prompt regression, and does something else worth
+knowing.** `lmcache.mp.lazy_offload_min_prefix_tokens` defaults to 0, and setting it
+to 12000 makes the policy refuse 1108 operations, so a shorter request provably has
+nothing of its own session in L1 to retrieve -- yet its penalty against `off` is
+unchanged at 16 ms. Short requests are not losing by retrieving what they could have
+recomputed. What the gate does instead is stop spending L1 on short prefixes, which
+grows the 26231-token TTFT gain from 93 ms to 135 ms for 0.014 of coverage.
+
+Finally, three of the nine first-repetition runs recorded vLLM preemptions -- 12, 2
+and 2 -- all under eviction-aware and all under budget pressure, where all nine eager
+runs and both repetitions of the reported 20 and 40 GiB eviction-aware points
+recorded none. The 10 GiB row carries the largest count and should be read as
+unconfirmed until that is explained.
+
 ### GSM8K correctness
 
 The correctness workload runs 120 questions twice (cold then cached),
@@ -193,6 +279,13 @@ where future Reuse and Economy gates can avoid paying that cost for dead KV.
   near L1 capacity and bounded the no-gain and over-capacity regimes. The MP
   server emitted a mode-independent missing-touch-key warning, so these
   supplemental runs are not described as warning-free.
+- A real SWE-agent TP=4 replay completed 30 capped-cohort runs and 13
+  whole-trajectory runs. Every run's engine-reported prompt-token count matched
+  the cohort's tokenizer count for every step, so the replay sent exactly the
+  prompts the cohort selection reasoned about, and schedule lag p90 was 0.0 ms
+  throughout. All 30 capped runs and 10 of the 13 whole-trajectory runs pass
+  every harness guard; the three exceptions recorded vLLM preemptions and are
+  named in the report rather than averaged in.
 
 ## Reproduction
 
@@ -209,6 +302,7 @@ one-off experiment infrastructure.
 - Policy A/B report: [`POLICY_COMPARISON.md`](https://github.com/BoJiang03/LMCache/blob/c28dd7761239848fde601e39d6e6cd81c0295377/repro/pr4499/POLICY_COMPARISON.md)
 - Hot-TTFT attribution controls: [`HOT_TTFT_ATTRIBUTION.md`](https://github.com/BoJiang03/LMCache/blob/8df519590b31715d2eab420e1b9ba81c435aed23/repro/pr4499/HOT_TTFT_ATTRIBUTION.md)
 - Real long-context working-set sweep: [`QASPER_WORKING_SET.md`](https://github.com/BoJiang03/LMCache/blob/7e1c4ed57e0c131624d0c78f64f64f7c59828a8e/repro/pr4499/QASPER_WORKING_SET.md)
+- Real agentic session replay: [`AGENTIC_WORKLOAD.md`](https://github.com/BoJiang03/LMCache/blob/5a76005c52abf25789d6a3fdee3551084ba66b65/repro/pr4499/AGENTIC_WORKLOAD.md)
 
 Exact hot/cold comparison:
 

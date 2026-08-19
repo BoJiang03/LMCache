@@ -55,8 +55,25 @@ REP = os.environ.get("AGENTIC_FULL_REP", "full")
 #: (name, config, extra connector settings) per variant.
 VARIANTS = {
     "eager": ("eager", {}),
+    "off": ("off", {}),
     "lazy": ("lazy", {}),
     "lazy-d4": ("lazy", {"lmcache.mp.lazy_offload_max_drain_per_step": 4}),
+    # Gate 3 controls. If the short-prompt regression is retrieval that does
+    # not pay for itself, refusing to store a prefix below break-even must
+    # remove it; if it is fixed decision-loop cost, these change nothing.
+    # collect_due reads the free queue to danger_depth + max_drain_per_step x
+    # the largest pending operation. If the late-run decode cost is that read,
+    # quartering the multiplier must quarter the cost; if it is queue depth
+    # alone, it must not move.
+    "lazy-d1": ("lazy", {"lmcache.mp.lazy_offload_max_drain_per_step": 1}),
+    "lazy-mp6k": ("lazy", {
+        "lmcache.mp.lazy_offload_max_drain_per_step": 4,
+        "lmcache.mp.lazy_offload_min_prefix_tokens": 6000,
+    }),
+    "lazy-mp12k": ("lazy", {
+        "lmcache.mp.lazy_offload_max_drain_per_step": 4,
+        "lmcache.mp.lazy_offload_min_prefix_tokens": 12000,
+    }),
 }
 WANTED = [
     name

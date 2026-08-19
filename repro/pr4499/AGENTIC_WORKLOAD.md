@@ -283,6 +283,82 @@ end-to-end gain at a 40 GiB budget: identical coverage and TTFT to `=4`
 (0.899 against 0.895, p90 281 against 285) and a paired E2E of -0.8 ms
 against -24.6 ms.
 
+### Why it loses where it loses
+
+Five controls at the 20 GiB budget, each a full 2212-request run of the same
+workload, separate the causes. `off` runs the engine with no KV connector at
+all and is the baseline every number below is measured against; the three
+`max_drain_per_step` values and the two gate-3 settings vary one thing each.
+Paired means are over the 2141 requests common to every run.
+
+| variant | TTFT | decode | E2E | coverage | throttled | dropped_evicted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | -- | -- | -- | 0.31 (APC only) | -- | -- |
+| eager | +27.2 | +30.5 | **+57.7** | 0.310 | -- | -- |
+| lazy, `=64` | -6.2 | +40.6 | +34.4 | 0.623 | 0 | 138 |
+| lazy, `=4` | -7.7 | +26.0 | +18.3 | 0.626 | 134 | 350 |
+| lazy, `=1` | -2.1 | **+2.8** | **+0.7** | 0.600 | 731 | 1017 |
+| lazy, `=4`, `min_prefix_tokens=6000` | -5.9 | +22.9 | +17.0 | 0.624 | 118 | 262 |
+| lazy, `=4`, `min_prefix_tokens=12000` | -8.8 | +25.5 | +16.8 | 0.612 | 95 | 242 |
+
+**Eager is worse than having no connector at all here, at every prompt
+length.** Its TTFT cost against `off` rises from 6 ms at 2760-token prompts to
+66 ms at 26231-token ones -- it writes in proportion to what it reads in -- and
+its external hit rate is 0.004, so none of it comes back. That is 57.7 ms per
+request of pure loss, and it is the baseline the rest of this document
+compares eviction-aware against.
+
+**The short-prompt penalty is not unprofitable retrieval.** Gate 3 is the
+direct test, because it acts on the store side: with
+`min_prefix_tokens = 12000` the policy refuses 1108 operations and emits 1548
+instead of 2522, so a request below 12000 tokens provably has nothing of its
+own trajectory in L1 to retrieve. Its penalty against `off` at 2760 tokens is
++16 ms -- exactly what it was without the gate. The hypothesis that short
+requests lose by retrieving what they could have recomputed is refuted.
+
+What gate 3 does instead is protect the *long* prefixes, by not spending L1 on
+short ones: at `min_prefix_tokens = 12000` the 26231-token TTFT gain grows from
+93 ms to **135 ms** and the 19134-token gain from 64 ms to 93 ms, for 0.014 of
+coverage. That is the opposite of the effect it was reached for.
+
+**The decode cost is the free-queue read, and `max_drain_per_step` sets its
+depth.** Decode split into run octiles shows the shape:
+
+| variant | O1 | O2 | O3 | O4 | O5 | O6 | O7 | O8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | 99 | 95 | 95 | 94 | 95 | 93 | 97 | 98 |
+| eager | 95 | 108 | 109 | 107 | 103 | 106 | 104 | 97 |
+| lazy, `=64` | 233 | 89 | 91 | 89 | 99 | 90 | 123 | 212 |
+| lazy, `=4` | 98 | 89 | 92 | 89 | 99 | 91 | 126 | 202 |
+| lazy, `=1` | 98 | 92 | 93 | 90 | 92 | 90 | **92** | **92** |
+
+For three quarters of the run eviction-aware decodes *faster* than no
+connector; then it doubles. `collect_due` reads the free queue to
+`danger_depth + max_drain_per_step x largest live operation`, and dropping the
+multiplier from 4 to 1 flattens the curve completely -- 202 ms to 92 ms in the
+final octile, +2.8 ms of decode against `off` over the whole run. Pending depth
+is not the cause: `=1` ends with 81 pending against `=4`'s 101. The last-octile
+prompts are also the run's *shortest* (median 7056), so it is not context
+length either.
+
+**`=1` is not free, and the trade is the point.** It throttles 731 drains and
+loses 1017 admitted operations to eviction -- 28% of everything it admitted,
+against 12% at `=4` -- which is the failure mode `max_drain_per_step`'s
+documentation names for a cap below the number of concurrently prefilling
+requests. The cost lands on exactly the requests the policy exists for: the
+26231-token TTFT gain falls from 93 ms to 25 ms, and E2E p99 rises to 1031 ms
+against `=4`'s 905 ms and `off`'s 933 ms. What `=1` buys is uniformity, not
+depth -- its E2E against `off` stays inside -30 to +13 ms at every prompt size,
+where `=4` runs +42 ms at short prompts and -74 ms at long ones.
+
+The two are not naturally in tension. One parameter is setting both the drain
+rate, which decides how much KV survives to be written, and the depth of a
+read paid on every scheduler step. Bounding that read independently of the
+drain budget -- by the pending operations' actual block count rather than
+`budget x largest op`, or by a separate cap -- should give the 100 ms
+long-prompt gain of `=64` and the flat decode of `=1` at once. That is a
+production change and is not attempted here.
+
 ### What did not pass
 
 Three of the nine runs failed the preemption guard: 12 preemptions in
