@@ -356,8 +356,8 @@ rate, which decides how much KV survives to be written, and the depth of a
 read paid on every scheduler step. Bounding that read independently of the
 drain budget -- by the pending operations' actual block count rather than
 `budget x largest op`, or by a separate cap -- should give the 100 ms
-long-prompt gain of `=64` and the flat decode of `=1` at once. That is a
-production change and is not attempted here.
+long-prompt gain of `=64` and the flat decode of `=1` at once. Section 5 is
+that change, measured.
 
 ### What did not pass
 
@@ -370,6 +370,79 @@ which is a mechanism rather than noise -- and it is the 10 GiB row, where
 the policy loses, that carries the largest count. That row should be treated
 as unconfirmed until the preemptions are explained; the 20 and 40 GiB rows
 are clean in both repetitions.
+
+## 5. The same panel, with the read decoupled from the drain budget
+
+Section 4 ends on a prediction: `max_drain_per_step` was setting two unrelated
+quantities, and separating them should keep `=64`'s long-prompt gain while
+removing the decode cost. `collect_due` now opens the free-queue read at
+`danger_depth` and widens it only by the blocks an emission has *already*
+pinned out of the queue, instead of prepaying `max_drain_per_step x largest
+pending op`; whether a pinned block was in the queue is asked of the pool
+(`ref_cnt == 0`) rather than of the window, so a pin deeper than the window
+still counts. Same workload, same cohort, same 14 slots x 158 steps, L1 =
+20 GiB.
+
+| vs `off` | TTFT | decode | E2E | coverage | read/step | evicted | throttled |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| eager | +27.8 | +29.6 | +57.4 | 0.310 | -- | -- | -- |
+| lazy `=64`, before | -6.7 | +39.2 | +32.4 | 0.623 | ~backlog | 138 | 0 |
+| lazy `=4`, before | -8.1 | +25.2 | +17.1 | 0.626 | ~backlog/16 | 350 | 134 |
+| **lazy `=64`, after** | **-5.9** | **-1.9** | **-7.8** | 0.614 | **83.3** | 149 | 0 |
+| **lazy `=4`, after** | **-7.9** | **-0.6** | **-8.5** | 0.622 | **79.4** | 333 | 125 |
+
+The decode cost is gone, and E2E crosses zero: the connector is now cheaper
+per request than running without one, which no configuration in section 4
+managed. Decode by run octile shows it directly -- the post-change curves sit
+on top of `off`, including the noise at O3 and O5, which `off` has too:
+
+| variant | O1 | O2 | O3 | O4 | O5 | O6 | O7 | O8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | 98 | 95 | 120 | 94 | 119 | 93 | 97 | 99 |
+| eager | 97 | 124 | 189 | 115 | 177 | 122 | 121 | 106 |
+| lazy `=64`, before | 233 | 89 | 91 | 89 | 99 | 90 | 123 | 212 |
+| lazy `=64`, after | 97 | 97 | 107 | 96 | 115 | 98 | 95 | 94 |
+| lazy `=4`, after | 98 | 102 | 119 | 96 | 106 | 98 | 97 | 94 |
+
+**The long-prompt gain survives and the short-prompt penalty does not.** By
+prompt length, against `off` (TTFT/E2E, ms):
+
+| variant | 0-4k | 4-8k | 8-16k | 16-24k | 24k+ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| eager | +10/+8 | +9/+16 | +24/+41 | +47/+64 | +57/+217 |
+| lazy `=64`, before | +16/+73 | +19/+103 | -0/+42 | -35/-26 | -45/-54 |
+| lazy `=64`, after | +12/+7 | +14/+9 | +1/-1 | -29/-22 | -40/-48 |
+
+The +73 and +103 ms E2E penalties on prompts below 8000 tokens -- the reason
+the policy could look worse than eager on short requests -- were the per-step
+read, charged to every request in the run whether or not it had anything to
+gain. They fall to +7 and +9 while the 24k+ gain moves only from -54 to
+-48 ms, inside the drift floor measured below.
+
+**Why the read was so overcharged.** The new cost sensors put a number on it:
+across 70096 drains the policy emitted 2794 operations, **0.04 per drain**,
+while the old bound sized every drain's read for 64. The read is now 83.3
+blocks per step; the old bound was `min(pending blocks, 64 x largest op)`,
+which under this backlog is the whole pending set -- thousands of blocks. That
+figure is an estimate from the pending-op count and op sizes, not a
+measurement: the pre-change runs have no counters.
+
+**The budget is now a single-purpose knob.** `=4` and `=64` read to the same
+depth (79.4 against 83.3 blocks per step) and decode the same (-0.6 against
+-1.9 ms), while they still differ in exactly what the cap is for: `=4`
+throttles 125 drains and loses 333 admitted operations to eviction, against 0
+and 149. Before the change the same pair differed by 14 ms of decode. There is
+no longer a reason to lower it from the default: `=4` buys 0.7 ms of E2E,
+inside the noise floor, for 184 more lost operations.
+
+**Drift control.** The panel spans hours, so `off` was run twice, sixteen hours
+apart, on either side of the change. Paired: -1.1 ms TTFT, -0.9 ms decode,
+-2.0 ms E2E, identical coverage, and no bucket beyond 5 ms except the 280-request
+24k+ tail at 17 ms. That is the resolution floor for every number above.
+
+**Still open.** One preemption remains in `lazy, =64` (two before). The
+eviction-aware-only preemptions of section 4 are smaller here but not
+explained.
 
 ## Verdict
 
@@ -391,17 +464,28 @@ are clean in both repetitions.
    be worth deferring to. At a budget that nearly holds the live set the win
    narrows to the tail; at 0.27x the live set the policy reaches only 0.398
    coverage and loses on E2E.
-4. **`max_drain_per_step` = 64 is priced for the drain, not for the read
-   that sizing it implies.** At low instantaneous concurrency it doubles
-   decode time (§2); at agentic concurrency with long prompts it merely
-   consumes the entire end-to-end gain (-0.8 ms against -24.6 ms paired E2E
-   at a 40 GiB budget). Lowering it costs nothing measurable in either
-   regime.
+4. **`max_drain_per_step` was priced for the drain, not for the read that
+   sizing it implied -- and that was the whole cost.** One parameter set
+   both the rate at which buffered KV is written and the depth of a
+   free-queue read paid on every scheduler step, so raising it for the
+   drain bought a per-step cost charged to every request. Reading only as
+   deep as a drain's own emissions require (§5) removes it: paired against
+   no connector at all, E2E goes from +32.4 ms to **-7.8 ms** at the
+   default cap, decode from +39.2 ms to -1.9 ms, and the +73/+103 ms
+   penalty on sub-8000-token prompts -- the reason the policy could look
+   worse than eager on short requests -- falls to +7/+9 ms while the 24k+
+   gain holds at -48 ms. The mean drain emits 0.04 operations; the old
+   bound sized every one of them for 64.
+5. **With that separated, the default cap is the right cap.** `=4` and
+   `=64` now read to the same depth and decode the same; `=4` buys 0.7 ms
+   of E2E, inside the drift floor, for 184 more operations lost to
+   eviction. Before the change the two differed by 14 ms of decode, which
+   is what made the knob look worth tuning.
 
-The actionable findings for the PR are (4), and the observation in
-§4 that the deferring policy is the only configuration that preempts under
-budget pressure. Nothing here contradicts the reported hot/cold or QASPER
-results.
+The remaining open item is the observation in §4 that the deferring policy
+is the only configuration that preempts under budget pressure; it is smaller
+after §5 (one preemption, against two) but unexplained. Nothing here
+contradicts the reported hot/cold or QASPER results.
 
 ## Guards and raw data
 
@@ -410,8 +494,9 @@ sections 1--3 pass every guard in `agentic/validate_agentic.py`: exact
 request counts, zero failed steps, prompt-token counts identical to the
 cohort's, a closing lazy ledger, no tracebacks, and zero vLLM preemptions.
 Of section 4's 13 runs, 10 pass; the three that do not are named in "What
-did not pass", and all three failures are preemption counts. Schedule lag
-p90 was 0.0 ms in every run reported here, so no run was reshaped by
+did not pass", and all three failures are preemption counts. Section 5's
+four runs pass every guard except one preemption in `lazy, =64`. Schedule
+lag p90 was 0.0 ms in every run reported here, so no run was reshaped by
 saturation.
 
 Both cohorts (100+ MiB of trajectory text) stay on RAID; their identity,
@@ -420,9 +505,13 @@ per-session token profile and instance list are in
 `results/agentic_full/cohort_manifest.json`.
 
 Reproduce sections 1--3 with `agentic/run_agentic_sweep.py` and
-`agentic/run_attribution.py`, and section 4 with
+`agentic/run_attribution.py`, and sections 4--5 with
 `agentic/run_full_replay.py`; the tables come from
-`agentic/agentic_table.py` / `agentic/attribution_table.py`. See
+`agentic/agentic_table.py` / `agentic/attribution_table.py`, and section 5's
+from `agentic/analyze_panel.py` (paired per request, so it needs the runs to
+share a request stream). See
 [`agentic/README.md`](agentic/README.md). Raw per-run JSON (every request
-record, counter delta, L1 series and ledger) is under `results/agentic/`
-and `results/agentic_full/`.
+record, counter delta, L1 series and ledger) is under `results/agentic/`,
+`results/agentic_full/` and `results/agentic_decoupled/`; the latter also
+carries the rendered panel (`panel_l20.txt`) and the two-run drift control
+(`drift_control.txt`).

@@ -66,7 +66,23 @@ python agentic/agentic_table.py results/
 AGENTIC_COHORT=cohort_full.json AGENTIC_SLOT_STEPS=158 \
 AGENTIC_MAX_MODEL_LEN=40960 AGENTIC_FULL_SLOTS=14 \
 AGENTIC_FULL_BUDGETS=20,40,10 python agentic/run_full_replay.py
+
+# one budget, one variant per column, including the no-connector baseline
+AGENTIC_FULL_BUDGETS=20 AGENTIC_FULL_VARIANTS=off,eager,lazy,lazy-d4 \
+AGENTIC_FULL_REP=dec python agentic/run_full_replay.py
+python agentic/analyze_panel.py results/agentic_decoupled/ag_*.json
 ```
+
+`analyze_panel.py` compares runs **per request** rather than per
+distribution: every variant replays the same cohort through the same slot
+schedule, so a request is identified by its slot, trajectory and step in all
+of them. The effects here are tens of milliseconds on a population whose own
+spread is hundreds, which unpaired percentiles cannot resolve. It reports
+coverage and tails per run, paired means against a reference variant (`off`
+by default) overall and by prompt length, decode by run octile, and the
+policy ledger including the per-step cost counters. Passing two runs of the
+same variant from different panels is how the drift control is read: they are
+kept apart by repetition label instead of collapsing.
 
 Each point boots its own MP server and engine, replays the cohort, and
 writes one JSON with every per-request record, the vLLM counter deltas, the
