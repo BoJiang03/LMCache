@@ -23,6 +23,19 @@ LMCACHE_TEST_CHUNK_SIZE = 16
 
 
 @dataclass(frozen=True)
+class StorageSnapshot:
+    """Point-in-time contents of the LMCache local CPU backend.
+
+    Attributes:
+        num_keys: Number of chunk keys currently resident in the hot cache.
+        total_bytes: Sum of the logical sizes of all resident memory objects.
+    """
+
+    num_keys: int
+    total_bytes: int
+
+
+@dataclass(frozen=True)
 class StepResult:
     """Outcome of one request on the LMCache engine.
 
@@ -65,6 +78,31 @@ def configure_environment() -> None:
             )
 
 
+def _prometheus_counter_totals(names: tuple[str, ...]) -> dict[str, int]:
+    """Read the current totals of the given Prometheus counters.
+
+    Args:
+        names: Prometheus metric names (without the ``_total`` suffix).
+
+    Returns:
+        Mapping of metric name to its integer total (0 if not yet emitted).
+    """
+    # Third Party
+    from prometheus_client import REGISTRY
+
+    totals: dict[str, int] = {name: 0 for name in names}
+    for metric in REGISTRY.collect():
+        if metric.name in totals:
+            totals[metric.name] = int(
+                sum(
+                    sample.value
+                    for sample in metric.samples
+                    if sample.name.endswith("_total")
+                )
+            )
+    return totals
+
+
 def cumulative_lookup_stats(monitor) -> tuple[int, int]:
     """Cumulative (lookup_tokens, lookup_hits) since engine start.
 
@@ -80,21 +118,61 @@ def cumulative_lookup_stats(monitor) -> tuple[int, int]:
     Returns:
         Tuple of cumulative (lookup_tokens, lookup_hits).
     """
-    # Third Party
-    from prometheus_client import REGISTRY
-
-    totals = {"lmcache:num_lookup_tokens": 0.0, "lmcache:num_lookup_hits": 0.0}
-    for metric in REGISTRY.collect():
-        if metric.name in totals:
-            totals[metric.name] = sum(
-                sample.value
-                for sample in metric.samples
-                if sample.name.endswith("_total")
-            )
-    return (
-        int(totals["lmcache:num_lookup_tokens"]) + monitor.interval_lookup_tokens,
-        int(totals["lmcache:num_lookup_hits"]) + monitor.interval_lookup_hits,
+    totals = _prometheus_counter_totals(
+        ("lmcache:num_lookup_tokens", "lmcache:num_lookup_hits")
     )
+    return (
+        totals["lmcache:num_lookup_tokens"] + monitor.interval_lookup_tokens,
+        totals["lmcache:num_lookup_hits"] + monitor.interval_lookup_hits,
+    )
+
+
+def cumulative_stored_tokens(monitor) -> int:
+    """Cumulative tokens LMCache was ASKED to store since engine start.
+
+    Counted at store-request time (``on_store_request``), i.e. this is the
+    engine's store-side intent, not proof of residency; compare against
+    ``storage_snapshot`` for the resident truth. Theft-proof the same way as
+    ``cumulative_lookup_stats``.
+
+    Args:
+        monitor: The process-local ``LMCStatsMonitor`` instance.
+
+    Returns:
+        Cumulative store-requested token count.
+    """
+    totals = _prometheus_counter_totals(("lmcache:num_stored_tokens",))
+    return totals["lmcache:num_stored_tokens"] + monitor.interval_stored_tokens
+
+
+def storage_snapshot() -> StorageSnapshot:
+    """Snapshot what is ACTUALLY resident in the local CPU backend.
+
+    This is the ground truth for storage-conservation checks: chunk keys and
+    bytes physically held by the hot cache, independent of what any counter
+    claims was stored. Requires the in-process engine (single-process mode).
+
+    Returns:
+        The current ``StorageSnapshot``.
+
+    Raises:
+        RuntimeError: If the LMCache engine or its local CPU backend is not
+            available in this process.
+    """
+    # First Party
+    from lmcache.integration.vllm.utils import ENGINE_NAME
+    from lmcache.v1.cache_engine import LMCacheEngineBuilder
+
+    engine = LMCacheEngineBuilder.get(ENGINE_NAME)
+    if engine is None or engine.storage_manager is None:
+        raise RuntimeError("LMCache engine/storage manager not initialized")
+    backend = engine.storage_manager.storage_backends.get("LocalCPUBackend")
+    if backend is None:
+        raise RuntimeError("LocalCPUBackend not active; snapshot unavailable")
+    with backend.cpu_lock:
+        num_keys = len(backend.hot_cache)
+        total_bytes = sum(obj.get_size() for obj in backend.hot_cache.values())
+    return StorageSnapshot(num_keys=num_keys, total_bytes=total_bytes)
 
 
 class MMHarness:
@@ -195,6 +273,14 @@ class MMHarness:
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
         return cumulative_lookup_stats(self.monitor)
+
+    def stored_tokens_total(self) -> int:
+        """Cumulative store-requested tokens (see ``cumulative_stored_tokens``)."""
+        return cumulative_stored_tokens(self.monitor)
+
+    def storage(self) -> StorageSnapshot:
+        """Resident local-CPU-backend snapshot (see ``storage_snapshot``)."""
+        return storage_snapshot()
 
     def check_output(self, request: MMRequest, result: StepResult, where: str) -> None:
         """Verify a step's output against baseline and semantic probe.

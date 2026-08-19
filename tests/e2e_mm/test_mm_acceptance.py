@@ -64,14 +64,25 @@ def test_t0_cross_image_isolation_and_hit_equivalence(harness):
 
 
 def test_t0_collision_pressure(harness):
-    """T0.2: N distinct same-shape images must never cross-hit.
+    """T0.2 + T0.7: N distinct same-shape images, with storage conservation.
 
-    Regression for the 16-bit mm_hash truncation (issue #3301): with 16-bit
-    identity, ~300 distinct images give ~50% collision probability; any
-    collision shows up here as a hit count above the text-prefix steady
-    state.
+    T0.2 is the regression for the 16-bit mm_hash truncation (issue #3301):
+    with 16-bit identity, ~300 distinct images give ~50% collision
+    probability; any collision shows up here as a hit count above the
+    text-prefix steady state.
+
+    T0.7 audits the STORE side of the same traffic: every token the lookup
+    missed must be store-requested AND land as resident chunk keys in the
+    local CPU backend (under-storage = silently dropped KV), and the full-hit
+    replay in pass 2 must store ~nothing new (over-storage = unstable keys or
+    a lookup/store disagreement) while never losing resident entries.
     """
     requests = pressure_requests(pressure_n())
+    n = len(requests)
+    decode_budget = sum(r.max_tokens for r in requests)
+
+    stored_0 = harness.stored_tokens_total()
+    resident_0 = harness.storage()
     pass1 = [harness.run(r) for r in requests]
 
     assert pass1[0].lookup_hits == 0, "fresh case salt must not hit anything"
@@ -92,6 +103,35 @@ def test_t0_collision_pressure(harness):
             f"earlier requests with identical identifiers: {same_identifier}"
         )
 
+    # T0.7 pass-1 conservation: missed tokens -> store requests -> resident
+    # keys. Tolerances: chunk alignment (one partial chunk per request) and
+    # the decode tokens vLLM may also hand over for storage.
+    stored_1 = harness.stored_tokens_total()
+    resident_1 = harness.storage()
+    missed = sum(r.lookup_tokens - r.lookup_hits for r in pass1)
+    stored_delta = stored_1 - stored_0
+    assert stored_delta >= missed - n * CHUNK, (
+        f"under-storage: lookup missed {missed} tokens but only "
+        f"{stored_delta} were store-requested -- LMCache is dropping KV"
+    )
+    assert stored_delta <= missed + decode_budget + n * CHUNK, (
+        f"over-storage: {stored_delta} tokens store-requested for only "
+        f"{missed} missed (+{decode_budget} decode budget) -- duplicate "
+        f"stores or a lookup/store disagreement"
+    )
+    key_delta = resident_1.num_keys - resident_0.num_keys
+    expected_chunks = missed // CHUNK
+    assert key_delta >= expected_chunks - n, (
+        f"resident-key deficit: expected ~{expected_chunks} new chunk keys, "
+        f"found {key_delta} -- store-requested KV never became resident "
+        f"(allocation failure or silent drop)"
+    )
+    assert key_delta <= expected_chunks + 2 * n, (
+        f"resident-key surplus: expected ~{expected_chunks} new chunk keys, "
+        f"found {key_delta} -- unstable keys are storing duplicates"
+    )
+    assert resident_1.total_bytes > resident_0.total_bytes
+
     # Pass 2: every image repeats, must fully hit and reproduce its output.
     for req, first in zip(requests, pass1, strict=True):
         second = harness.run(req)
@@ -99,6 +139,30 @@ def test_t0_collision_pressure(harness):
             f"{req.key}: hit-path output diverged from its own first pass"
         )
         assert second.lookup_hits >= second.lookup_tokens - 2 * CHUNK
+
+    # T0.7 pass-2 conservation: a full-hit replay has nothing new to cache.
+    stored_2 = harness.stored_tokens_total()
+    resident_2 = harness.storage()
+    assert stored_2 - stored_1 <= decode_budget + n * CHUNK, (
+        f"full-hit replay re-stored {stored_2 - stored_1} tokens -- the "
+        f"store path does not trust its own lookup"
+    )
+    new_keys = resident_2.num_keys - resident_1.num_keys
+    assert new_keys >= 0, (
+        f"{-new_keys} resident chunk keys VANISHED during the replay while "
+        f"the cache is far under capacity -- KV loss (eviction or pin bug)"
+    )
+    assert new_keys <= n, (
+        f"full-hit replay added {new_keys} resident chunk keys -- keys are "
+        f"not stable across identical requests"
+    )
+    if key_delta > 0:
+        avg_chunk_bytes = (resident_1.total_bytes - resident_0.total_bytes) / key_delta
+        bytes_growth = resident_2.total_bytes - resident_1.total_bytes
+        assert bytes_growth <= (new_keys + n) * avg_chunk_bytes, (
+            f"replay grew resident bytes by {bytes_growth} with only "
+            f"{new_keys} new keys -- bytes leaking without keys"
+        )
 
 
 @pytest.mark.parametrize("phase", range(BOUNDARY_PHASES))
