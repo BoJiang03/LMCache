@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pytest wrappers for the isolated-engine scenarios (T0.9, T0.10).
+"""Pytest wrappers for the isolated-engine scenarios (T0.9-T0.11, T3).
 
 Each scenario needs an engine configured differently from the shared session
-harness, so it runs in a subprocess (see ``isolated_cases.py``); the test
-asserts the subprocess's JSON report contains no failures.
+harness (or an external MP cache server), so it runs in a subprocess (see
+``isolated_cases.py``); the test asserts the subprocess's JSON report
+contains no failures.
 """
 
 # Standard
@@ -21,7 +22,10 @@ from specs import selected_model_keys
 
 
 @pytest.mark.parametrize("model_key", selected_model_keys())
-@pytest.mark.parametrize("scenario", ["chunked_prefill", "capacity_eviction"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["chunked_prefill", "capacity_eviction", "preemption", "mp_connector"],
+)
 def test_isolated_scenario(scenario, model_key, tmp_path):
     configure_environment()
     out_json = tmp_path / f"{scenario}_{model_key}.json"
@@ -30,7 +34,7 @@ def test_isolated_scenario(scenario, model_key, tmp_path):
         [sys.executable, str(runner), scenario, model_key, str(out_json)],
         capture_output=True,
         text=True,
-        timeout=1800,
+        timeout=2400,
     )
     if not out_json.exists():
         raise AssertionError(

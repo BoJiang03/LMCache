@@ -24,6 +24,30 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def pytest_collection_modifyitems(config, items):
+    # Modality-gated tests (e.g. T2.3 video) are DESELECTED -- not skipped --
+    # for models whose spec does not declare the modality: a skip would
+    # poison certification (certify.py treats any skip as failure), while a
+    # deselect keeps the run's claim exactly as wide as the spec.
+    from specs import MODEL_SPECS
+
+    deselected = []
+    kept = []
+    for item in items:
+        marker = item.get_closest_marker("requires_modality")
+        if marker is not None:
+            model_key = getattr(item, "callspec", None)
+            model_key = model_key.params.get("harness") if model_key else None
+            if (
+                model_key is not None
+                and marker.args[0] not in MODEL_SPECS[model_key].modalities
+            ):
+                deselected.append(item)
+                continue
+        kept.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = kept
+
     for item in items:
         item.add_marker(pytest.mark.mm_e2e)
     if os.environ.get("LMCACHE_MM_E2E") != "1":
@@ -44,7 +68,7 @@ def _model_keys() -> list[str]:
 @pytest.fixture(scope="session", params=_model_keys())
 def harness(request, tmp_path_factory):
     """Session harness for one model: baselines + LMCache engine."""
-    from catalog import catalog, pressure_requests
+    from catalog import catalog, pressure_requests, video_requests
     from harness import MMHarness, compute_baselines, configure_environment
     from specs import MODEL_SPECS
 
@@ -61,6 +85,8 @@ def harness(request, tmp_path_factory):
         )
     spec = MODEL_SPECS[request.param]
     all_requests = list(catalog().values()) + pressure_requests(pressure_n())
+    if "video" in spec.modalities:
+        all_requests += list(video_requests().values())
     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
     baselines = compute_baselines(spec, all_requests, workdir)
     h = MMHarness(spec, baselines)

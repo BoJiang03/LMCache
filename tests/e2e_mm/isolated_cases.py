@@ -18,14 +18,31 @@ would misattribute model weakness to the cache.
 
 # Standard
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 
 # First Party (test-local)
-from catalog import MMRequest, eviction_requests, long_prefix_color_request
+from catalog import (
+    MMRequest,
+    catalog,
+    color_request,
+    eviction_requests,
+    long_prefix_color_request,
+    preemption_requests,
+)
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
-from harness import MMHarness, compute_baselines
+from harness import (
+    MMHarness,
+    MPHarness,
+    compute_baselines,
+    vllm_preemption_total,
+)
 from specs import MODEL_SPECS, ModelSpec
 
 IMAGE_SPAN_MARGIN = 4 * CHUNK
@@ -47,6 +64,19 @@ EVICTION_N = 32
 # Isolated engines coexist with (at most) one session engine on the GPU, so
 # they claim a smaller fraction than the spec default.
 ISOLATED_GPU_UTILIZATION = 0.35
+
+# Preemption scenario: a deliberately tiny GPU block pool (16-token blocks)
+# that admits every prompt but cannot absorb the decode growth of the whole
+# batch, so the scheduler MUST preempt (asserted via the vLLM preemption
+# counter -- the scenario fails as vacuous if it never happens).
+PREEMPTION_GPU_BLOCKS = 128
+PREEMPTION_N = 6
+PREEMPTION_MAX_TOKENS = 112
+
+# MP connector scenario: ports for the cache server subprocess, derived from
+# the PID so concurrent runs on one host do not collide.
+MP_SERVER_L1_GB = 4
+MP_SERVER_START_TIMEOUT_S = 120
 
 
 def _expect(failures: list[str], condition: bool, message: str) -> None:
@@ -279,9 +309,390 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     return {"failures": failures, "metrics": metrics}
 
 
+def run_preemption(spec: ModelSpec) -> dict:
+    """T0.11: correctness when the scheduler preempts and recomputes.
+
+    A tiny GPU block pool plus forced-length decodes (``ignore_eos``) makes
+    the running batch outgrow KV memory, so vLLM preempts at least one
+    request (asserted via the ``vllm:num_preemptions`` counter; zero
+    preemptions fails the scenario as vacuous) and later re-prefills it.
+    The re-prefill goes through LMCache's preemption path (restored token
+    ids, fresh block ids); every output must still match the plain-vLLM
+    baseline, and afterwards every request must fully hit and reproduce its
+    text -- proving the preemption round-trip neither corrupted KV nor
+    poisoned the cache.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        Report dict with ``failures`` (empty = pass) and ``metrics``.
+    """
+    engine_kwargs = {
+        "gpu_memory_utilization": ISOLATED_GPU_UTILIZATION,
+        "num_gpu_blocks_override": PREEMPTION_GPU_BLOCKS,
+        # vLLM refuses a block pool smaller than one max-length request, so
+        # the context length must shrink along with the pool.
+        "max_model_len": PREEMPTION_GPU_BLOCKS * CHUNK,
+        "max_num_seqs": PREEMPTION_N,
+        "disable_log_stats": False,  # the preemption counter needs stats on
+    }
+    requests = preemption_requests(PREEMPTION_N, PREEMPTION_MAX_TOKENS)
+    with tempfile.TemporaryDirectory() as tmp:
+        baselines = compute_baselines(
+            spec,
+            requests,
+            pathlib.Path(tmp),
+            extra_engine_kwargs=engine_kwargs,
+        )
+    harness = MMHarness(spec, baselines=baselines, extra_engine_kwargs=engine_kwargs)
+    failures: list[str] = []
+    metrics: dict[str, object] = {}
+    stored_before = harness.stored_tokens_total()
+    try:
+        preemptions_before = vllm_preemption_total()
+        batch = harness.run_batch(requests)
+        preemptions = vllm_preemption_total() - preemptions_before
+        _expect(
+            failures,
+            preemptions > 0,
+            f"no preemption occurred (counter delta {preemptions}) -- the "
+            f"scenario is vacuous; lower PREEMPTION_GPU_BLOCKS or raise "
+            f"PREEMPTION_MAX_TOKENS",
+        )
+        for req, text in zip(requests, batch.texts, strict=True):
+            _check_text(failures, harness, req, text, f"T0.11 batch {req.key}")
+
+        # The preemption round-trip must leave a usable, uncorrupted cache:
+        # every request replays to a full hit with its exact batch output.
+        for req, batch_text in zip(requests, batch.texts, strict=True):
+            again = harness.run(req)
+            _expect(
+                failures,
+                again.text == batch_text,
+                f"{req.key}: replay text {again.text!r} != preempted-batch "
+                f"text {batch_text!r}",
+            )
+            _expect(
+                failures,
+                again.lookup_hits >= again.lookup_tokens - 2 * CHUNK,
+                f"{req.key}: replay hit only {again.lookup_hits} of "
+                f"{again.lookup_tokens} tokens after the preemption batch",
+            )
+
+        # Under-storage guard: preemption must not silently drop stores.
+        # (No upper bound here: a preempted request legitimately re-stores.)
+        stored_delta = harness.stored_tokens_total() - stored_before
+        missed = batch.lookup_tokens - batch.lookup_hits
+        _expect(
+            failures,
+            stored_delta >= missed - PREEMPTION_N * CHUNK,
+            f"under-storage across preemption: batch missed {missed} tokens "
+            f"but only {stored_delta} were store-requested",
+        )
+        metrics["preemptions"] = preemptions
+        metrics["batch"] = {
+            "lookup_tokens": batch.lookup_tokens,
+            "lookup_hits": batch.lookup_hits,
+            "stored_delta": stored_delta,
+        }
+    finally:
+        harness.close()
+    return {"failures": failures, "metrics": metrics}
+
+
+def _start_mp_server(zmq_port: int, http_port: int, log_path: pathlib.Path):
+    """Launch the LMCache MP cache server and wait until it is healthy.
+
+    Args:
+        zmq_port: ZMQ port for the connector traffic.
+        http_port: HTTP port for the observability API.
+        log_path: File capturing the server's stdout/stderr.
+
+    Returns:
+        The server ``subprocess.Popen`` handle.
+
+    Raises:
+        RuntimeError: If the server does not become healthy in time.
+    """
+    log_file = open(log_path, "w")
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "lmcache.v1.multiprocess.http_server",
+            "--port",
+            str(zmq_port),
+            "--http-port",
+            str(http_port),
+            "--chunk-size",
+            str(CHUNK),
+            "--l1-size-gb",
+            str(MP_SERVER_L1_GB),
+            "--eviction-policy",
+            "LRU",
+        ],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
+    deadline = time.monotonic() + MP_SERVER_START_TIMEOUT_S
+    url = f"http://localhost:{http_port}/healthcheck"
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if resp.status == 200:
+                    return proc
+        except (urllib.error.URLError, OSError):
+            time.sleep(2)
+    proc.terminate()
+    raise RuntimeError(
+        f"MP cache server failed to become healthy; log tail:\n"
+        f"{log_path.read_text()[-2000:]}"
+    )
+
+
+def run_mp_connector(spec: ModelSpec) -> dict:
+    """T3: the T0+T1 core on the multi-process connector deployment path.
+
+    Starts a real LMCache MP cache server subprocess, drives a vLLM engine
+    through ``LMCacheMPConnector`` (this repo's version), and replays the
+    core acceptance set: cross-image isolation and hit equivalence (T0.1 /
+    T0.3), mixed traffic (T0.5), a concurrent batch (T0.8), prefix reuse
+    (T1.2), multi-image order (T2.1), partial sharing (T2.2), store
+    conservation against the server's resident-object API, and the
+    detector negative control. Chunk-boundary phases (T0.4) and collision
+    pressure (T0.2) are keyspace properties independent of the transport
+    and stay on the in-process path.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        Report dict with ``failures`` (empty = pass) and ``metrics``.
+    """
+    zmq_port = 25000 + (os.getpid() % 5000)
+    http_port = zmq_port + 5000
+    cat = catalog()
+    used_keys = [
+        "t01-A",
+        "t01-B",
+        "t05-text",
+        "t05-A",
+        "t05-B",
+        "t08-A",
+        "t08-B",
+        "t08-text",
+        "t12-A",
+        "t12-A-q2",
+        "t21-AB",
+        "t21-BA",
+        "t22-A",
+        "t22-AC",
+    ]
+    requests = [cat[k] for k in used_keys]
+    engine_kwargs = {"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION}
+    failures: list[str] = []
+    metrics: dict[str, object] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        baselines = compute_baselines(
+            spec, requests, pathlib.Path(tmp), extra_engine_kwargs=engine_kwargs
+        )
+        server = _start_mp_server(
+            zmq_port, http_port, pathlib.Path(tmp) / "mp_server.log"
+        )
+        harness = MPHarness(
+            spec,
+            baselines=baselines,
+            zmq_port=zmq_port,
+            http_port=http_port,
+            extra_engine_kwargs=engine_kwargs,
+        )
+        try:
+            singles: list = []
+
+            # T0.1 / T0.3 / T1.1 / T1.3 on the t01 pair.
+            a1 = harness.run(cat["t01-A"])
+            singles.append(a1)
+            _expect(failures, a1.lookup_hits == 0, "fresh salt hit something")
+            _check_text(failures, harness, cat["t01-A"], a1.text, "T3 t01 first A")
+            b1 = harness.run(cat["t01-B"])
+            singles.append(b1)
+            _check_text(failures, harness, cat["t01-B"], b1.text, "T3 t01 B")
+            a2 = harness.run(cat["t01-A"])
+            singles.append(a2)
+            _check_text(failures, harness, cat["t01-A"], a2.text, "T3 t01 repeat A")
+            _expect(
+                failures,
+                a2.text == a1.text,
+                f"hit text {a2.text!r} != miss text {a1.text!r}",
+            )
+            _expect(
+                failures,
+                a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK,
+                f"repeat A hit only {a2.lookup_hits}/{a2.lookup_tokens}",
+            )
+            _expect(
+                failures,
+                b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN,
+                f"image B hit {b1.lookup_hits} tokens, too close to A's "
+                f"full hit {a2.lookup_hits} -- cross-image false hit",
+            )
+            metrics["t01"] = {
+                "prompt_tokens": a1.lookup_tokens,
+                "full_hit": a2.lookup_hits,
+                "b_hit": b1.lookup_hits,
+            }
+
+            # T0.5 mixed traffic.
+            t1 = harness.run(cat["t05-text"])
+            singles.append(t1)
+            _check_text(failures, harness, cat["t05-text"], t1.text, "T3 t05 text")
+            m1 = harness.run(cat["t05-A"])
+            singles.append(m1)
+            _check_text(failures, harness, cat["t05-A"], m1.text, "T3 t05 A")
+            t2 = harness.run(cat["t05-text"])
+            singles.append(t2)
+            _expect(failures, t2.text == t1.text, "text-only repeat diverged")
+            _expect(
+                failures,
+                t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK,
+                f"text-only repeat hit only {t2.lookup_hits}/{t2.lookup_tokens}",
+            )
+            m2 = harness.run(cat["t05-B"])
+            singles.append(m2)
+            _check_text(failures, harness, cat["t05-B"], m2.text, "T3 t05 B")
+
+            # T1.2 prefix reuse across questions.
+            q1 = harness.run(cat["t12-A"])
+            singles.append(q1)
+            _check_text(failures, harness, cat["t12-A"], q1.text, "T3 t12 q1")
+            q2 = harness.run(cat["t12-A-q2"])
+            singles.append(q2)
+            _check_text(failures, harness, cat["t12-A-q2"], q2.text, "T3 t12 q2")
+            _expect(
+                failures,
+                q2.lookup_hits >= q1.lookup_tokens - 6 * CHUNK,
+                f"prefix reuse too shallow: {q2.lookup_hits} of ~{q1.lookup_tokens}",
+            )
+            _expect(
+                failures,
+                q2.lookup_hits < q2.lookup_tokens,
+                "different question must not fully hit",
+            )
+
+            # T2.1 multi-image order.
+            ab = harness.run(cat["t21-AB"])
+            singles.append(ab)
+            _check_text(failures, harness, cat["t21-AB"], ab.text, "T3 t21 AB")
+            ba = harness.run(cat["t21-BA"])
+            singles.append(ba)
+            _check_text(failures, harness, cat["t21-BA"], ba.text, "T3 t21 BA")
+            ab2 = harness.run(cat["t21-AB"])
+            singles.append(ab2)
+            _expect(failures, ab2.text == ab.text, "t21 repeat diverged")
+            _expect(
+                failures,
+                ba.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN,
+                f"swapped order hit {ba.lookup_hits} vs full {ab2.lookup_hits}",
+            )
+
+            # T2.2 partial sharing.
+            s1 = harness.run(cat["t22-A"])
+            singles.append(s1)
+            _check_text(failures, harness, cat["t22-A"], s1.text, "T3 t22 A")
+            s2 = harness.run(cat["t22-AC"])
+            singles.append(s2)
+            _check_text(failures, harness, cat["t22-AC"], s2.text, "T3 t22 AC")
+            _expect(
+                failures,
+                s2.lookup_hits >= IMAGE_SPAN_MARGIN + CHUNK,
+                f"shared image prefix not reused: {s2.lookup_hits}",
+            )
+            _expect(
+                failures,
+                s2.lookup_hits < s2.lookup_tokens,
+                "the second image is new; a full hit here is a false hit",
+            )
+
+            # Conservation on the MP path: everything the lookups missed must
+            # have been submitted for storage, and the server must actually
+            # hold objects.
+            missed = sum(r.lookup_tokens - r.lookup_hits for r in singles)
+            stored = harness.stored_tokens_total()
+            _expect(
+                failures,
+                stored >= missed - len(singles) * CHUNK,
+                f"under-storage on MP path: missed {missed} tokens but only "
+                f"{stored} were store-submitted",
+            )
+            snapshot = harness.storage()
+            _expect(
+                failures,
+                snapshot.num_keys > 0 and snapshot.total_bytes > 0,
+                f"MP server reports no resident objects ({snapshot})",
+            )
+            metrics["conservation"] = {
+                "missed": missed,
+                "stored": stored,
+                "resident_keys": snapshot.num_keys,
+                "resident_bytes": snapshot.total_bytes,
+            }
+
+            # T0.8 concurrent batch, then the batched store must be hittable.
+            batch_reqs = [
+                cat["t08-A"],
+                cat["t08-B"],
+                cat["t08-A"],
+                cat["t08-text"],
+                cat["t08-B"],
+            ]
+            batch = harness.run_batch(batch_reqs)
+            for i, (req, text) in enumerate(zip(batch_reqs, batch.texts, strict=True)):
+                _check_text(failures, harness, req, text, f"T3 t08 entry {i}")
+            after = harness.run(cat["t08-A"])
+            _check_text(failures, harness, cat["t08-A"], after.text, "T3 t08 after")
+            _expect(
+                failures,
+                after.lookup_hits >= after.lookup_tokens - 2 * CHUNK,
+                f"batched store not hittable: {after.lookup_hits}/"
+                f"{after.lookup_tokens}",
+            )
+
+            # Negative control: with MM identity substitution disabled the
+            # cross-image tripwire MUST fire on this path too.
+            blind_a = color_request("t3blind-A", "t3blind", 0)
+            blind_b = color_request("t3blind-B", "t3blind", 2)
+            with harness.identity_blindness():
+                nc_a = harness.run(blind_a)
+                _expect(
+                    failures,
+                    nc_a.lookup_hits == 0,
+                    "negative control: fresh salt hit something",
+                )
+                nc_b = harness.run(blind_b)
+            _expect(
+                failures,
+                nc_b.lookup_hits > nc_b.lookup_tokens - IMAGE_SPAN_MARGIN,
+                f"negative control did not trip on the MP path: blind B hit "
+                f"only {nc_b.lookup_hits} of {nc_b.lookup_tokens} tokens",
+            )
+        finally:
+            harness.close()
+            server.terminate()
+            try:
+                server.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                server.kill()
+    return {"failures": failures, "metrics": metrics}
+
+
 SCENARIOS = {
     "chunked_prefill": run_chunked_prefill,
     "capacity_eviction": run_capacity_eviction,
+    "preemption": run_preemption,
+    "mp_connector": run_mp_connector,
 }
 
 

@@ -29,7 +29,7 @@ def main(in_path: str, out_path: str) -> None:
         gpu_memory_utilization=spec["gpu_memory_utilization"],
         enforce_eager=True,
         enable_prefix_caching=False,
-        limit_mm_per_prompt={"image": 2},
+        limit_mm_per_prompt=spec.get("limit_mm_per_prompt", {"image": 2}),
     )
     engine_kwargs.update(spec.get("extra_engine_kwargs", {}))
     llm = LLM(**engine_kwargs)
@@ -38,7 +38,10 @@ def main(in_path: str, out_path: str) -> None:
         outputs = llm.chat(
             request["messages"],
             sampling_params=SamplingParams(
-                temperature=0.0, max_tokens=request["max_tokens"], seed=0
+                temperature=0.0,
+                max_tokens=request["max_tokens"],
+                seed=0,
+                ignore_eos=request.get("ignore_eos", False),
             ),
             use_tqdm=False,
         )

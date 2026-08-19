@@ -106,6 +106,24 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
             )
 
 
+def mm_limits(spec: ModelSpec) -> dict[str, int]:
+    """Per-prompt multimodal item limits for the engines of ``spec``.
+
+    Shared by the LMCache engine, the baseline engine, and every isolated
+    scenario so all of them accept the same request shapes.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The ``limit_mm_per_prompt`` mapping.
+    """
+    limits = {"image": 2}
+    if "video" in spec.modalities:
+        limits["video"] = 1
+    return limits
+
+
 def _prometheus_counter_totals(names: tuple[str, ...]) -> dict[str, int]:
     """Read the current totals of the given Prometheus counters.
 
@@ -129,6 +147,20 @@ def _prometheus_counter_totals(names: tuple[str, ...]) -> dict[str, int]:
                 )
             )
     return totals
+
+
+def vllm_preemption_total() -> int:
+    """Cumulative vLLM scheduler preemptions since engine start.
+
+    Requires the engine to run with ``disable_log_stats=False`` (the offline
+    ``LLM`` API disables stat logging -- and thus this counter -- by
+    default). Scenarios that must PROVE a preemption happened read this.
+
+    Returns:
+        The current ``vllm:num_preemptions`` counter total.
+    """
+    totals = _prometheus_counter_totals(("vllm:num_preemptions",))
+    return totals["vllm:num_preemptions"]
 
 
 def cumulative_lookup_stats(monitor) -> tuple[int, int]:
@@ -235,27 +267,43 @@ class MMHarness:
         self._identifier_log: list[str] = []
         self._identity_blind = False
         self._install_identifier_recorder()
+        self._install_transport_hooks()
 
         # Third Party
         from vllm import LLM
-        from vllm.config import KVTransferConfig
-
-        # First Party
-        from lmcache.observability import LMCStatsMonitor
 
         engine_kwargs: dict[str, object] = dict(
             model=spec.hf_id,
-            kv_transfer_config=KVTransferConfig(
-                kv_connector="LMCacheConnectorV1", kv_role="kv_both"
-            ),
+            kv_transfer_config=self._kv_transfer_config(),
             max_model_len=spec.max_model_len,
             gpu_memory_utilization=spec.gpu_memory_utilization,
             enforce_eager=True,
             enable_prefix_caching=False,
-            limit_mm_per_prompt={"image": 2},
+            limit_mm_per_prompt=mm_limits(spec),
         )
         engine_kwargs.update(extra_engine_kwargs)
         self.llm = LLM(**engine_kwargs)
+        self._setup_stats()
+
+    def _kv_transfer_config(self):
+        """Build the KV transfer config selecting the deployment path."""
+        # Third Party
+        from vllm.config import KVTransferConfig
+
+        return KVTransferConfig(kv_connector="LMCacheConnectorV1", kv_role="kv_both")
+
+    def _install_transport_hooks(self) -> None:
+        """Install path-specific counter hooks BEFORE the engine imports.
+
+        The in-process path needs none (stats come from the LMCache
+        singleton); the MP path wraps its adapter methods here.
+        """
+
+    def _setup_stats(self) -> None:
+        """Bind the stats source once the engine is up."""
+        # First Party
+        from lmcache.observability import LMCStatsMonitor
+
         self.monitor = LMCStatsMonitor.GetOrCreate()
 
     def _install_identifier_recorder(self) -> None:
@@ -325,7 +373,10 @@ class MMHarness:
         outputs = self.llm.chat(
             request.messages(),
             sampling_params=SamplingParams(
-                temperature=0.0, max_tokens=request.max_tokens, seed=0
+                temperature=0.0,
+                max_tokens=request.max_tokens,
+                seed=0,
+                ignore_eos=request.ignore_eos,
             ),
             use_tqdm=False,
         )
@@ -353,7 +404,12 @@ class MMHarness:
         outputs = self.llm.chat(
             [r.messages() for r in requests],
             sampling_params=[
-                SamplingParams(temperature=0.0, max_tokens=r.max_tokens, seed=0)
+                SamplingParams(
+                    temperature=0.0,
+                    max_tokens=r.max_tokens,
+                    seed=0,
+                    ignore_eos=r.ignore_eos,
+                )
                 for r in requests
             ],
             use_tqdm=False,
@@ -447,6 +503,129 @@ class MMHarness:
         return True
 
 
+class MPHarness(MMHarness):
+    """Harness variant driving the multi-process deployment path (T3).
+
+    The engine talks to an external LMCache MP cache server over ZMQ via
+    ``LMCacheMPConnector`` (this repo's tip version, selected through
+    ``kv_connector_module_path``); the server process must already be
+    running. Stats plumbing differs from the in-process path:
+
+    - lookup tokens/hits are recorded by wrapping the scheduler adapter's
+      lookup submit/check methods (class-level wrappers: at most one
+      MPHarness per process);
+    - store intent is recorded by wrapping the worker adapter's batched
+      store submission (works because the suite forces single-process vLLM);
+    - residency comes from the server's HTTP ``/status`` endpoint.
+
+    Args:
+        spec: The model under certification.
+        baselines: Mapping of request key to the plain-vLLM output text.
+        zmq_port: The MP cache server's ZMQ port.
+        http_port: The MP cache server's HTTP observability port.
+        extra_engine_kwargs: Additional/overriding vLLM ``LLM(...)`` kwargs.
+    """
+
+    def __init__(
+        self,
+        spec: ModelSpec,
+        baselines: dict[str, str],
+        zmq_port: int,
+        http_port: int,
+        extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
+    ):
+        self._zmq_port = zmq_port
+        self._http_port = http_port
+        self._lookup_tokens_total = 0
+        self._lookup_hits_total = 0
+        self._stored_tokens = 0
+        self._pending_lookup_tokens: dict[str, int] = {}
+        super().__init__(spec, baselines, extra_engine_kwargs=extra_engine_kwargs)
+
+    def _kv_transfer_config(self):
+        """Select THIS repo's MP connector via the module-path override."""
+        # Third Party
+        from vllm.config import KVTransferConfig
+
+        return KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_connector_module_path=("lmcache.integration.vllm.lmcache_mp_connector"),
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.host": "tcp://localhost",
+                "lmcache.mp.port": self._zmq_port,
+            },
+        )
+
+    def _install_transport_hooks(self) -> None:
+        """Wrap the MP adapters to expose per-request lookup/store counters.
+
+        The scheduler adapter resolves lookups asynchronously: tokens are
+        remembered at submit time and booked (with the hit count) when
+        ``check_lookup_result`` first returns a value for the request.
+        """
+        # First Party
+        from lmcache.integration.vllm.vllm_multi_process_adapter import (
+            LMCacheMPSchedulerAdapter,
+            LMCacheMPWorkerAdapter,
+        )
+
+        harness = self
+        original_submit = LMCacheMPSchedulerAdapter.maybe_submit_lookup_request
+        original_check = LMCacheMPSchedulerAdapter.check_lookup_result
+        original_store = LMCacheMPWorkerAdapter.batched_submit_store_requests
+
+        def submit(adapter, request_id, token_ids, *args, **kwargs):
+            harness._pending_lookup_tokens.setdefault(request_id, len(token_ids))
+            return original_submit(adapter, request_id, token_ids, *args, **kwargs)
+
+        def check(adapter, request_id):
+            ret = original_check(adapter, request_id)
+            if ret is not None:
+                tokens = harness._pending_lookup_tokens.pop(request_id, None)
+                if tokens is not None:
+                    harness._lookup_tokens_total += tokens
+                    harness._lookup_hits_total += ret
+            return ret
+
+        def store(adapter, request_ids, ops, *args, **kwargs):
+            for op in ops:
+                harness._stored_tokens += op.end - op.start
+            return original_store(adapter, request_ids, ops, *args, **kwargs)
+
+        LMCacheMPSchedulerAdapter.maybe_submit_lookup_request = submit
+        LMCacheMPSchedulerAdapter.check_lookup_result = check
+        LMCacheMPWorkerAdapter.batched_submit_store_requests = store
+
+    def _setup_stats(self) -> None:
+        self.monitor = None
+
+    def _cumulative_lookup_stats(self) -> tuple[int, int]:
+        return (self._lookup_tokens_total, self._lookup_hits_total)
+
+    def stored_tokens_total(self) -> int:
+        """Cumulative tokens submitted to the MP server for storage."""
+        return self._stored_tokens
+
+    def storage(self) -> StorageSnapshot:
+        """Resident object count/bytes from the MP server's /status API."""
+        # Standard
+        import urllib.request
+
+        url = f"http://localhost:{self._http_port}/status"
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            status = json.loads(resp.read())
+        l1 = status["storage_manager"]["l1_manager"]
+        return StorageSnapshot(
+            num_keys=l1["total_object_count"],
+            total_bytes=l1["memory_used_bytes"],
+        )
+
+    def close(self) -> None:
+        """Tear down the engine (the MP server is managed by the caller)."""
+        del self.llm
+
+
 def compute_baselines(
     spec: ModelSpec,
     requests: list[MMRequest],
@@ -474,9 +653,15 @@ def compute_baselines(
         "model": spec.hf_id,
         "max_model_len": spec.max_model_len,
         "gpu_memory_utilization": spec.gpu_memory_utilization,
+        "limit_mm_per_prompt": mm_limits(spec),
         "extra_engine_kwargs": dict(extra_engine_kwargs),
         "requests": [
-            {"key": r.key, "messages": r.messages(), "max_tokens": r.max_tokens}
+            {
+                "key": r.key,
+                "messages": r.messages(),
+                "max_tokens": r.max_tokens,
+                "ignore_eos": r.ignore_eos,
+            }
             for r in todo
         ],
     }
