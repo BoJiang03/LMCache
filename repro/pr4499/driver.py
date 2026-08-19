@@ -594,25 +594,53 @@ _BENIGN_WARNINGS = (
 )
 
 
-#: The MP server's warning when `end_session` names a request it has no
-#: session for (`lookup.py`). Not allow-listed by text, because the same
-#: text would cover a real double-teardown: it is counted instead, against
-#: the number of requests each scenario knows cannot have a session.
+#: The MP server's warnings when `end_session` names a request whose L1
+#: keep-alive touch it cannot perform (`lookup.py`). Not allow-listed by
+#: text, because the same text would cover a real double-teardown: they are
+#: counted instead, against the number of requests each scenario knows
+#: cannot have cached anything.
 #:
-#: A session is created by the lookup handler, but only after
-#: `compute_chunk_hashes` returns something -- a prompt shorter than one
-#: chunk yields no hashes and the handler returns before `get_or_create`.
-#: The connector still calls `end_session` when such a request finishes, so
-#: the warning is exactly one per sub-chunk request. Every one of them here
-#: is a ledger-flush request, which is sub-chunk by design (it must admit no
-#: op of its own). Nothing is lost: the request stored nothing, so the touch
-#: that is skipped had nothing to touch.
+#: A prompt shorter than one chunk yields no chunk hashes, so the lookup
+#: handler registers a degenerate prefetch job and returns *before* the
+#: `get_or_create` that would attach the lookup key to a session. The
+#: connector still calls `end_session` when such a request finishes, so the
+#: warning is exactly one per sub-chunk request. Every one of them here is a
+#: ledger-flush request, which is sub-chunk by design (it must admit no op
+#: of its own). Nothing is lost either way: the request stored nothing, so
+#: the touch that is skipped had nothing to touch.
+#:
+#: Two texts, because which one the server logs depends on whether a session
+#: object exists at teardown, and that is decided by a path with nothing to
+#: do with caching. `get_num_new_matched_tokens` polls the lookup result for
+#: every request, and the poll handler records `prefetch_hit_chunks` through
+#: `session_manager.get_or_create` -- so reading the result of the degenerate
+#: job is itself what creates a session, one that never got a lookup key.
+#: With the poll, the server finds that session and reports the missing key;
+#: without it, no session exists and the server reports the request. Both
+#: mean the same thing here, and treating only one as expected pins the
+#: package to an implementation detail of a module it is not testing.
 #:
 #: This is why the warning first looked like it correlated with pressure and
 #: preemption: only the pressure scenarios had flush requests. Adding one to
 #: S2 -- no pressure, no preemption, one request queue that never drains --
 #: produced exactly one warning, and S2 had never had one before.
-_WARN_NO_SESSION = "not found, skipping touch"
+_WARN_NO_SESSION = (
+    "not found, skipping touch",
+    "has no lookup ipc key, skipping touch",
+)
+
+
+def _is_sessionless_warning(line: str) -> bool:
+    """Whether a WARNING line is a sub-chunk request's benign teardown.
+
+    Args:
+        line: One WARNING line from a scenario's logs.
+
+    Returns:
+        True if the line is one of the two `end_session` texts a request
+        that cached nothing produces; see :data:`_WARN_NO_SESSION`.
+    """
+    return any(text in line for text in _WARN_NO_SESSION)
 
 #: Sub-chunk (hence sessionless) requests per scenario, all of them ledger
 #: flushes: S11 flushes once per phase, S1 and S4 do not flush at all.
@@ -860,11 +888,14 @@ _LEDGER_OUTCOMES = (
 #: to see. A missing key must fail instead.
 #: `throttled_drains` counts *drains*, not ops, so it is deliberately not a
 #: ledger outcome: adding it to the equation would break the accounting it
-#: exists to explain.
+#: exists to explain. The same goes for the four per-step cost sensors,
+#: which count the decision loop's own work rather than any op's fate.
 _LEDGER_KEYS = frozenset(
     _LEDGER_OUTCOMES
     + ("admitted", "pending", "deduplicated",
-       "rejected_unhashed", "rejected_prefix_broken", "throttled_drains")
+       "rejected_unhashed", "rejected_prefix_broken", "throttled_drains",
+       "drain_steps", "free_queue_blocks_read", "requests_validated",
+       "blocks_validated")
 )
 
 
@@ -1397,10 +1428,19 @@ def scenario_S6() -> Check:
         finally:
             teardown([vllm])
         expect_clean_exit(c, "lazy vllm", vllm)
-        # Enough chunks to be a content test rather than an anecdote: every
-        # prompt's full chunks, minus the couple preemption drops at the
-        # margin under this config.
-        floor = total_chunks - 8
+        # Enough chunks to be a content test rather than an anecdote --
+        # but not "almost all of them", which this configuration cannot
+        # produce. The four prompts are sent one at a time, so the only
+        # allocation pressure on a request's blocks is what *later*
+        # requests generate; the last one's ops are still buffered when the
+        # scenario ends, and buffered is where they belong ("idle never
+        # drains" is the policy, not a failure). The pool also holds 448
+        # blocks = 28 chunks against 31 chunks of content, so the pressure
+        # that does arrive is mild. Measured: 15 chunks stored, in four
+        # consecutive runs. A third of the total leaves room for the two
+        # eviction drops this config is allowed below, and still compares
+        # far more chunks than a byte test needs.
+        floor = total_chunks // 3
         c.expect(
             len(lazy) >= floor,
             f"the lazy run stored most of the four prefixes' chunks "
@@ -1419,11 +1459,13 @@ def scenario_S6() -> Check:
             f"every stored chunk has distinct bytes "
             f"(unique={len(set(lazy.values()))}, objects={len(lazy)})",
         )
-        # This config preempts (its own ledger shows
-        # dropped_on_request_drop=2), and a resumed request's re-admitted
-        # ops can lose one to eviction at the margin. A lost op costs S6
-        # nothing -- its subject is the bytes of the chunks that did store,
-        # and a missing lazy key cannot fake a match.
+        # A bound, not an expectation: this config has been seen to preempt
+        # (a ledger with dropped_on_request_drop=2) and a resumed request's
+        # re-admitted ops can then lose one to eviction at the margin, but
+        # sequential requests on a pool this size usually preempt not at
+        # all. A lost op costs S6 nothing either way -- its subject is the
+        # bytes of the chunks that did store, and a missing lazy key cannot
+        # fake a match.
         check_ledger(c, "S6", max_evicted=2)
 
         cache_clear()
@@ -2272,7 +2314,7 @@ _STEP_BUDGET_TOKENS = 512
 
 #: The policy's cap-sizing WARNING, emitted once per process when a drain
 #: both hit `max_drain_per_step` and lost ops to eviction in the same step.
-_CAP_WARNING = r"held back \d+ due store op\(s\)"
+_CAP_WARNING = r"held back due store ops on \d+ drain\(s\)"
 
 
 def op_prefix_ends(prompt: str) -> list[int]:
@@ -3580,7 +3622,7 @@ def main() -> int:
             print("   ", line)
         c.failures.append(f"{len(tb)} Traceback/ERROR lines in logs")
     warnings = grep_warnings(scenario)
-    sessionless = [w for w in warnings if _WARN_NO_SESSION in w]
+    sessionless = [w for w in warnings if _is_sessionless_warning(w)]
     expected_sessionless = _SESSIONLESS_REQUESTS[scenario]
     c.expect(
         len(sessionless) == expected_sessionless,
@@ -3590,7 +3632,7 @@ def main() -> int:
     )
     for line in sessionless:
         print("   ", line)
-    unexpected = [w for w in warnings if _WARN_NO_SESSION not in w]
+    unexpected = [w for w in warnings if not _is_sessionless_warning(w)]
     if unexpected:
         print(f"[check] FAIL: {len(unexpected)} unexpected WARNING lines in logs:")
         for line in unexpected[:10]:
