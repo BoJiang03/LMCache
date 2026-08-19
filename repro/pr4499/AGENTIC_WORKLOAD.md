@@ -432,17 +432,128 @@ depth (79.4 against 83.3 blocks per step) and decode the same (-0.6 against
 -1.9 ms), while they still differ in exactly what the cap is for: `=4`
 throttles 125 drains and loses 333 admitted operations to eviction, against 0
 and 149. Before the change the same pair differed by 14 ms of decode. There is
-no longer a reason to lower it from the default: `=4` buys 0.7 ms of E2E,
-inside the noise floor, for 184 more lost operations.
+no longer a *latency* reason to lower it from the default: `=4` buys 0.7 ms
+of E2E, inside the noise floor, for 184 more lost operations. (What the cap
+still prices -- the drain's transient pin under budget pressure -- is
+measured in §7.)
 
 **Drift control.** The panel spans hours, so `off` was run twice, sixteen hours
 apart, on either side of the change. Paired: -1.1 ms TTFT, -0.9 ms decode,
 -2.0 ms E2E, identical coverage, and no bucket beyond 5 ms except the 280-request
 24k+ tail at 17 ms. That is the resolution floor for every number above.
 
-**Still open.** One preemption remains in `lazy, =64` (two before). The
-eviction-aware-only preemptions of section 4 are smaller here but not
-explained.
+**Still open here, resolved in §7.** One preemption remains in `lazy, =64`
+(two before); §7 identifies the mechanism and the knob that bounds it.
+
+## 6. The last milliseconds: what a short prompt still pays, and to whom
+
+After §5, the only latency bucket where lazy trails eager is TTFT below
+8000 tokens: +2 ms at 0--4k (at the drift floor) and +5 ms at 4--8k, while
+the same requests' E2E already nets ahead (-1/-7 ms). Three extractions
+from the §5 runs locate the cost exactly
+(`agentic/attribute_short_ttft.py`).
+
+**Part one is not the policy's.** Eager pays +7/+9 ms median TTFT against
+`off` on the same buckets with an external hit rate of 0.003 -- that is
+the MP connector's per-request lookup overhead, present before this PR.
+Lazy's first octile, while L1 is still too cold to hit, pays the same
++7.5 ms. Everything the policy adds sits on top of a floor every
+connector-bearing variant pays.
+
+**Part two is retrieval on hits too small to pay for themselves.** The
+per-request deltas are bimodal -- the fraction above 10 ms tracks the hit
+fraction, near-zero against eager at step 0 (+1.2 ms median), 0.15 in the
+cold first octile, 0.5--0.95 once L1 warms. The server log gives both
+sides of the ledger:
+
+| transfer | retrieval p50 | | prompt | hits <=2k tokens | median hit |
+|---:|---:|---|---:|---:|---:|
+| 0--2k tokens | 9.0 ms | | 0--4k | 91% | 1024 |
+| 4--8k | 13.0 ms | | 4--8k | 60% | 1024 |
+| 16k+ | 25.0 ms | | 16k+ | 43% | 8448 |
+
+A retrieval has a ~9 ms floor before size matters, and what a short prompt
+actually hits is almost always ~1024 tokens: all 74 trajectories share a
+1242-token SWE-agent system prefix (chunk-aligned to 4 x 256). Saving a
+thousand tokens of prefill while paying the floor plus a
+WAITING_FOR_REMOTE_KVS scheduling round-trip is a net loss; the win mass
+appears in the data exactly where the arithmetic says it must, at 8--16k
+(paired TTFT p25 = -39.5 ms).
+
+This also re-reads §4's gate-3 control. `min_prefix_tokens=12000` left the
+short-prompt penalty unchanged, which looked like a refutation of
+retrieval as the mechanism. It refuted a narrower claim: nothing short of
+*its own session* was stored, but long sessions' stored prefixes contain
+the shared 1242-token prefix, so short requests kept hitting it -- and
+kept paying for a retrieval worth less than its floor.
+
+**The consequence is a retrieve-side gate, not a store-side one.** The
+policy's stores are fine; what does not pay is scheduling an external load
+for a sub-break-even hit. A minimum-hit threshold in the connector's
+lookup path (return no match below ~2k tokens; 91% of the 0--4k
+retrievals move exactly that little) would remove the remaining gap for
+every variant, eager included. That is common MP-connector code, a
+separate change from this PR. Within this PR's scope the honest statement
+is: the residual TTFT gap is the price of having a cache that actually
+hits, eager avoids it only by hitting nothing, and E2E already nets ahead
+of eager in every bucket.
+
+## 7. The 10 GiB point retested, and the preemptions explained
+
+Section 4 left two things standing against the policy: at L1 = 10 GiB
+(3.7x oversubscription) lazy-d4 lost to eager by +10.9 ms paired E2E, and
+the only configurations that ever preempted a vLLM request were
+eviction-aware ones. The same four-variant panel as §5, at 10 GiB:
+
+| variant | coverage | ext hit | cycles | vs off (TTFT/decode/E2E ms) | vs eager (E2E) | preempt |
+|---|---:|---:|---:|---|---:|---:|
+| off | 0.308 | 0.000 | 0 | -- | -46.0 | 0 |
+| eager | 0.308 | 0.000 | 955 | +23.6 / +22.4 / +46.0 | -- | 0 |
+| lazy | 0.429 | 0.121 | 298 | +13.3 / +3.6 / +16.8 | **-29.2** | 11 |
+| lazy-d4 | 0.399 | 0.102 | 452 | +16.5 / +10.5 / +26.9 | -19.1 | 1 |
+
+**The loss to eager is gone.** Lazy beats eager at every prompt length
+here too (E2E -2 ms at 0--4k to -90 ms at 24k+), for the same reason as
+§5: the read the old bound prepaid was largest exactly where the backlog
+was largest. Against `off` the policy is still net positive cost at this
+budget -- +16.8 ms E2E, decode nearly flat at +3.6 -- because a 0.121
+external hit rate cannot pay back what §6 prices retrieval at. The working
+range statement of §4 stands, but its floor moved: below the range the
+policy loses least, rather than losing to eager. A same-night drift
+control (`off` at 10 against `off` at 20, which no connector can tell
+apart) pairs to -1.1/-1.9/-3.0 ms.
+
+**The preemptions are the drain's transient pin, and the cap bounds
+them.** Eleven preemptions at the default cap against one at `=4`, with
+the read depth and decode now identical between the two -- the only
+remaining per-step difference is how many operations one drain emits, so
+the contrast is causal, not correlative. The mechanism, assembled from the
+run logs (`agentic/preemption_census.py`):
+
+- A pending operation's blocks sit *in* the free queue -- the policy
+  watches them there; they cost nothing to hold. Emission is what pins
+  them out of it for the duration of the D2H copy.
+- Under budget pressure a drain emits whole-prefix operations in bursts
+  (every one of the eleven events has 21k--116k tokens of stores within
+  +/-3 s), and the burst fires exactly when allocation demand fires,
+  because the demand is what pressed the free queue.
+- The offered load alone never exceeds 38.2% of the pool in the sampled
+  timeline -- `off` and `eager` peak there and preempt zero times -- while
+  the lazy variant's sampled peaks reach 99.1%, 80.6%, 79.1%. The
+  difference is the transient pin. Capping the drain at 4 cuts the peaks
+  to 65.4% and the preemptions to one.
+- vLLM preempts the newest request; each victim resumed and finished, the
+  worst-observed cost +34 ms of TTFT, and its buffered operations were
+  correctly dropped (`dropped_on_request_drop` stays closed in the
+  ledger).
+
+Big drain waves are necessary but not sufficient -- windows that large
+occur in half the run without incident; the preemption needs the
+collision with an equally bursty allocation demand, which is why the
+count is 11 in 2212 requests and not hundreds. The knob trade this
+restores is stated under Verdict: the default cap keeps the -29.2 ms E2E
+win and accepts eleven ~30 ms victims; `=4` trades 10 ms of the win for
+their absence.
 
 ## Verdict
 
@@ -460,10 +571,14 @@ explained.
    prompt was 5635 tokens and its median request therefore could not win;
    the untruncated one's is 11175, and the same policy cuts TTFT p90 by 18%,
    E2E p90 by 16%, and long-prompt TTFT by 28--29%.
-3. **The policy has a working range.** It needs a lower tier large enough to
-   be worth deferring to. At a budget that nearly holds the live set the win
-   narrows to the tail; at 0.27x the live set the policy reaches only 0.398
-   coverage and loses on E2E.
+3. **The policy has a working range, and outside it the failure is now
+   graceful.** It needs a lower tier large enough to be worth deferring to:
+   at a budget that nearly holds the live set the win narrows to the tail,
+   and at 0.27x the live set a 0.121 external hit rate cannot pay back
+   retrieval. But where §4's harness had it losing to eager at that floor,
+   the decoupled read (§7) has it beating eager at every prompt length and
+   every budget tested -- below the working range it loses least, against
+   the one baseline nothing beats there (no connector at all).
 4. **`max_drain_per_step` was priced for the drain, not for the read that
    sizing it implied -- and that was the whole cost.** One parameter set
    both the rate at which buffered KV is written and the depth of a
@@ -476,16 +591,28 @@ explained.
    worse than eager on short requests -- falls to +7/+9 ms while the 24k+
    gain holds at -48 ms. The mean drain emits 0.04 operations; the old
    bound sized every one of them for 64.
-5. **With that separated, the default cap is the right cap.** `=4` and
-   `=64` now read to the same depth and decode the same; `=4` buys 0.7 ms
-   of E2E, inside the drift floor, for 184 more operations lost to
-   eviction. Before the change the two differed by 14 ms of decode, which
-   is what made the knob look worth tuning.
+5. **With that separated, the cap is a real trade with a right default.**
+   `=4` and `=64` now read to the same depth and decode the same, so the
+   knob no longer buys latency -- what it prices is the drain transient.
+   At 20 GiB the two differ by 0.7 ms of E2E, inside the drift floor. At
+   10 GiB the default cap wins 10 ms more E2E but lets a bursty drain pin
+   enough blocks mid-copy to preempt 11 requests in 2212 (~30 ms each);
+   `=4` reduces that to one at the cost of 186 more operations lost to
+   eviction (§7). The default stays right -- the expected preemption cost
+   is ~0.15 ms per request against a 10 ms win -- but an operator who
+   cannot tolerate preemptions now knows which knob bounds them and what
+   it costs.
+6. **The short-prompt TTFT residual is the price of hitting, not a defect
+   of deferral** (§6): a ~9 ms retrieval floor spent on the 1024-token
+   shared prefix that is all a short prompt has to hit. It is removable
+   for every variant at once by a retrieve-side minimum-hit gate in common
+   connector code, outside this PR.
 
-The remaining open item is the observation in §4 that the deferring policy
-is the only configuration that preempts under budget pressure; it is smaller
-after §5 (one preemption, against two) but unexplained. Nothing here
-contradicts the reported hot/cold or QASPER results.
+Both §4 loose ends are now closed: the 10 GiB loss to eager was the same
+prepaid read as everything else and reverses under the decoupled bound,
+and the eviction-aware-only preemptions are the drain's transient pin,
+bounded by the cap (§7). Nothing here contradicts the reported hot/cold or
+QASPER results.
 
 ## Guards and raw data
 
@@ -495,9 +622,10 @@ request counts, zero failed steps, prompt-token counts identical to the
 cohort's, a closing lazy ledger, no tracebacks, and zero vLLM preemptions.
 Of section 4's 13 runs, 10 pass; the three that do not are named in "What
 did not pass", and all three failures are preemption counts. Section 5's
-four runs pass every guard except one preemption in `lazy, =64`. Schedule
-lag p90 was 0.0 ms in every run reported here, so no run was reshaped by
-saturation.
+four runs pass every guard except one preemption in `lazy, =64`; §7's four
+pass except the preemptions the section itself is about (11 in `lazy`, 1
+in `lazy-d4`, zero in `off` and `eager`). Schedule lag p90 was 0.0 ms in
+every run reported here, so no run was reshaped by saturation.
 
 Both cohorts (100+ MiB of trajectory text) stay on RAID; their identity,
 per-session token profile and instance list are in
@@ -509,9 +637,12 @@ Reproduce sections 1--3 with `agentic/run_agentic_sweep.py` and
 `agentic/run_full_replay.py`; the tables come from
 `agentic/agentic_table.py` / `agentic/attribution_table.py`, and section 5's
 from `agentic/analyze_panel.py` (paired per request, so it needs the runs to
-share a request stream). See
+share a request stream). Section 6's attribution is
+`agentic/attribute_short_ttft.py` (run JSONs plus the policy run's server
+log) and §7's event analysis is `agentic/preemption_census.py` (vllm log
+plus server log). See
 [`agentic/README.md`](agentic/README.md). Raw per-run JSON (every request
 record, counter delta, L1 series and ledger) is under `results/agentic/`,
 `results/agentic_full/` and `results/agentic_decoupled/`; the latter also
-carries the rendered panel (`panel_l20.txt`) and the two-run drift control
-(`drift_control.txt`).
+carries the rendered panels (`panel_l20.txt`, `panel_l10.txt`) and the
+two-run drift control (`drift_control.txt`).

@@ -1,0 +1,32 @@
+variant       cover  exthit  cycles  ttftp50  ttftp90  e2ep50  e2ep90  e2ep99  decode preempt
+off           0.308   0.000       0      162      458     252     543    1041    99.8       0
+eager         0.308   0.000     955      180      505     292     596    1140   122.1       0
+lazy          0.429   0.121     298      169      484     256     569    1080   103.3      11
+lazy-d4       0.399   0.102     452      166      496     258     587    1137   110.3       1
+
+paired means vs off (ms/request)
+variant          n     ttft   decode      e2e
+eager         2212     23.6     22.4     46.0
+lazy          2212     13.3      3.6     16.8
+lazy-d4       2212     16.5     10.5     26.9
+
+paired TTFT / E2E by prompt length vs off (ms)
+  eager        0-4k:+10/+13(410) 4-8k:+11/+24(394) 8-16k:+22/+40(677) 16-24k:+37/+46(451) 24-infk:+44/+140(280)
+  lazy         0-4k:+13/+10(410) 4-8k:+15/+13(394) 8-16k:+10/+9(677) 16-24k:+14/+18(451) 24-infk:+17/+50(280)
+  lazy-d4      0-4k:+15/+13(410) 4-8k:+15/+13(394) 8-16k:+10/+13(677) 16-24k:+17/+24(451) 24-infk:+36/+105(280)
+
+mean decode by run octile (ms)
+  off             98    96   122    93   119    89    90    92
+  eager          107   111   155   105   163   112   112   112
+  lazy            97    95   123    94   134    97    94    92
+  lazy-d4         98   105   142    99   138   103   101    96
+
+policy ledger
+  lazy         admitted=3594 emitted=3477 evicted=45 throttled=0 pending=58 | drains=69879 read/step=95.2 validated_blocks/step=286.6 validated_reqs/step=0.70
+  lazy-d4      admitted=3669 emitted=3351 evicted=231 throttled=322 pending=87 | drains=69345 read/step=90.3 validated_blocks/step=395.6 validated_reqs/step=0.94
+paired means vs eager (ms/request)
+variant          n     ttft   decode      e2e
+lazy-d4       2212     -7.2    -11.9    -19.1
+lazy          2212    -10.4    -18.8    -29.2
+off           2212    -23.6    -22.4    -46.0
+
