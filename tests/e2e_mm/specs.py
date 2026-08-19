@@ -39,10 +39,12 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         ModelSpec(
             key="qwen2.5-vl-3b",
             hf_id="Qwen/Qwen2.5-VL-3B-Instruct",
+            modalities=frozenset({"image", "video"}),
         ),
         ModelSpec(
             key="qwen2-vl-2b",
             hf_id="Qwen/Qwen2-VL-2B-Instruct",
+            modalities=frozenset({"image", "video"}),
         ),
     ]
 }

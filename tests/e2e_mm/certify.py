@@ -34,17 +34,25 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from benchmark_parity import parity_gate  # noqa: E402
 from specs import MODEL_SPECS  # noqa: E402
 
-CERTIFICATE_SCHEMA_VERSION = 1
+CERTIFICATE_SCHEMA_VERSION = 2
 
 # What a SUPPORTED verdict does NOT cover. Kept in the certificate so the
 # claim is never wider than the evidence.
 KNOWN_NOT_COVERED = [
-    "LMCacheMPConnector / multi-process deployment path (T3, planned)",
     "tensor-parallel (TP>1) and pipeline-parallel deployments",
     "remote / disk storage backends and cross-instance sharing",
-    "video and audio modalities (T2.3, planned)",
-    "preemption-driven re-prefill (only statistically exercised by MME batching)",
+    "audio modality (no audio model registered yet)",
+    "MP path chunk-boundary phases and collision pressure "
+    "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
     "allocator-level buffer accounting (tracked by the pin-count project)",
+]
+
+# Deployment paths exercised by a green suite run (test_isolated_paths.py
+# runs the mp_connector scenario for every selected model).
+CERTIFIED_DEPLOYMENT_PATHS = [
+    "LMCacheConnectorV1 (in-process, single GPU, TP=1)",
+    "LMCacheMPConnector + MP cache server (single GPU, TP=1; "
+    "T0/T1 core, see README T3)",
 ]
 
 
@@ -218,10 +226,16 @@ def main() -> int:
         "commit": commit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": {
-            "deployment_paths": ["LMCacheConnectorV1 (in-process, single GPU, TP=1)"],
+            "deployment_paths": CERTIFIED_DEPLOYMENT_PATHS,
             "modalities": sorted(spec.modalities),
             "chunk_size": 16,
-            "backend": "LocalCPUBackend",
+            "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+            "scheduling": [
+                "single-step and chunked prefill",
+                "concurrent batches",
+                "capacity eviction",
+                "preemption-driven recompute",
+            ],
         },
         "suite": suite,
         "parity": parity,

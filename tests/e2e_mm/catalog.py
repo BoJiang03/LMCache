@@ -15,11 +15,18 @@ from dataclasses import dataclass
 from functools import lru_cache
 import base64
 import io
+import os
+import tempfile
 
 # Third Party
 from PIL import Image
 
 IMAGE_SIZE = 448
+# Videos use a smaller frame so the placeholder span stays a few hundred
+# tokens (8 frames x 224x224 with 2x temporal merge on Qwen2-VL ~= 256).
+VIDEO_SIZE = 224
+VIDEO_FRAMES = 8
+VIDEO_FPS = 2
 
 _PALETTE: list[tuple[str, tuple[int, int, int]]] = [
     ("red", (220, 20, 20)),
@@ -69,8 +76,66 @@ def image_data_uri(index: int) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+@lru_cache(maxsize=64)
+def video_data_uri(index: int) -> str:
+    """Build the deterministic test video at ``index`` as an MP4 data URI.
+
+    Every frame is a solid square of ``image_color_name(index)`` with the
+    same index-encoding corner pattern as ``image_data_uri`` plus a small
+    moving marker, so the clip is a real multi-frame video whose bytes (and
+    therefore vLLM content hash) are unique per index while its dominant
+    color stays a one-word semantic probe.
+
+    Args:
+        index: Video index; any non-negative integer.
+
+    Returns:
+        A ``data:video/mp4;base64,...`` URI.
+    """
+    # Third Party
+    import cv2
+    import numpy as np
+
+    _, rgb = _PALETTE[index % len(_PALETTE)]
+    dark = tuple(max(0, c - 40) for c in rgb)
+    frames = []
+    for t in range(VIDEO_FRAMES):
+        frame = np.full((VIDEO_SIZE, VIDEO_SIZE, 3), rgb, dtype=np.uint8)
+        for bit in range(24):
+            if (index >> bit) & 1:
+                bx, by = (bit % 8) * 8, (bit // 8) * 8
+                frame[by : by + 8, bx : bx + 8] = dark
+        # A moving marker so consecutive frames differ (a genuine video).
+        mx = 8 * t
+        frame[VIDEO_SIZE - 16 :, mx : mx + 16] = dark
+        frames.append(frame[:, :, ::-1])  # RGB -> BGR for OpenCV
+    fd, path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    try:
+        writer = cv2.VideoWriter(
+            path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            VIDEO_FPS,
+            (VIDEO_SIZE, VIDEO_SIZE),
+        )
+        if not writer.isOpened():
+            raise RuntimeError("OpenCV could not open an mp4 writer")
+        for frame in frames:
+            writer.write(frame)
+        writer.release()
+        with open(path, "rb") as f:
+            payload = f.read()
+    finally:
+        os.unlink(path)
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:video/mp4;base64,{encoded}"
+
+
 COLOR_QUESTION = (
     "What is the dominant color of this image? Answer with exactly one word."
+)
+VIDEO_COLOR_QUESTION = (
+    "What is the dominant color in this video? Answer with exactly one word."
 )
 MULTI_COLOR_QUESTION = (
     "List the dominant color of each image in the order given, "
@@ -94,6 +159,9 @@ class MMRequest:
             for the semantic probe to pass; empty tuple disables the probe.
         max_tokens: Generation budget.
         needs_baseline: Whether the baseline engine must run this request.
+        video_indices: Indices of videos attached, in order (after images).
+        ignore_eos: Force the full ``max_tokens`` decode (the preemption
+            scenario needs guaranteed KV growth during decode).
     """
 
     key: str
@@ -103,6 +171,8 @@ class MMRequest:
     expected_probe: tuple[str, ...]
     max_tokens: int = 8
     needs_baseline: bool = True
+    video_indices: tuple[int, ...] = ()
+    ignore_eos: bool = False
 
     def messages(self) -> list[dict]:
         """Build the OpenAI-style chat messages for this request."""
@@ -110,6 +180,10 @@ class MMRequest:
             {"type": "image_url", "image_url": {"url": image_data_uri(i)}}
             for i in self.image_indices
         ]
+        content.extend(
+            {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
+            for i in self.video_indices
+        )
         content.append({"type": "text", "text": self.question})
         return [
             {
@@ -147,6 +221,18 @@ def multi_color_request(
     )
 
 
+def video_color_request(key: str, salt: str, video_index: int) -> MMRequest:
+    """Build a single-video request probing the video's dominant color."""
+    return MMRequest(
+        key=key,
+        salt=salt,
+        question=VIDEO_COLOR_QUESTION,
+        image_indices=(),
+        expected_probe=(image_color_name(video_index),),
+        video_indices=(video_index,),
+    )
+
+
 def text_request(key: str, salt: str) -> MMRequest:
     """Build a text-only request with a fixed-answer probe."""
     return MMRequest(
@@ -160,8 +246,10 @@ def text_request(key: str, salt: str) -> MMRequest:
 
 # Image index allocation: probe-critical cases use dedicated indices with
 # distinct colors WITHIN each case; the pressure test uses indices >= 100,
-# the capacity-eviction scenario indices >= 400.
+# the preemption scenario indices >= 300, the capacity-eviction scenario
+# indices >= 400.
 PRESSURE_INDEX_BASE = 100
+PREEMPTION_INDEX_BASE = 300
 EVICTION_INDEX_BASE = 400
 
 # Chunk-boundary phases: pad the salt with k extra words to shift where the
@@ -271,6 +359,52 @@ def eviction_requests(n: int) -> list[MMRequest]:
             image_indices=(EVICTION_INDEX_BASE + i,),
             expected_probe=(image_color_name(EVICTION_INDEX_BASE + i),),
             needs_baseline=True,
+        )
+        for i in range(n)
+    ]
+
+
+def video_requests() -> dict[str, MMRequest]:
+    """T2.3 video requests, keyed by request key.
+
+    Kept OUT of ``catalog()`` because they are only valid (and only get
+    baselines) for models whose spec declares the ``video`` modality; an
+    image-only model's baseline engine would reject the video input.
+    """
+    requests = [
+        # Same-shape, different-color videos behind an identical prompt.
+        video_color_request("t23-A", "t23", 0),  # red
+        video_color_request("t23-B", "t23", 2),  # blue
+    ]
+    return {r.key: r for r in requests}
+
+
+def preemption_requests(n: int, max_tokens: int) -> list[MMRequest]:
+    """Build the preemption scenario requests: ``n`` distinct images.
+
+    Long decodes (``max_tokens``) grow the KV of every running request until
+    the deliberately tiny GPU block pool overflows and the scheduler
+    preempts; distinct colors expose any cross-request contamination on the
+    recompute path.
+
+    Args:
+        n: Number of distinct-image requests (scheduled as one batch).
+        max_tokens: Decode budget per request; must be large enough that
+            decode growth overflows the block pool.
+
+    Returns:
+        The built requests.
+    """
+    return [
+        MMRequest(
+            key=f"t11-{i}",
+            salt="t11",
+            question=COLOR_QUESTION,
+            image_indices=(PREEMPTION_INDEX_BASE + i,),
+            expected_probe=(image_color_name(PREEMPTION_INDEX_BASE + i),),
+            max_tokens=max_tokens,
+            needs_baseline=True,
+            ignore_eos=True,
         )
         for i in range(n)
     ]

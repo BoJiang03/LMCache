@@ -27,8 +27,11 @@ can fail and pointing at least one detector at every mode:
 | Scheduler step splits an image span (chunked prefill) | store-side truncated-span bugs | T0.9 (dedicated small-budget engine) |
 | Concurrent store/lookup races in a batch | contamination or loss under load | T0.8 duplicate-in-batch; MME (2374 batched requests) |
 | Eviction misbehavior (false hit after evict, unbounded growth, corrupt recompute) | wrong output or OOM at capacity | T0.10 (dedicated tiny-capacity engine) |
+| Preemption recompute corrupts state (stale keys, wrong restored tokens, poisoned cache) | wrong output after a preemption round-trip | T0.11 (dedicated tiny-block-pool engine, preemption PROVEN via the vLLM counter) |
+| A different deployment path skips or breaks the MM key handling (e.g. MP connector) | per-path cross-image serving | T3 mp_connector scenario (real MP cache server) incl. its own negative control |
+| Modality-specific ingestion misses identity (video frames, temporal merge) | cross-video KV serving | T2.3 per declared modality |
 | Quality drift only visible on real data (resolutions, aspect ratios, numerics) | statistical score loss | T0.6 MME three-way parity |
-| The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check |
+| The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check (run on BOTH deployment paths) |
 
 Layering: the synthetic tests are deterministic, minute-scale, and
 localizing — a single false hit trips a counter invariant. MME parity is the
@@ -38,10 +41,13 @@ fires before it certifies anything.
 
 **What a pass does NOT claim** (recorded verbatim in every certificate):
 only the deployment paths listed in the certificate scope are certified —
-currently the in-process `LMCacheConnectorV1` on a single GPU (TP=1) with
-the local CPU backend. The MP connector, TP>1, remote/disk backends, video
-and audio modalities, preemption-driven re-prefill, and allocator-level
-buffer accounting are outside the claim until their tests exist.
+currently the in-process `LMCacheConnectorV1` and the `LMCacheMPConnector`
++ MP cache server pair, each on a single GPU (TP=1). TP>1, remote/disk
+backends, the audio modality (no audio model registered), and
+allocator-level buffer accounting are outside the claim until their tests
+exist; on the MP path the chunk-boundary phases and collision pressure
+tiers run only in-process (cache keys are computed identically on both
+paths, so the keyspace properties are transport-independent).
 
 ## How to run
 
@@ -95,7 +101,8 @@ that guard the suite can silently certify a different source tree.
 | T0.8 | Concurrent batch | One batch containing duplicate image requests plus mixed traffic: every entry's output verified, and the entry cached during the batch must fully hit afterwards. |
 | T0.9 | Chunked prefill | Dedicated engine with `max_num_batched_tokens` far below the prompt length, pad phases sweeping the step boundary across the image span: miss/full-hit/isolation invariants and store conservation all hold when stores end mid-image (`test_isolated_paths.py` / `isolated_cases.py`). Outputs are checked against a plain-vLLM baseline computed under the SAME scheduling config — small models misname colors behind long pads even without LMCache, so a bare probe would misattribute model weakness to the cache. |
 | T0.10 | Capacity eviction | Dedicated engine with a ~50 MB cache overflowed several times by distinct images: no false hits ever, resident bytes stay under the cap, and evicted requests recompute to exactly their first-pass output. |
-| — | Detector negative control | With MM identity substitution deliberately disabled for a fresh salt, the T0.1-style counter check MUST trip (the second image must falsely hit). A failure here invalidates every green counter assertion. |
+| T0.11 | Preemption recompute | Dedicated engine with a tiny GPU block pool and forced-length decodes so the scheduler MUST preempt (proven via `vllm:num_preemptions`; zero preemptions fails as vacuous): every batch output still matches the config-matched baseline, and every request afterwards fully hits and reproduces its text — the preemption round-trip neither corrupts KV nor poisons the cache. |
+| — | Detector negative control | With MM identity substitution deliberately disabled for a fresh salt, the T0.1-style counter check MUST trip (the second image must falsely hit). A failure here invalidates every green counter assertion. Run on the in-process path (main suite) AND inside the T3 MP scenario. |
 
 ### T1 — Effectiveness (the cache must actually work)
 
@@ -111,7 +118,7 @@ that guard the suite can silently certify a different source tree.
 |---|---|---|
 | T2.1 | Multi-image order | A request with images (A, B) and one with (B, A) do not cross-hit and each answers correctly. |
 | T2.2 | Partial sharing | Request [A] then request [A, C]: shared prefix hits, C computed correctly. |
-| T2.3 | Other modalities | For models with video/audio, T0.1/T0.3 rerun per modality (not yet implemented). |
+| T2.3 | Other modalities | For models whose spec declares `video`: synthetic solid-color MP4s rerun T0.1/T0.3/T1 on the video ingestion path (multi-frame decode, temporal merge). Deselected — not skipped — at collection for models without the modality, so certification stays exactly as wide as the spec. Audio: no audio model registered yet. |
 
 ### T0.6 — Benchmark score parity (`benchmark_parity.py`)
 
@@ -137,9 +144,22 @@ requires one recorded parity run per model.
 
 ### T3 — Deployment paths
 
-The same T0+T1 set must pass per path. Currently implemented: in-process
-`LMCacheConnectorV1`. Planned: `LMCacheMPConnector`, CPU offload round-trip,
-remote backend cross-instance.
+The same T0+T1 core must pass per path. Implemented:
+
+- **In-process `LMCacheConnectorV1`** — the full matrix above.
+- **`LMCacheMPConnector` + MP cache server** (`isolated_cases.py
+  mp_connector`): a real `lmcache.v1.multiprocess.http_server` subprocess,
+  the engine driven through this repo's connector via
+  `kv_connector_module_path`. Reruns T0.1/T0.3/T0.5/T0.8, T1.1–T1.3,
+  T2.1/T2.2, store conservation against the server's resident-object API
+  (`/status`), and its own detector negative control. Lookup/hit counters
+  come from wrapping the scheduler adapter's lookup submit/check calls;
+  store intent from the worker adapter's batched store submissions.
+  T0.4 phases and T0.2 pressure stay in-process: both paths compute cache
+  keys with the same `apply_mm_hashes_to_token_ids`, so keyspace properties
+  are transport-independent.
+
+Planned: CPU offload round-trip, remote backend cross-instance, TP>1.
 
 ### Special-architecture add-ons
 

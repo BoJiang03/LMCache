@@ -24,6 +24,7 @@ from catalog import (
     catalog,
     color_request,
     pressure_requests,
+    video_requests,
 )
 from conftest import pressure_n
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
@@ -298,6 +299,40 @@ def test_t2_multi_image_order(harness):
     # Swapped order diverges at the first image: BA must not hit into AB's
     # image region.
     assert ba1.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN
+
+
+@pytest.mark.requires_modality("video")
+def test_t2_video_isolation_and_hit(harness):
+    """T2.3: T0.1 + T0.3 + T1 rerun on the video modality.
+
+    Videos travel a different vLLM ingestion path (multi-frame decode,
+    temporal merge) but must land on the same LMCache guarantees: content
+    identity in the keys, hit-path equivalence, and no cross-item hits.
+    Deselected at collection for models whose spec does not declare video.
+    """
+    videos = video_requests()
+    req_a, req_b = videos["t23-A"], videos["t23-B"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T2.3 first video A")
+    assert a1.lookup_hits == 0, "fresh case salt must not hit anything"
+    assert a1.identifiers, "video request produced no multimodal identifiers"
+
+    b1 = harness.run(req_b)
+    harness.check_output(req_b, b1, "T2.3 different video B")
+
+    a2 = harness.run(req_a)
+    harness.check_output(req_a, a2, "T2.3 repeat video A")
+    assert a2.text == a1.text, "hit path must reproduce the miss-path output"
+    assert a2.lookup_hits > 0, "video requests must actually hit (no bypass)"
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
+
+    # B shares only the text prefix with A; hits into the video span would
+    # be cross-video contamination (the video span is hundreds of tokens).
+    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN, (
+        f"video B hit {b1.lookup_hits} tokens, too close to A's full hit "
+        f"{a2.lookup_hits} -- cross-video false hit"
+    )
 
 
 def test_t2_partial_sharing(harness):
