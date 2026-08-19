@@ -120,6 +120,13 @@ def main() -> int:
     Returns:
         Process exit code; 1 if any point failed.
     """
+    if len(sys.argv) > 1:
+        # Configuration is environment-only. Refusing argv keeps a stray
+        # `--help` (or any typo) from launching a multi-hour GPU sweep.
+        print(__doc__, file=sys.stderr)
+        print(f"[full] takes no arguments, got {sys.argv[1:]}",
+              file=sys.stderr)
+        return 2
     unknown = [name for name in WANTED if name not in VARIANTS]
     if unknown:
         print(f"[full] unknown variants {unknown}", file=sys.stderr)
