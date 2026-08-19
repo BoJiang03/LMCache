@@ -53,6 +53,7 @@ that guard the suite can silently certify a different source tree.
 | T0.3 | Hit equivalence | The same request twice: the second run must hit and produce the identical output. |
 | T0.4 | Chunk-boundary phases | T0.1/T0.3 hold when the image placeholder span crosses chunk boundaries at varying phases (text prefix padded 0..chunk_size-1 words, chunk_size=16). |
 | T0.5 | Mixed traffic | Interleaved text-only and multimodal requests do not contaminate each other. |
+| T0.7 | Storage conservation | On the T0.2 traffic: every token the lookup missed is store-requested and lands as resident chunk keys in the local CPU backend (deficit = silently dropped KV); the full-hit replay stores ~nothing new, never loses resident keys, and resident bytes track keys (growth without keys = a leak). |
 
 ### T1 — Effectiveness (the cache must actually work)
 
