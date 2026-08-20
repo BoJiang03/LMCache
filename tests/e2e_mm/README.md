@@ -233,6 +233,16 @@ into the tests:
   photos draw much longer reasoning than the suite's synthetic images
   (GLM needs 256 there vs 64 in the suite); too small a budget truncates
   answers and fails the parse-rate gate.
+- `mme_max_flip_fraction` — per-model override of the parity gate's
+  answer-flip budget (default 0.5%, calibrated on short-answer models).
+  Running with vs. without the LMCache connector are two different — each
+  fully deterministic — numeric regimes, and a long chain-of-thought
+  amplifies the regime difference into ~1% of borderline answers flipping
+  or repetition-looping past the decode budget. Measured for GLM
+  (2026-08-20): flip counts and flipped-question sets reproduce exactly
+  across runs, baseline reruns are byte-identical (0 self-flips), and
+  per-question inspection shows no corruption signature; KV corruption is
+  still caught by the replay, hit-ratio, and score-delta oracles.
 
 The MME parity gate additionally enforces a baseline answer parse-rate
 (`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the

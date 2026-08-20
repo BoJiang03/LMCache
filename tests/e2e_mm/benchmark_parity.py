@@ -193,7 +193,7 @@ def mme_scores(items: list[dict], answers: list[str]) -> dict:
     }
 
 
-def parity_gate(report: dict) -> dict:
+def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
     """Evaluate the parity thresholds against a report dict.
 
     Shared by this script's exit code and by ``certify.py`` when it ingests
@@ -202,13 +202,17 @@ def parity_gate(report: dict) -> dict:
     Args:
         report: A report as written by ``main`` (needs ``scores``,
             ``num_questions``, both flip counts and the hit ratio).
+        max_flip_fraction: Per-model override of the flip budget
+            (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default
+            ``MAX_FLIP_FRACTION``.
 
     Returns:
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
         and the thresholds used.
     """
     scores = report["scores"]
-    max_flips = MAX_FLIP_FRACTION * report["num_questions"]
+    flip_fraction = max_flip_fraction or MAX_FLIP_FRACTION
+    max_flips = flip_fraction * report["num_questions"]
     delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
     delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
     hit_ratio = report["pass2_lookup_hit_ratio"]
@@ -230,7 +234,7 @@ def parity_gate(report: dict) -> dict:
         "score_delta_pass1_vs_baseline": delta_p1_base,
         "baseline_answer_parse_ratio": parse_ratio,
         "thresholds": {
-            "max_flip_fraction": MAX_FLIP_FRACTION,
+            "max_flip_fraction": flip_fraction,
             "max_score_delta": MAX_SCORE_DELTA,
             "min_hit_ratio": MIN_HIT_RATIO,
             "min_parse_ratio": MIN_PARSE_RATIO,
@@ -328,6 +332,13 @@ def main() -> int:
         default=8,
         help="decode budget per question; raise for models whose answer "
         "lands after a preamble (ModelSpec.min_decode_tokens)",
+    )
+    parser.add_argument(
+        "--max-flip-fraction",
+        type=float,
+        default=0.0,
+        help="per-model flip-budget override for the gate "
+        "(ModelSpec.mme_max_flip_fraction); 0 = the default",
     )
     args = parser.parse_args()
     chat_template_kwargs: dict = (
@@ -427,10 +438,16 @@ def main() -> int:
             sum(1 for a in answers_base if parse_yes_no(a)) / max(1, len(items)), 4
         ),
     }
-    gate = parity_gate(report)
+    gate = parity_gate(report, args.max_flip_fraction)
     report["gate"] = gate
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2)
+    # Raw per-pass answers, so a flip overshoot can be analyzed post-hoc
+    # (which questions, which categories, which direction) without paying
+    # for a multi-hour rerun. The baseline answers are already on disk.
+    answers_path = pathlib.Path(args.out).with_suffix(".answers.json")
+    with open(answers_path, "w") as f:
+        json.dump({"pass1": answers_p1, "pass2": answers_p2}, f)
 
     print(json.dumps(report, indent=2))
     print(
