@@ -61,7 +61,10 @@ connector only forwards lifecycle events to the manager.
 
 1. Route each `GetStoreMetadata` result to `admit(op)` instead of the step
    metadata. Handle the outcome:
-   - `ADMITTED` → nothing now.
+   - `ADMITTED` → nothing now. The op is in the policy's custody; while the
+     request's known prefix is below `min_prefix_tokens` that custody is a
+     gate-3 *holding pen* outside the pending machine (see "Gate 3" below),
+     indistinguishable to the caller.
    - `REJECTED_UNHASHED_BLOCK` → **skip and warn** (a hash-less block's later
      eviction is undetectable: evicted-and-reallocated also reads `None`).
      The tracker has already advanced past the skipped range by the time the
@@ -135,8 +138,13 @@ connector only forwards lifecycle events to the manager.
      hardware.
 2. Once per step, call `observe_step(gross_blocks_allocated,
    est_next_step_blocks, allocated_block_ids)` and then
-   `collect_due(in_flight_request_ids)`. The controller obtains both sets of
-   ids from scheduler output and its request registry. The queue keeps a
+   `collect_due(in_flight_request_ids, finished_request_ids)`. The controller
+   obtains all three sets of ids from scheduler output and its request
+   registry. Finished ids drive one gate-3 obligation: a finished request's
+   prefix can no longer grow, so a chain still held below the break-even
+   length is dropped by that drain (its request appears in
+   `emptied_requests`); *pending* ops of finished requests are untouched --
+   waiting out their eviction clock is the point of lazy offload. The queue keeps a
    block-to-request reverse index and revalidates only requests touched by
    allocations or represented in the bounded free-queue snapshot. Requests
    blocked by a submitted batch retain pending validation until a receipt.
@@ -232,10 +240,31 @@ vLLM hit instead of 0 on a lookup miss.
   the front through the last due one; a data-loss drop (hash mismatch) drops
   from the first lost op through the tail and blacklists the request's later
   chunks; the intact stored prefix stays pending and stays valuable.
-- **Gate 3**: when a request comes due with known prefix <
-  `min_prefix_tokens`, all its ops are dropped (the due front is dying, which
-  breaks the chain for the rest). The threshold is the offline break-even
-  prefix length; 0 disables.
+- **Gate 3, at admission**: while a request's known prefix is below
+  `min_prefix_tokens` (the offline break-even length; 0 disables), its ops
+  are held in a side pen outside the pending machine -- unindexed, so the
+  per-step validation and free-queue walk never pay for them. This placement
+  is the decision model's (§5: gate 3 is static and decidable early) and it
+  is what the emission-side variant measurably was not: rejecting at drain
+  time left every sub-break-even op a queue resident until its eviction due
+  date, roughly doubling per-step validation on a mixed-length replay. The
+  chunk that lifts the prefix past the threshold promotes the whole held
+  chain into the pending machine. Held ops are invisible to the per-step
+  loss check, so promotion validates the chain's snapshots once; a block
+  lost during the wait kills the whole chain (the intact front is still
+  below break-even and the break stops it from ever growing past it) and
+  the promoting chunk is rejected prefix-broken. Promotion skips the
+  deduplication check on purpose: held ops already entered the admission
+  ledger, and deduplicating one away would leave that entry matched by
+  neither a pending op nor a drop counter -- the cost is a rare duplicate
+  store, never corruption. A request that finishes below the threshold has
+  its held chain dropped by the next drain (`rejected_short_prefix`). Held
+  and pending are mutually exclusive per request: nothing emits before
+  promotion, and every chunk after promotion ends past the threshold.
+  An emission-time check remains as a backstop for the one path back below
+  the threshold: eviction truncating a promoted chain. When such a request
+  comes due, all its ops are dropped (the due front is dying, which breaks
+  the chain for the rest).
 - A due segment is cut at the first deduplication hole before emission
   (the batch must coalesce into one contiguous token range); the request
   keeps its due-rank urgency, and the post-hole ops follow in a later
@@ -350,22 +379,23 @@ policy does not live). Three hooks, all on the pending-store facade:
   producing are rejected at admission and log at DEBUG only: their cause was
   already reported, and one broken request produces many of them;
 - every drain re-logs the whole ledger as one greppable `key=value` line
-  (`Lazy offload counters: admitted=... emitted=... pending=N`) when the
-  counters changed, throttled to one line per 5s. `pending` is the queue
-  depth at the same instant, which closes the line as an equation over
+  (`Lazy offload counters: admitted=... emitted=... pending=N held=M`) when
+  the counters changed, throttled to one line per 5s. `pending` and `held`
+  are the two custody depths at the same instant (the pending machine and
+  the gate-3 holding pen), which close the line as an equation over
   exactly six outcome counters:
 
   ```
-  admitted == pending + emitted + dropped_evicted + rejected_short_prefix
-              + dropped_on_request_drop + dropped_failed_store
-              + dropped_id_reuse
+  admitted == pending + held + emitted + dropped_evicted
+              + rejected_short_prefix + dropped_on_request_drop
+              + dropped_failed_store + dropped_id_reuse
   ```
 
   so a reader can separate an operation still waiting for pressure from one
   that left the queue without incrementing any outcome counter. The set is
   neither "every `dropped_*` counter" nor "every drop and reject":
   `rejected_short_prefix` belongs in it although it is not named `dropped_*`
-  (gate 3 discards ops that were admitted), while `rejected_unhashed`,
+  (gate 3 discards ops that were admitted into the pen), while `rejected_unhashed`,
   `rejected_prefix_broken` and `deduplicated` must stay out of it — those ops
   are turned away at admission and never counted in `admitted`. Summing by
   name instead of by this list makes the equation fail the moment gate 3

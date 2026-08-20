@@ -312,18 +312,139 @@ class TestPrefixClosure:
 
 
 class TestEconomyGate:
-    def test_short_prefix_dropped_not_stored(self) -> None:
+    def test_short_chain_is_held_out_of_the_pending_machine(self) -> None:
+        """Sub-break-even chunks are admitted into a side pen, not the
+        pending machine: pressure neither emits nor validates them, so
+        short requests cost nothing on the per-step path."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        assert (
+            queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+            is AdmitResult.ADMITTED
+        )
+        assert (
+            queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+            is AdmitResult.ADMITTED
+        )
+        assert queue.num_pending_ops() == 0
+        assert queue.num_held_ops() == 2
+        assert queue.has_pending_request("req")
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert result.to_store == []
+        assert result.dropped_short_prefix == []
+        assert queue.stats().requests_validated == 0
+        assert queue.num_held_ops() == 2
+
+    def test_finish_below_threshold_drops_the_held_chain(self) -> None:
         pool = FakePoolView()
         seed_blocks(pool, [1, 2], free=True)
         queue = make_queue(pool, min_prefix_tokens=1024)
         queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
         queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        result = queue.collect_due(finished_request_ids={"req"})
+        assert [op.prefix_end_tokens for op in result.dropped_short_prefix] == [
+            256,
+            512,
+        ]
+        assert result.emptied_requests == ["req"]
+        assert queue.stats().rejected_short_prefix == 2
+        assert queue.num_held_ops() == 0
+        assert not queue.has_pending_request("req")
+
+    def test_crossing_the_threshold_promotes_the_whole_chain(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, min_prefix_tokens=1024)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        assert (
+            queue.admit(
+                make_op(
+                    "req",
+                    [3],
+                    pool,
+                    prefix_end_tokens=1024,
+                    prefix_start_tokens=512,
+                )
+            )
+            is AdmitResult.ADMITTED
+        )
+        assert queue.num_held_ops() == 0
+        assert queue.num_pending_ops() == 3
+        queue.observe_step(new_blocks_allocated=3, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [256, 512, 1024]
+
+    def test_eviction_while_held_drops_chain_and_breaks_prefix(self) -> None:
+        """Held ops are invisible to the per-step loss check, so the chain
+        is validated at promotion; a block lost during the wait kills the
+        whole chain (the intact front can never reach break-even)."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=True)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        pool.evict(2)
+        result = queue.admit(make_op("req", [3], pool, prefix_end_tokens=1024))
+        assert result is AdmitResult.REJECTED_PREFIX_BROKEN
+        assert queue.num_pending_ops() == 0
+        assert queue.num_held_ops() == 0
+        stats = queue.stats()
+        assert stats.rejected_short_prefix == 1  # the intact front (gate 3)
+        assert stats.dropped_evicted == 1  # the lost op (gate 1)
+        later = queue.admit(make_op("req", [3], pool, prefix_end_tokens=1280))
+        assert later is AdmitResult.REJECTED_PREFIX_BROKEN
+
+    def test_finished_request_with_pending_ops_is_untouched(self) -> None:
+        """Finishing ends prefix growth, not the eviction clock: pending
+        ops of a finished request wait for their blocks to come due."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=True)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=2048))
+        result = queue.collect_due(finished_request_ids={"req"})
+        assert result.dropped_short_prefix == []
+        assert queue.num_pending_ops() == 1
+
+    def test_drop_request_clears_the_held_chain(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=False)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        assert queue.drop_request("req") == 1
+        assert queue.num_held_ops() == 0
+        assert not queue.has_pending_request("req")
+        assert queue.stats().dropped_on_request_drop == 1
+
+    def test_rejects_mixed_epochs_across_the_held_chain(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool, min_prefix_tokens=1024)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256, epoch=0))
+        with pytest.raises(RuntimeError):
+            queue.admit(make_op("req", [2], pool, prefix_end_tokens=512, epoch=1))
+
+    def test_truncated_chain_below_threshold_dropped_at_emission(self) -> None:
+        """Backstop: eviction cuts a promoted chain back under break-even,
+        so storing the surviving stub would cost more than recomputing it."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, min_prefix_tokens=1024)
+        queue.admit(
+            make_op("req", [1], pool, prefix_end_tokens=512, prefix_start_tokens=0)
+        )
+        queue.admit(
+            make_op("req", [2], pool, prefix_end_tokens=1024, prefix_start_tokens=512)
+        )
+        pool.evict(2)
         queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
         result = queue.collect_due()
         assert result.to_store == []
-        assert len(result.dropped_short_prefix) == 2
+        assert [op.prefix_end_tokens for op in result.dropped_evicted] == [1024]
+        assert [op.prefix_end_tokens for op in result.dropped_short_prefix] == [512]
         assert queue.num_pending_ops() == 0
-        assert queue.stats().rejected_short_prefix == 2
 
     def test_long_prefix_passes_gate(self) -> None:
         pool = FakePoolView()
@@ -455,8 +576,8 @@ class TestContentDeduplication:
         seed_blocks(pool, [1], free=True)
         queue = make_queue(pool, min_prefix_tokens=1024)
         queue.admit(make_op("req-a", [1], pool, prefix_end_tokens=256))
-        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
-        assert len(queue.collect_due().dropped_short_prefix) == 1
+        finished = queue.collect_due(finished_request_ids={"req-a"})
+        assert len(finished.dropped_short_prefix) == 1
         result = queue.admit(make_op("req-b", [1], pool, prefix_end_tokens=256))
         assert result is AdmitResult.ADMITTED
 

@@ -341,8 +341,10 @@ Two policies are available:
 - `EVICTION_AWARE` (default) reads the free queue in LRU order and releases an
   operation only when one of its blocks enters the pressure-derived danger
   window. It validates admission-time block hashes, preserves prefix closure,
-  deduplicates identical pending content, and can reject prefixes below the
-  configured break-even length. Its decision model and full queue contract are
+  deduplicates identical pending content, and holds chains below the
+  configured break-even length out of its per-step machinery until they grow
+  past it, dropping them if their request finishes below it. Its decision
+  model and full queue contract are
   in [lazy_offload_decision_model.md](lazy_offload_decision_model.md) and
   [lazy_offload_policy/eviction_aware.md](lazy_offload_policy/eviction_aware.md).
 - `FIFO` remains available as an explicit legacy fallback. It preserves the
@@ -350,9 +352,11 @@ Two policies are available:
   configured request threshold and
   validates their block hashes immediately before submission.
 
-Policies do not receive request-finished or store-receipt lifecycle events.
-The manager derives finished and blocked request-id sets from the registry and
-passes those to one `LazyOffloadPendingStore.drain()` entry point. The facade
+Policies do not receive lifecycle events; the manager derives finished and
+blocked request-id sets from the registry and passes those as inputs to one
+`LazyOffloadPendingStore.drain()` entry point (finished ids let the
+eviction-aware policy drop chains still held under the break-even length,
+whose prefix can no longer grow). The facade
 hides pressure-aware versus FIFO triggering and returns a policy-neutral
 `LazyOffloadDrain`: request batches plus ids whose buffers became empty. Only
 the manager validates and pins emitted batches and combines empty-buffer facts

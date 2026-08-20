@@ -6,8 +6,11 @@ Implements the drain policy described in
 ``docs/design/integration/vllm/lazy_offload_decision_model.md``: store
 operations are buffered instead of submitted eagerly, and are released only
 when the GPU blocks holding their data are about to be evicted (gate 1,
-"replace prediction with timing") and the covered prefix is long enough for
-the store to beat recomputation (gate 3, static break-even threshold).
+"replace prediction with timing"). A chain whose covered prefix is too short
+for the store to beat recomputation is held outside the pending machine --
+where it costs nothing per step -- until its request grows past the
+break-even length, and dropped if it never does (gate 3, static break-even
+threshold at admission).
 
 This module is pure policy: it never touches vLLM at runtime (vLLM types
 appear only in annotations) and performs no I/O, so it is unit-testable
@@ -228,7 +231,10 @@ class AdmitResult(enum.Enum):
 
     The connector maps each outcome to an action:
 
-    - ADMITTED: nothing to do now; the operation will be emitted later.
+    - ADMITTED: nothing to do now; the operation is in the policy's custody.
+      It is emitted later -- or dropped by a gate: an operation below the
+      gate-3 break-even prefix length is held until its request grows past
+      the threshold, and dropped if the request finishes below it.
     - REJECTED_UNHASHED_BLOCK: a covered block has no hash, so eviction of
       that block could not be detected later (a reallocated block would also
       read None, masking the loss). The connector must skip the store and
@@ -328,9 +334,11 @@ class LazyOffloadPolicyConfig:
             consumption to treat as "imminent eviction". Larger values drain
             earlier (closer to eager, fewer drops); smaller values drain
             later (better filtering, more drops).
-        min_prefix_tokens: Break-even prefix length (gate 3): a request
-            whose known prefix is shorter than this when its blocks come due
-            is dropped instead of stored. 0 disables the gate.
+        min_prefix_tokens: Break-even prefix length (gate 3), applied at
+            admission: a request's operations are held outside the pending
+            machine while its known prefix is shorter than this, promoted
+            into it when the prefix grows past the threshold, and dropped
+            if the request finishes below it. 0 disables the gate.
         max_drain_per_step: Upper bound on operations emitted per step, to
             bound the D2H burst. Must be >= 1. There is no safe static
             lower bound: a prefilling request buffers about one operation
@@ -369,7 +377,9 @@ class LazyOffloadCounters:
 
     ``dropped_evicted`` is the gate-1 quality sensor (drop rate): operations
     lost because their blocks were evicted before the policy drained them.
-    ``rejected_short_prefix`` counts gate-3 rejections.
+    ``rejected_short_prefix`` counts gate-3 rejections: held operations whose
+    request finished below the break-even prefix length, plus chains that
+    eviction truncated back below it before emission.
 
     ``throttled_drains`` is the sizing sensor for
     :attr:`LazyOffloadPolicyConfig.max_drain_per_step`: drains that left a
@@ -447,8 +457,10 @@ class DrainResult:
         dropped_evicted: Operations whose data was lost (block evicted or
             reallocated before drain), including later same-request
             operations dropped for prefix closure.
-        dropped_short_prefix: Operations dropped by gate 3 (request prefix
-            below the break-even length at the time its blocks came due).
+        dropped_short_prefix: Operations dropped by gate 3: held operations
+            whose request finished below the break-even prefix length, and
+            pending chains eviction truncated back below it by the time
+            their blocks came due.
         emptied_requests: Requests whose pending operations became empty in
             this drain. The controller combines this fact with request phase
             and submitted-batch state before ending a session.
@@ -610,6 +622,18 @@ class EvictionAwareStoreQueue:
     emission never spans a hole (each batch is one contiguous store), so
     the ops on each side of it go out in separate batches.
 
+    Gate 3 realization, at admission: while a request's known prefix is
+    below ``min_prefix_tokens``, its operations are held outside the
+    pending machine -- unindexed, so the per-step validation and free-queue
+    walk never pay for them. The chunk that lifts the prefix past the
+    threshold promotes the whole held chain into the pending machine (after
+    one snapshot check, because evictions during the wait were unobserved);
+    a request that finishes below the threshold has its held chain dropped
+    by the next :meth:`collect_due`. Held and pending are mutually
+    exclusive per request: nothing emits before promotion, and every chunk
+    after promotion ends past the threshold, so it never holds again while
+    the store epoch lasts.
+
     Not thread-safe: all methods must be called from the scheduler thread
     (the vLLM connector scheduler-side call pattern).
     """
@@ -626,6 +650,10 @@ class EvictionAwareStoreQueue:
         # Primary pending storage and every derived secondary index share one
         # owner so departure paths cannot update one without the other.
         self._pending_ops = _PendingOperations()
+        # Gate-3 holding pen: chains below the break-even prefix length,
+        # keyed by request. Deliberately index-free -- the point of holding
+        # is that these ops cost nothing on the per-step path.
+        self._held_short: dict[str, list[PendingStoreOp]] = {}
         # Prefix validity is a policy concern. Request phase, epochs, and
         # submitted batches are owned by the controller.
         self._broken_prefixes: set[str] = set()
@@ -645,7 +673,9 @@ class EvictionAwareStoreQueue:
             The admission outcome; see :class:`AdmitResult` for the action
             the caller must take on each value.
         """
-        existing = self._pending_ops.get(op.request_id)
+        existing = self._held_short.get(op.request_id) or self._pending_ops.get(
+            op.request_id
+        )
         if existing is not None and existing[0].epoch != op.epoch:
             raise RuntimeError(
                 f"request {op.request_id!r} mixed store epochs "
@@ -661,6 +691,20 @@ class EvictionAwareStoreQueue:
             self._broken_prefixes.add(op.request_id)
             self._counters.rejected_unhashed += 1
             return AdmitResult.REJECTED_UNHASHED_BLOCK
+        if op.prefix_end_tokens < self._config.min_prefix_tokens:
+            # Gate 3 (economy): the chain is below break-even. Hold it out
+            # of the pending machine until the request grows past the
+            # threshold or finishes below it. Counted admitted now so the
+            # ledger closes: admitted == pending + held + emitted + drops.
+            self._held_short.setdefault(op.request_id, []).append(op)
+            self._counters.admitted += 1
+            return AdmitResult.ADMITTED
+        if op.request_id in self._held_short and not self._promote_held(op.request_id):
+            # A held block was recycled while the chain waited below the
+            # threshold: stored without that prefix, this op would be
+            # unreachable.
+            self._counters.rejected_prefix_broken += 1
+            return AdmitResult.REJECTED_PREFIX_BROKEN
         covering = self._pending_ops.covering_op(op)
         if covering is not None and self._chain_intact(covering):
             self._counters.deduplicated += 1
@@ -672,6 +716,58 @@ class EvictionAwareStoreQueue:
         self._pending_ops.add(op)
         self._counters.admitted += 1
         return AdmitResult.ADMITTED
+
+    def _promote_held(self, request_id: str) -> bool:
+        """Move the request's held chain into the pending machine.
+
+        Held ops are invisible to the per-step loss check, so an eviction
+        that recycled one of their blocks was never observed: the chain is
+        validated here instead. A lost block kills the whole chain, not
+        just its suffix -- the intact front is still below the break-even
+        length (every held op is) and the break stops it from ever growing
+        past it, so promoting it would only recreate the sub-break-even
+        queue residents this gate exists to remove.
+
+        Promoted ops skip the content-deduplication check on purpose: they
+        entered the admission ledger when they were held, and deduplicating
+        one away here would leave that entry matched by neither a pending
+        op nor a drop counter. The cost is a rare duplicate store when
+        another request buffered identical content during the wait --
+        wasted device-to-host bandwidth, never corruption.
+
+        Args:
+            request_id: Request whose held chain must move. The caller has
+                already checked that one exists.
+
+        Returns:
+            False when the chain lost a block while held: nothing is
+            promoted, the chain is dropped, and further admissions of this
+            request are rejected.
+        """
+        held = self._held_short.pop(request_id)
+        first_lost = len(held)
+        for index, held_op in enumerate(held):
+            if not self._snapshot_intact(held_op):
+                first_lost = index
+                break
+        if first_lost < len(held):
+            # Ledger split mirrors _drop_evicted_suffix: ops from the first
+            # lost one on are gate-1 losses; the intact front is a gate-3
+            # rejection (it can never reach break-even now).
+            self._counters.rejected_short_prefix += first_lost
+            self._counters.dropped_evicted += len(held) - first_lost
+            self._broken_prefixes.add(request_id)
+            logger.info(
+                "Lazy offload: dropped %d held store op(s) of request %s: "
+                "a block was evicted while the chain waited below the "
+                "break-even prefix length",
+                len(held),
+                request_id,
+            )
+            return False
+        for held_op in held:
+            self._pending_ops.add(held_op)
+        return True
 
     def observe_step(
         self,
@@ -706,12 +802,16 @@ class EvictionAwareStoreQueue:
         self._next_step_estimate = est_next_step_blocks
 
     def has_pending_request(self, request_id: str) -> bool:
-        """Whether this request currently owns buffered operations."""
-        return self._pending_ops.contains_request(request_id)
+        """Whether this request currently owns buffered or held operations."""
+        return (
+            self._pending_ops.contains_request(request_id)
+            or request_id in self._held_short
+        )
 
     def drop_request(self, request_id: str) -> int:
-        """Discard buffered operations invalidated by a tracker reset."""
+        """Discard buffered and held operations invalidated by a tracker reset."""
         dropped = self._pending_ops.pop_request(request_id)
+        dropped += self._held_short.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._counters.dropped_on_request_drop += len(dropped)
         return len(dropped)
@@ -719,6 +819,7 @@ class EvictionAwareStoreQueue:
     def discard_for_reuse(self, request_id: str) -> int:
         """Discard a finished predecessor's buffered policy state."""
         dropped = self._pending_ops.pop_request(request_id)
+        dropped += self._held_short.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._counters.dropped_id_reuse += len(dropped)
         return len(dropped)
@@ -746,6 +847,10 @@ class EvictionAwareStoreQueue:
             The number of pending operations dropped.
         """
         dropped = self._pending_ops.pop_request(request_id)
+        # A held chain cannot coexist with an in-flight batch (nothing emits
+        # before promotion), but a departure path that forgot the pen would
+        # leak it, so it is cleared here too.
+        dropped += self._held_short.pop(request_id, [])
         self._counters.dropped_failed_store += len(dropped)
         self._broken_prefixes.add(request_id)
         return len(dropped)
@@ -754,11 +859,19 @@ class EvictionAwareStoreQueue:
         """Return the total number of buffered store operations."""
         return self._pending_ops.num_ops()
 
+    def num_held_ops(self) -> int:
+        """Return the number of operations held below the break-even length."""
+        return sum(len(ops) for ops in self._held_short.values())
+
     def stats(self) -> LazyOffloadCounters:
         """Return a copy of the cumulative policy counters."""
         return replace(self._counters)
 
-    def collect_due(self, blocked_request_ids: set[str] | None = None) -> DrainResult:
+    def collect_due(
+        self,
+        blocked_request_ids: set[str] | None = None,
+        finished_request_ids: set[str] | None = None,
+    ) -> DrainResult:
         """Release the operations whose blocks face imminent eviction.
 
         For every pending request, first drops the suffix of its operation
@@ -793,12 +906,29 @@ class EvictionAwareStoreQueue:
             blocked_request_ids: Requests that already have a store batch in
                 flight. They are left pending, and any validation this
                 step's allocations asked for stays pending with them.
+            finished_request_ids: Requests the controller has seen finish
+                generation. A finished request's known prefix can no longer
+                grow, so a chain still held below the gate-3 break-even
+                length is dropped here (pending operations of finished
+                requests are untouched: waiting out their eviction clock is
+                the point of lazy offload).
 
         Returns:
             The operations to store and to drop this step; see
             :class:`DrainResult`.
         """
         result = DrainResult()
+        for request_id in sorted(finished_request_ids or ()):
+            held = self._held_short.pop(request_id, None)
+            if held is None:
+                continue
+            # Gate 3: the request finished below the break-even length.
+            # Held and pending are mutually exclusive, so the request is
+            # emptied by this drop and its session becomes releasable.
+            result.dropped_short_prefix.extend(held)
+            result.emptied_requests.append(request_id)
+            self._counters.rejected_short_prefix += len(held)
+            self._broken_prefixes.add(request_id)
         blocked_request_ids = blocked_request_ids or set()
         if not self._pending_ops:
             return result
@@ -1021,7 +1151,13 @@ class EvictionAwareStoreQueue:
         return min_rank, ops[: last_due + 1]
 
     def _fails_economy_gate(self, ops: list[PendingStoreOp]) -> bool:
-        """Gate 3: is the request's known prefix below break-even length?"""
+        """Gate 3 backstop: did the chain fall back below break-even length?
+
+        Admission holds sub-break-even chains out of the pending machine,
+        so every chain in it once ended past the threshold. This only fires
+        when eviction truncated a promoted chain back below it -- storing
+        the stub would cost more than recomputing it.
+        """
         if self._config.min_prefix_tokens == 0:
             return False
         known_prefix = ops[-1].prefix_end_tokens

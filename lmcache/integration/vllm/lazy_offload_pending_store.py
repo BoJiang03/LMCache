@@ -50,24 +50,28 @@ _STATS_LOG_INTERVAL_S = 5.0
 _DROP_LOG_SAMPLE_OPS = 8
 
 
-def _format_ledger(counters: LazyOffloadCounters, num_pending: int) -> str:
+def _format_ledger(
+    counters: LazyOffloadCounters, num_pending: int, num_held: int
+) -> str:
     """Render the ledger as one greppable ``key=value`` line body.
 
     Args:
         counters: The cumulative policy counters.
-        num_pending: Operations still buffered at the same instant. It makes
-            the line close as an equation -- ``admitted == pending +
-            emitted + every drop counter`` -- so a reader can tell an
-            operation still waiting for pressure from one that left the
-            queue without incrementing any outcome counter. Without it the
-            strongest available check is ``outcomes <= admitted``, which
-            catches over-counting only.
+        num_pending: Operations still buffered at the same instant. Together
+            with ``num_held`` it makes the line close as an equation --
+            ``admitted == pending + held + emitted + every drop counter`` --
+            so a reader can tell an operation still waiting for pressure
+            from one that left the queue without incrementing any outcome
+            counter. Without them the strongest available check is
+            ``outcomes <= admitted``, which catches over-counting only.
+        num_held: Operations held below the gate-3 break-even prefix length
+            at the same instant.
 
     Returns:
-        The rendered ``key=value`` body, pending depth last.
+        The rendered ``key=value`` body, the two depth gauges last.
     """
     fields = " ".join(f"{name}={value}" for name, value in asdict(counters).items())
-    return f"{fields} pending={num_pending}"
+    return f"{fields} pending={num_pending} held={num_held}"
 
 
 def _format_drop_sample(dropped: list[PendingStoreOp]) -> str:
@@ -332,7 +336,7 @@ class LazyOffloadPendingStore:
                 est_next_step_blocks,
                 allocated_block_ids,
             )
-            result = self._collect_due(blocked_request_ids)
+            result = self._collect_due(blocked_request_ids, finished_request_ids)
             items_by_request: dict[str, PendingStoreItem] = {}
             for op in result.to_store:
                 item = items_by_request.setdefault(
@@ -383,8 +387,18 @@ class LazyOffloadPendingStore:
                 allocated_block_ids,
             )
 
-    def _collect_due(self, blocked_request_ids: set[str] | None = None) -> DrainResult:
+    def _collect_due(
+        self,
+        blocked_request_ids: set[str] | None = None,
+        finished_request_ids: set[str] | None = None,
+    ) -> DrainResult:
         """Release the operations facing imminent eviction (EVICTION_AWARE).
+
+        Args:
+            blocked_request_ids: Requests with a store batch still in flight.
+            finished_request_ids: Requests the controller has seen finish;
+                their chains still held under the gate-3 break-even length
+                are dropped (they can no longer grow past it).
 
         Returns:
             The policy's drain decision for this step.
@@ -393,7 +407,7 @@ class LazyOffloadPendingStore:
             ValueError: If called in FIFO mode or before the pool is bound.
         """
         queue = self._require_eviction_queue()
-        result = queue.collect_due(blocked_request_ids)
+        result = queue.collect_due(blocked_request_ids, finished_request_ids)
         stats = queue.stats()
         if (
             not self._warned_throttled_loss
@@ -465,7 +479,7 @@ class LazyOffloadPendingStore:
                     dropped_op.request_id,
                     dropped_op.prefix_end_tokens,
                 )
-        self._maybe_log_stats(stats, queue.num_pending_ops())
+        self._maybe_log_stats(stats, queue.num_pending_ops(), queue.num_held_ops())
         return result
 
     def stats(self) -> LazyOffloadCounters:
@@ -497,15 +511,20 @@ class LazyOffloadPendingStore:
             _format_ledger(
                 self._eviction_queue.stats(),
                 self._eviction_queue.num_pending_ops(),
+                self._eviction_queue.num_held_ops(),
             ),
         )
 
-    def _maybe_log_stats(self, stats: LazyOffloadCounters, num_pending: int) -> None:
+    def _maybe_log_stats(
+        self, stats: LazyOffloadCounters, num_pending: int, num_held: int
+    ) -> None:
         """Log the counter ledger if it changed and the throttle allows.
 
         Args:
             stats: The policy counters as of this drain.
             num_pending: Operations still buffered at the same instant.
+            num_held: Operations held below the gate-3 break-even prefix
+                length at the same instant.
 
         Runs on every drain (the engine calls ``collect_due`` each step),
         so the log converges to the true ledger whenever the engine takes
@@ -513,12 +532,14 @@ class LazyOffloadPendingStore:
         the shutdown hook alone is unreliable under a force-killed engine.
 
         The change test looks at the decision counters only, not at the
-        pending depth the line also carries: every mutation of the pending
-        queue moves one of them with it (admission, emission, each drop
-        cause), so a changed depth always shows up as a changed decision.
-        The per-step cost sensors are excluded on purpose -- they advance
-        on every drain, so gating on them would log a line every interval
-        for the life of the engine.
+        depth gauges the line also carries: every change of the policy's
+        total custody moves one of them with it (admission, emission, each
+        drop cause), so a changed depth always shows up as a changed
+        decision. (A gate-3 promotion moves ops between the two gauges
+        without a decision, but it preserves their sum and the next
+        decision logs the split.) The per-step cost sensors are excluded
+        on purpose -- they advance on every drain, so gating on them would
+        log a line every interval for the life of the engine.
         """
         decisions = stats.decisions()
         if decisions == self._last_logged_decisions:
@@ -528,7 +549,7 @@ class LazyOffloadPendingStore:
             return
         logger.info(
             "Lazy offload counters: %s",
-            _format_ledger(stats, num_pending),
+            _format_ledger(stats, num_pending, num_held),
         )
         self._last_logged_decisions = decisions
         self._last_stats_log_time = now

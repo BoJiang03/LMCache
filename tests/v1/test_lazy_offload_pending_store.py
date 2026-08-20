@@ -107,12 +107,13 @@ def _drain_store(
     store: LazyOffloadPendingStore,
     new_blocks_allocated: int = 0,
     est_next_step_blocks: int = 0,
+    finished_request_ids: set[str] | None = None,
 ) -> pending_store_mod.LazyOffloadDrain:
     return store.drain(
         new_blocks_allocated,
         est_next_step_blocks,
         None,
-        set(),
+        finished_request_ids or set(),
         set(),
     )
 
@@ -388,7 +389,7 @@ class TestEvictionAwareMode:
         )
         messages = _spy_logger_info(monkeypatch)
         store.add(_make_meta("req-0", num_blocks=1, end=256))
-        _drain_store(store, 4, 0)
+        _drain_store(store, 4, 0, finished_request_ids={"req-0"})
         assert store.stats().rejected_short_prefix == 1
         (line,) = [m for m in messages if "below the break-even length" in m]
         assert "dropped 1 store op(s)" in line
@@ -416,7 +417,7 @@ class TestEvictionAwareMode:
             meta = _make_meta(f"req-{block_id}", end=256)
             meta.op.flat_block_ids = [block_id]
             store.add(meta)
-        _drain_store(store, 40, 0)
+        _drain_store(store, 40, 0, finished_request_ids={f"req-{i}" for i in range(10)})
         assert store.stats().rejected_short_prefix == 10
         (line,) = [m for m in messages if "below the break-even length" in m]
         assert "dropped 10 store op(s)" in line
