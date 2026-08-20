@@ -419,13 +419,27 @@ def run_preemption(spec: ModelSpec) -> dict:
 
         # Under-storage guard: preemption must not silently drop stores.
         # (No upper bound here: a preempted request legitimately re-stores.)
+        # A resumed request re-looks-up its already-DECODED tokens (they are
+        # input tokens for the recompute), counting them as misses -- but the
+        # save path, by save_decode_cache=False design, never stores
+        # decode-origin tokens. So each preemption legitimately contributes
+        # up to its decoded length (<= PREEMPTION_MAX_TOKENS, chunk-aligned)
+        # of missed-but-never-stored tokens. Verified deterministic:
+        # 2 preemptions x 80 decoded tokens = exactly the observed gap; the
+        # replay full-hit check above still catches any real store loss.
+        decode_relookup_slack = (
+            preemptions * ((PREEMPTION_MAX_TOKENS + CHUNK - 1) // CHUNK) * CHUNK
+        )
         stored_delta = harness.stored_tokens_total() - stored_before
         missed = batch.lookup_tokens - batch.lookup_hits
         _expect(
             failures,
-            stored_delta >= missed - PREEMPTION_N * CHUNK,
+            stored_delta >= missed - PREEMPTION_N * CHUNK - decode_relookup_slack,
             f"under-storage across preemption: batch missed {missed} tokens "
-            f"but only {stored_delta} were store-requested",
+            f"but only {stored_delta} were store-requested "
+            f"(slack: {PREEMPTION_N * CHUNK} partial-chunk + "
+            f"{decode_relookup_slack} decode-relookup over {preemptions} "
+            f"preemptions)",
         )
         metrics["preemptions"] = preemptions
         metrics["batch"] = {
