@@ -73,6 +73,11 @@ MAX_PIXELS = 768 * 28 * 28
 MAX_FLIP_FRACTION = 0.005  # per-item answer flips, both comparisons
 MAX_SCORE_DELTA = 10.0  # |score delta| on the 2800-point MME total
 MIN_HIT_RATIO = 0.8  # pass2 lookup hit ratio (else parity is vacuous)
+# Fraction of baseline answers that must parse to yes/no. If the model does
+# not answer within the 8-token budget (e.g. a thinking model emitting a
+# reasoning preamble), every answer parses to '' on all three passes and the
+# flip/score comparisons pass VACUOUSLY while measuring nothing.
+MIN_PARSE_RATIO = 0.9
 
 
 def load_items(limit: int) -> list[dict]:
@@ -122,8 +127,22 @@ def conversations(items: list[dict]) -> list[list[dict]]:
 
 
 def parse_yes_no(text: str) -> str:
-    """Extract the yes/no verdict from a model answer ('' if neither)."""
+    """Extract the yes/no verdict from a model answer ('' if neither).
+
+    Two answer shapes are recognized:
+
+    - A boxed answer (GLM-style ``<|begin_of_box|>yes<|end_of_box|>``,
+      possibly after a short preamble): the box content is the verdict.
+    - Otherwise: the answer must START with yes/no (Qwen-style direct
+      answers). Substring search is deliberately avoided — MME questions
+      quote statements containing yes/no-adjacent words, so a match deeper
+      in free text is not a verdict.
+    """
     lowered = text.strip().lower()
+    if "<|begin_of_box|>" in lowered:
+        # Last begin marker: a preamble may open a spurious unclosed box.
+        lowered = lowered.rsplit("<|begin_of_box|>", 1)[1]
+        lowered = lowered.split("<|end_of_box|>", 1)[0].strip()
     if lowered.startswith("yes"):
         return "yes"
     if lowered.startswith("no"):
@@ -181,40 +200,67 @@ def parity_gate(report: dict) -> dict:
     delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
     delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
     hit_ratio = report["pass2_lookup_hit_ratio"]
+    # Reports recorded before the parse-ratio guard existed lack the field;
+    # their high absolute MME scores already prove the answers parsed.
+    parse_ratio = report.get("baseline_answer_parse_ratio", 1.0)
     ok = (
         report["flips_pass2_vs_pass1"] <= max_flips
         and report["flips_pass1_vs_baseline"] <= max_flips
         and delta_p2_p1 <= MAX_SCORE_DELTA
         and delta_p1_base <= MAX_SCORE_DELTA
         and hit_ratio >= MIN_HIT_RATIO
+        and parse_ratio >= MIN_PARSE_RATIO
     )
     return {
         "pass": ok,
         "max_flips": max_flips,
         "score_delta_pass2_vs_pass1": delta_p2_p1,
         "score_delta_pass1_vs_baseline": delta_p1_base,
+        "baseline_answer_parse_ratio": parse_ratio,
         "thresholds": {
             "max_flip_fraction": MAX_FLIP_FRACTION,
             "max_score_delta": MAX_SCORE_DELTA,
             "min_hit_ratio": MIN_HIT_RATIO,
+            "min_parse_ratio": MIN_PARSE_RATIO,
         },
     }
 
 
-def run_batch(llm, items: list[dict]) -> list[str]:
-    """Run all questions in one batched chat call, order-aligned."""
+def run_batch(
+    llm, items: list[dict], chat_template_kwargs: dict, max_tokens: int
+) -> list[str]:
+    """Run all questions in one batched chat call, order-aligned.
+
+    Args:
+        llm: The vLLM engine.
+        items: MME question dicts (see ``load_items``).
+        chat_template_kwargs: Extra chat-template kwargs from the model spec
+            (e.g. ``{"enable_thinking": False}``); empty dict for none.
+        max_tokens: Decode budget per question; must be large enough for the
+            model's yes/no verdict to land in the generated text (see
+            ``ModelSpec.min_decode_tokens``).
+    """
     # Third Party
     from vllm import SamplingParams
 
     outputs = llm.chat(
         conversations(items),
-        sampling_params=SamplingParams(temperature=0.0, max_tokens=8, seed=0),
+        sampling_params=SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=0),
+        chat_template_kwargs=dict(chat_template_kwargs) or None,
         use_tqdm=True,
     )
     return [out.outputs[0].text for out in outputs]
 
 
-def engine_kwargs(model: str) -> dict:
+def engine_kwargs(model: str, mm_processor_kwargs: dict) -> dict:
+    """Engine kwargs for both parity engines.
+
+    Args:
+        model: HuggingFace model id.
+        mm_processor_kwargs: Model-specific image-token cap from the spec
+            (``ModelSpec.mme_mm_processor_kwargs``); the historical default
+            is the Qwen-style ``max_pixels`` cap.
+    """
     return dict(
         model=model,
         max_model_len=8192,
@@ -222,18 +268,25 @@ def engine_kwargs(model: str) -> dict:
         enforce_eager=True,
         enable_prefix_caching=False,
         limit_mm_per_prompt={"image": 1},
-        mm_processor_kwargs={"max_pixels": MAX_PIXELS},
+        mm_processor_kwargs=dict(mm_processor_kwargs) or {"max_pixels": MAX_PIXELS},
     )
 
 
-def run_baseline(model: str, limit: int, out_path: str) -> None:
+def run_baseline(
+    model: str,
+    limit: int,
+    out_path: str,
+    chat_template_kwargs: dict,
+    mm_processor_kwargs: dict,
+    max_tokens: int,
+) -> None:
     """Subprocess role: plain vLLM answers for every question."""
     # Third Party
     from vllm import LLM
 
     items = load_items(limit)
-    llm = LLM(**engine_kwargs(model))
-    answers = run_batch(llm, items)
+    llm = LLM(**engine_kwargs(model, mm_processor_kwargs))
+    answers = run_batch(llm, items, chat_template_kwargs, max_tokens)
     with open(out_path, "w") as f:
         json.dump(answers, f)
 
@@ -245,7 +298,32 @@ def main() -> int:
     parser.add_argument("--out", default="mme_parity_report.json")
     parser.add_argument("--role", choices=["main", "baseline"], default="main")
     parser.add_argument("--baseline-out", default="")
+    parser.add_argument(
+        "--chat-template-kwargs",
+        default="",
+        help="JSON object of extra chat-template kwargs from the model spec "
+        "(e.g. '{\"enable_thinking\": false}'); empty = none",
+    )
+    parser.add_argument(
+        "--mm-processor-kwargs",
+        default="",
+        help="JSON object with the model-specific per-image token cap "
+        "(ModelSpec.mme_mm_processor_kwargs); empty = Qwen-style max_pixels",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=8,
+        help="decode budget per question; raise for models whose answer "
+        "lands after a preamble (ModelSpec.min_decode_tokens)",
+    )
     args = parser.parse_args()
+    chat_template_kwargs: dict = (
+        json.loads(args.chat_template_kwargs) if args.chat_template_kwargs else {}
+    )
+    mm_processor_kwargs: dict = (
+        json.loads(args.mm_processor_kwargs) if args.mm_processor_kwargs else {}
+    )
 
     # First Party (test-local)
     from harness import configure_environment, cumulative_lookup_stats
@@ -253,7 +331,14 @@ def main() -> int:
     configure_environment()
 
     if args.role == "baseline":
-        run_baseline(args.model, args.limit, args.baseline_out)
+        run_baseline(
+            args.model,
+            args.limit,
+            args.baseline_out,
+            chat_template_kwargs,
+            mm_processor_kwargs,
+            args.max_tokens,
+        )
         return 0
 
     items = load_items(args.limit)
@@ -272,6 +357,12 @@ def main() -> int:
             str(args.limit),
             "--baseline-out",
             str(baseline_path),
+            "--chat-template-kwargs",
+            args.chat_template_kwargs,
+            "--mm-processor-kwargs",
+            args.mm_processor_kwargs,
+            "--max-tokens",
+            str(args.max_tokens),
         ],
         timeout=7200,
     )
@@ -290,13 +381,13 @@ def main() -> int:
         kv_transfer_config=KVTransferConfig(
             kv_connector="LMCacheConnectorV1", kv_role="kv_both"
         ),
-        **engine_kwargs(args.model),
+        **engine_kwargs(args.model, mm_processor_kwargs),
     )
     monitor = LMCStatsMonitor.GetOrCreate()
 
-    answers_p1 = run_batch(llm, items)
+    answers_p1 = run_batch(llm, items, chat_template_kwargs, args.max_tokens)
     t0, h0 = cumulative_lookup_stats(monitor)
-    answers_p2 = run_batch(llm, items)
+    answers_p2 = run_batch(llm, items, chat_template_kwargs, args.max_tokens)
     t1, h1 = cumulative_lookup_stats(monitor)
     hit_ratio = (h1 - h0) / max(1, t1 - t0)
 
@@ -320,6 +411,9 @@ def main() -> int:
         "flips_pass1_vs_baseline": flips_p1_base,
         "flips_pass2_vs_pass1": flips_p2_p1,
         "pass2_lookup_hit_ratio": round(hit_ratio, 4),
+        "baseline_answer_parse_ratio": round(
+            sum(1 for a in answers_base if parse_yes_no(a)) / max(1, len(items)), 4
+        ),
     }
     gate = parity_gate(report)
     report["gate"] = gate
