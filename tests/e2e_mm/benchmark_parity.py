@@ -33,6 +33,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -129,20 +130,31 @@ def conversations(items: list[dict]) -> list[list[dict]]:
 def parse_yes_no(text: str) -> str:
     """Extract the yes/no verdict from a model answer ('' if neither).
 
-    Two answer shapes are recognized:
+    Three answer shapes are recognized:
 
     - A boxed answer (GLM-style ``<|begin_of_box|>yes<|end_of_box|>``,
       possibly after a short preamble): the box content is the verdict.
+    - Completed thinking without a box (``...</think> The code is not
+      Python. So the answer is no.``): the verdict is the LAST standalone
+      yes/no in the post-thinking answer text — models restate the question
+      before concluding, so the conclusion comes last.
     - Otherwise: the answer must START with yes/no (Qwen-style direct
       answers). Substring search is deliberately avoided — MME questions
       quote statements containing yes/no-adjacent words, so a match deeper
       in free text is not a verdict.
+
+    A truncated answer (open box or unfinished thinking) parses to '' —
+    that is what the parse-ratio gate exists to catch.
     """
     lowered = text.strip().lower()
     if "<|begin_of_box|>" in lowered:
         # Last begin marker: a preamble may open a spurious unclosed box.
         lowered = lowered.rsplit("<|begin_of_box|>", 1)[1]
         lowered = lowered.split("<|end_of_box|>", 1)[0].strip()
+    elif "</think>" in lowered:
+        tail = lowered.rsplit("</think>", 1)[1]
+        matches = re.findall(r"\b(yes|no)\b", tail)
+        return matches[-1] if matches else ""
     if lowered.startswith("yes"):
         return "yes"
     if lowered.startswith("no"):

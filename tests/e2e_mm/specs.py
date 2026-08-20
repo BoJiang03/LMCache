@@ -46,6 +46,13 @@ class ModelSpec:
             budget for the answer to land inside the generated text, or the
             semantic probes and MME yes/no parsing read only preamble. 0
             keeps each request's own budget.
+        mme_max_tokens: Decode budget for the MME parity runs specifically.
+            Real MME photos draw a much longer preamble than the suite's
+            synthetic images (reasoning over OCR'd code, artwork, posters),
+            so a budget that suffices for the suite can still truncate MME
+            answers and fail the parse-ratio gate. 0 falls back to
+            ``min_decode_tokens`` (and the parity runner's own default when
+            that is also 0).
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -66,6 +73,7 @@ class ModelSpec:
     chat_template_kwargs: dict[str, object] = field(default_factory=dict)
     mme_mm_processor_kwargs: dict[str, object] = field(default_factory=dict)
     min_decode_tokens: int = 0
+    mme_max_tokens: int = 0
     answer_extract_pattern: str = ""
 
 
@@ -99,6 +107,10 @@ MODEL_SPECS: dict[str, ModelSpec] = {
                 "size": {"shortest_edge": 12544, "longest_edge": _MME_PIXEL_BUDGET}
             },
             min_decode_tokens=64,
+            # Real MME photos draw far longer reasoning than the suite's
+            # synthetic swatches: at 64 tokens, 42% of baseline answers
+            # truncated before the boxed verdict (parse-ratio gate FAIL).
+            mme_max_tokens=256,
             # Tempered: the preamble may OPEN a spurious unclosed box marker,
             # so the answer group must not span another begin marker.
             answer_extract_pattern=(

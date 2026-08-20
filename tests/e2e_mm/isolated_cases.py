@@ -17,6 +17,7 @@ would misattribute model weakness to the cache.
 """
 
 # Standard
+import importlib.util
 import json
 import os
 import pathlib
@@ -28,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 
-# First Party (test-local)
+# First Party (test-local; none of these import lmcache at module level)
 from catalog import (
     MMRequest,
     catalog,
@@ -45,6 +46,25 @@ from harness import (
     vllm_preemption_total,
 )
 from specs import MODEL_SPECS, ModelSpec
+
+# Pin THIS repo's lmcache package (same rationale as conftest.py). This
+# script runs as a standalone subprocess, so pytest's sys.path pinning does
+# not reach it: sys.path[0] is this directory, and the next `lmcache` on the
+# path is whatever editable install the shared venv happens to carry --
+# possibly a DIFFERENT source tree, silently certifying the wrong code.
+# Must run before anything imports lmcache (all such imports happen inside
+# functions, after this module-level block).
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+_LMCACHE_SPEC = importlib.util.find_spec("lmcache")
+if _LMCACHE_SPEC is None or _LMCACHE_SPEC.origin is None:
+    raise RuntimeError("lmcache is not importable from the isolated scenario")
+if pathlib.Path(_LMCACHE_SPEC.origin).resolve().parents[1] != _REPO_ROOT:
+    raise RuntimeError(
+        f"lmcache would resolve to {_LMCACHE_SPEC.origin}, expected the tree "
+        f"under {_REPO_ROOT}; the scenario would certify the wrong source tree"
+    )
 
 IMAGE_SPAN_MARGIN = 4 * CHUNK
 
@@ -433,6 +453,15 @@ def _start_mp_server(zmq_port: int, http_port: int, log_path: pathlib.Path):
         RuntimeError: If the server does not become healthy in time.
     """
     log_file = open(log_path, "w")
+    # The server must run THIS repo's lmcache too: `-m` resolves through the
+    # child's own sys.path, where the venv's editable install would otherwise
+    # win (see the pinning at the top of this file). PYTHONPATH entries
+    # precede site-packages.
+    env = dict(os.environ)
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_REPO_ROOT}:{existing_pp}" if existing_pp else str(_REPO_ROOT)
+    )
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -451,6 +480,7 @@ def _start_mp_server(zmq_port: int, http_port: int, log_path: pathlib.Path):
         ],
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     deadline = time.monotonic() + MP_SERVER_START_TIMEOUT_S
     url = f"http://localhost:{http_port}/healthcheck"
