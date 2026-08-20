@@ -340,6 +340,15 @@ def main() -> int:
         help="per-model flip-budget override for the gate "
         "(ModelSpec.mme_max_flip_fraction); 0 = the default",
     )
+    parser.add_argument(
+        "--max-local-cpu-gb",
+        type=float,
+        default=0.0,
+        help="LMCache local-CPU capacity override "
+        "(ModelSpec.mme_max_local_cpu_gb); 0 = the 40 GB default. Must "
+        "hold the full benchmark's KV or the pass-2 LRU scan evicts every "
+        "entry before its revisit and the hit-ratio gate fails at ~0",
+    )
     args = parser.parse_args()
     chat_template_kwargs: dict = (
         json.loads(args.chat_template_kwargs) if args.chat_template_kwargs else {}
@@ -351,7 +360,7 @@ def main() -> int:
     # First Party (test-local)
     from harness import configure_environment, cumulative_lookup_stats
 
-    configure_environment()
+    configure_environment(args.max_local_cpu_gb or 40.0)
 
     if args.role == "baseline":
         run_baseline(

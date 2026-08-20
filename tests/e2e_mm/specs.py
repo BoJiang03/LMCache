@@ -64,6 +64,15 @@ class ModelSpec:
             (parse ''), with no corruption signature. Real KV corruption
             is still caught by the byte-identical replay oracles, the
             hit-ratio gate, and the score-delta gates.
+        mme_max_local_cpu_gb: LMCache local-CPU capacity (GB) for the MME
+            parity run. 0 keeps the runner's 40 GB default, which holds the
+            full benchmark's KV for the certified GQA-2 models (28-36
+            KB/token). A wider-KV model overflows it -- the pass-2 replay
+            revisits requests in store order, the LRU scan evicts every
+            entry before its revisit, and the hit-ratio gate fails at ~0
+            with zero flips (pure recompute, not corruption). Size it to
+            hold the whole benchmark: questions x prompt tokens x KV bytes
+            per token.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -86,6 +95,7 @@ class ModelSpec:
     min_decode_tokens: int = 0
     mme_max_tokens: int = 0
     mme_max_flip_fraction: float = 0.0
+    mme_max_local_cpu_gb: float = 0.0
     answer_extract_pattern: str = ""
 
 
@@ -123,6 +133,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # (HF processor: crop_to_patches); max_patches=2 caps a photo at
             # 768 image tokens, the same budget the Qwen/GLM pixel caps encode.
             mme_mm_processor_kwargs={"max_patches": 2},
+            # The Qwen3-1.7B backbone is GQA-8: 28 layers x 8 KV heads x
+            # 128 dims = 112 KB/token, 3-4x the certified GQA-2 models.
+            # Full MME (~2374 x <=1000-token prompts) is ~250 GB of KV;
+            # at the 40 GB default the pass-2 LRU scan hit ~0 (measured
+            # 2026-08-20: hit_ratio 0.013 with 0 flips and 0.00 score
+            # delta -- pure recompute). 280 GB holds the whole run.
+            mme_max_local_cpu_gb=280.0,
         ),
         ModelSpec(
             key="glm-4.6v-flash",

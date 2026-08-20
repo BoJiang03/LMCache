@@ -243,6 +243,14 @@ into the tests:
   across runs, baseline reruns are byte-identical (0 self-flips), and
   per-question inspection shows no corruption signature; KV corruption is
   still caught by the replay, hit-ratio, and score-delta oracles.
+- `mme_max_local_cpu_gb` — LMCache local-CPU capacity for the MME parity
+  run (0 = the 40 GB default, which holds the full benchmark's KV for
+  GQA-2 models at 28–36 KB/token). A wider-KV model (InternVL3.5-2B's
+  Qwen3 backbone is GQA-8, 112 KB/token) overflows the default: the
+  pass-2 replay revisits requests in store order, the LRU scan evicts
+  every entry before its revisit, and the hit-ratio gate fails at ~0
+  with zero flips (pure recompute, not corruption). Size it to hold the
+  whole benchmark: questions × prompt tokens × KV bytes per token.
 
 The MME parity gate additionally enforces a baseline answer parse-rate
 (`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the
