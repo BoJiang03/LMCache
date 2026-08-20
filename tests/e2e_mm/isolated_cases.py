@@ -317,10 +317,10 @@ def run_preemption(spec: ModelSpec) -> dict:
     request (asserted via the ``vllm:num_preemptions`` counter; zero
     preemptions fails the scenario as vacuous) and later re-prefills it.
     The re-prefill goes through LMCache's preemption path (restored token
-    ids, fresh block ids); every output must still match the plain-vLLM
-    baseline, and afterwards every request must fully hit and reproduce its
-    text -- proving the preemption round-trip neither corrupted KV nor
-    poisoned the cache.
+    ids, fresh block ids); every output must still verify against the
+    config-matched plain-vLLM baseline, and afterwards every request must
+    fully hit and verify again -- proving the preemption round-trip neither
+    corrupted KV nor poisoned the cache.
 
     Args:
         spec: The model under certification.
@@ -364,15 +364,16 @@ def run_preemption(spec: ModelSpec) -> dict:
             _check_text(failures, harness, req, text, f"T0.11 batch {req.key}")
 
         # The preemption round-trip must leave a usable, uncorrupted cache:
-        # every request replays to a full hit with its exact batch output.
-        for req, batch_text in zip(requests, batch.texts, strict=True):
+        # every request replays to a full hit and its output verifies against
+        # the config-matched baseline (which runs solo/sequential -- the SAME
+        # regime as this replay). Byte-equality against the batch text is
+        # deliberately NOT asserted: the concurrent preempted batch is a
+        # different numeric regime, and the ignore_eos garbage tail amplifies
+        # kernel-level numeric differences chaotically; contamination is
+        # still caught hard, because the probe would name the wrong color.
+        for req in requests:
             again = harness.run(req)
-            _expect(
-                failures,
-                again.text == batch_text,
-                f"{req.key}: replay text {again.text!r} != preempted-batch "
-                f"text {batch_text!r}",
-            )
+            _check_text(failures, harness, req, again.text, f"T0.11 replay {req.key}")
             _expect(
                 failures,
                 again.lookup_hits >= again.lookup_tokens - 2 * CHUNK,
