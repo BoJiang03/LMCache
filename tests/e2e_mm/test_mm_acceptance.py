@@ -28,6 +28,7 @@ from catalog import (
 )
 from conftest import pressure_n
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
+from harness import effective_max_tokens
 
 IMAGE_SPAN_MARGIN = 4 * CHUNK
 
@@ -47,7 +48,7 @@ def test_t0_cross_image_isolation_and_hit_equivalence(harness):
 
     a2 = harness.run(req_a)
     harness.check_output(req_a, a2, "T0.3 repeat A")
-    assert a2.text == a1.text, "hit path must reproduce the miss-path output"
+    harness.check_replay_text(req_a, a1.text, a2.text, "T0.3 repeat A")
     # T1.1 reuse depth + T1.3 non-degenerate: the repeat is a full hit.
     assert a2.lookup_hits > 0, "MM requests must actually hit (no bypass)"
     assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
@@ -61,7 +62,7 @@ def test_t0_cross_image_isolation_and_hit_equivalence(harness):
 
     b2 = harness.run(req_b)
     harness.check_output(req_b, b2, "T0.3 repeat B")
-    assert b2.text == b1.text
+    harness.check_replay_text(req_b, b1.text, b2.text, "T0.3 repeat B")
     assert b2.lookup_hits >= b2.lookup_tokens - 2 * CHUNK
 
 
@@ -81,7 +82,7 @@ def test_t0_collision_pressure(harness):
     """
     requests = pressure_requests(pressure_n())
     n = len(requests)
-    decode_budget = sum(r.max_tokens for r in requests)
+    decode_budget = sum(effective_max_tokens(harness.spec, r) for r in requests)
 
     stored_0 = harness.stored_tokens_total()
     resident_0 = harness.storage()
@@ -137,9 +138,7 @@ def test_t0_collision_pressure(harness):
     # Pass 2: every image repeats, must fully hit and reproduce its output.
     for req, first in zip(requests, pass1, strict=True):
         second = harness.run(req)
-        assert second.text == first.text, (
-            f"{req.key}: hit-path output diverged from its own first pass"
-        )
+        harness.check_replay_text(req, first.text, second.text, "T0.2 replay")
         assert second.lookup_hits >= second.lookup_tokens - 2 * CHUNK
 
     # T0.7 pass-2 conservation: a full-hit replay has nothing new to cache.
@@ -239,7 +238,7 @@ def test_t0_chunk_boundary_phases(harness, phase):
     a2 = harness.run(req_a)
     harness.check_output(req_a, a2, f"T0.4 phase {phase} repeat A")
 
-    assert a2.text == a1.text
+    harness.check_replay_text(req_a, a1.text, a2.text, f"T0.4 phase {phase}")
     assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
     assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN
 
@@ -255,13 +254,13 @@ def test_t0_mixed_traffic(harness):
     harness.check_output(req_a, a1, "T0.5 MM A")
     t2 = harness.run(text_req)
     harness.check_output(text_req, t2, "T0.5 text repeat")
-    assert t2.text == t1.text
+    harness.check_replay_text(text_req, t1.text, t2.text, "T0.5 text repeat")
     assert t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK
     b1 = harness.run(req_b)
     harness.check_output(req_b, b1, "T0.5 MM B")
     a2 = harness.run(req_a)
     harness.check_output(req_a, a2, "T0.5 MM A repeat")
-    assert a2.text == a1.text
+    harness.check_replay_text(req_a, a1.text, a2.text, "T0.5 MM A repeat")
 
 
 def test_t1_prefix_reuse_across_questions(harness):
@@ -294,7 +293,7 @@ def test_t2_multi_image_order(harness):
     ab2 = harness.run(req_ab)
     harness.check_output(req_ab, ab2, "T2.1 repeat AB")
 
-    assert ab2.text == ab1.text
+    harness.check_replay_text(req_ab, ab1.text, ab2.text, "T2.1 repeat AB")
     assert ab2.lookup_hits >= ab2.lookup_tokens - 2 * CHUNK
     # Swapped order diverges at the first image: BA must not hit into AB's
     # image region.
@@ -323,7 +322,7 @@ def test_t2_video_isolation_and_hit(harness):
 
     a2 = harness.run(req_a)
     harness.check_output(req_a, a2, "T2.3 repeat video A")
-    assert a2.text == a1.text, "hit path must reproduce the miss-path output"
+    harness.check_replay_text(req_a, a1.text, a2.text, "T2.3 repeat video A")
     assert a2.lookup_hits > 0, "video requests must actually hit (no bypass)"
     assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
 

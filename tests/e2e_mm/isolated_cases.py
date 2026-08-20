@@ -23,6 +23,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 import urllib.error
 import urllib.request
@@ -99,6 +100,21 @@ def _check_text(
         failures.append(str(exc))
 
 
+def _check_replay(
+    failures: list[str],
+    harness: MMHarness,
+    request: MMRequest,
+    reference_text: str,
+    text: str,
+    where: str,
+) -> None:
+    """Run the harness replay policy, recording instead of raising."""
+    try:
+        harness.check_replay_text(request, reference_text, text, where)
+    except AssertionError as exc:
+        failures.append(str(exc))
+
+
 def run_chunked_prefill(spec: ModelSpec) -> dict:
     """T0.9: correctness when scheduler steps split an image span.
 
@@ -158,10 +174,8 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
             _check_text(failures, harness, req_a, a1.text, f"T0.9 pad {pad} miss A")
 
             a2 = harness.run(req_a)
-            _expect(
-                failures,
-                a2.text == a1.text,
-                f"pad {pad}: hit-path text {a2.text!r} != miss-path {a1.text!r}",
+            _check_replay(
+                failures, harness, req_a, a1.text, a2.text, f"T0.9 pad {pad} repeat A"
             )
             _expect(
                 failures,
@@ -298,11 +312,13 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
         for index in (0, EVICTION_N - 1):
             req, first = requests[index], pass1[index]
             again = harness.run(req)
-            _expect(
+            _check_replay(
                 failures,
-                again.text == first.text,
-                f"{req.key}: post-eviction rerun {again.text!r} != first "
-                f"pass {first.text!r}",
+                harness,
+                req,
+                first.text,
+                again.text,
+                f"T0.10 post-eviction rerun {req.key}",
             )
     finally:
         harness.close()
@@ -524,10 +540,8 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             a2 = harness.run(cat["t01-A"])
             singles.append(a2)
             _check_text(failures, harness, cat["t01-A"], a2.text, "T3 t01 repeat A")
-            _expect(
-                failures,
-                a2.text == a1.text,
-                f"hit text {a2.text!r} != miss text {a1.text!r}",
+            _check_replay(
+                failures, harness, cat["t01-A"], a1.text, a2.text, "T3 t01 repeat A"
             )
             _expect(
                 failures,
@@ -555,7 +569,9 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             _check_text(failures, harness, cat["t05-A"], m1.text, "T3 t05 A")
             t2 = harness.run(cat["t05-text"])
             singles.append(t2)
-            _expect(failures, t2.text == t1.text, "text-only repeat diverged")
+            _check_replay(
+                failures, harness, cat["t05-text"], t1.text, t2.text, "T3 t05 repeat"
+            )
             _expect(
                 failures,
                 t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK,
@@ -592,7 +608,9 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             _check_text(failures, harness, cat["t21-BA"], ba.text, "T3 t21 BA")
             ab2 = harness.run(cat["t21-AB"])
             singles.append(ab2)
-            _expect(failures, ab2.text == ab.text, "t21 repeat diverged")
+            _check_replay(
+                failures, harness, cat["t21-AB"], ab.text, ab2.text, "T3 t21 repeat"
+            )
             _expect(
                 failures,
                 ba.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN,
@@ -679,6 +697,11 @@ def run_mp_connector(spec: ModelSpec) -> dict:
                 f"negative control did not trip on the MP path: blind B hit "
                 f"only {nc_b.lookup_hits} of {nc_b.lookup_tokens} tokens",
             )
+        except Exception:  # noqa: BLE001 - keep the report; see server_log_tail
+            # A rare KV-load-failure flake aborts the engine mid-scenario;
+            # convert the crash into a reported failure so the report (and
+            # the server-side log below) survives for diagnosis.
+            failures.append("engine exception:\n" + traceback.format_exc())
         finally:
             harness.close()
             server.terminate()
@@ -686,6 +709,9 @@ def run_mp_connector(spec: ModelSpec) -> dict:
                 server.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 server.kill()
+        if failures:
+            log_path = pathlib.Path(tmp) / "mp_server.log"
+            metrics["server_log_tail"] = log_path.read_text()[-8000:]
     return {"failures": failures, "metrics": metrics}
 
 

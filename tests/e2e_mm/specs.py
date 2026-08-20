@@ -23,6 +23,38 @@ class ModelSpec:
         gpu_memory_utilization: Fraction of GPU memory for the engine.
         extra_suites: Special-architecture add-on suites this model needs
             (e.g. "deepstack", "bidirectional_image_attn", "modality_lora").
+        chat_template_kwargs: Extra kwargs passed to every ``llm.chat`` call
+            (test engine, baseline runner, and MME parity runs alike), e.g.
+            ``{"enable_thinking": False}`` for hybrid-thinking models whose
+            template supports disabling the reasoning preamble. Must be
+            JSON-serializable. The suite's oracles (baseline exact match,
+            semantic probes, MME yes/no parsing) assume the answer lands
+            within each request's small ``max_tokens`` budget, so thinking
+            MUST be disabled here for models that would otherwise emit a
+            reasoning preamble.
+        mme_mm_processor_kwargs: ``mm_processor_kwargs`` for the MME parity
+            engines only (real photos of arbitrary size, unlike the suite's
+            small synthetic images). Must cap the per-image token count so a
+            question fits the 8192-token parity context; the kwarg names are
+            model-processor-specific (Qwen: ``max_pixels``; GLM:
+            ``size.longest_edge`` in total pixels). Must be
+            JSON-serializable.
+        min_decode_tokens: Floor applied to every request's ``max_tokens``
+            (suite, baselines, and MME parity alike). Models that lead with a
+            short preamble before the answer even with thinking disabled
+            (e.g. GLM's ``<|begin_of_box|>``-boxed answers) need enough
+            budget for the answer to land inside the generated text, or the
+            semantic probes and MME yes/no parsing read only preamble. 0
+            keeps each request's own budget.
+        answer_extract_pattern: Regex whose LAST match's group(1) is the
+            model's final answer inside a generated text ('' = the whole
+            text is the answer). For models that phrase a preamble before a
+            marked answer (GLM: ``<|begin_of_box|>...<|end_of_box|>``), the
+            hit-path replay oracle compares extracted answers when the full
+            texts differ: miss pass (KV computed) and hit pass (KV loaded)
+            are different numeric regimes, and a verbose preamble gives the
+            regime noise many tokens to flip, while a real KV corruption
+            flips the marked answer itself.
     """
 
     key: str
@@ -31,7 +63,17 @@ class ModelSpec:
     max_model_len: int = 8192
     gpu_memory_utilization: float = 0.6
     extra_suites: frozenset = field(default_factory=frozenset)
+    chat_template_kwargs: dict[str, object] = field(default_factory=dict)
+    mme_mm_processor_kwargs: dict[str, object] = field(default_factory=dict)
+    min_decode_tokens: int = 0
+    answer_extract_pattern: str = ""
 
+
+# MME photos are arbitrarily large; cap them at ~768 image tokens per photo
+# (Qwen smart-resize: tokens <= max_pixels / 28^2; GLM: 4 pixels per 14x14
+# patch merge, same 602112-pixel budget) so a question fits the parity
+# engine's 8192-token context.
+_MME_PIXEL_BUDGET = 768 * 28 * 28
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     spec.key: spec
@@ -40,11 +82,28 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             key="qwen2.5-vl-3b",
             hf_id="Qwen/Qwen2.5-VL-3B-Instruct",
             modalities=frozenset({"image", "video"}),
+            mme_mm_processor_kwargs={"max_pixels": _MME_PIXEL_BUDGET},
         ),
         ModelSpec(
             key="qwen2-vl-2b",
             hf_id="Qwen/Qwen2-VL-2B-Instruct",
             modalities=frozenset({"image", "video"}),
+            mme_mm_processor_kwargs={"max_pixels": _MME_PIXEL_BUDGET},
+        ),
+        ModelSpec(
+            key="glm-4.6v-flash",
+            hf_id="zai-org/GLM-4.6V-Flash",
+            modalities=frozenset({"image", "video"}),
+            chat_template_kwargs={"enable_thinking": False},
+            mme_mm_processor_kwargs={
+                "size": {"shortest_edge": 12544, "longest_edge": _MME_PIXEL_BUDGET}
+            },
+            min_decode_tokens=64,
+            # Tempered: the preamble may OPEN a spurious unclosed box marker,
+            # so the answer group must not span another begin marker.
+            answer_extract_pattern=(
+                r"<\|begin_of_box\|>((?:(?!<\|begin_of_box\|>).)*?)<\|end_of_box\|>"
+            ),
         ),
     ]
 }

@@ -119,17 +119,25 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
     """
     out = workdir / f"parity_{model_key}.json"
     script = pathlib.Path(__file__).resolve().parent / "benchmark_parity.py"
+    spec = MODEL_SPECS[model_key]
+    cmd = [
+        sys.executable,
+        str(script),
+        "--model",
+        spec.hf_id,
+        "--limit",
+        str(limit),
+        "--out",
+        str(out),
+    ]
+    if spec.chat_template_kwargs:
+        cmd += ["--chat-template-kwargs", json.dumps(spec.chat_template_kwargs)]
+    if spec.mme_mm_processor_kwargs:
+        cmd += ["--mm-processor-kwargs", json.dumps(spec.mme_mm_processor_kwargs)]
+    if spec.min_decode_tokens > 8:
+        cmd += ["--max-tokens", str(spec.min_decode_tokens)]
     subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "--model",
-            MODEL_SPECS[model_key].hf_id,
-            "--limit",
-            str(limit),
-            "--out",
-            str(out),
-        ],
+        cmd,
         cwd=script.parent,
         timeout=6 * 3600,
     )

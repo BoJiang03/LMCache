@@ -39,6 +39,17 @@ certification layer for anything only statistically visible. The negative
 control makes a green run self-evidencing: the suite proves its own tripwire
 fires before it certifies anything.
 
+**Replay oracle** (`check_replay_text`): a hit-path replay is compared to
+its own miss-path output, but the miss pass (KV computed) and the hit pass
+(KV loaded) are different numeric regimes, so byte equality is expected, not
+required. A divergent replay still passes — with a warning — when the
+extracted final answer matches (`ModelSpec.answer_extract_pattern`, e.g.
+GLM's boxed answers) or the semantic probe passes; it fails hard otherwise.
+Verbose answer styles give regime noise many tokens to flip phrasing, while
+real KV corruption or contamination flips the answer itself. Models with no
+pattern and no probe keep strict byte equality (Qwen answers are 1–8 direct
+tokens; equality holds there in practice).
+
 **What a pass does NOT claim** (recorded verbatim in every certificate):
 only the deployment paths listed in the certificate scope are certified —
 currently the in-process `LMCacheConnectorV1` and the `LMCacheMPConnector`
@@ -203,3 +214,24 @@ Add one `ModelSpec` entry in `specs.py` (HF id, modalities, smallest
 variant, optional `extra_suites` flags) and run the suite with
 `LMCACHE_MM_E2E_MODELS=<key>`. No new test code is needed for standard
 placeholder-injection architectures.
+
+Per-model answer-style adaptations are declared on the spec, never coded
+into the tests:
+
+- `chat_template_kwargs` — e.g. `{"enable_thinking": False}` for
+  hybrid-thinking models (GLM-4.6V). The suite's oracles read the generated
+  text directly, so a reasoning preamble must be disabled or budgeted for.
+- `min_decode_tokens` — floor for every request's `max_tokens` (suite,
+  baselines, MME parity). Needed when the model answers after a preamble
+  even with thinking off (GLM's `<|begin_of_box|>`-boxed answers land
+  within ~64 tokens).
+- `mme_mm_processor_kwargs` — model-specific per-image token cap for the
+  MME parity engines (Qwen: `max_pixels`; GLM: `size.longest_edge` in
+  total pixels). MME photos are arbitrarily large; without a cap a single
+  image can exceed the 8192-token parity context.
+
+The MME parity gate additionally enforces a baseline answer parse-rate
+(`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the
+decode budget, all three passes parse to '' and the flip/score comparisons
+would pass vacuously — the parse-rate guard turns that into a hard FAIL
+instead.

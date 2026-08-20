@@ -43,6 +43,7 @@ def main(in_path: str, out_path: str) -> None:
                 seed=0,
                 ignore_eos=request.get("ignore_eos", False),
             ),
+            chat_template_kwargs=spec.get("chat_template_kwargs") or None,
             use_tqdm=False,
         )
         results[request["key"]] = outputs[0].outputs[0].text

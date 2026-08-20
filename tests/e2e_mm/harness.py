@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import warnings
@@ -238,6 +239,21 @@ def storage_snapshot() -> StorageSnapshot:
 _NO_EXTRA_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
+def effective_max_tokens(spec: ModelSpec, request: MMRequest) -> int:
+    """A request's decode budget after the spec's ``min_decode_tokens`` floor.
+
+    Args:
+        spec: The model under certification.
+        request: The request whose budget to compute.
+
+    Returns:
+        ``max(request.max_tokens, spec.min_decode_tokens)`` — the budget the
+        harness, the baseline runner, and any decode-token accounting must
+        all use consistently.
+    """
+    return max(request.max_tokens, spec.min_decode_tokens)
+
+
 class MMHarness:
     """Drives one model's acceptance run: baselines + LMCache engine + stats.
 
@@ -374,10 +390,11 @@ class MMHarness:
             request.messages(),
             sampling_params=SamplingParams(
                 temperature=0.0,
-                max_tokens=request.max_tokens,
+                max_tokens=effective_max_tokens(self.spec, request),
                 seed=0,
                 ignore_eos=request.ignore_eos,
             ),
+            chat_template_kwargs=dict(self.spec.chat_template_kwargs) or None,
             use_tqdm=False,
         )
         tokens_after, hits_after = self._cumulative_lookup_stats()
@@ -406,12 +423,13 @@ class MMHarness:
             sampling_params=[
                 SamplingParams(
                     temperature=0.0,
-                    max_tokens=r.max_tokens,
+                    max_tokens=effective_max_tokens(self.spec, r),
                     seed=0,
                     ignore_eos=r.ignore_eos,
                 )
                 for r in requests
             ],
+            chat_template_kwargs=dict(self.spec.chat_template_kwargs) or None,
             use_tqdm=False,
         )
         tokens_after, hits_after = self._cumulative_lookup_stats()
@@ -477,6 +495,70 @@ class MMHarness:
                 f"[{where}] {request.key}: semantic probe failed. "
                 f"got={text!r} expected_probe={request.expected_probe}"
             )
+
+    def extracted_answer(self, text: str) -> str:
+        """The model's final answer inside ``text`` per the spec's pattern.
+
+        Returns:
+            group(1) of the LAST match of ``spec.answer_extract_pattern``
+            (a preamble may open a spurious marker; the final answer is the
+            last closed one), or '' when the spec has no pattern or the
+            pattern does not match.
+        """
+        if not self.spec.answer_extract_pattern:
+            return ""
+        matches = re.findall(self.spec.answer_extract_pattern, text, re.DOTALL)
+        return matches[-1].strip() if matches else ""
+
+    def check_replay_text(
+        self, request: MMRequest, reference_text: str, text: str, where: str
+    ) -> None:
+        """Verify a hit-path replay against its own miss-path output.
+
+        The miss pass (KV computed) and the hit pass (KV loaded from
+        LMCache) are different numeric regimes, so byte equality is expected
+        but not guaranteed; a verbose answer style (GLM preambles) gives the
+        regime noise many tokens to flip. Policy: exact match passes; a
+        mismatch passes with a warning when the extracted final answers
+        match (non-empty) or the semantic probe passes; otherwise the replay
+        fails hard — KV corruption or contamination flips the answer itself,
+        not just the phrasing.
+
+        Args:
+            request: The request replayed.
+            reference_text: The miss-path (first pass) generated text.
+            text: The hit-path (replay) generated text.
+            where: Human-readable context for failure messages.
+
+        Raises:
+            AssertionError: On divergence not rescued by an extracted-answer
+                match or the semantic probe.
+        """
+        if text == reference_text:
+            return
+        extracted = self.extracted_answer(text)
+        if extracted and extracted == self.extracted_answer(reference_text):
+            warnings.warn(
+                f"[{where}] {request.key}: hit-path text diverged from "
+                f"miss-path but extracted answers match ({extracted!r}); "
+                f"got {text!r}, reference {reference_text!r}",
+                stacklevel=2,
+            )
+            return
+        if request.expected_probe and self.probe_ok(request, text):
+            warnings.warn(
+                f"[{where}] {request.key}: hit-path text diverged from "
+                f"miss-path but semantic probe passed (got {text!r}, "
+                f"reference {reference_text!r})",
+                stacklevel=2,
+            )
+            return
+        raise AssertionError(
+            f"[{where}] {request.key}: hit-path output diverged from its "
+            f"miss-path reference AND no rescue (extracted answer/probe) "
+            f"applies. got={text!r} reference={reference_text!r} "
+            f"expected_probe={request.expected_probe}"
+        )
 
     def probe_ok(self, request: MMRequest, text: str) -> bool:
         """Whether the expected probe words appear in ``text`` IN ORDER.
@@ -654,12 +736,13 @@ def compute_baselines(
         "max_model_len": spec.max_model_len,
         "gpu_memory_utilization": spec.gpu_memory_utilization,
         "limit_mm_per_prompt": mm_limits(spec),
+        "chat_template_kwargs": dict(spec.chat_template_kwargs),
         "extra_engine_kwargs": dict(extra_engine_kwargs),
         "requests": [
             {
                 "key": r.key,
                 "messages": r.messages(),
-                "max_tokens": r.max_tokens,
+                "max_tokens": effective_max_tokens(spec, r),
                 "ignore_eos": r.ignore_eos,
             }
             for r in todo
