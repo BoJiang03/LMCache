@@ -414,7 +414,12 @@ def pressure_requests(n: int) -> list[MMRequest]:
     """Build the T0.2 collision-pressure requests: ``n`` distinct images.
 
     These are exempt from baseline comparison (pass-2 outputs are compared
-    against pass-1 outputs instead), so ``needs_baseline`` is False.
+    against pass-1 outputs instead), so ``needs_baseline`` is False. The
+    color probe backs the pass-2 replay check like everywhere else: the
+    miss and hit passes are different numeric regimes, and a model that
+    trails its answer with degenerate repetition diverges byte-wise while
+    still naming the right color; a false hit names the OTHER image's
+    color and fails the probe hard.
     """
     return [
         MMRequest(
@@ -422,7 +427,7 @@ def pressure_requests(n: int) -> list[MMRequest]:
             salt="t02",
             question=COLOR_QUESTION,
             image_indices=(PRESSURE_INDEX_BASE + i,),
-            expected_probe=(),
+            expected_probe=(image_color_name(PRESSURE_INDEX_BASE + i),),
             needs_baseline=False,
         )
         for i in range(n)
