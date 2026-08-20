@@ -128,7 +128,11 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # byte-identical, self-flips 0) and per-question inspection
             # showed only benign reasoning drift / repetition-loop
             # truncation on borderline items -- deterministic numeric-regime
-            # divergence, not corruption. 1.5% covers the observed 1.14%.
+            # divergence, not corruption. Control: with NO LMCache at all,
+            # changing only max_num_seqs (default -> 64) flips 5.10%
+            # (121/2374, score -0.67pt) -- vLLM kernels are not
+            # batch-invariant, and the connector's 1.14% sits well below
+            # the engine's own batch-sensitivity floor. 1.5% covers it.
             mme_max_flip_fraction=0.015,
             # Tempered: the preamble may OPEN a spurious unclosed box marker,
             # so the answer group must not span another begin marker.
