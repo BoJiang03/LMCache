@@ -134,8 +134,9 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--chat-template-kwargs", json.dumps(spec.chat_template_kwargs)]
     if spec.mme_mm_processor_kwargs:
         cmd += ["--mm-processor-kwargs", json.dumps(spec.mme_mm_processor_kwargs)]
-    if spec.min_decode_tokens > 8:
-        cmd += ["--max-tokens", str(spec.min_decode_tokens)]
+    mme_tokens = spec.mme_max_tokens or spec.min_decode_tokens
+    if mme_tokens > 8:
+        cmd += ["--max-tokens", str(mme_tokens)]
     subprocess.run(
         cmd,
         cwd=script.parent,

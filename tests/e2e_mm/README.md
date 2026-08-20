@@ -229,6 +229,10 @@ into the tests:
   MME parity engines (Qwen: `max_pixels`; GLM: `size.longest_edge` in
   total pixels). MME photos are arbitrarily large; without a cap a single
   image can exceed the 8192-token parity context.
+- `mme_max_tokens` — decode budget for the MME parity runs only. Real MME
+  photos draw much longer reasoning than the suite's synthetic images
+  (GLM needs 256 there vs 64 in the suite); too small a budget truncates
+  answers and fails the parse-rate gate.
 
 The MME parity gate additionally enforces a baseline answer parse-rate
 (`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the
