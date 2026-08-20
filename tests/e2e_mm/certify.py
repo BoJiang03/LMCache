@@ -139,6 +139,8 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--max-tokens", str(mme_tokens)]
     if spec.mme_max_flip_fraction:
         cmd += ["--max-flip-fraction", str(spec.mme_max_flip_fraction)]
+    if spec.mme_max_local_cpu_gb:
+        cmd += ["--max-local-cpu-gb", str(spec.mme_max_local_cpu_gb)]
     subprocess.run(
         cmd,
         cwd=script.parent,
