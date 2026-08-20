@@ -111,6 +111,20 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             mme_mm_processor_kwargs={"max_pixels": _MME_PIXEL_BUDGET},
         ),
         ModelSpec(
+            key="internvl3.5-2b",
+            # The transformers-native export (InternVLForConditionalGeneration).
+            # The OpenGVLab-format repo (InternVLChatModel) ships custom config
+            # code and would need trust_remote_code, which the suite's engines
+            # do not pass.
+            hf_id="OpenGVLab/InternVL3_5-2B-HF",
+            modalities=frozenset({"image", "video"}),
+            # InternVL tiles photos into 448x448 crops worth 256 tokens each,
+            # plus a 256-token global thumbnail whenever a photo is tiled
+            # (HF processor: crop_to_patches); max_patches=2 caps a photo at
+            # 768 image tokens, the same budget the Qwen/GLM pixel caps encode.
+            mme_mm_processor_kwargs={"max_patches": 2},
+        ),
+        ModelSpec(
             key="glm-4.6v-flash",
             hf_id="zai-org/GLM-4.6V-Flash",
             modalities=frozenset({"image", "video"}),
