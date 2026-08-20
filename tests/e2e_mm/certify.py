@@ -137,6 +137,8 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
     mme_tokens = spec.mme_max_tokens or spec.min_decode_tokens
     if mme_tokens > 8:
         cmd += ["--max-tokens", str(mme_tokens)]
+    if spec.mme_max_flip_fraction:
+        cmd += ["--max-flip-fraction", str(spec.mme_max_flip_fraction)]
     subprocess.run(
         cmd,
         cwd=script.parent,
@@ -147,13 +149,17 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
     return json.loads(out.read_text())
 
 
-def load_parity_report(path: pathlib.Path, hf_id: str) -> dict:
+def load_parity_report(
+    path: pathlib.Path, hf_id: str, max_flip_fraction: float = 0.0
+) -> dict:
     """Load a previously recorded parity report and re-evaluate its gate.
 
     Args:
         path: Path to a report written by ``benchmark_parity.py``.
         hf_id: Expected model id; a mismatch is refused (a certificate must
             never cite another model's parity run).
+        max_flip_fraction: Per-model flip-budget override
+            (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default.
 
     Returns:
         The report dict with a freshly evaluated ``gate``.
@@ -167,7 +173,7 @@ def load_parity_report(path: pathlib.Path, hf_id: str) -> dict:
             f"parity report {path} is for {report.get('model')!r}, "
             f"certificate is for {hf_id!r}"
         )
-    report["gate"] = parity_gate(report)
+    report["gate"] = parity_gate(report, max_flip_fraction)
     return report
 
 
@@ -204,7 +210,11 @@ def main() -> int:
 
     parity: dict = {"source": "not_run"}
     if args.parity_report:
-        report = load_parity_report(pathlib.Path(args.parity_report), spec.hf_id)
+        report = load_parity_report(
+            pathlib.Path(args.parity_report),
+            spec.hf_id,
+            spec.mme_max_flip_fraction,
+        )
         parity = {"source": f"recorded:{args.parity_report}", "report": report}
     elif args.run_parity:
         report = run_parity(

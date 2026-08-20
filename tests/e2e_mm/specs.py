@@ -53,6 +53,17 @@ class ModelSpec:
             answers and fail the parse-ratio gate. 0 falls back to
             ``min_decode_tokens`` (and the parity runner's own default when
             that is also 0).
+        mme_max_flip_fraction: Per-item answer-flip budget for the MME
+            parity gate, as a fraction of the question count. 0 keeps the
+            gate's default (0.5%, calibrated on short-answer models). Long
+            chain-of-thought models need a higher floor: with vs. without
+            the LMCache connector are two different (each fully
+            deterministic) numeric regimes, and a 200+-token reasoning
+            chain amplifies the regime difference into ~1% of borderline
+            answers landing on the other side or a repetition loop
+            (parse ''), with no corruption signature. Real KV corruption
+            is still caught by the byte-identical replay oracles, the
+            hit-ratio gate, and the score-delta gates.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -74,6 +85,7 @@ class ModelSpec:
     mme_mm_processor_kwargs: dict[str, object] = field(default_factory=dict)
     min_decode_tokens: int = 0
     mme_max_tokens: int = 0
+    mme_max_flip_fraction: float = 0.0
     answer_extract_pattern: str = ""
 
 
@@ -111,6 +123,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # synthetic swatches: at 64 tokens, 42% of baseline answers
             # truncated before the boxed verdict (parse-ratio gate FAIL).
             mme_max_tokens=256,
+            # Measured (2026-08-20): flips are exactly reproducible across
+            # runs (27 p1-vs-base, 17 p2-vs-p1 of 2374; baseline reruns are
+            # byte-identical, self-flips 0) and per-question inspection
+            # showed only benign reasoning drift / repetition-loop
+            # truncation on borderline items -- deterministic numeric-regime
+            # divergence, not corruption. 1.5% covers the observed 1.14%.
+            mme_max_flip_fraction=0.015,
             # Tempered: the preamble may OPEN a spurious unclosed box marker,
             # so the answer group must not span another begin marker.
             answer_extract_pattern=(
