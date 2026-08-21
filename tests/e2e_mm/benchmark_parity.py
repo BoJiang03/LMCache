@@ -206,6 +206,29 @@ def mme_scores(items: list[dict], answers: list[str]) -> dict:
     }
 
 
+def achievable_hit_tokens(prompt_lengths: list[int], granularity: int) -> int:
+    """Tokens a perfect cache could return for these prompts.
+
+    LMCache stores whole chunks and never serves a prompt's final token,
+    so a fully cached prompt of ``t`` tokens can return at most
+    ``granularity * ((t - 1) // granularity)``. Summing that is the only
+    fair denominator for a hit-coverage gate: a store-token total is
+    dedup-sensitive (identical prefixes submitted together are stored once
+    and hit once per request), and the raw prompt-token total is capped by
+    granularity (at a 544-token unified block a 380-token prompt is not
+    cacheable at all).
+
+    Args:
+        prompt_lengths: Lookup token count of each request, one entry per
+            request.
+        granularity: Cache chunk size in tokens.
+
+    Returns:
+        The maximum hit tokens this workload admits; 0 for no requests.
+    """
+    return sum(granularity * ((t - 1) // granularity) for t in prompt_lengths)
+
+
 def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
     """Evaluate the parity thresholds against a report dict.
 
@@ -239,13 +262,13 @@ def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
     # ones keep the raw floor, and reports predating the coverage fields
     # (granularity absent) keep it too.
     granularity = report.get("cache_granularity_tokens", LMCACHE_TEST_CHUNK_SIZE)
-    stored = report.get("pass1_stored_tokens", 0)
+    achievable = report.get("pass2_achievable_hit_tokens", 0)
     # Tokens vLLM actually skipped on the connector's account, not what the
     # cache merely held: with vLLM prefix caching on (mandatory for
     # hybrids) a replay served out of GPU memory still reports a full
     # LMCache hit, so only this number proves the retrieve path ran.
     loaded = report.get("pass2_external_cached_tokens", 0)
-    coverage = round(loaded / stored, 4) if stored else 0.0
+    coverage = round(loaded / achievable, 4) if achievable else 0.0
     if granularity > LMCACHE_TEST_CHUNK_SIZE:
         hit_criterion = "coverage"
         hit_ok = coverage >= MIN_HIT_COVERAGE
@@ -550,10 +573,15 @@ def main() -> int:
         reset_local_prefix_cache()
         t0, h0 = lookup_stats()
         local0, external0 = prefill.local_cached, prefill.external_cached
+        lookups0 = len(counters.lookup_request_tokens) if counters else 0
         answers_p2 = run_batch(llm, items, chat_template_kwargs, args.max_tokens)
         t1, h1 = lookup_stats()
         local_p2 = prefill.local_cached - local0
         external_p2 = prefill.external_cached - external0
+        achievable_p2 = achievable_hit_tokens(
+            counters.lookup_request_tokens[lookups0:] if counters else [],
+            args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+        )
         hit_ratio = (h1 - h0) / max(1, t1 - t0)
     finally:
         if server is not None:
@@ -583,9 +611,13 @@ def main() -> int:
         "cache_granularity_tokens": (
             args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE
         ),
+        # Store-request total, for diagnosis only: it is dedup-sensitive
+        # (MME asks two questions per image, so the shared prefix is stored
+        # once and hit twice) and cannot serve as a coverage denominator.
         "pass1_stored_tokens": stored_p1,
         "pass2_lookup_hit_tokens": h1 - h0,
         "pass2_lookup_tokens": t1 - t0,
+        "pass2_achievable_hit_tokens": achievable_p2,
         # vLLM's own split of who served pass 2's prefill tokens. The
         # LMCache counter above says what the cache held; this says what
         # was loaded from it, and is what the coverage gate uses.
