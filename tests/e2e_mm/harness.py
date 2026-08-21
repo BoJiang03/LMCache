@@ -265,9 +265,14 @@ def reset_vllm_prefix_cache(llm) -> str:
     core = llm.llm_engine.engine_core
     core = getattr(core, "engine_core", core)
     pool = core.scheduler.kv_cache_manager.block_pool
+    # Dropping the index is what stops local hits; lookups consult nothing
+    # else. Hashes are reset only on blocks nobody references -- the
+    # referenced ones belong to a request whose asynchronous store is still
+    # in flight, and the connector tracks those by hash.
     pool.cached_block_hash_to_block = type(pool.cached_block_hash_to_block)()
     for block in pool.blocks:
-        block.reset_hash()
+        if block.ref_cnt == 0:
+            block.reset_hash()
     return "forced"
 
 

@@ -32,12 +32,29 @@ can fail and pointing at least one detector at every mode:
 | Modality-specific ingestion misses identity (video frames, temporal merge) | cross-video KV serving | T2.3 per declared modality |
 | Quality drift only visible on real data (resolutions, aspect ratios, numerics) | statistical score loss | T0.6 MME three-way parity |
 | The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check (run on BOTH deployment paths) |
+| A "hit" is reported but the retrieve path never ran (vLLM's own prefix cache served it) | green suite proving nothing about the load path | hit-provenance oracle on every measured step (see below) |
 
 Layering: the synthetic tests are deterministic, minute-scale, and
 localizing — a single false hit trips a counter invariant. MME parity is the
 certification layer for anything only statistically visible. The negative
 control makes a green run self-evidencing: the suite proves its own tripwire
 fires before it certifies anything.
+
+**Hit-provenance oracle** (`MMHarness._check_hit_provenance`): every
+measured step cross-checks LMCache's counters against vLLM's own per-prefill
+accounting (`PrefillStats`, split into local-prefix-cache and
+external-connector tokens). LMCache's counters report what the cache HELD
+for a prompt, not what the engine loaded from it, and the two diverge
+whenever vLLM prefix caching is on: measured on Qwen3.5-2B (2026-08-21), a
+repeated prompt is served entirely out of vLLM's GPU cache (544 local / 0
+external) while the connector still reports a 544-token hit. Without this
+check every hit-count assertion in the hybrid suite would pass with the
+retrieve path never running. Two rules per step: vLLM's own cache must not
+have served a single-request replay, and the hits LMCache reported must
+have actually been loaded (one token of slack per request — vLLM always
+recomputes a prompt's final token). The preemption scenario opts out of the
+second rule via `harness.unloaded_hits_allowed()`, since LMCache
+deliberately declines to reload a preempted request.
 
 **Replay oracle** (`check_replay_text`): a hit-path replay is compared to
 its own miss-path output, but the miss pass (KV computed) and the hit pass
