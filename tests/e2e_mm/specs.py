@@ -142,6 +142,28 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             mme_max_local_cpu_gb=280.0,
         ),
         ModelSpec(
+            key="qwen3-vl-2b",
+            hf_id="Qwen/Qwen3-VL-2B-Instruct",
+            modalities=frozenset({"image", "video"}),
+            # DeepStack: the vision tower emits multiscale features from ViT
+            # layers 5/11/17 that vLLM injects into LLM layers 0-2 via a
+            # per-step side buffer OUTSIDE the paged KV. The add-on suite
+            # verifies the LMCache resume path against KV recomputed with
+            # that injection (see test_deepstack.py).
+            extra_suites=frozenset({"deepstack"}),
+            # New-style processor size cap (Qwen2VLImageProcessorFast):
+            # 16x16 patches with 2x2 merge = 1024 pixels per token, so
+            # 786432 total pixels cap a photo at the same ~768-token budget
+            # the other specs encode.
+            mme_mm_processor_kwargs={
+                "size": {"shortest_edge": 65536, "longest_edge": 786432}
+            },
+            # Qwen3-1.7B-class backbone, GQA-8: 28 layers x 8 KV heads x
+            # 128 dims = 112 KB/token, same as InternVL3.5-2B; the full MME
+            # run needs the same 280 GB local-CPU capacity (see that spec).
+            mme_max_local_cpu_gb=280.0,
+        ),
+        ModelSpec(
             key="glm-4.6v-flash",
             hf_id="zai-org/GLM-4.6V-Flash",
             modalities=frozenset({"image", "video"}),
