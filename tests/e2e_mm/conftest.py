@@ -36,6 +36,9 @@ HYBRID_POST_PAD_BLOCKS = 4
 HYBRID_WORDS_PER_TOKEN = 1.0
 # The MP cache server backing a hybrid run. GDN state pages are fat (~13 MB
 # per block on Qwen3.5-2B), and the pressure test stores 64 padded prompts.
+# Deeper hybrids cost far more per block (~205 MB on Qwen3.6-27B) and
+# override this via ``ModelSpec.mp_server_l1_gb``; too small a capacity
+# evicts inside a test and fails its store-conservation audit.
 HYBRID_MP_SERVER_L1_GB = 60.0
 
 
@@ -187,7 +190,7 @@ def harness(request, tmp_path_factory):
         http_port=24000 + (os.getpid() % 1000) + 1000,
         chunk_size=spec.hybrid_block_tokens,
         log_path=workdir / "mp_server.log",
-        l1_size_gb=HYBRID_MP_SERVER_L1_GB,
+        l1_size_gb=spec.mp_server_l1_gb or HYBRID_MP_SERVER_L1_GB,
         separate_object_groups=True,
     )
     # The hybrid engine settings themselves come from the spec via
