@@ -206,15 +206,11 @@ def cumulative_stored_tokens(monitor) -> int:
     return totals["lmcache:num_stored_tokens"] + monitor.interval_stored_tokens
 
 
-def storage_snapshot() -> StorageSnapshot:
-    """Snapshot what is ACTUALLY resident in the local CPU backend.
-
-    This is the ground truth for storage-conservation checks: chunk keys and
-    bytes physically held by the hot cache, independent of what any counter
-    claims was stored. Requires the in-process engine (single-process mode).
+def _local_cpu_backend():
+    """The in-process engine's ``LocalCPUBackend`` instance.
 
     Returns:
-        The current ``StorageSnapshot``.
+        The active backend.
 
     Raises:
         RuntimeError: If the LMCache engine or its local CPU backend is not
@@ -230,10 +226,106 @@ def storage_snapshot() -> StorageSnapshot:
     backend = engine.storage_manager.storage_backends.get("LocalCPUBackend")
     if backend is None:
         raise RuntimeError("LocalCPUBackend not active; snapshot unavailable")
+    return backend
+
+
+def storage_snapshot() -> StorageSnapshot:
+    """Snapshot what is ACTUALLY resident in the local CPU backend.
+
+    This is the ground truth for storage-conservation checks: chunk keys and
+    bytes physically held by the hot cache, independent of what any counter
+    claims was stored. Requires the in-process engine (single-process mode).
+
+    Returns:
+        The current ``StorageSnapshot``.
+
+    Raises:
+        RuntimeError: If the LMCache engine or its local CPU backend is not
+            available in this process.
+    """
+    backend = _local_cpu_backend()
     with backend.cpu_lock:
         num_keys = len(backend.hot_cache)
         total_bytes = sum(obj.get_size() for obj in backend.hot_cache.values())
     return StorageSnapshot(num_keys=num_keys, total_bytes=total_bytes)
+
+
+def resident_chunk_keys() -> list:
+    """All chunk keys resident in the local CPU backend, in STORE order.
+
+    The hot cache is an insertion-ordered mapping and LMCache stores a
+    request's chunks sequentially, so the difference between two snapshots
+    of this list — taken around a single request run on an otherwise idle
+    engine — is that request's chunk-key chain in prompt order. The
+    surgical-eviction oracles (deepstack add-on suite) rely on this to cut
+    a stored request at a chosen prompt depth.
+
+    Returns:
+        Resident ``CacheEngineKey`` objects, oldest first.
+    """
+    backend = _local_cpu_backend()
+    return backend.get_keys()
+
+
+def clone_resident_kv(keys: list) -> dict:
+    """Clone the resident KV tensor of each given chunk key.
+
+    Args:
+        keys: ``CacheEngineKey`` objects to clone; each must currently be
+            resident in the local CPU backend.
+
+    Returns:
+        Mapping of key to a detached deep copy of its KV tensor.
+
+    Raises:
+        RuntimeError: If a key is not resident or holds no tensor.
+    """
+    backend = _local_cpu_backend()
+    clones: dict = {}
+    with backend.cpu_lock:
+        for key in keys:
+            obj = backend.hot_cache.get(key)
+            if obj is None or obj.tensor is None:
+                raise RuntimeError(f"chunk {key} not resident; cannot clone")
+            clones[key] = obj.tensor.detach().clone()
+    return clones
+
+
+def evict_resident_keys(keys: list) -> None:
+    """Force-remove the given chunk keys from the local CPU backend.
+
+    Test-only surgical eviction: replays of the owning request then hit
+    only the surviving prefix and must RECOMPUTE (and re-store) the evicted
+    tail — the mid-prompt resume path that natural LRU eviction only
+    produces by accident.
+
+    Args:
+        keys: ``CacheEngineKey`` objects to remove (missing keys are an
+            error: a cut that silently did not happen would turn the resume
+            test into a trivial full-hit replay).
+
+    Raises:
+        RuntimeError: If a key was not resident.
+    """
+    backend = _local_cpu_backend()
+    for key in keys:
+        if not backend.remove(key):
+            raise RuntimeError(f"chunk {key} was not resident; cut incomplete")
+
+
+def resident_kv_tensor(key):
+    """The resident KV tensor of one chunk key, or None if not resident.
+
+    Args:
+        key: The ``CacheEngineKey`` to look up.
+
+    Returns:
+        The live (not copied) KV tensor, or None when the key is absent.
+    """
+    backend = _local_cpu_backend()
+    with backend.cpu_lock:
+        obj = backend.hot_cache.get(key)
+    return obj.tensor if obj is not None else None
 
 
 _NO_EXTRA_KWARGS: Mapping[str, object] = MappingProxyType({})

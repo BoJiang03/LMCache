@@ -174,10 +174,27 @@ Planned: CPU offload round-trip, remote backend cross-instance, TP>1.
 
 ### Special-architecture add-ons
 
-- **DeepStack** (Qwen3-VL / Qwen3.5): hit-path output must equal baseline
-  despite multi-layer visual injection outside paged KV.
-- **Gemma 3**: bidirectional image attention vs chunk-boundary phases
-  (strengthened T0.4).
+Declared per model via `ModelSpec.extra_suites`; add-on tests carry
+`@pytest.mark.requires_extra_suite("<name>")` and are deselected — not
+skipped — for models without the flag (same policy as `requires_modality`).
+
+- **DeepStack** (`"deepstack"`, `test_deepstack.py`, TD.1–TD.4 — Qwen3-VL
+  family): the vision tower's multiscale features are injected into the
+  first LLM layers through a per-step side buffer OUTSIDE the paged KV.
+  The risky path is a hit boundary INSIDE an image span: vLLM resumes
+  prefill mid-span and must scatter the payload at the right offsets. The
+  suite produces such boundaries surgically (evict a stored request's tail
+  chunks, replay) and compares the KV the resume re-stores against the KV
+  the full prefill stored. The oracle is KV-level because outputs are
+  provably blind here: fully disabling the injection on Qwen3-VL-2B
+  changes no output bytes on the synthetic probes, while per-chunk KV
+  divergence separates cleanly (recompute noise rel-Frobenius 0.02–0.04 vs
+  0.55–0.70 with the payload zeroed; measured 2026-08-21). TD.4 is the
+  negative control that keeps the oracle honest. Verdict backed by this
+  suite: the payload's effect is baked into stored KV, so skipped prefixes
+  need no side buffer; only the resumed span needs (and gets) reinjection.
+- **Gemma 3/4**: bidirectional image attention vs chunk-boundary phases
+  (strengthened T0.4); vLLM issue #40106 makes this a live concern.
 - **Phi-4-multimodal**: different LoRA on identical tokens must not share
   cache entries.
 
