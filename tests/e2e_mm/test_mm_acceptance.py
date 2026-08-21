@@ -7,12 +7,15 @@ cases comes from case-unique salts at the start of the system message, so
 each case's very first token chunk is unique and cases cannot hit each
 other's entries.
 
-Hit-count assertion vocabulary (chunk_size = 16):
+Hit-count assertion vocabulary (chunk = ``harness.chunk``: 16 by default,
+vLLM's unified block size for a hybrid model):
 - "misses" == lookup_hits is 0 (case salt is fresh, chunk 0 cannot match);
-- "full hit" == lookup_hits >= lookup_tokens - 2 * CHUNK (trailing partial
+- "full hit" == lookup_hits >= lookup_tokens - 2 * chunk (trailing partial
   chunk and the recompute-last-token rule);
-- "did not reach the image" == at least IMAGE_SPAN_MARGIN fewer hit tokens
-  than a full hit (test images are 448x448, spans of hundreds of tokens).
+- "did not reach the image" == at least ``harness.image_span_margin`` fewer
+  hit tokens than a full hit (test images are 448x448, spans of hundreds of
+  tokens; for a hybrid model the padded prompt puts whole shared blocks
+  before the image and several more after it).
 """
 
 # Third Party
@@ -27,10 +30,7 @@ from catalog import (
     video_requests,
 )
 from conftest import pressure_n
-from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
 from harness import effective_max_tokens
-
-IMAGE_SPAN_MARGIN = 4 * CHUNK
 
 CATALOG = catalog()
 
@@ -51,11 +51,11 @@ def test_t0_cross_image_isolation_and_hit_equivalence(harness):
     harness.check_replay_text(req_a, a1.text, a2.text, "T0.3 repeat A")
     # T1.1 reuse depth + T1.3 non-degenerate: the repeat is a full hit.
     assert a2.lookup_hits > 0, "MM requests must actually hit (no bypass)"
-    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * harness.chunk
 
     # T0.1 counter check: B shares only the text prefix with A; if B's hits
     # reach into the image region, a false hit occurred.
-    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN, (
+    assert b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin, (
         f"image B hit {b1.lookup_hits} tokens, too close to A's full hit "
         f"{a2.lookup_hits} -- cross-image false hit"
     )
@@ -63,7 +63,7 @@ def test_t0_cross_image_isolation_and_hit_equivalence(harness):
     b2 = harness.run(req_b)
     harness.check_output(req_b, b2, "T0.3 repeat B")
     harness.check_replay_text(req_b, b1.text, b2.text, "T0.3 repeat B")
-    assert b2.lookup_hits >= b2.lookup_tokens - 2 * CHUNK
+    assert b2.lookup_hits >= b2.lookup_tokens - 2 * harness.chunk
 
 
 def test_t0_collision_pressure(harness):
@@ -91,7 +91,7 @@ def test_t0_collision_pressure(harness):
     assert pass1[0].lookup_hits == 0, "fresh case salt must not hit anything"
     steady = pass1[1].lookup_hits
     # The steady state is the shared text prefix only, never into the image.
-    assert steady <= pass1[1].lookup_tokens - IMAGE_SPAN_MARGIN
+    assert steady <= pass1[1].lookup_tokens - harness.image_span_margin
     for i, res in enumerate(pass1[1:], start=1):
         same_identifier = [
             j
@@ -113,23 +113,26 @@ def test_t0_collision_pressure(harness):
     resident_1 = harness.storage()
     missed = sum(r.lookup_tokens - r.lookup_hits for r in pass1)
     stored_delta = stored_1 - stored_0
-    assert stored_delta >= missed - n * CHUNK, (
+    assert stored_delta >= missed - n * harness.chunk, (
         f"under-storage: lookup missed {missed} tokens but only "
         f"{stored_delta} were store-requested -- LMCache is dropping KV"
     )
-    assert stored_delta <= missed + decode_budget + n * CHUNK, (
+    assert stored_delta <= missed + decode_budget + n * harness.chunk, (
         f"over-storage: {stored_delta} tokens store-requested for only "
         f"{missed} missed (+{decode_budget} decode budget) -- duplicate "
         f"stores or a lookup/store disagreement"
     )
     key_delta = resident_1.num_keys - resident_0.num_keys
-    expected_chunks = missed // CHUNK
-    assert key_delta >= expected_chunks - n, (
+    # One resident object per chunk, or one per KV cache group per chunk for
+    # a hybrid model running with separate object groups.
+    expected_chunks = (missed // harness.chunk) * harness.objects_per_chunk
+    chunk_slack = n * harness.objects_per_chunk
+    assert key_delta >= expected_chunks - chunk_slack, (
         f"resident-key deficit: expected ~{expected_chunks} new chunk keys, "
         f"found {key_delta} -- store-requested KV never became resident "
         f"(allocation failure or silent drop)"
     )
-    assert key_delta <= expected_chunks + 2 * n, (
+    assert key_delta <= expected_chunks + 2 * chunk_slack, (
         f"resident-key surplus: expected ~{expected_chunks} new chunk keys, "
         f"found {key_delta} -- unstable keys are storing duplicates"
     )
@@ -139,12 +142,12 @@ def test_t0_collision_pressure(harness):
     for req, first in zip(requests, pass1, strict=True):
         second = harness.run(req)
         harness.check_replay_text(req, first.text, second.text, "T0.2 replay")
-        assert second.lookup_hits >= second.lookup_tokens - 2 * CHUNK
+        assert second.lookup_hits >= second.lookup_tokens - 2 * harness.chunk
 
     # T0.7 pass-2 conservation: a full-hit replay has nothing new to cache.
     stored_2 = harness.stored_tokens_total()
     resident_2 = harness.storage()
-    assert stored_2 - stored_1 <= decode_budget + n * CHUNK, (
+    assert stored_2 - stored_1 <= decode_budget + n * harness.chunk, (
         f"full-hit replay re-stored {stored_2 - stored_1} tokens -- the "
         f"store path does not trust its own lookup"
     )
@@ -153,14 +156,14 @@ def test_t0_collision_pressure(harness):
         f"{-new_keys} resident chunk keys VANISHED during the replay while "
         f"the cache is far under capacity -- KV loss (eviction or pin bug)"
     )
-    assert new_keys <= n, (
+    assert new_keys <= chunk_slack, (
         f"full-hit replay added {new_keys} resident chunk keys -- keys are "
         f"not stable across identical requests"
     )
     if key_delta > 0:
         avg_chunk_bytes = (resident_1.total_bytes - resident_0.total_bytes) / key_delta
         bytes_growth = resident_2.total_bytes - resident_1.total_bytes
-        assert bytes_growth <= (new_keys + n) * avg_chunk_bytes, (
+        assert bytes_growth <= (new_keys + chunk_slack) * avg_chunk_bytes, (
             f"replay grew resident bytes by {bytes_growth} with only "
             f"{new_keys} new keys -- bytes leaking without keys"
         )
@@ -189,7 +192,7 @@ def test_t0_concurrent_batch(harness):
     # The batch's stores must be complete and hittable afterwards.
     a_after = harness.run(req_a)
     harness.check_output(req_a, a_after, "T0.8 single run after batch")
-    assert a_after.lookup_hits >= a_after.lookup_tokens - 2 * CHUNK, (
+    assert a_after.lookup_hits >= a_after.lookup_tokens - 2 * harness.chunk, (
         f"request cached during a batch only hit {a_after.lookup_hits} of "
         f"{a_after.lookup_tokens} tokens afterwards"
     )
@@ -216,8 +219,8 @@ def test_detector_sensitivity_negative_control(harness):
 
     # Under identity blindness B's placeholder tokens are identical to A's,
     # so B must reach A's full prompt depth -- the false hit the real
-    # detector (IMAGE_SPAN_MARGIN separation) would flag as contamination.
-    assert b1.lookup_hits > b1.lookup_tokens - IMAGE_SPAN_MARGIN, (
+    # detector (harness.image_span_margin separation) would flag as contamination.
+    assert b1.lookup_hits > b1.lookup_tokens - harness.image_span_margin, (
         f"negative control did not trip: with identity substitution "
         f"disabled, image B hit only {b1.lookup_hits} of "
         f"{b1.lookup_tokens} tokens -- the counter detector would not have "
@@ -239,8 +242,8 @@ def test_t0_chunk_boundary_phases(harness, phase):
     harness.check_output(req_a, a2, f"T0.4 phase {phase} repeat A")
 
     harness.check_replay_text(req_a, a1.text, a2.text, f"T0.4 phase {phase}")
-    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
-    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * harness.chunk
+    assert b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin
 
 
 def test_t0_mixed_traffic(harness):
@@ -255,7 +258,7 @@ def test_t0_mixed_traffic(harness):
     t2 = harness.run(text_req)
     harness.check_output(text_req, t2, "T0.5 text repeat")
     harness.check_replay_text(text_req, t1.text, t2.text, "T0.5 text repeat")
-    assert t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK
+    assert t2.lookup_hits >= t2.lookup_tokens - 2 * harness.chunk
     b1 = harness.run(req_b)
     harness.check_output(req_b, b1, "T0.5 MM B")
     a2 = harness.run(req_a)
@@ -273,7 +276,7 @@ def test_t1_prefix_reuse_across_questions(harness):
     harness.check_output(req_q2, q2, "T1.2 second question")
 
     # The shared system+image prefix must hit; only the question tail differs.
-    assert q2.lookup_hits >= a1.lookup_tokens - 6 * CHUNK, (
+    assert q2.lookup_hits >= a1.lookup_tokens - 6 * harness.chunk, (
         f"prefix reuse too shallow: hit {q2.lookup_hits} of "
         f"~{a1.lookup_tokens} shared-prefix tokens"
     )
@@ -294,10 +297,10 @@ def test_t2_multi_image_order(harness):
     harness.check_output(req_ab, ab2, "T2.1 repeat AB")
 
     harness.check_replay_text(req_ab, ab1.text, ab2.text, "T2.1 repeat AB")
-    assert ab2.lookup_hits >= ab2.lookup_tokens - 2 * CHUNK
+    assert ab2.lookup_hits >= ab2.lookup_tokens - 2 * harness.chunk
     # Swapped order diverges at the first image: BA must not hit into AB's
     # image region.
-    assert ba1.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN
+    assert ba1.lookup_hits <= ab2.lookup_hits - harness.image_span_margin
 
 
 @pytest.mark.requires_modality("video")
@@ -324,11 +327,11 @@ def test_t2_video_isolation_and_hit(harness):
     harness.check_output(req_a, a2, "T2.3 repeat video A")
     harness.check_replay_text(req_a, a1.text, a2.text, "T2.3 repeat video A")
     assert a2.lookup_hits > 0, "video requests must actually hit (no bypass)"
-    assert a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * harness.chunk
 
     # B shares only the text prefix with A; hits into the video span would
     # be cross-video contamination (the video span is hundreds of tokens).
-    assert b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN, (
+    assert b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin, (
         f"video B hit {b1.lookup_hits} tokens, too close to A's full hit "
         f"{a2.lookup_hits} -- cross-video false hit"
     )
@@ -345,7 +348,7 @@ def test_t2_partial_sharing(harness):
 
     # The hit must reach well into image A's span (the text prefix alone is
     # a few dozen tokens; the image span is hundreds).
-    assert ac.lookup_hits >= IMAGE_SPAN_MARGIN + CHUNK, (
+    assert ac.lookup_hits >= harness.image_span_margin + harness.chunk, (
         f"shared image prefix not reused: only {ac.lookup_hits} tokens hit"
     )
     assert ac.lookup_hits < ac.lookup_tokens, (
