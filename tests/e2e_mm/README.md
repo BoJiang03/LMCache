@@ -218,6 +218,22 @@ exactly one unified block, so every padded prompt spans several steps), and
 capacity eviction / preemption stay uncovered until those scenarios grow an
 MP variant.
 
+**A failed KV load is fatal on a hybrid, so the suite must not manufacture
+one.** When the connector reports load errors, vLLM rewinds the affected
+requests in `_update_requests_with_invalid_blocks`, which unpacks a single
+KV cache group (`(req_block_ids,) = ...get_block_ids(req_id)`, carrying an
+explicit "TODO: add support for hybrid memory allocator") and so raises
+`ValueError: too many values to unpack` on a multi-group model. The
+connector only reports load errors while it believes the server is dead,
+and it believes that after a single heartbeat ping missing its 10s window
+-- which happens on this host because a real MP retrieve is reported back
+0.3-20s after submission though the server transfers it in ~3ms. The suite
+therefore runs every MP engine with a 60s heartbeat window and a matching
+server reap timeout (`MP_HEARTBEAT_INTERVAL_S`), so the pressure cases
+measure cache behaviour rather than that latency. The latency and the
+unrecoverable-load-error pair are recorded findings, not fixed ones; the
+certificate excludes degraded-mode recovery on hybrids explicitly.
+
 ### Special-architecture add-ons
 
 Declared per model via `ModelSpec.extra_suites`; add-on tests carry

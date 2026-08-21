@@ -107,6 +107,23 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
             )
 
 
+# Heartbeat window for every MP-path engine the suite starts, and the
+# matching server-side reap timeout (which must clear 3x the interval or
+# the server evicts a worker that is merely slow to ping).
+#
+# The default 10s window is too tight here for a reason worth stating: a
+# real KV load on the MP path is reported back to vLLM 0.3-20s after it is
+# submitted, even though the server completes the transfer in ~3ms (traced
+# in records/2026/08/21). One ping that loses its turn inside such a gap is
+# read as server death, and the connector then reports the in-flight
+# retrieve's blocks as load errors -- which vLLM cannot recover on a hybrid
+# model at all (see HYBRID_NOT_COVERED in certify.py). Widening the window
+# keeps the suite measuring cache behaviour instead of that latency; the
+# latency itself is a separate, recorded defect.
+MP_HEARTBEAT_INTERVAL_S = 60.0
+MP_WORKER_REAP_TIMEOUT_S = 300.0
+
+
 @dataclass(frozen=True)
 class MPServerHandle:
     """A running LMCache MP cache server subprocess.
@@ -179,6 +196,8 @@ def start_mp_cache_server(
         str(l1_size_gb),
         "--eviction-policy",
         "LRU",
+        "--worker-reap-timeout-seconds",
+        str(MP_WORKER_REAP_TIMEOUT_S),
     ]
     if separate_object_groups:
         command.append("--separate-object-groups")
@@ -329,8 +348,10 @@ def mp_kv_transfer_config(zmq_port: int):
     """vLLM KV-transfer config selecting THIS repo's MP connector.
 
     Shared by every MP-path caller (``MPHarness``, the MME parity run) so
-    the connector module path and the server address keys cannot drift
-    apart between them.
+    the connector module path, the server address keys and the heartbeat
+    window cannot drift apart between them. The window is widened from the
+    10s default for the reason given at ``MP_HEARTBEAT_INTERVAL_S``; the
+    servers this module starts raise their reap timeout to match.
 
     Args:
         zmq_port: ZMQ port of the running MP cache server.
@@ -348,6 +369,7 @@ def mp_kv_transfer_config(zmq_port: int):
         kv_connector_extra_config={
             "lmcache.mp.host": "tcp://localhost",
             "lmcache.mp.port": zmq_port,
+            "lmcache.mp.heartbeat_interval": MP_HEARTBEAT_INTERVAL_S,
         },
     )
 
