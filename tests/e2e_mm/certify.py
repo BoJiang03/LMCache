@@ -61,6 +61,11 @@ HYBRID_NOT_COVERED = [
     "scenarios drive the in-process connector (see IN_PROCESS_SCENARIOS)",
     "bit-exact generation -- the GDN kernels have no batch-invariant mode, "
     "so output equality is gated by the MME flip/score budget, not bytes",
+    "recovery from a failed KV load (the connector's degraded mode): vLLM "
+    "rewinds the affected requests through "
+    "`_update_requests_with_invalid_blocks`, which unpacks a single KV "
+    "cache group and therefore raises on a hybrid -- so on this path a "
+    "load error is fatal to the engine, not recoverable",
 ]
 
 IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
