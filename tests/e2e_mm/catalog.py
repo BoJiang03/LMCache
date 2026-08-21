@@ -175,20 +175,39 @@ class MMRequest:
     ignore_eos: bool = False
 
     def messages(self) -> list[dict]:
-        """Build the OpenAI-style chat messages for this request."""
-        content: list[dict] = [
+        """Build the OpenAI-style chat messages for this request.
+
+        The multimodal items come first, then the question. When the pad
+        knobs are set (hybrid models, see ``pre_pad_words``), filler text
+        surrounds the items so the prompt spans several whole KV blocks.
+        """
+        items: list[dict] = [
             {"type": "image_url", "image_url": {"url": image_data_uri(i)}}
             for i in self.image_indices
         ]
-        content.extend(
+        items.extend(
             {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
             for i in self.video_indices
         )
-        content.append({"type": "text", "text": self.question})
+        mid_pad = mid_pad_words()
+        content: list[dict] = []
+        for position, item in enumerate(items):
+            if position and mid_pad:
+                content.append({"type": "text", "text": _filler(mid_pad)})
+            content.append(item)
+        post_pad = post_pad_words()
+        question = (
+            f"{_filler(post_pad)}\n{self.question}" if post_pad else self.question
+        )
+        content.append({"type": "text", "text": question})
+        pre_pad = pre_pad_words()
+        preamble = f" {_filler(pre_pad)}" if pre_pad else ""
         return [
             {
                 "role": "system",
-                "content": f"Session {self.salt}. You are a concise assistant.",
+                "content": (
+                    f"Session {self.salt}.{preamble} You are a concise assistant."
+                ),
             },
             {"role": "user", "content": content},
         ]
@@ -257,9 +276,65 @@ EVICTION_INDEX_BASE = 400
 BOUNDARY_PHASES = 16
 
 
+def pre_pad_words() -> int:
+    """Filler words between the case salt and the multimodal items.
+
+    Set via ``LMCACHE_MM_E2E_PRE_PAD_WORDS`` by the conftest for
+    Mamba/GDN hybrid models, whose hit granularity is the unified block
+    size ``N`` (hundreds of tokens) rather than a 16-token chunk. This pad
+    puts SHARED, cacheable blocks in front of the image so two requests
+    that differ only in image content still have a common prefix to hit —
+    without it, the first block already differs and every hit count
+    collapses to zero. It follows the case salt, so case isolation (the
+    first chunk differs per case) is unchanged.
+    """
+    return int(os.environ.get("LMCACHE_MM_E2E_PRE_PAD_WORDS", "0"))
+
+
+def post_pad_words() -> int:
+    """Filler words between the multimodal items and the question.
+
+    Set via ``LMCACHE_MM_E2E_POST_PAD_WORDS`` for hybrid models. This is
+    the load-bearing half of the hybrid prompt shape: it puts several
+    whole blocks AFTER the image span, so that a request differing only in
+    image content also differs in every one of those blocks. With the
+    image in the last (partial) block instead, block-granular hit counts
+    would be IDENTICAL for different images and the suite's primary
+    cross-image detector would be blind.
+    """
+    return int(os.environ.get("LMCACHE_MM_E2E_POST_PAD_WORDS", "0"))
+
+
+def mid_pad_words() -> int:
+    """Filler words inserted between consecutive multimodal items.
+
+    Set via ``LMCACHE_MM_E2E_MID_PAD_WORDS`` for hybrid models: it
+    completes whole blocks after the FIRST image of a multi-image request,
+    so the partial-sharing case (T2.2) can hit past that image instead of
+    stopping at the shared pre-pad.
+    """
+    return int(os.environ.get("LMCACHE_MM_E2E_MID_PAD_WORDS", "0"))
+
+
+def _filler(words: int) -> str:
+    """A deterministic filler phrase of ``words`` ignorable pad words."""
+    return "Ignore the following filler text. " + " ".join(["pad"] * words)
+
+
+def boundary_step_words() -> int:
+    """Words per T0.4 boundary phase (default 1 ~= 1 token per phase).
+
+    With ``BOUNDARY_PHASES`` phases the sweep covers ``phases * step``
+    tokens of alignment space; the conftest sets
+    ``LMCACHE_MM_E2E_BOUNDARY_STEP`` to ``N // BOUNDARY_PHASES`` for a
+    hybrid model so the sweep covers one full ``N``-token block period.
+    """
+    return int(os.environ.get("LMCACHE_MM_E2E_BOUNDARY_STEP", "1"))
+
+
 def boundary_salt(phase: int) -> str:
-    """Salt for chunk-boundary phase ``phase``, padded with ``phase`` words."""
-    return f"t04 phase {phase} " + " ".join(["pad"] * phase)
+    """Salt for chunk-boundary phase ``phase``, shifted by padding words."""
+    return f"t04 phase {phase} " + " ".join(["pad"] * (phase * boundary_step_words()))
 
 
 def catalog() -> dict[str, MMRequest]:

@@ -18,14 +18,37 @@ import pytest
 
 # First Party (test-local)
 from harness import configure_environment
-from specs import selected_model_keys
+from specs import MODEL_SPECS, selected_model_keys
 
 
-@pytest.mark.parametrize("model_key", selected_model_keys())
-@pytest.mark.parametrize(
-    "scenario",
-    ["chunked_prefill", "capacity_eviction", "preemption", "mp_connector"],
-)
+# Scenarios that drive the in-process connector. vLLM only offers its
+# hybrid KV cache manager to connectors that advertise support for it, and
+# LMCacheConnectorV1 does not: a Mamba/GDN model fails engine init on this
+# path ("Hybrid KV cache manager is disabled but failed to convert the KV
+# cache specs to one unified type"), so these scenarios are not applicable
+# to hybrid models and their certificates claim the MP path only.
+IN_PROCESS_SCENARIOS = ("chunked_prefill", "capacity_eviction", "preemption")
+MP_SCENARIOS = ("mp_connector",)
+
+
+def _scenario_cases() -> list[tuple[str, str]]:
+    """Enumerate (scenario, model_key) pairs applicable to each model.
+
+    Returns:
+        The parametrization list: every selected model paired with the
+        scenarios its deployment path supports.
+    """
+    cases: list[tuple[str, str]] = []
+    for model_key in selected_model_keys():
+        spec = MODEL_SPECS[model_key]
+        scenarios = MP_SCENARIOS
+        if not spec.hybrid_block_tokens:
+            scenarios = IN_PROCESS_SCENARIOS + MP_SCENARIOS
+        cases.extend((scenario, model_key) for scenario in scenarios)
+    return cases
+
+
+@pytest.mark.parametrize("scenario,model_key", _scenario_cases())
 def test_isolated_scenario(scenario, model_key, tmp_path):
     configure_environment()
     out_json = tmp_path / f"{scenario}_{model_key}.json"

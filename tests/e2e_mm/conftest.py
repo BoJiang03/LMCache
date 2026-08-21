@@ -23,6 +23,65 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
+# Hybrid prompt shape, in unified blocks. The pre-pad gives requests that
+# differ only in image content a shared, cacheable prefix; the post-pad puts
+# whole blocks AFTER the image span so such requests also differ there --
+# without it, block-granular hit counts would be identical for different
+# images and the suite's primary cross-image detector would be blind. The
+# mid-pad (between consecutive multimodal items) lets a partial-sharing hit
+# reach past the first image.
+HYBRID_PRE_PAD_BLOCKS = 2
+HYBRID_POST_PAD_BLOCKS = 4
+# ~1 token per pad word (verified on the Qwen tokenizers).
+HYBRID_WORDS_PER_TOKEN = 1.0
+# The MP cache server backing a hybrid run. GDN state pages are fat (~13 MB
+# per block on Qwen3.5-2B), and the pressure test stores 64 padded prompts.
+HYBRID_MP_SERVER_L1_GB = 60.0
+
+
+def pytest_configure(config):
+    """Set the prompt shape for hybrid models BEFORE test modules import.
+
+    ``test_mm_acceptance`` builds its catalog at import time, so the pad
+    environment must be in place before collection imports it; a later
+    change would give the tests different salts than the baselines.
+
+    Args:
+        config: The pytest config (unused).
+
+    Raises:
+        RuntimeError: If a hybrid model is selected together with other
+            models — the prompt shape is global, so one run certifies one
+            hybrid model.
+    """
+    from specs import MODEL_SPECS
+
+    keys = _model_keys()
+    hybrid = [k for k in keys if MODEL_SPECS[k].hybrid_block_tokens]
+    if not hybrid:
+        return
+    if len(keys) > 1:
+        raise RuntimeError(
+            f"hybrid model {hybrid[0]!r} needs a padded prompt shape that "
+            f"applies to the whole run; select it alone (got {keys})"
+        )
+    block = MODEL_SPECS[hybrid[0]].hybrid_block_tokens
+    words_per_block = int(block * HYBRID_WORDS_PER_TOKEN)
+    os.environ["LMCACHE_MM_E2E_PRE_PAD_WORDS"] = str(
+        words_per_block * HYBRID_PRE_PAD_BLOCKS
+    )
+    os.environ["LMCACHE_MM_E2E_POST_PAD_WORDS"] = str(
+        words_per_block * HYBRID_POST_PAD_BLOCKS
+    )
+    os.environ["LMCACHE_MM_E2E_MID_PAD_WORDS"] = str(words_per_block * 2)
+    # Sweep the T0.4 alignment phases across one whole block period.
+    from catalog import BOUNDARY_PHASES
+
+    os.environ["LMCACHE_MM_E2E_BOUNDARY_STEP"] = str(
+        max(1, words_per_block // BOUNDARY_PHASES)
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     # Spec-gated tests (modality, special-architecture add-on suites) are
     # DESELECTED -- not skipped -- for models whose spec does not declare
@@ -81,9 +140,23 @@ def _model_keys() -> list[str]:
 
 @pytest.fixture(scope="session", params=_model_keys())
 def harness(request, tmp_path_factory):
-    """Session harness for one model: baselines + LMCache engine."""
+    """Session harness for one model: baselines + LMCache engine.
+
+    A Mamba/GDN hybrid model runs on the MP deployment path with a cache
+    server started here: vLLM's hybrid KV cache manager is only offered to
+    connectors that advertise support for it, and the in-process
+    ``LMCacheConnectorV1`` does not — it fails engine init outright
+    ("Hybrid KV cache manager is disabled but failed to convert the KV
+    cache specs to one unified type").
+    """
     from catalog import catalog, pressure_requests, video_requests
-    from harness import MMHarness, compute_baselines, configure_environment
+    from harness import (
+        MMHarness,
+        MPHarness,
+        compute_baselines,
+        configure_environment,
+        start_mp_cache_server,
+    )
     from specs import MODEL_SPECS
 
     configure_environment()
@@ -103,9 +176,33 @@ def harness(request, tmp_path_factory):
         all_requests += list(video_requests().values())
     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
     baselines = compute_baselines(spec, all_requests, workdir)
-    h = MMHarness(spec, baselines)
-    yield h
-    h.close()
+    if not spec.hybrid_block_tokens:
+        h = MMHarness(spec, baselines)
+        yield h
+        h.close()
+        return
+
+    server = start_mp_cache_server(
+        zmq_port=24000 + (os.getpid() % 1000),
+        http_port=24000 + (os.getpid() % 1000) + 1000,
+        chunk_size=spec.hybrid_block_tokens,
+        log_path=workdir / "mp_server.log",
+        l1_size_gb=HYBRID_MP_SERVER_L1_GB,
+        separate_object_groups=True,
+    )
+    # The hybrid engine settings themselves come from the spec via
+    # MMHarness (shared with the baseline engine).
+    h = MPHarness(
+        spec,
+        baselines,
+        zmq_port=server.zmq_port,
+        http_port=server.http_port,
+    )
+    try:
+        yield h
+    finally:
+        h.close()
+        server.process.terminate()
 
 
 def pressure_n() -> int:

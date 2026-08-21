@@ -73,6 +73,24 @@ class ModelSpec:
             with zero flips (pure recompute, not corruption). Size it to
             hold the whole benchmark: questions x prompt tokens x KV bytes
             per token.
+        hybrid_block_tokens: vLLM's unified KV block size ``N`` for a
+            Mamba/GDN linear-attention hybrid (0 = not a hybrid). Hybrids
+            run the suite on the MP deployment path — the in-process
+            connector does not support vLLM's hybrid KV cache manager —
+            with an MP cache server at ``chunk_size = N`` and
+            ``--separate-object-groups``, and the engine (and its
+            config-matched baseline) at ``mamba_cache_mode="align"``,
+            ``enable_prefix_caching=True`` (mandatory for align) and
+            ``max_num_batched_tokens = N``. ``N`` is model-specific and
+            printed by vLLM at startup ("Setting attention block size to
+            N tokens..."); the harness validates this value against the
+            engine. Hit granularity becomes ``N``, so the conftest pads
+            every request's prompt to span multiple blocks and the tests
+            read their chunk tolerance from ``harness.chunk``.
+        hybrid_object_groups: Number of LMCache cache objects stored per
+            token block under ``--separate-object-groups`` (full-attention
+            KV + recurrent-state groups; 2 for the Qwen3.5 family). Used
+            by the storage-conservation bounds. 0 for non-hybrids.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -96,6 +114,8 @@ class ModelSpec:
     mme_max_tokens: int = 0
     mme_max_flip_fraction: float = 0.0
     mme_max_local_cpu_gb: float = 0.0
+    hybrid_block_tokens: int = 0
+    hybrid_object_groups: int = 0
     answer_extract_pattern: str = ""
 
 
@@ -161,6 +181,26 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # Qwen3-1.7B-class backbone, GQA-8: 28 layers x 8 KV heads x
             # 128 dims = 112 KB/token, same as InternVL3.5-2B; the full MME
             # run needs the same 280 GB local-CPU capacity (see that spec).
+            mme_max_local_cpu_gb=280.0,
+        ),
+        ModelSpec(
+            key="qwen3.5-2b",
+            hf_id="Qwen/Qwen3.5-2B",
+            modalities=frozenset({"image", "video"}),
+            # GDN hybrid: 24 layers = 6 full attention + 18 Gated-DeltaNet
+            # linear attention. The linear layers' recurrent state is cached
+            # as opaque pages on the MP path (align mode); upstream validates
+            # only TEXT KV caching for these models (mp/hybrid_models.rst),
+            # and this suite's run is the image/video validation.
+            hybrid_block_tokens=544,
+            hybrid_object_groups=2,
+            # Same new-style pixel cap as Qwen3-VL (1024 px/token).
+            mme_mm_processor_kwargs={
+                "size": {"shortest_edge": 65536, "longest_edge": 786432}
+            },
+            # Only 6 full-attention layers (12 KB/token), but every 544-token
+            # block also stores a fat GDN state page (~13 MB/object measured);
+            # ~26 MB per MME question needs well over the 40 GB default.
             mme_max_local_cpu_gb=280.0,
         ),
         ModelSpec(

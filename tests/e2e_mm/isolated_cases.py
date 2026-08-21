@@ -25,9 +25,6 @@ import subprocess
 import sys
 import tempfile
 import traceback
-import time
-import urllib.error
-import urllib.request
 
 # First Party (test-local; none of these import lmcache at module level)
 from catalog import (
@@ -43,6 +40,7 @@ from harness import (
     MMHarness,
     MPHarness,
     compute_baselines,
+    start_mp_cache_server,
     vllm_preemption_total,
 )
 from specs import MODEL_SPECS, ModelSpec
@@ -97,6 +95,10 @@ PREEMPTION_MAX_TOKENS = 112
 # MP connector scenario: ports for the cache server subprocess, derived from
 # the PID so concurrent runs on one host do not collide.
 MP_SERVER_L1_GB = 4
+# Hybrid models store a fat recurrent-state page per block (~13 MB on
+# Qwen3.5-2B) on top of the attention KV, and their prompts are padded to
+# span several blocks.
+MP_SERVER_L1_GB_HYBRID = 30
 MP_SERVER_START_TIMEOUT_S = 120
 
 
@@ -452,68 +454,6 @@ def run_preemption(spec: ModelSpec) -> dict:
     return {"failures": failures, "metrics": metrics}
 
 
-def _start_mp_server(zmq_port: int, http_port: int, log_path: pathlib.Path):
-    """Launch the LMCache MP cache server and wait until it is healthy.
-
-    Args:
-        zmq_port: ZMQ port for the connector traffic.
-        http_port: HTTP port for the observability API.
-        log_path: File capturing the server's stdout/stderr.
-
-    Returns:
-        The server ``subprocess.Popen`` handle.
-
-    Raises:
-        RuntimeError: If the server does not become healthy in time.
-    """
-    log_file = open(log_path, "w")
-    # The server must run THIS repo's lmcache too: `-m` resolves through the
-    # child's own sys.path, where the venv's editable install would otherwise
-    # win (see the pinning at the top of this file). PYTHONPATH entries
-    # precede site-packages.
-    env = dict(os.environ)
-    existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{_REPO_ROOT}:{existing_pp}" if existing_pp else str(_REPO_ROOT)
-    )
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "lmcache.v1.multiprocess.http_server",
-            "--port",
-            str(zmq_port),
-            "--http-port",
-            str(http_port),
-            "--chunk-size",
-            str(CHUNK),
-            "--l1-size-gb",
-            str(MP_SERVER_L1_GB),
-            "--eviction-policy",
-            "LRU",
-        ],
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        env=env,
-    )
-    deadline = time.monotonic() + MP_SERVER_START_TIMEOUT_S
-    url = f"http://localhost:{http_port}/healthcheck"
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                if resp.status == 200:
-                    return proc
-        except (urllib.error.URLError, OSError):
-            time.sleep(2)
-    proc.terminate()
-    raise RuntimeError(
-        f"MP cache server failed to become healthy; log tail:\n"
-        f"{log_path.read_text()[-2000:]}"
-    )
-
-
 def run_mp_connector(spec: ModelSpec) -> dict:
     """T3: the T0+T1 core on the multi-process connector deployment path.
 
@@ -560,8 +500,18 @@ def run_mp_connector(spec: ModelSpec) -> dict:
         baselines = compute_baselines(
             spec, requests, pathlib.Path(tmp), extra_engine_kwargs=engine_kwargs
         )
-        server = _start_mp_server(
-            zmq_port, http_port, pathlib.Path(tmp) / "mp_server.log"
+        server = start_mp_cache_server(
+            zmq_port=zmq_port,
+            http_port=http_port,
+            # A hybrid model's chunk size must be vLLM's unified block size,
+            # and its recurrent-state layers need their own cache objects.
+            chunk_size=spec.hybrid_block_tokens or CHUNK,
+            log_path=pathlib.Path(tmp) / "mp_server.log",
+            l1_size_gb=(
+                MP_SERVER_L1_GB_HYBRID if spec.hybrid_block_tokens else MP_SERVER_L1_GB
+            ),
+            separate_object_groups=bool(spec.hybrid_block_tokens),
+            start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
         harness = MPHarness(
             spec,
@@ -589,12 +539,12 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             )
             _expect(
                 failures,
-                a2.lookup_hits >= a2.lookup_tokens - 2 * CHUNK,
+                a2.lookup_hits >= a2.lookup_tokens - 2 * harness.chunk,
                 f"repeat A hit only {a2.lookup_hits}/{a2.lookup_tokens}",
             )
             _expect(
                 failures,
-                b1.lookup_hits <= a2.lookup_hits - IMAGE_SPAN_MARGIN,
+                b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin,
                 f"image B hit {b1.lookup_hits} tokens, too close to A's "
                 f"full hit {a2.lookup_hits} -- cross-image false hit",
             )
@@ -618,7 +568,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             )
             _expect(
                 failures,
-                t2.lookup_hits >= t2.lookup_tokens - 2 * CHUNK,
+                t2.lookup_hits >= t2.lookup_tokens - 2 * harness.chunk,
                 f"text-only repeat hit only {t2.lookup_hits}/{t2.lookup_tokens}",
             )
             m2 = harness.run(cat["t05-B"])
@@ -634,7 +584,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             _check_text(failures, harness, cat["t12-A-q2"], q2.text, "T3 t12 q2")
             _expect(
                 failures,
-                q2.lookup_hits >= q1.lookup_tokens - 6 * CHUNK,
+                q2.lookup_hits >= q1.lookup_tokens - 6 * harness.chunk,
                 f"prefix reuse too shallow: {q2.lookup_hits} of ~{q1.lookup_tokens}",
             )
             _expect(
@@ -657,7 +607,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             )
             _expect(
                 failures,
-                ba.lookup_hits <= ab2.lookup_hits - IMAGE_SPAN_MARGIN,
+                ba.lookup_hits <= ab2.lookup_hits - harness.image_span_margin,
                 f"swapped order hit {ba.lookup_hits} vs full {ab2.lookup_hits}",
             )
 
@@ -670,7 +620,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             _check_text(failures, harness, cat["t22-AC"], s2.text, "T3 t22 AC")
             _expect(
                 failures,
-                s2.lookup_hits >= IMAGE_SPAN_MARGIN + CHUNK,
+                s2.lookup_hits >= harness.image_span_margin + harness.chunk,
                 f"shared image prefix not reused: {s2.lookup_hits}",
             )
             _expect(
@@ -686,7 +636,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             stored = harness.stored_tokens_total()
             _expect(
                 failures,
-                stored >= missed - len(singles) * CHUNK,
+                stored >= missed - len(singles) * harness.chunk,
                 f"under-storage on MP path: missed {missed} tokens but only "
                 f"{stored} were store-submitted",
             )
@@ -718,7 +668,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             _check_text(failures, harness, cat["t08-A"], after.text, "T3 t08 after")
             _expect(
                 failures,
-                after.lookup_hits >= after.lookup_tokens - 2 * CHUNK,
+                after.lookup_hits >= after.lookup_tokens - 2 * harness.chunk,
                 f"batched store not hittable: {after.lookup_hits}/"
                 f"{after.lookup_tokens}",
             )
@@ -737,7 +687,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
                 nc_b = harness.run(blind_b)
             _expect(
                 failures,
-                nc_b.lookup_hits > nc_b.lookup_tokens - IMAGE_SPAN_MARGIN,
+                nc_b.lookup_hits > nc_b.lookup_tokens - harness.image_span_margin,
                 f"negative control did not trip on the MP path: blind B hit "
                 f"only {nc_b.lookup_hits} of {nc_b.lookup_tokens} tokens",
             )
@@ -748,7 +698,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             failures.append("engine exception:\n" + traceback.format_exc())
         finally:
             harness.close()
-            server.terminate()
+            server.process.terminate()
             try:
                 server.wait(timeout=30)
             except subprocess.TimeoutExpired:

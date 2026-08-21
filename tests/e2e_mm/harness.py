@@ -107,6 +107,128 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
             )
 
 
+@dataclass(frozen=True)
+class MPServerHandle:
+    """A running LMCache MP cache server subprocess.
+
+    Attributes:
+        process: The server ``subprocess.Popen`` handle.
+        zmq_port: ZMQ port the connector must talk to.
+        http_port: HTTP observability port (residency snapshots).
+    """
+
+    process: object
+    zmq_port: int
+    http_port: int
+
+
+def start_mp_cache_server(
+    zmq_port: int,
+    http_port: int,
+    chunk_size: int,
+    log_path: pathlib.Path,
+    l1_size_gb: float,
+    separate_object_groups: bool = False,
+    start_timeout_s: float = 120.0,
+) -> MPServerHandle:
+    """Launch an LMCache MP cache server and wait until it is healthy.
+
+    Args:
+        zmq_port: ZMQ port for the connector traffic.
+        http_port: HTTP port for the observability API.
+        chunk_size: Server chunk size in tokens. For a hybrid model this
+            MUST be vLLM's unified block size (or a multiple); the
+            connector refuses to register otherwise.
+        log_path: File capturing the server's stdout/stderr.
+        l1_size_gb: L1 (host memory) pool size in GB.
+        separate_object_groups: Give each KV cache group its own cache
+            objects. Required for Mamba/GDN hybrids, whose recurrent-state
+            layers must not share objects with the full-attention layers.
+        start_timeout_s: How long to wait for the health endpoint.
+
+    Returns:
+        The running server handle.
+
+    Raises:
+        RuntimeError: If the server does not become healthy in time.
+    """
+    # Standard
+    import time
+    import urllib.error
+    import urllib.request
+
+    log_file = open(log_path, "w")
+    # The server must run THIS repo's lmcache too: `-m` resolves through the
+    # child's own sys.path, where the venv's editable install would
+    # otherwise win. PYTHONPATH entries precede site-packages.
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{repo_root}:{existing}" if existing else str(repo_root)
+    command = [
+        sys.executable,
+        "-m",
+        "lmcache.v1.multiprocess.http_server",
+        "--port",
+        str(zmq_port),
+        "--http-port",
+        str(http_port),
+        "--chunk-size",
+        str(chunk_size),
+        "--l1-size-gb",
+        str(l1_size_gb),
+        "--eviction-policy",
+        "LRU",
+    ]
+    if separate_object_groups:
+        command.append("--separate-object-groups")
+    proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+    deadline = time.monotonic() + start_timeout_s
+    url = f"http://localhost:{http_port}/healthcheck"
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if resp.status == 200:
+                    return MPServerHandle(
+                        process=proc, zmq_port=zmq_port, http_port=http_port
+                    )
+        except (urllib.error.URLError, OSError):
+            time.sleep(2)
+    proc.terminate()
+    raise RuntimeError(
+        f"MP cache server failed to become healthy; log tail:\n"
+        f"{log_path.read_text()[-2000:]}"
+    )
+
+
+def hybrid_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
+    """vLLM engine kwargs a Mamba/GDN hybrid model requires.
+
+    Empty for non-hybrid specs. The three settings are mandatory, not
+    tuning (see ``docs/source/mp/hybrid_models.rst``): ``align`` is the
+    only Mamba cache mode the GDN backends support, it only works with
+    vLLM prefix caching enabled, and a scheduler step must advance at
+    least one whole unified block for the state snapshot to land on a
+    block boundary.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        Engine kwargs to merge into every engine for this model (test
+        engine, baseline engine, isolated scenarios).
+    """
+    if not spec.hybrid_block_tokens:
+        return {}
+    return {
+        "mamba_cache_mode": "align",
+        "enable_prefix_caching": True,
+        "max_num_batched_tokens": spec.hybrid_block_tokens,
+    }
+
+
 def mm_limits(spec: ModelSpec) -> dict[str, int]:
     """Per-prompt multimodal item limits for the engines of ``spec``.
 
@@ -389,9 +511,85 @@ class MMHarness:
             enable_prefix_caching=False,
             limit_mm_per_prompt=mm_limits(spec),
         )
+        engine_kwargs.update(hybrid_engine_kwargs(spec))
         engine_kwargs.update(extra_engine_kwargs)
         self.llm = LLM(**engine_kwargs)
+        self._validate_block_size()
         self._setup_stats()
+
+    @property
+    def chunk(self) -> int:
+        """LMCache chunk size in tokens — the granularity of every hit.
+
+        Tests read their hit-count tolerances from this instead of the
+        module constant: a hybrid model's chunk must equal vLLM's unified
+        block size (hundreds of tokens), not the 16-token default.
+        """
+        return self.spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE
+
+    @property
+    def objects_per_chunk(self) -> int:
+        """Cache objects stored per token chunk.
+
+        One for a plain paged-KV model; a hybrid model running with
+        ``--separate-object-groups`` stores one object per KV cache group
+        (full-attention KV plus recurrent state), which the
+        storage-conservation bounds must account for.
+        """
+        return self.spec.hybrid_object_groups or 1
+
+    @property
+    def image_span_margin(self) -> int:
+        """Hit-count separation that proves a hit did NOT reach the image.
+
+        Test images are 448x448 (hundreds of placeholder tokens), so four
+        chunks of separation is unambiguous at the 16-token default. At a
+        hybrid model's block granularity the image span is smaller than one
+        block, so the margin is expressed in blocks instead: the padded
+        hybrid prompt places whole shared blocks before the image and
+        several more after it, and a request that differs only in image
+        content hits exactly the leading shared blocks — while a false hit
+        reaches the trailing blocks too.
+        """
+        return (2 if self.spec.hybrid_block_tokens else 4) * self.chunk
+
+    def expected_full_hit(self, lookup_tokens: int) -> int:
+        """Hit count a fully cached prompt of ``lookup_tokens`` must reach.
+
+        LMCache stores whole chunks and never serves the final token from
+        cache, so a fully stored prompt hits every chunk that ends before
+        its last token.
+
+        Args:
+            lookup_tokens: The prompt's lookup token count.
+
+        Returns:
+            The expected hit count for a full-hit replay.
+        """
+        return self.chunk * ((lookup_tokens - 1) // self.chunk)
+
+    def _validate_block_size(self) -> None:
+        """Fail loudly if a hybrid spec's declared block size is wrong.
+
+        ``ModelSpec.hybrid_block_tokens`` drives the MP server's chunk
+        size, the scheduler budget, and every hit tolerance in the suite.
+        vLLM derives the real unified block size from the model's head
+        dimensions and GDN state size, so a stale declared value would
+        silently produce meaningless (or trivially passing) assertions.
+
+        Raises:
+            RuntimeError: If the engine's block size differs from the spec.
+        """
+        if not self.spec.hybrid_block_tokens:
+            return
+        actual = self.llm.llm_engine.vllm_config.cache_config.block_size
+        if actual != self.spec.hybrid_block_tokens:
+            raise RuntimeError(
+                f"{self.spec.key}: spec declares hybrid_block_tokens="
+                f"{self.spec.hybrid_block_tokens} but vLLM chose {actual}; "
+                f"update the spec (the value drives the MP server chunk "
+                f"size and every hit tolerance)"
+            )
 
     def _kv_transfer_config(self):
         """Build the KV transfer config selecting the deployment path."""
@@ -476,6 +674,7 @@ class MMHarness:
         # Third Party
         from vllm import SamplingParams
 
+        self._reset_local_prefix_cache()
         tokens_before, hits_before = self._cumulative_lookup_stats()
         log_before = len(self._identifier_log)
         outputs = self.llm.chat(
@@ -509,6 +708,7 @@ class MMHarness:
         # Third Party
         from vllm import SamplingParams
 
+        self._reset_local_prefix_cache()
         tokens_before, hits_before = self._cumulative_lookup_stats()
         outputs = self.llm.chat(
             [r.messages() for r in requests],
@@ -530,6 +730,18 @@ class MMHarness:
             lookup_tokens=tokens_after - tokens_before,
             lookup_hits=hits_after - hits_before,
         )
+
+    def _reset_local_prefix_cache(self) -> None:
+        """Drop vLLM's OWN prefix cache so LMCache is the only hit source.
+
+        No-op for models the suite runs with vLLM prefix caching disabled
+        (the default). Hybrid models cannot disable it — ``align`` mode
+        requires it — so without this reset vLLM would serve repeats from
+        GPU memory, LMCache would never be asked, and the suite's hit
+        arithmetic would measure the wrong cache.
+        """
+        if self.spec.hybrid_block_tokens:
+            self.llm.reset_prefix_cache()
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
         return cumulative_lookup_stats(self.monitor)
@@ -823,6 +1035,10 @@ def compute_baselines(
         RuntimeError: If the baseline subprocess fails.
     """
     todo = [r for r in requests if r.needs_baseline]
+    # A hybrid model's baseline must run the same mandatory engine settings
+    # as the engine under test (align mode changes the numeric regime), so
+    # an output difference can only come from LMCache.
+    extra_engine_kwargs = {**hybrid_engine_kwargs(spec), **extra_engine_kwargs}
     spec_json = {
         "model": spec.hf_id,
         "max_model_len": spec.max_model_len,
