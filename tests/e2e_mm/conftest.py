@@ -24,25 +24,29 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def pytest_collection_modifyitems(config, items):
-    # Modality-gated tests (e.g. T2.3 video) are DESELECTED -- not skipped --
-    # for models whose spec does not declare the modality: a skip would
-    # poison certification (certify.py treats any skip as failure), while a
-    # deselect keeps the run's claim exactly as wide as the spec.
+    # Spec-gated tests (modality, special-architecture add-on suites) are
+    # DESELECTED -- not skipped -- for models whose spec does not declare
+    # the capability: a skip would poison certification (certify.py treats
+    # any skip as failure), while a deselect keeps the run's claim exactly
+    # as wide as the spec.
     from specs import MODEL_SPECS
 
     deselected = []
     kept = []
     for item in items:
-        marker = item.get_closest_marker("requires_modality")
-        if marker is not None:
-            model_key = getattr(item, "callspec", None)
-            model_key = model_key.params.get("harness") if model_key else None
-            if (
-                model_key is not None
-                and marker.args[0] not in MODEL_SPECS[model_key].modalities
-            ):
-                deselected.append(item)
-                continue
+        model_key = getattr(item, "callspec", None)
+        model_key = model_key.params.get("harness") if model_key else None
+        spec = MODEL_SPECS[model_key] if model_key is not None else None
+        gated_out = False
+        if spec is not None:
+            modality = item.get_closest_marker("requires_modality")
+            extra = item.get_closest_marker("requires_extra_suite")
+            gated_out = (
+                modality is not None and modality.args[0] not in spec.modalities
+            ) or (extra is not None and extra.args[0] not in spec.extra_suites)
+        if gated_out:
+            deselected.append(item)
+            continue
         kept.append(item)
     if deselected:
         config.hook.pytest_deselected(items=deselected)
