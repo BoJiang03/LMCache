@@ -140,14 +140,30 @@ three ways: plain-vLLM baseline, LMCache cold pass (miss path), and an
 identical second pass where every prompt's KV is restored from LMCache (hit
 path). Pass criteria: answer flips ≤ 0.5% and |total score delta| ≤ 10
 points (of 2800) on BOTH comparisons (pass1 vs baseline, pass2 vs pass1),
-and pass2 lookup hit ratio ≥ 0.8. The pass1-vs-baseline gate matters:
-cross-image contamination poisons the cache on the cold pass and then
-replays deterministically, so the pass2-vs-pass1 comparison alone cannot
-detect it.
+plus a non-vacuity gate on the hit path. The pass1-vs-baseline gate
+matters: cross-image contamination poisons the cache on the cold pass and
+then replays deterministically, so the pass2-vs-pass1 comparison alone
+cannot detect it.
+
+The non-vacuity gate is granularity-dependent. At the 16-token chunk size
+it is the raw pass-2 lookup hit ratio (≥ 0.8). A hybrid model caches at
+vLLM's unified block size (e.g. 544 tokens), where an 800-token MME prompt
+caps out at a 0.68 raw ratio however perfect the hit path is, so those runs
+are gated on **coverage** instead: pass 2 must find ≥ 95% of the tokens
+pass 1 actually stored. Coverage is granularity-free and strictly sharper;
+the report records which criterion applied and the certificate refuses a
+parity report produced on a path the model is not certified on.
 
 ```bash
 cd tests/e2e_mm && CUDA_VISIBLE_DEVICES=0 python benchmark_parity.py
 ```
+
+`--hybrid-block-tokens N` moves the LMCache passes onto the MP path with a
+cache server started by the script (see T3 below), applies the mandatory
+hybrid engine settings to the baseline engine too, and empties vLLM's own
+prefix cache between passes — `align` mode forces vLLM prefix caching on,
+which would otherwise serve pass 2 out of GPU memory and leave LMCache
+unasked. `certify.py` passes it from the spec.
 
 Long-running (three full benchmark passes); intended for nightly/release
 validation rather than PR CI. Certification for the "supported" level
@@ -171,6 +187,19 @@ The same T0+T1 core must pass per path. Implemented:
   are transport-independent.
 
 Planned: CPU offload round-trip, remote backend cross-instance, TP>1.
+
+**Mamba/GDN hybrids are MP-only.** vLLM offers its hybrid KV cache manager
+solely to connectors that advertise support for it, which the in-process
+`LMCacheConnectorV1` does not: engine init fails outright with "Hybrid KV
+cache manager is disabled but failed to convert the KV cache specs to one
+unified type". For a model with `hybrid_block_tokens` set, the whole suite
+therefore runs on the MP path (the `harness` fixture starts the server),
+the three in-process isolated scenarios are excluded from parametrization,
+and the certificate claims the MP path only. Two consequences worth
+knowing: chunked prefill is covered for free (a scheduler step advances
+exactly one unified block, so every padded prompt spans several steps), and
+capacity eviction / preemption stay uncovered until those scenarios grow an
+MP variant.
 
 ### Special-architecture add-ons
 
@@ -268,6 +297,25 @@ into the tests:
   every entry before its revisit, and the hit-ratio gate fails at ~0
   with zero flips (pure recompute, not corruption). Size it to hold the
   whole benchmark: questions × prompt tokens × KV bytes per token.
+
+- `hybrid_block_tokens` — vLLM's unified block size for a Mamba/GDN hybrid
+  (Qwen3.5-2B: 544; vLLM prints it at startup), 0 for every other model.
+  Setting it switches the model onto the MP-only path described in T3,
+  forces the three mandatory hybrid engine settings onto every engine
+  (`mamba_cache_mode=align`, vLLM prefix caching on,
+  `max_num_batched_tokens` ≥ one block), and becomes the granularity every
+  hit-count tolerance is derived from (`harness.chunk`). The harness
+  validates it against the live engine, so a stale value fails loudly
+  instead of making assertions trivially true. Because a cacheable unit is
+  now hundreds of tokens — larger than a 196-token image span — the prompts
+  are padded to whole blocks around each image (`HYBRID_PRE_PAD_BLOCKS` /
+  `HYBRID_POST_PAD_BLOCKS` and the mid-pad in `conftest.py`); without the
+  post-pad the block-granularity hit counts of two *different* images are
+  identical and the suite's primary cross-image detector goes blind.
+- `hybrid_object_groups` — cache objects stored per block, i.e. the number
+  of KV cache groups the server keeps separate under
+  `--separate-object-groups` (2: full-attention KV plus recurrent state).
+  The storage-conservation bounds multiply by it.
 
 The MME parity gate additionally enforces a baseline answer parse-rate
 (`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the

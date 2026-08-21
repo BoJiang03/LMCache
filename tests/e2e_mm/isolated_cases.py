@@ -700,9 +700,9 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             harness.close()
             server.process.terminate()
             try:
-                server.wait(timeout=30)
+                server.process.wait(timeout=30)
             except subprocess.TimeoutExpired:
-                server.kill()
+                server.process.kill()
         if failures:
             log_path = pathlib.Path(tmp) / "mp_server.log"
             metrics["server_log_tail"] = log_path.read_text()[-8000:]

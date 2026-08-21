@@ -117,7 +117,7 @@ class MPServerHandle:
         http_port: HTTP observability port (residency snapshots).
     """
 
-    process: object
+    process: subprocess.Popen
     zmq_port: int
     http_port: int
 
@@ -203,30 +203,207 @@ def start_mp_cache_server(
     )
 
 
-def hybrid_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
+def hybrid_engine_kwargs(block_tokens: int) -> dict[str, object]:
     """vLLM engine kwargs a Mamba/GDN hybrid model requires.
 
-    Empty for non-hybrid specs. The three settings are mandatory, not
-    tuning (see ``docs/source/mp/hybrid_models.rst``): ``align`` is the
-    only Mamba cache mode the GDN backends support, it only works with
-    vLLM prefix caching enabled, and a scheduler step must advance at
-    least one whole unified block for the state snapshot to land on a
-    block boundary.
+    Empty when ``block_tokens`` is 0 (not a hybrid). The three settings are
+    mandatory, not tuning (see ``docs/source/mp/hybrid_models.rst``):
+    ``align`` is the only Mamba cache mode the GDN backends support, it
+    only works with vLLM prefix caching enabled, and a scheduler step must
+    advance at least one whole unified block for the state snapshot to land
+    on a block boundary.
 
     Args:
-        spec: The model under certification.
+        block_tokens: vLLM's unified block size for the model
+            (``ModelSpec.hybrid_block_tokens``); 0 for a non-hybrid.
 
     Returns:
         Engine kwargs to merge into every engine for this model (test
-        engine, baseline engine, isolated scenarios).
+        engine, baseline engine, isolated scenarios, MME parity).
     """
-    if not spec.hybrid_block_tokens:
+    if not block_tokens:
         return {}
     return {
         "mamba_cache_mode": "align",
         "enable_prefix_caching": True,
-        "max_num_batched_tokens": spec.hybrid_block_tokens,
+        "max_num_batched_tokens": block_tokens,
     }
+
+
+def reset_vllm_prefix_cache(llm) -> str:
+    """Empty vLLM's own prefix cache, by force if the public API refuses.
+
+    Every caller that measures LMCache hits on a model running with vLLM
+    prefix caching enabled (i.e. every Mamba/GDN hybrid, whose ``align``
+    mode requires it) needs this. Measured on Qwen3.5-2B (2026-08-21): a
+    repeated prompt whose KV is in LMCache is served ENTIRELY by vLLM's own
+    cache (544 local / 0 external cached tokens) while the connector still
+    reports a 544-token hit — the LMCache-side counters describe what the
+    cache HELD, not what was loaded, so without this reset the hit
+    arithmetic passes while the retrieve path never runs.
+
+    ``LLM.reset_prefix_cache()`` refuses (warning, ``False``) while any GPU
+    block is still referenced, and on the MP path exactly that happens: the
+    connector keeps the most recent request's blocks (4 of 12405 measured)
+    referenced until a later scheduler step releases them, and no step ever
+    comes while the engine is idle. Retrying cannot help, so the index is
+    cleared directly instead — the same two operations the public API
+    performs after its refcount check, which is safe here because no
+    request is running: the still-referenced blocks keep their data for the
+    pending store, they merely stop being hit candidates, and vLLM's own
+    eviction path already tolerates a hash-less block.
+
+    Args:
+        llm: The vLLM ``LLM`` engine.
+
+    Returns:
+        ``"public_api"`` if vLLM accepted the reset, ``"forced"`` if the
+        index had to be cleared directly.
+    """
+    if llm.reset_prefix_cache():
+        return "public_api"
+    core = llm.llm_engine.engine_core
+    core = getattr(core, "engine_core", core)
+    pool = core.scheduler.kv_cache_manager.block_pool
+    pool.cached_block_hash_to_block = type(pool.cached_block_hash_to_block)()
+    for block in pool.blocks:
+        block.reset_hash()
+    return "forced"
+
+
+class VllmPrefillCounters:
+    """vLLM's own accounting of WHO served each prefilled token.
+
+    The LMCache-side counters report what the cache held; these report what
+    the engine actually skipped computing, split by provider. The pair is
+    what makes a hit-count assertion meaningful: a replay served out of
+    vLLM's GPU prefix cache raises ``local_cached`` and leaves
+    ``external_cached`` at zero, while the LMCache counters look identical
+    to a real load.
+
+    Patches ``PrefillStats.set`` on the class, so at most one instance per
+    process may be installed (the suite forces single-process vLLM, so the
+    engine core runs here).
+
+    Attributes:
+        local_cached: Cumulative tokens served from vLLM's prefix cache.
+        external_cached: Cumulative tokens served by the KV connector.
+    """
+
+    def __init__(self) -> None:
+        self.local_cached = 0
+        self.external_cached = 0
+
+    def install(self) -> None:
+        """Wrap ``PrefillStats.set``. Call before the engine is built."""
+        # Third Party
+        from vllm.v1.metrics.stats import PrefillStats
+
+        counters = self
+        original = PrefillStats.set
+
+        def patched(
+            stats,
+            num_prompt_tokens: int,
+            num_local_cached_tokens: int,
+            num_external_cached_tokens: int,
+        ):
+            counters.local_cached += num_local_cached_tokens
+            counters.external_cached += num_external_cached_tokens
+            return original(
+                stats,
+                num_prompt_tokens,
+                num_local_cached_tokens,
+                num_external_cached_tokens,
+            )
+
+        PrefillStats.set = patched
+
+
+def mp_kv_transfer_config(zmq_port: int):
+    """vLLM KV-transfer config selecting THIS repo's MP connector.
+
+    Shared by every MP-path caller (``MPHarness``, the MME parity run) so
+    the connector module path and the server address keys cannot drift
+    apart between them.
+
+    Args:
+        zmq_port: ZMQ port of the running MP cache server.
+
+    Returns:
+        The ``KVTransferConfig`` to hand to ``LLM(...)``.
+    """
+    # Third Party
+    from vllm.config import KVTransferConfig
+
+    return KVTransferConfig(
+        kv_connector="LMCacheMPConnector",
+        kv_connector_module_path="lmcache.integration.vllm.lmcache_mp_connector",
+        kv_role="kv_both",
+        kv_connector_extra_config={
+            "lmcache.mp.host": "tcp://localhost",
+            "lmcache.mp.port": zmq_port,
+        },
+    )
+
+
+class MPTransportCounters:
+    """Lookup and store counters for the MP deployment path.
+
+    The MP connector reports no in-process LMCache stats, so the counters
+    come from wrapping the adapter methods. The wrappers are installed on
+    the CLASSES, which bounds this to at most one live instance per
+    process (the suite forces single-process vLLM, so the worker adapter
+    lives here too). Lookups resolve asynchronously: token counts are
+    remembered at submit time and booked, with the hit count, when
+    ``check_lookup_result`` first returns a value for the request.
+
+    Attributes:
+        lookup_tokens: Cumulative tokens submitted for lookup.
+        lookup_hits: Cumulative tokens the server reported as hits.
+        stored_tokens: Cumulative tokens submitted for storage.
+    """
+
+    def __init__(self) -> None:
+        self.lookup_tokens = 0
+        self.lookup_hits = 0
+        self.stored_tokens = 0
+        self._pending_lookup_tokens: dict[str, int] = {}
+
+    def install(self) -> None:
+        """Wrap the MP adapter methods. Call before the engine is built."""
+        # First Party
+        from lmcache.integration.vllm.vllm_multi_process_adapter import (
+            LMCacheMPSchedulerAdapter,
+            LMCacheMPWorkerAdapter,
+        )
+
+        counters = self
+        original_submit = LMCacheMPSchedulerAdapter.maybe_submit_lookup_request
+        original_check = LMCacheMPSchedulerAdapter.check_lookup_result
+        original_store = LMCacheMPWorkerAdapter.batched_submit_store_requests
+
+        def submit(adapter, request_id, token_ids, *args, **kwargs):
+            counters._pending_lookup_tokens.setdefault(request_id, len(token_ids))
+            return original_submit(adapter, request_id, token_ids, *args, **kwargs)
+
+        def check(adapter, request_id):
+            ret = original_check(adapter, request_id)
+            if ret is not None:
+                tokens = counters._pending_lookup_tokens.pop(request_id, None)
+                if tokens is not None:
+                    counters.lookup_tokens += tokens
+                    counters.lookup_hits += ret
+            return ret
+
+        def store(adapter, request_ids, ops, *args, **kwargs):
+            for op in ops:
+                counters.stored_tokens += op.end - op.start
+            return original_store(adapter, request_ids, ops, *args, **kwargs)
+
+        LMCacheMPSchedulerAdapter.maybe_submit_lookup_request = submit
+        LMCacheMPSchedulerAdapter.check_lookup_result = check
+        LMCacheMPWorkerAdapter.batched_submit_store_requests = store
 
 
 def mm_limits(spec: ModelSpec) -> dict[str, int]:
@@ -497,6 +674,10 @@ class MMHarness:
         self._identifier_log: list[str] = []
         self._identity_blind = False
         self._install_identifier_recorder()
+        # vLLM's own view of who served each prefilled token, the ground
+        # truth every hit assertion is checked against.
+        self._prefill = VllmPrefillCounters()
+        self._prefill.install()
         self._install_transport_hooks()
 
         # Third Party
@@ -511,7 +692,7 @@ class MMHarness:
             enable_prefix_caching=False,
             limit_mm_per_prompt=mm_limits(spec),
         )
-        engine_kwargs.update(hybrid_engine_kwargs(spec))
+        engine_kwargs.update(hybrid_engine_kwargs(spec.hybrid_block_tokens))
         engine_kwargs.update(extra_engine_kwargs)
         self.llm = LLM(**engine_kwargs)
         self._validate_block_size()
@@ -677,6 +858,7 @@ class MMHarness:
         self._reset_local_prefix_cache()
         tokens_before, hits_before = self._cumulative_lookup_stats()
         log_before = len(self._identifier_log)
+        provenance_before = self._prefill_provenance()
         outputs = self.llm.chat(
             request.messages(),
             sampling_params=SamplingParams(
@@ -690,6 +872,9 @@ class MMHarness:
         )
         tokens_after, hits_after = self._cumulative_lookup_stats()
         seen = self._identifier_log[log_before:]
+        self._check_hit_provenance(
+            hits_after - hits_before, provenance_before, request.key
+        )
         return StepResult(
             text=outputs[0].outputs[0].text,
             lookup_tokens=tokens_after - tokens_before,
@@ -710,6 +895,7 @@ class MMHarness:
 
         self._reset_local_prefix_cache()
         tokens_before, hits_before = self._cumulative_lookup_stats()
+        provenance_before = self._prefill_provenance()
         outputs = self.llm.chat(
             [r.messages() for r in requests],
             sampling_params=[
@@ -725,11 +911,69 @@ class MMHarness:
             use_tqdm=False,
         )
         tokens_after, hits_after = self._cumulative_lookup_stats()
+        # Requests inside one batch legitimately share prefixes (that is
+        # what the concurrency cases exercise), so vLLM's own cache may
+        # serve some of them; only the accounting identity is checked.
+        self._check_hit_provenance(
+            hits_after - hits_before,
+            provenance_before,
+            f"batch of {len(requests)}",
+            local_budget=tokens_after - tokens_before,
+        )
         return BatchResult(
             texts=tuple(o.outputs[0].text for o in outputs),
             lookup_tokens=tokens_after - tokens_before,
             lookup_hits=hits_after - hits_before,
         )
+
+    def _prefill_provenance(self) -> tuple[int, int]:
+        """Snapshot vLLM's cumulative (local, external) cached tokens."""
+        return (self._prefill.local_cached, self._prefill.external_cached)
+
+    def _check_hit_provenance(
+        self,
+        lookup_hits: int,
+        before: tuple[int, int],
+        where: str,
+        local_budget: int = 0,
+    ) -> None:
+        """Verify the reported hits were really served by LMCache.
+
+        The LMCache counters report what the cache HELD for a prompt, not
+        what the engine loaded: with vLLM prefix caching on (mandatory for
+        hybrids) a replay can be served entirely out of GPU memory while
+        the connector still reports a full hit, which would make every
+        hit-count assertion in the suite pass without the retrieve path
+        running once. vLLM's own per-prefill split settles it.
+
+        Args:
+            lookup_hits: Hits LMCache reported for this step.
+            before: The ``_prefill_provenance()`` snapshot taken before it.
+            where: Label for the error message (request key or batch size).
+            local_budget: Tokens vLLM's own cache may legitimately have
+                served — 0 for a single request (it cannot share a prefix
+                with itself), the step's lookup tokens for a batch, whose
+                requests are meant to share prefixes with each other.
+
+        Raises:
+            RuntimeError: If vLLM's cache served tokens it should not have,
+                or if the reported hits were not actually loaded.
+        """
+        local = self._prefill.local_cached - before[0]
+        external = self._prefill.external_cached - before[1]
+        if local > local_budget:
+            raise RuntimeError(
+                f"{where}: vLLM's own prefix cache served {local} tokens "
+                f"(budget {local_budget}); LMCache's {lookup_hits} reported "
+                f"hits would be measuring the wrong cache"
+            )
+        if external < lookup_hits - local:
+            raise RuntimeError(
+                f"{where}: LMCache reported {lookup_hits} hit tokens but "
+                f"vLLM only skipped {external} on the connector's account "
+                f"({local} locally cached); the retrieve path did not run "
+                f"for the difference"
+            )
 
     def _reset_local_prefix_cache(self) -> None:
         """Drop vLLM's OWN prefix cache so LMCache is the only hit source.
@@ -737,11 +981,13 @@ class MMHarness:
         No-op for models the suite runs with vLLM prefix caching disabled
         (the default). Hybrid models cannot disable it — ``align`` mode
         requires it — so without this reset vLLM would serve repeats from
-        GPU memory, LMCache would never be asked, and the suite's hit
-        arithmetic would measure the wrong cache.
+        GPU memory while LMCache still reported a hit, and the suite's hit
+        arithmetic would describe the wrong cache. That the reset worked is
+        verified per step by ``_check_hit_provenance``; see
+        ``reset_vllm_prefix_cache`` for why it has to be forced.
         """
         if self.spec.hybrid_block_tokens:
-            self.llm.reset_prefix_cache()
+            reset_vllm_prefix_cache(self.llm)
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
         return cumulative_lookup_stats(self.monitor)
@@ -897,11 +1143,9 @@ class MPHarness(MMHarness):
     ``kv_connector_module_path``); the server process must already be
     running. Stats plumbing differs from the in-process path:
 
-    - lookup tokens/hits are recorded by wrapping the scheduler adapter's
-      lookup submit/check methods (class-level wrappers: at most one
-      MPHarness per process);
-    - store intent is recorded by wrapping the worker adapter's batched
-      store submission (works because the suite forces single-process vLLM);
+    - lookup tokens/hits and store intent come from
+      ``MPTransportCounters`` (class-level adapter wrappers, hence at most
+      one MPHarness per process);
     - residency comes from the server's HTTP ``/status`` endpoint.
 
     Args:
@@ -922,76 +1166,26 @@ class MPHarness(MMHarness):
     ):
         self._zmq_port = zmq_port
         self._http_port = http_port
-        self._lookup_tokens_total = 0
-        self._lookup_hits_total = 0
-        self._stored_tokens = 0
-        self._pending_lookup_tokens: dict[str, int] = {}
+        self._counters = MPTransportCounters()
         super().__init__(spec, baselines, extra_engine_kwargs=extra_engine_kwargs)
 
     def _kv_transfer_config(self):
         """Select THIS repo's MP connector via the module-path override."""
-        # Third Party
-        from vllm.config import KVTransferConfig
-
-        return KVTransferConfig(
-            kv_connector="LMCacheMPConnector",
-            kv_connector_module_path=("lmcache.integration.vllm.lmcache_mp_connector"),
-            kv_role="kv_both",
-            kv_connector_extra_config={
-                "lmcache.mp.host": "tcp://localhost",
-                "lmcache.mp.port": self._zmq_port,
-            },
-        )
+        return mp_kv_transfer_config(self._zmq_port)
 
     def _install_transport_hooks(self) -> None:
-        """Wrap the MP adapters to expose per-request lookup/store counters.
-
-        The scheduler adapter resolves lookups asynchronously: tokens are
-        remembered at submit time and booked (with the hit count) when
-        ``check_lookup_result`` first returns a value for the request.
-        """
-        # First Party
-        from lmcache.integration.vllm.vllm_multi_process_adapter import (
-            LMCacheMPSchedulerAdapter,
-            LMCacheMPWorkerAdapter,
-        )
-
-        harness = self
-        original_submit = LMCacheMPSchedulerAdapter.maybe_submit_lookup_request
-        original_check = LMCacheMPSchedulerAdapter.check_lookup_result
-        original_store = LMCacheMPWorkerAdapter.batched_submit_store_requests
-
-        def submit(adapter, request_id, token_ids, *args, **kwargs):
-            harness._pending_lookup_tokens.setdefault(request_id, len(token_ids))
-            return original_submit(adapter, request_id, token_ids, *args, **kwargs)
-
-        def check(adapter, request_id):
-            ret = original_check(adapter, request_id)
-            if ret is not None:
-                tokens = harness._pending_lookup_tokens.pop(request_id, None)
-                if tokens is not None:
-                    harness._lookup_tokens_total += tokens
-                    harness._lookup_hits_total += ret
-            return ret
-
-        def store(adapter, request_ids, ops, *args, **kwargs):
-            for op in ops:
-                harness._stored_tokens += op.end - op.start
-            return original_store(adapter, request_ids, ops, *args, **kwargs)
-
-        LMCacheMPSchedulerAdapter.maybe_submit_lookup_request = submit
-        LMCacheMPSchedulerAdapter.check_lookup_result = check
-        LMCacheMPWorkerAdapter.batched_submit_store_requests = store
+        """Wrap the MP adapters to expose lookup/store counters."""
+        self._counters.install()
 
     def _setup_stats(self) -> None:
         self.monitor = None
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
-        return (self._lookup_tokens_total, self._lookup_hits_total)
+        return (self._counters.lookup_tokens, self._counters.lookup_hits)
 
     def stored_tokens_total(self) -> int:
         """Cumulative tokens submitted to the MP server for storage."""
-        return self._stored_tokens
+        return self._counters.stored_tokens
 
     def storage(self) -> StorageSnapshot:
         """Resident object count/bytes from the MP server's /status API."""
@@ -1038,7 +1232,10 @@ def compute_baselines(
     # A hybrid model's baseline must run the same mandatory engine settings
     # as the engine under test (align mode changes the numeric regime), so
     # an output difference can only come from LMCache.
-    extra_engine_kwargs = {**hybrid_engine_kwargs(spec), **extra_engine_kwargs}
+    extra_engine_kwargs = {
+        **hybrid_engine_kwargs(spec.hybrid_block_tokens),
+        **extra_engine_kwargs,
+    }
     spec_json = {
         "model": spec.hf_id,
         "max_model_len": spec.max_model_len,

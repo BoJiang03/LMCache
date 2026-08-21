@@ -32,28 +32,98 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 # First Party (test-local)
 from benchmark_parity import parity_gate  # noqa: E402
-from specs import MODEL_SPECS  # noqa: E402
+from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
+from specs import MODEL_SPECS, ModelSpec  # noqa: E402
 
-CERTIFICATE_SCHEMA_VERSION = 2
+CERTIFICATE_SCHEMA_VERSION = 3
 
-# What a SUPPORTED verdict does NOT cover. Kept in the certificate so the
-# claim is never wider than the evidence.
+# What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [
     "tensor-parallel (TP>1) and pipeline-parallel deployments",
     "remote / disk storage backends and cross-instance sharing",
     "audio modality (no audio model registered yet)",
-    "MP path chunk-boundary phases and collision pressure "
-    "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
     "allocator-level buffer accounting (tracked by the pin-count project)",
 ]
 
-# Deployment paths exercised by a green suite run (test_isolated_paths.py
-# runs the mp_connector scenario for every selected model).
-CERTIFIED_DEPLOYMENT_PATHS = [
-    "LMCacheConnectorV1 (in-process, single GPU, TP=1)",
-    "LMCacheMPConnector + MP cache server (single GPU, TP=1; "
-    "T0/T1 core, see README T3)",
+# Additional exclusions for a model certified on both paths: the suite's
+# bulk runs in-process and only the T3 scenario crosses the transport.
+DUAL_PATH_NOT_COVERED = [
+    "MP path chunk-boundary phases and collision pressure "
+    "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
 ]
+
+# Additional exclusions for a Mamba/GDN hybrid, which is MP-only.
+HYBRID_NOT_COVERED = [
+    "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
+    "cache manager only to connectors that advertise support for it, so a "
+    "hybrid model fails engine init there outright",
+    "capacity eviction and preemption-driven recompute: both isolated "
+    "scenarios drive the in-process connector (see IN_PROCESS_SCENARIOS)",
+    "bit-exact generation -- the GDN kernels have no batch-invariant mode, "
+    "so output equality is gated by the MME flip/score budget, not bytes",
+]
+
+IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
+MP_PATH = (
+    "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+)
+
+
+def certified_scope(spec: ModelSpec) -> dict:
+    """Describe exactly what a green run for ``spec`` covers.
+
+    The scope is deployment-path dependent: a Mamba/GDN hybrid runs the
+    whole suite on the MP path (the in-process connector cannot serve it)
+    at vLLM's unified block granularity, while every other model runs the
+    bulk in-process at the 16-token LMCache chunk size and crosses the
+    transport in the T3 scenario only.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The certificate's ``scope`` block: deployment paths, modalities,
+        cache granularity, storage backend and scheduling regimes proven.
+    """
+    if spec.hybrid_block_tokens:
+        return {
+            "deployment_paths": [MP_PATH],
+            "modalities": sorted(spec.modalities),
+            "chunk_size": spec.hybrid_block_tokens,
+            "chunk_size_note": "vLLM unified block size (Mamba/GDN align mode)",
+            "backend": "MP cache server L1, separate object groups",
+            "scheduling": [
+                "chunked prefill (inherent: a scheduler step advances one "
+                "unified block)",
+                "concurrent batches",
+            ],
+        }
+    return {
+        "deployment_paths": [IN_PROCESS_PATH, MP_PATH],
+        "modalities": sorted(spec.modalities),
+        "chunk_size": LMCACHE_TEST_CHUNK_SIZE,
+        "chunk_size_note": "LMCache chunk size",
+        "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+        "scheduling": [
+            "single-step and chunked prefill",
+            "concurrent batches",
+            "capacity eviction",
+            "preemption-driven recompute",
+        ],
+    }
+
+
+def known_not_covered(spec: ModelSpec) -> list[str]:
+    """List what a green run for ``spec`` leaves outside the claim.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The universal exclusions plus the ones its deployment path adds.
+    """
+    extra = HYBRID_NOT_COVERED if spec.hybrid_block_tokens else DUAL_PATH_NOT_COVERED
+    return KNOWN_NOT_COVERED + extra
 
 
 def run_suite(model_key: str, pressure_n: int, workdir: pathlib.Path) -> dict:
@@ -141,6 +211,8 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--max-flip-fraction", str(spec.mme_max_flip_fraction)]
     if spec.mme_max_local_cpu_gb:
         cmd += ["--max-local-cpu-gb", str(spec.mme_max_local_cpu_gb)]
+    if spec.hybrid_block_tokens:
+        cmd += ["--hybrid-block-tokens", str(spec.hybrid_block_tokens)]
     subprocess.run(
         cmd,
         cwd=script.parent,
@@ -152,14 +224,16 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
 
 
 def load_parity_report(
-    path: pathlib.Path, hf_id: str, max_flip_fraction: float = 0.0
+    path: pathlib.Path, spec: ModelSpec, max_flip_fraction: float = 0.0
 ) -> dict:
     """Load a previously recorded parity report and re-evaluate its gate.
 
     Args:
         path: Path to a report written by ``benchmark_parity.py``.
-        hf_id: Expected model id; a mismatch is refused (a certificate must
-            never cite another model's parity run).
+        spec: The model under certification; both its id and its deployment
+            path must match the report (a certificate must never cite
+            another model's parity run, nor an in-process run for a model
+            certified on the MP path only).
         max_flip_fraction: Per-model flip-budget override
             (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default.
 
@@ -167,13 +241,23 @@ def load_parity_report(
         The report dict with a freshly evaluated ``gate``.
 
     Raises:
-        ValueError: If the report is for a different model.
+        ValueError: If the report is for a different model or was produced
+            on a deployment path this model is not certified on.
     """
     report = json.loads(path.read_text())
-    if report.get("model") != hf_id:
+    if report.get("model") != spec.hf_id:
         raise ValueError(
             f"parity report {path} is for {report.get('model')!r}, "
-            f"certificate is for {hf_id!r}"
+            f"certificate is for {spec.hf_id!r}"
+        )
+    # Reports recorded before the field existed are all in-process runs.
+    recorded_path = report.get("deployment_path", "in_process")
+    expected_path = "mp" if spec.hybrid_block_tokens else "in_process"
+    if recorded_path != expected_path:
+        raise ValueError(
+            f"parity report {path} was produced on the {recorded_path!r} "
+            f"deployment path, but {spec.key} is certified on "
+            f"{expected_path!r}"
         )
     report["gate"] = parity_gate(report, max_flip_fraction)
     return report
@@ -214,7 +298,7 @@ def main() -> int:
     if args.parity_report:
         report = load_parity_report(
             pathlib.Path(args.parity_report),
-            spec.hf_id,
+            spec,
             spec.mme_max_flip_fraction,
         )
         parity = {"source": f"recorded:{args.parity_report}", "report": report}
@@ -246,21 +330,10 @@ def main() -> int:
         "hf_id": spec.hf_id,
         "commit": commit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scope": {
-            "deployment_paths": CERTIFIED_DEPLOYMENT_PATHS,
-            "modalities": sorted(spec.modalities),
-            "chunk_size": 16,
-            "backend": "LocalCPUBackend (in-process) / MP cache server L1",
-            "scheduling": [
-                "single-step and chunked prefill",
-                "concurrent batches",
-                "capacity eviction",
-                "preemption-driven recompute",
-            ],
-        },
+        "scope": certified_scope(spec),
         "suite": suite,
         "parity": parity,
-        "known_not_covered": KNOWN_NOT_COVERED,
+        "known_not_covered": known_not_covered(spec),
     }
     out_path.write_text(json.dumps(certificate, indent=2))
     print(f"[certify] {args.model_key}: {verdict} -> {out_path}")
