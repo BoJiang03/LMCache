@@ -52,6 +52,16 @@ def pytest_collection_modifyitems(config, items):
         config.hook.pytest_deselected(items=deselected)
         items[:] = kept
 
+    # Run tests that do NOT use the session engine BEFORE those that do.
+    # The isolated scenarios spawn their own engine subprocess at the same
+    # gpu_memory_utilization on the same GPU; the session harness — once
+    # created by the first harness-using test — stays resident until
+    # session end, and two engines do not fit. This was previously an
+    # accident of file-name order (test_isolated_paths < test_mm_acceptance)
+    # that the deepstack add-on file broke; the sort is stable, so order
+    # within each group is unchanged.
+    items.sort(key=lambda item: "harness" in getattr(item, "fixturenames", ()))
+
     for item in items:
         item.add_marker(pytest.mark.mm_e2e)
     if os.environ.get("LMCACHE_MM_E2E") != "1":
