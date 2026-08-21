@@ -91,6 +91,22 @@ class ModelSpec:
             token block under ``--separate-object-groups`` (full-attention
             KV + recurrent-state groups; 2 for the Qwen3.5 family). Used
             by the storage-conservation bounds. 0 for non-hybrids.
+        isolated_gpu_utilization: GPU fraction for the engines
+            ``isolated_cases.py`` starts, overriding its 0.35 default
+            (0 = use the default). That default assumes an isolated engine
+            may share the GPU with the acceptance session's engine, which
+            leaves too little for a model whose weights alone exceed it --
+            27B in bf16 needs 0.37 before a single KV block. Raising it is
+            safe because the scenarios each run in their own subprocess and
+            the isolated module is collected before the acceptance module,
+            so no session engine is alive yet.
+        mp_server_l1_gb: L1 capacity (GB) for the MP cache servers the
+            suite starts, overriding their hybrid defaults (0 = use them).
+            A model's per-block cost is ``blocks x layers x page_size``,
+            which varies by two orders of magnitude across the registered
+            hybrids; a capacity that cannot hold one test's working set
+            makes the cache evict mid-test and the store-conservation
+            audits fail for a reason that has nothing to do with LMCache.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -116,6 +132,8 @@ class ModelSpec:
     mme_max_local_cpu_gb: float = 0.0
     hybrid_block_tokens: int = 0
     hybrid_object_groups: int = 0
+    isolated_gpu_utilization: float = 0.0
+    mp_server_l1_gb: float = 0.0
     answer_extract_pattern: str = ""
 
 
@@ -202,6 +220,75 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # block also stores a fat GDN state page (~13 MB/object measured);
             # ~26 MB per MME question needs well over the 40 GB default.
             mme_max_local_cpu_gb=280.0,
+        ),
+        ModelSpec(
+            key="qwen3.6-27b",
+            hf_id="Qwen/Qwen3.6-27B",
+            modalities=frozenset({"image", "video"}),
+            # 27B needs ~52 GB of weights before any KV pool.
+            gpu_memory_utilization=0.8,
+            # Same GDN hybrid architecture class as Qwen3.5-2B
+            # (Qwen3_5ForConditionalGeneration), four times as deep: 64
+            # layers = 16 full attention (4 KV heads x 256) + 48
+            # Gated-DeltaNet. No DeepStack (deepstack_visual_indexes is
+            # empty), so no add-on suite.
+            #
+            # Measured at engine init: unified block 784 tokens, four KV
+            # cache groups (3x MambaSpec of 16 layers + 1x
+            # FullAttentionSpec of 16) at an identical 3.2 MB page size,
+            # which bucket by sliding-window size into 2 object groups.
+            # That page size is PER LAYER (3211264 / 784 = 4096 B/token =
+            # K+V for 4 heads x 256 dims), so a block costs all 64 layers:
+            # ~205 MB, i.e. 262 KB/token -- 5x Qwen3.5-2B, not a third of
+            # it. Every capacity number below follows from that.
+            hybrid_block_tokens=784,
+            hybrid_object_groups=2,
+            # Thinks out loud by default -- an 8-token budget returns
+            # "The user wants to identify the dominant color" instead of a
+            # color. Its chat template takes enable_thinking, and with it
+            # off the synthetic probes answer "Red." / "Blue" directly.
+            chat_template_kwargs={"enable_thinking": False},
+            # Same new-style pixel cap as the rest of the Qwen3-VL family
+            # (16x16 patches, 2x2 merge = 1024 px/token). The model's own
+            # preprocessor default is 16.7M pixels, which would blow the
+            # parity engine's context on a single photo.
+            mme_mm_processor_kwargs={
+                "size": {"shortest_edge": 65536, "longest_edge": 786432}
+            },
+            # Measured (2026-08-21), all on the gate's PARSED-answer metric
+            # (raw text also churns case/whitespace: 85 raw differences for
+            # 12 parsed ones, which the gate rightly ignores):
+            #   baseline rerun, identical config ... 0 flips (byte-identical)
+            #   no LMCache, max_num_seqs changed .... 2 (0.084%)
+            #   LMCache miss pass vs plain vLLM ..... 1
+            #   LMCache hit pass vs miss pass ...... 12 (0.505%)
+            # The hit path diverges 6x more than a batch-shape change, and
+            # that is inherent to hybrids rather than a defect: a hit
+            # RESTORES a Gated-DeltaNet state page instead of recomputing
+            # it, so unlike full attention (where loaded KV is bit-identical
+            # to computed KV) there is no identical arithmetic to hope for.
+            # It scales with linear depth -- 18 GDN layers on Qwen3.5-2B
+            # flip 0.21%, 48 here flip 0.505%. Per-question inspection
+            # agrees: the 12 land on borderline recognition items (6 of 12
+            # in `landmark`), the hit pass is right 5 times against the miss
+            # pass's 7 (a corrupting cache would be one-sided), and the
+            # score moves +1.0 of 2179. 1% covers it; the 10-point score
+            # gate still catches a real regression.
+            mme_max_flip_fraction=0.01,
+            # The full MME run stored 196784 tokens = 251 blocks = 51 GB,
+            # measured, with no eviction against 120 GB (the controller
+            # evicts at 80% = 96 GB).
+            mme_max_local_cpu_gb=120.0,
+            # The 64-image pressure case alone stores 64 x 4 blocks = 52 GB
+            # and the rest of the session adds to it, so the suite's 60 GB
+            # hybrid default evicts mid-test: measured 92 resident keys
+            # vanishing at image 62 of 64, which is exactly what T0.7's
+            # resident-key audit is there to catch.
+            mp_server_l1_gb=200.0,
+            # 52 GB of weights is 0.37 of an H200 before any KV block, so
+            # the isolated modules' 0.35 default cannot even load the model
+            # ("No available memory for the cache blocks").
+            isolated_gpu_utilization=0.75,
         ),
         ModelSpec(
             key="glm-4.6v-flash",

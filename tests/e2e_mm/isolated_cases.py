@@ -81,8 +81,24 @@ EVICTION_CAPACITY_GB = 0.05
 EVICTION_N = 32
 
 # Isolated engines coexist with (at most) one session engine on the GPU, so
-# they claim a smaller fraction than the spec default.
+# they claim a smaller fraction than the spec default. A model whose weights
+# alone exceed this fraction overrides it via
+# ``ModelSpec.isolated_gpu_utilization`` -- see that field for why sharing
+# the GPU is not actually required.
 ISOLATED_GPU_UTILIZATION = 0.35
+
+
+def isolated_gpu_utilization(spec: ModelSpec) -> float:
+    """GPU fraction for an engine this module starts.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The model's override when it declares one, else the shared default.
+    """
+    return spec.isolated_gpu_utilization or ISOLATED_GPU_UTILIZATION
+
 
 # Preemption scenario: a deliberately tiny GPU block pool (16-token blocks)
 # that admits every prompt but cannot absorb the decode growth of the whole
@@ -97,7 +113,8 @@ PREEMPTION_MAX_TOKENS = 112
 MP_SERVER_L1_GB = 4
 # Hybrid models store a fat recurrent-state page per block (~13 MB on
 # Qwen3.5-2B) on top of the attention KV, and their prompts are padded to
-# span several blocks.
+# span several blocks. Deeper hybrids override this via
+# ``ModelSpec.mp_server_l1_gb`` (~205 MB per block on Qwen3.6-27B).
 MP_SERVER_L1_GB_HYBRID = 30
 MP_SERVER_START_TIMEOUT_S = 120
 
@@ -155,7 +172,7 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
     engine_kwargs = {
-        "gpu_memory_utilization": ISOLATED_GPU_UTILIZATION,
+        "gpu_memory_utilization": isolated_gpu_utilization(spec),
         "max_num_batched_tokens": CHUNKED_TOKEN_BUDGET,
         "max_num_seqs": 4,
     }
@@ -263,12 +280,14 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
             spec,
             requests,
             pathlib.Path(tmp),
-            extra_engine_kwargs={"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION},
+            extra_engine_kwargs={
+                "gpu_memory_utilization": isolated_gpu_utilization(spec)
+            },
         )
     harness = MMHarness(
         spec,
         baselines=baselines,
-        extra_engine_kwargs={"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION},
+        extra_engine_kwargs={"gpu_memory_utilization": isolated_gpu_utilization(spec)},
         max_local_cpu_gb=EVICTION_CAPACITY_GB,
     )
     failures: list[str] = []
@@ -367,7 +386,7 @@ def run_preemption(spec: ModelSpec) -> dict:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
     engine_kwargs = {
-        "gpu_memory_utilization": ISOLATED_GPU_UTILIZATION,
+        "gpu_memory_utilization": isolated_gpu_utilization(spec),
         "num_gpu_blocks_override": PREEMPTION_GPU_BLOCKS,
         # vLLM refuses a block pool smaller than one max-length request, so
         # the context length must shrink along with the pool.
@@ -497,7 +516,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
         "t22-AC",
     ]
     requests = [cat[k] for k in used_keys]
-    engine_kwargs = {"gpu_memory_utilization": ISOLATED_GPU_UTILIZATION}
+    engine_kwargs = {"gpu_memory_utilization": isolated_gpu_utilization(spec)}
     failures: list[str] = []
     metrics: dict[str, object] = {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -512,7 +531,9 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             chunk_size=spec.hybrid_block_tokens or CHUNK,
             log_path=pathlib.Path(tmp) / "mp_server.log",
             l1_size_gb=(
-                MP_SERVER_L1_GB_HYBRID if spec.hybrid_block_tokens else MP_SERVER_L1_GB
+                (spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID)
+                if spec.hybrid_block_tokens
+                else MP_SERVER_L1_GB
             ),
             separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
