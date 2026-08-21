@@ -362,12 +362,18 @@ class MPTransportCounters:
         lookup_tokens: Cumulative tokens submitted for lookup.
         lookup_hits: Cumulative tokens the server reported as hits.
         stored_tokens: Cumulative tokens submitted for storage.
+        lookup_request_tokens: Prompt length of every resolved lookup, in
+            resolution order. Lets a caller compute how much of a workload
+            was cacheable at all (whole chunks only), which a store-token
+            total cannot: identical prefixes submitted together are stored
+            once and hit once per request.
     """
 
     def __init__(self) -> None:
         self.lookup_tokens = 0
         self.lookup_hits = 0
         self.stored_tokens = 0
+        self.lookup_request_tokens: list[int] = []
         self._pending_lookup_tokens: dict[str, int] = {}
 
     def install(self) -> None:
@@ -394,6 +400,7 @@ class MPTransportCounters:
                 if tokens is not None:
                     counters.lookup_tokens += tokens
                     counters.lookup_hits += ret
+                    counters.lookup_request_tokens.append(tokens)
             return ret
 
         def store(adapter, request_ids, ops, *args, **kwargs):
@@ -678,6 +685,7 @@ class MMHarness:
         # truth every hit assertion is checked against.
         self._prefill = VllmPrefillCounters()
         self._prefill.install()
+        self._unloaded_hits_allowed = False
         self._install_transport_hooks()
 
         # Third Party
@@ -918,6 +926,7 @@ class MMHarness:
             hits_after - hits_before,
             provenance_before,
             f"batch of {len(requests)}",
+            num_requests=len(requests),
             local_budget=tokens_after - tokens_before,
         )
         return BatchResult(
@@ -935,6 +944,7 @@ class MMHarness:
         lookup_hits: int,
         before: tuple[int, int],
         where: str,
+        num_requests: int = 1,
         local_budget: int = 0,
     ) -> None:
         """Verify the reported hits were really served by LMCache.
@@ -950,6 +960,8 @@ class MMHarness:
             lookup_hits: Hits LMCache reported for this step.
             before: The ``_prefill_provenance()`` snapshot taken before it.
             where: Label for the error message (request key or batch size).
+            num_requests: Requests in the step; each one is allowed the
+                single final token vLLM always recomputes.
             local_budget: Tokens vLLM's own cache may legitimately have
                 served — 0 for a single request (it cannot share a prefix
                 with itself), the step's lookup tokens for a batch, whose
@@ -967,13 +979,35 @@ class MMHarness:
                 f"(budget {local_budget}); LMCache's {lookup_hits} reported "
                 f"hits would be measuring the wrong cache"
             )
-        if external < lookup_hits - local:
+        if self._unloaded_hits_allowed:
+            return
+        # vLLM always recomputes a prompt's final token, so a full-prompt
+        # hit loads one token fewer than the connector reports (its own log
+        # line reads "LMCache hit tokens: 304, need to load: 303") — one
+        # token of slack per request in the step.
+        if external < lookup_hits - local - num_requests:
             raise RuntimeError(
                 f"{where}: LMCache reported {lookup_hits} hit tokens but "
                 f"vLLM only skipped {external} on the connector's account "
                 f"({local} locally cached); the retrieve path did not run "
                 f"for the difference"
             )
+
+    @contextlib.contextmanager
+    def unloaded_hits_allowed(self):
+        """Suspend the "reported hits were loaded" check for a scenario.
+
+        LMCache declines to serve a PREEMPTED request (an explicit early
+        return in the connector), so the preemption scenario legitimately
+        reports hits for requests that then recompute — that recompute is
+        exactly what it verifies. The check that vLLM's own prefix cache
+        stayed out of the way stays active.
+        """
+        self._unloaded_hits_allowed = True
+        try:
+            yield
+        finally:
+            self._unloaded_hits_allowed = False
 
     def _reset_local_prefix_cache(self) -> None:
         """Drop vLLM's OWN prefix cache so LMCache is the only hit source.

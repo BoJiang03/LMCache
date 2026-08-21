@@ -389,7 +389,11 @@ def run_preemption(spec: ModelSpec) -> dict:
     stored_before = harness.stored_tokens_total()
     try:
         preemptions_before = vllm_preemption_total()
-        batch = harness.run_batch(requests)
+        # A preempted request is deliberately NOT reloaded from LMCache, so
+        # the batch reports hits it then recomputes; that recompute is what
+        # this scenario verifies.
+        with harness.unloaded_hits_allowed():
+            batch = harness.run_batch(requests)
         preemptions = vllm_preemption_total() - preemptions_before
         _expect(
             failures,
