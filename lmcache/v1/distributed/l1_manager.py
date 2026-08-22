@@ -233,6 +233,19 @@ class L1Manager:
                 lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
             )
 
+    @property
+    def read_ttl_seconds(self) -> int:
+        """The TTL, in seconds, applied to every entry's read lock.
+
+        Exposed because a caller that observes KEY_NOT_READABLE after a
+        successful reserve_read needs the configured bound to say whether
+        the gap it just measured explains the failure.
+
+        Returns:
+            The read-lock TTL in seconds.
+        """
+        return self._read_ttl_seconds
+
     def register_listener(self, listener: L1ManagerListener) -> None:
         """Register a listener for L1Manager events.
 

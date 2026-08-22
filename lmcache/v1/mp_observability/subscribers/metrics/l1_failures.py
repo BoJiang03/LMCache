@@ -49,11 +49,15 @@ class L1FailureMetricsSubscriber(EventSubscriber):
         self._read_counter = meter.create_counter(
             "lmcache_mp.l1_read_failure",
             description=(
-                "Count of L1 reserve_read failures (post-lookup anomaly). "
+                "Count of L1 read failures (post-lookup anomaly). "
                 "Tagged by ``during`` = l2_store | l1_retrieve, ``reason`` = "
-                "not_found | write_locked, and ``model_name``. Should stay "
-                "near zero in healthy operation; non-zero indicates a "
-                "lookup/reserve race or unexpected eviction."
+                "not_found | write_locked | read_lock_expired, and "
+                "``model_name``. Should stay near zero in healthy operation. "
+                "``write_locked`` (l2_store only) is a reserve_read collision "
+                "with a concurrent writer; ``read_lock_expired`` "
+                "(l1_retrieve only) means an already-reserved key lost its "
+                "read lock before the transfer consumed it, which for a long "
+                "lookup-to-transfer gap means read_ttl_seconds elapsed."
             ),
             unit="chunks",
         )
