@@ -205,7 +205,7 @@ The same T0+T1 core must pass per path. Implemented:
 
 Planned: CPU offload round-trip, remote backend cross-instance, TP>1.
 
-**Mamba/GDN hybrids are MP-only.** vLLM offers its hybrid KV cache manager
+**Multi-KV-group models are MP-only, and there are two kinds of them.** vLLM offers its hybrid KV cache manager
 solely to connectors that advertise support for it, which the in-process
 `LMCacheConnectorV1` does not: engine init fails outright with "Hybrid KV
 cache manager is disabled but failed to convert the KV cache specs to one
@@ -217,6 +217,27 @@ knowing: chunked prefill is covered for free (a scheduler step advances
 exactly one unified block, so every padded prompt spans several steps), and
 capacity eviction / preemption stay uncovered until those scenarios grow an
 MP variant.
+
+The two kinds differ in what else the engine needs, which is why
+`hybrid_family` exists alongside `hybrid_block_tokens`:
+
+- `RECURRENT_STATE` (Mamba/Gated-DeltaNet: Qwen3.5/3.6/3.8) keeps
+  per-sequence state pages instead of per-token KV, so `align` mode and its
+  two companions are mandatory, and a hit *restores* a lossy state summary
+  rather than reproducing KV bit-for-bit.
+- `SLIDING_WINDOW` (Gemma 4) is ordinary paged KV throughout; its groups
+  differ only in window and block size, so it needs none of the align
+  settings and runs with prefix caching off like a single-group model.
+
+Gemma 4 also shows why the chunk size is not simply the block size vLLM
+reports. Its 512-wide full-attention layers page at block 16 while its
+256-wide sliding layers page at block 32 (vLLM equalizes page size by
+varying the block size), and LMCache requires the chunk to be a multiple of
+every paged group's block — so the chunk is 32 and
+`cache_config.block_size` is 16. `_validate_block_size` checks that rule
+rather than equality. Only 24 of its 42 layers have their own KV at all:
+`num_kv_shared_layers=18` makes the rest reuse another layer's, so per-token
+cost is measured, not derived from layer count.
 
 **A failed KV load is fatal on a hybrid, so the suite must not manufacture
 one.** When the connector reports load errors, vLLM rewinds the affected
@@ -333,13 +354,15 @@ into the tests:
 
 - `hybrid_block_tokens` — vLLM's unified block size for a Mamba/GDN hybrid
   (Qwen3.5-2B: 544; vLLM prints it at startup), 0 for every other model.
-  Setting it switches the model onto the MP-only path described in T3,
-  forces the three mandatory hybrid engine settings onto every engine
-  (`mamba_cache_mode=align`, vLLM prefix caching on,
-  `max_num_batched_tokens` ≥ one block), and becomes the granularity every
+  Setting it switches the model onto the MP-only path described in T3 and
+  becomes the granularity every
   hit-count tolerance is derived from (`harness.chunk`). The harness
-  validates it against the live engine, so a stale value fails loudly
-  instead of making assertions trivially true. Because a cacheable unit is
+  validates it against the live engine (a multiple of every paged group's
+  block size), so a stale value fails loudly instead of making assertions
+  trivially true. Must be set together with `hybrid_family`, which decides
+  whether the align settings (`mamba_cache_mode=align`, vLLM prefix caching
+  on, `max_num_batched_tokens` >= one block) are forced onto every engine;
+  `ModelSpec.__post_init__` rejects half a statement. Because a cacheable unit is
   now hundreds of tokens — larger than a 196-token image span — the prompts
   are padded to whole blocks around each image (`HYBRID_PRE_PAD_BLOCKS` /
   `HYBRID_POST_PAD_BLOCKS` and the mid-pad in `conftest.py`); without the
@@ -347,8 +370,17 @@ into the tests:
   identical and the suite's primary cross-image detector goes blind.
 - `hybrid_object_groups` — cache objects stored per block, i.e. the number
   of KV cache groups the server keeps separate under
-  `--separate-object-groups` (2: full-attention KV plus recurrent state).
-  The storage-conservation bounds multiply by it.
+  `--separate-object-groups` (2: full-attention KV plus recurrent state, or
+  full-attention plus sliding-window). The storage-conservation bounds
+  multiply by it.
+- `hf_overrides` — config repairs applied identically to every engine for
+  the model. Gemma 4 needs it because transformers 5.15 folded the
+  per-layer attention dims into `per_layer_config` and stopped exposing the
+  flat `global_head_dim` / `num_global_key_value_heads` names vLLM still
+  reads with a defaulting `getattr`, so the full-attention layers would be
+  built at the sliding geometry. It must be identical across the test
+  engine, the baseline and the parity engines: it changes the model's
+  geometry, so a baseline without it is not a comparison.
 
 The MME parity gate additionally enforces a baseline answer parse-rate
 (`MIN_PARSE_RATIO`): if a model's yes/no verdict does not land inside the

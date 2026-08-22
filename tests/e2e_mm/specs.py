@@ -8,7 +8,35 @@ optional ``extra_suites`` flags for special architectures) is per-model.
 
 # Standard
 from dataclasses import dataclass, field
+import enum
 import os
+
+
+class HybridFamily(enum.Enum):
+    """Why vLLM splits a model's KV cache into more than one group.
+
+    Both families need the MP deployment path, because the in-process
+    connector does not advertise support for vLLM's hybrid KV cache
+    manager. They need DIFFERENT engine settings, though, so the suite has
+    to tell them apart rather than treating "hybrid" as one thing.
+
+    Attributes:
+        NONE: One KV cache group; the in-process path works.
+        RECURRENT_STATE: Mamba/Gated-DeltaNet linear-attention layers whose
+            state is a per-sequence page rather than per-token KV. Requires
+            ``mamba_cache_mode="align"``, which in turn requires vLLM
+            prefix caching, and a scheduler step wide enough for one whole
+            block so the state snapshot lands on a block boundary.
+        SLIDING_WINDOW: Sliding-window layers mixed with full-attention
+            layers, all of them ordinary paged KV. Needs none of the align
+            settings -- the groups differ in window and block size, not in
+            kind -- so the engine keeps the suite's default scheduling and
+            prefix caching stays off.
+    """
+
+    NONE = "none"
+    RECURRENT_STATE = "recurrent_state"
+    SLIDING_WINDOW = "sliding_window"
 
 
 @dataclass(frozen=True)
@@ -73,20 +101,48 @@ class ModelSpec:
             with zero flips (pure recompute, not corruption). Size it to
             hold the whole benchmark: questions x prompt tokens x KV bytes
             per token.
-        hybrid_block_tokens: vLLM's unified KV block size ``N`` for a
-            Mamba/GDN linear-attention hybrid (0 = not a hybrid). Hybrids
-            run the suite on the MP deployment path — the in-process
-            connector does not support vLLM's hybrid KV cache manager —
-            with an MP cache server at ``chunk_size = N`` and
-            ``--separate-object-groups``, and the engine (and its
-            config-matched baseline) at ``mamba_cache_mode="align"``,
-            ``enable_prefix_caching=True`` (mandatory for align) and
-            ``max_num_batched_tokens = N``. ``N`` is model-specific and
-            printed by vLLM at startup ("Setting attention block size to
-            N tokens..."); the harness validates this value against the
-            engine. Hit granularity becomes ``N``, so the conftest pads
-            every request's prompt to span multiple blocks and the tests
-            read their chunk tolerance from ``harness.chunk``.
+        hybrid_block_tokens: LMCache chunk size ``N`` in tokens for a model
+            whose KV cache vLLM splits into more than one group (0 = single
+            group). Such models run the suite on the MP deployment path —
+            the in-process connector does not support vLLM's hybrid KV
+            cache manager — with an MP cache server at ``chunk_size = N``
+            and ``--separate-object-groups``. Which further engine settings
+            are mandatory depends on ``hybrid_family``. Hit granularity
+            becomes ``N``, so the conftest pads every request's prompt to
+            span multiple blocks and the tests read their chunk tolerance
+            from ``harness.chunk``.
+
+            ``N`` must be a common multiple of every PAGED group's block
+            size, which is what LMCache itself requires (it rejects
+            registration otherwise: "chunk size must be a multiple of
+            engine group tokens_per_block"); recurrent-state groups hold
+            one page per sequence and impose no such constraint. The
+            harness validates this against the live engine. For the
+            Mamba/GDN hybrids the only paged group is full attention, so
+            ``N`` equals the block size vLLM prints at startup ("Setting
+            attention block size to N tokens..."). A sliding-window hybrid
+            can have SEVERAL paged groups at different block sizes --
+            Gemma 4 pairs 512-wide full-attention layers (block 16) with
+            256-wide sliding layers (block 32), because vLLM equalizes
+            page size by varying the block size -- and then ``N`` is their
+            common multiple, NOT the ``cache_config.block_size`` vLLM
+            reports.
+        hf_overrides: ``hf_overrides`` for every engine the suite starts
+            for this model (test engine, baseline runner, MME parity), to
+            repair a model config vLLM cannot read as shipped. Must be
+            JSON-serializable, and must be identical across those engines:
+            it changes the model's geometry, so a baseline built without it
+            would not be comparable. Gemma 4 needs it because transformers
+            5.15 folds the per-layer attention dims into
+            ``per_layer_config`` and stops exposing the flat
+            ``global_head_dim`` / ``num_global_key_value_heads`` names that
+            vLLM still reads with ``getattr(config, name, <sliding
+            value>)`` -- so without this the full-attention layers are
+            built at the sliding-window geometry and weight loading dies
+            on a shape mismatch.
+        hybrid_family: Which kind of multi-group KV cache this model has
+            (see ``HybridFamily``); it selects the mandatory engine
+            settings. Must be set exactly when ``hybrid_block_tokens`` is.
         hybrid_object_groups: Number of LMCache cache objects stored per
             token block under ``--separate-object-groups`` (full-attention
             KV + recurrent-state groups; 2 for the Qwen3.5 family). Used
@@ -131,10 +187,36 @@ class ModelSpec:
     mme_max_flip_fraction: float = 0.0
     mme_max_local_cpu_gb: float = 0.0
     hybrid_block_tokens: int = 0
+    hybrid_family: HybridFamily = HybridFamily.NONE
     hybrid_object_groups: int = 0
+    hf_overrides: dict[str, object] = field(default_factory=dict)
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
     answer_extract_pattern: str = ""
+
+    def __post_init__(self) -> None:
+        """Reject a spec whose hybrid fields disagree.
+
+        The chunk size and the family are two halves of one statement --
+        "this model runs on the MP path, with these mandatory engine
+        settings". Half a statement would either put a model on the MP
+        path with the wrong settings or leave a multi-group model on the
+        in-process path, where engine init fails with a message about
+        converting KV cache specs that names no model.
+
+        Raises:
+            ValueError: If exactly one of ``hybrid_block_tokens`` and
+                ``hybrid_family`` is set.
+        """
+        is_hybrid = self.hybrid_family is not HybridFamily.NONE
+        if bool(self.hybrid_block_tokens) != is_hybrid:
+            raise ValueError(
+                f"{self.key}: hybrid_block_tokens="
+                f"{self.hybrid_block_tokens} and hybrid_family="
+                f"{self.hybrid_family.value} must be set together "
+                f"(a chunk size without a family, or a family without a "
+                f"chunk size, is half a spec)"
+            )
 
 
 # MME photos are arbitrarily large; cap them at ~768 image tokens per photo
@@ -211,6 +293,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # only TEXT KV caching for these models (mp/hybrid_models.rst),
             # and this suite's run is the image/video validation.
             hybrid_block_tokens=544,
+            hybrid_family=HybridFamily.RECURRENT_STATE,
             hybrid_object_groups=2,
             # Same new-style pixel cap as Qwen3-VL (1024 px/token).
             mme_mm_processor_kwargs={
@@ -242,6 +325,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # ~205 MB, i.e. 262 KB/token -- 5x Qwen3.5-2B, not a third of
             # it. Every capacity number below follows from that.
             hybrid_block_tokens=784,
+            hybrid_family=HybridFamily.RECURRENT_STATE,
             hybrid_object_groups=2,
             # Thinks out loud by default -- an 8-token budget returns
             # "The user wants to identify the dominant color" instead of a
@@ -313,6 +397,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # across 64 layers), and therefore every capacity number.
             gpu_memory_utilization=0.8,
             hybrid_block_tokens=784,
+            hybrid_family=HybridFamily.RECURRENT_STATE,
             hybrid_object_groups=2,
             chat_template_kwargs={"enable_thinking": False},
             mme_mm_processor_kwargs={
@@ -330,6 +415,63 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             mme_max_local_cpu_gb=120.0,
             mp_server_l1_gb=200.0,
             isolated_gpu_utilization=0.75,
+        ),
+        ModelSpec(
+            key="gemma-4-e4b",
+            hf_id="google/gemma-4-E4B-it",
+            modalities=frozenset({"image", "video"}),
+            # A SLIDING-WINDOW hybrid, not a Mamba/GDN one: 42 layers of
+            # 5 sliding (window 512, head_dim 256) to 1 full attention
+            # (head_dim 512), which vLLM splits into 6 KV cache groups --
+            # so it needs the hybrid cache manager and therefore the MP
+            # deployment path, same as the GDN models but for a different
+            # reason.
+            #
+            # Measured at engine init: 5 SlidingWindowSpec groups of 4
+            # layers at block 32 plus 1 FullAttentionSpec group of 4 at
+            # block 16, every group at page size 65536 (vLLM equalizes page
+            # size by halving the block size for the twice-as-wide full
+            # layers). Only 24 of the 42 layers appear, because
+            # num_kv_shared_layers=18 makes the rest reuse another layer's
+            # KV -- so the cost is 56 KB/token, not what layers x heads x
+            # dims would suggest.
+            #
+            # The chunk is therefore 32, the common multiple of the two
+            # paged block sizes, NOT the 16 that vLLM reports as
+            # cache_config.block_size: LMCache rejects a chunk that is not
+            # a multiple of every paged group ("chunk size 16 must be a
+            # multiple of engine group 0 tokens_per_block 32"). Verified at
+            # 32 on the MP path: pass 1 stored, pass 2 loaded 2304 tokens
+            # back with identical text and local_cached 0.
+            hybrid_block_tokens=32,
+            hybrid_family=HybridFamily.SLIDING_WINDOW,
+            # Two object-group buckets: the sliding groups (window 512) and
+            # the full-attention groups (no window).
+            hybrid_object_groups=2,
+            # transformers 5.15 moved Gemma 4's per-layer attention dims
+            # into per_layer_config and no longer exposes the flat
+            # `global_head_dim` name that vLLM reads with
+            # `getattr(config, "global_head_dim", config.head_dim)`, so
+            # without this the 7 full-attention layers are built at the
+            # sliding geometry (256) and their 512-wide weights fail to
+            # load. The value is per_layer_config[<first full layer>]
+            # .head_dim; 12B additionally needs
+            # num_global_key_value_heads (it is attention_k_eq_v, with no
+            # v_proj at all on full layers).
+            hf_overrides={
+                "allow_global_per_layer_attribute_access": True,
+                "text_config": {
+                    "allow_global_per_layer_attribute_access": True,
+                    "global_head_dim": 512,
+                },
+            },
+            # Images are a fixed 280 soft tokens
+            # (vision_soft_tokens_per_image), so no pixel budget is needed
+            # for the MME photos -- unlike every Qwen/GLM spec above.
+            #
+            # 56 KB/token over ~2374 questions of <=1000 prompt tokens is
+            # ~130 GB, well past the runner's 40 GB default.
+            mme_max_local_cpu_gb=280.0,
         ),
         ModelSpec(
             key="glm-4.6v-flash",
