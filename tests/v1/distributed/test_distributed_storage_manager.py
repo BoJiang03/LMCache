@@ -1015,6 +1015,77 @@ class TestFailureEventProduction:
         finally:
             sm.close()
 
+    def test_read_lock_expiry_between_prefetch_and_read_is_reported_as_such(
+        self, basic_memory_config, basic_layout, captured_events
+    ):
+        """A prefetched key whose read lock outlives ``read_ttl_seconds``
+        before the transfer consumes it must yield no objects and be
+        reported as ``read_lock_expired``.
+
+        The read lock is stamped at lookup time and only ``lock()`` refreshes
+        it, so any lookup-to-transfer gap longer than the TTL silently
+        unlocks the entry: ``unsafe_read`` returns KEY_NOT_READABLE and the
+        load delivers nothing. Reporting that as ``write_locked`` -- as this
+        did -- describes a concurrent writer that never existed, which is
+        why the real incident was read as a lock race for so long.
+        """
+        # 1s TTL so the expiry is reachable without a long sleep. The
+        # production default is 300s; nothing else here depends on the value.
+        config = StorageManagerConfig(
+            l1_manager_config=L1ManagerConfig(
+                memory_config=basic_memory_config,
+                write_ttl_seconds=600,
+                read_ttl_seconds=1,
+            ),
+            eviction_config=EvictionConfig(eviction_policy="LRU"),
+        )
+        sm = StorageManager(config)
+        try:
+            keys = [make_object_key(i) for i in range(3)]
+            layout = basic_layout
+
+            ret = sm.reserve_write(keys, layout, mode="new")
+            assert len(ret) == len(keys)
+            sm.finish_write(list(ret.keys()))
+
+            handle = sm.submit_prefetch_task(PrefetchRequestSpec(keys, {0: layout}))
+            assert wait_for_prefetch_status(sm, handle) == len(keys)
+
+            # The entries are readable right now -- the locks are held.
+            with sm.read_prefetched_results(keys) as objs:
+                assert objs is not None
+                assert len(objs) == len(keys)
+
+            # Re-reserve, then let the TTL lapse instead of transferring. This
+            # is the production shape: a request whose prefix was looked up
+            # sits in the scheduler's queue longer than the TTL.
+            handle = sm.submit_prefetch_task(PrefetchRequestSpec(keys, {0: layout}))
+            assert wait_for_prefetch_status(sm, handle) == len(keys)
+            time.sleep(1.2)
+
+            with sm.read_prefetched_results(keys) as objs:
+                # Nothing is yielded: a partial read would be worse than none,
+                # because the caller treats what it gets as the whole load.
+                assert objs is None
+
+            assert wait_for_condition(
+                lambda: (
+                    len(_events_of_type(captured_events, EventType.L1_READ_FAILED)) >= 1
+                ),
+                timeout=2.0,
+            )
+
+            read_events = _events_of_type(captured_events, EventType.L1_READ_FAILED)
+            assert len(read_events) == 1
+            meta = read_events[0].metadata
+            assert meta["during"] == "l1_retrieve"
+            assert meta["reason"] == "read_lock_expired"
+            # The keys still exist -- expiry unlocks, it does not evict. A
+            # not_found here would mean a different defect entirely.
+            assert set(meta["keys"]) == set(keys)
+        finally:
+            sm.close()
+
 
 class TestStorageManagerSparsePrefetch:
     """SPARSE prefetch: retain a read lock on every found key, not just the

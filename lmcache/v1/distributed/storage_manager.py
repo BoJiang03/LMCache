@@ -303,7 +303,7 @@ class StorageManager:
         good_objs: list[MemoryObj] = []
         bad_keys: list[ObjectKey] = []
         not_found_keys: list[ObjectKey] = []
-        write_locked_keys: list[ObjectKey] = []
+        read_unlocked_keys: list[ObjectKey] = []
         all_good = True
         for k, (e, o) in read_results.items():
             if o is None:
@@ -317,7 +317,7 @@ class StorageManager:
                 if e == L1Error.KEY_NOT_EXIST:
                     not_found_keys.append(k)
                 elif e == L1Error.KEY_NOT_READABLE:
-                    write_locked_keys.append(k)
+                    read_unlocked_keys.append(k)
                 continue
 
             good_keys.append(k)
@@ -337,14 +337,42 @@ class StorageManager:
                     },
                 )
             )
-        if write_locked_keys:
+        if read_unlocked_keys:
+            # NOT "write_locked". unsafe_read does not consult the write
+            # lock at all; its KEY_NOT_READABLE means the entry is not
+            # READ-locked (see L1Manager.unsafe_read). Since the caller must
+            # have reserved these keys, the lock was either already released
+            # or -- far more often -- its TTL expired, because reserve_read
+            # stamps expiry at lookup time and only lock() refreshes it. A
+            # lookup-to-transfer gap longer than read_ttl_seconds silently
+            # unlocks the entry and the load returns nothing.
+            #
+            # Reporting that as a write collision sends the reader hunting a
+            # concurrent writer that does not exist; the label is the only
+            # signal that distinguishes the two, so it has to be right.
+            #
+            # One aggregate line on top of the per-key errors above: this
+            # condition arrives thousands of keys at a time (it is systemic,
+            # not per-key), and the per-key text -- "exists but cannot be
+            # read" -- names neither the lock nor the knob, so a reader who
+            # scrolls a wall of them still has nothing to act on.
+            logger.error(
+                "%d prefetched keys lost their read lock before transfer, so "
+                "their load returned nothing. The read lock is stamped at "
+                "lookup and is not refreshed on read, so this is what a "
+                "lookup-to-transfer gap longer than read_ttl_seconds (%ds) "
+                "looks like; raise it if the queue can legitimately be that "
+                "deep.",
+                len(read_unlocked_keys),
+                self._l1_manager.read_ttl_seconds,
+            )
             self._event_bus.publish(
                 Event(
                     event_type=EventType.L1_READ_FAILED,
                     metadata={
                         "during": "l1_retrieve",
-                        "reason": "write_locked",
-                        "keys": write_locked_keys,
+                        "reason": "read_lock_expired",
+                        "keys": read_unlocked_keys,
                     },
                 )
             )
