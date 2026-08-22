@@ -45,6 +45,7 @@ from harness import (
     start_mp_cache_server,
     vllm_preemption_total,
 )
+from isolated_routing import ALL_SCENARIOS
 from specs import MODEL_SPECS, ModelSpec
 
 # Pin THIS repo's lmcache package (same rationale as conftest.py). This
@@ -98,6 +99,13 @@ EVICTION_N = 32
 # resident objects respectively, fine enough granularity for the 10% bound
 # below. At two units Gemma 3's 184 MB would be only 1.44x and the scenario
 # would fail itself as vacuous.
+#
+# One unit is also enough for a Qwen3.5-2B, whose recurrent-state objects are
+# 12 MB (measured: 5 resident keys, 60162048 bytes, 0.897 of the cap, against
+# 1.6 GB of intended traffic -- 23.9x). Only the 27B-class hybrids, whose one
+# object is a ~154 MB state page, need more, and they say so via
+# ``ModelSpec.eviction_capacity_gb``: the exclusion here is per-model object
+# size, not per hybrid family.
 EVICTION_CAPACITY_GB_MP = 0.0625
 
 # Isolated engines coexist with (at most) one session engine on the GPU, so
@@ -142,6 +150,17 @@ PREEMPTION_MAX_TOKENS = 112
 # sees the exact same engine, while a hybrid can now raise its pool via
 # ``ModelSpec.preemption_gpu_blocks`` without also stretching the context
 # it has to fit.
+#
+# It is a fixed number rather than a per-model one because every model that
+# runs this scenario fits in it: the conftest pads a hybrid prompt to span
+# HYBRID_PRE_PAD_BLOCKS + HYBRID_POST_PAD_BLOCKS = 6 whole KV blocks, which
+# is 96-192 tokens for the sliding-window hybrids. It does NOT fit a
+# recurrent-state hybrid (3264 tokens on Qwen3.5-2B, 4704 on the 27Bs), but
+# that family cannot run this scenario at all for an unrelated reason -- see
+# certify._PREEMPTION_NOT_COVERED -- so a model whose padded prompt outgrows
+# this constant should raise it deliberately rather than silently. The
+# failure is self-explanatory if one ever does: "maximum context length is
+# 2048 tokens... your prompt contains at least 2049".
 PREEMPTION_MAX_MODEL_LEN = 128 * 16
 
 # MP connector scenario: ports for the cache server subprocess, derived from
@@ -420,7 +439,7 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     metrics: dict[str, object] = {}
     # Assert against the capacity actually configured, not a nominal one the
     # tier never agreed to.
-    capacity_gb = (
+    capacity_gb = spec.eviction_capacity_gb or (
         EVICTION_CAPACITY_GB_MP if spec.hybrid_block_tokens else EVICTION_CAPACITY_GB
     )
     capacity_bytes = int(capacity_gb * 1024**3)
@@ -441,17 +460,30 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
             pass1[0].lookup_hits == 0,
             f"fresh salt hit {pass1[0].lookup_hits} tokens",
         )
-        # The shared text prefix may itself get evicted, so hits may drop
-        # BELOW the steady state; they must never exceed it (a false hit).
-        steady = pass1[1].lookup_hits
+        # These requests share a text prefix and differ only in image, so a
+        # legitimate hit covers the leading shared region and stops at the
+        # image; anything reaching the trailing blocks is another image's KV
+        # (see MMHarness.image_span_margin). The bound is absolute rather
+        # than relative to an earlier request in this pass: it used to be
+        # `pass1[1].lookup_hits` as a "steady state", which silently assumed
+        # request 0's store had landed before request 1 looked up. It has
+        # not, once an object is big enough -- Qwen3.8-27B measured a steady
+        # state of 0 (its 154 MB state page was still in flight for the
+        # first three requests, which then hit 784-1568 and were all
+        # reported as false hits) where the architecturally identical
+        # Qwen3.6-27B measured 1568. A race decided the reference value, so
+        # the reference could not be a measurement.
+        false_hit_ceiling = pass1[1].lookup_tokens - harness.image_span_margin
         for i, res in enumerate(pass1[1:], start=1):
             _expect(
                 failures,
-                res.lookup_hits <= steady,
-                f"request {i}: hit {res.lookup_hits} tokens, above the "
-                f"text-prefix steady state {steady} -- false hit under "
-                f"eviction",
+                res.lookup_hits <= false_hit_ceiling,
+                f"request {i}: hit {res.lookup_hits} of {res.lookup_tokens} "
+                f"tokens, past the {false_hit_ceiling}-token shared-prefix "
+                f"ceiling -- the hit reached the image span, a false hit "
+                f"under eviction",
             )
+        metrics["pass1_hits"] = [res.lookup_hits for res in pass1]
 
         # Conservation under the cap: the traffic must overflow capacity
         # (else this scenario is vacuous) while resident bytes stay bounded.
@@ -475,7 +507,8 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
             intended_bytes > 2 * capacity_bytes,
             f"traffic stored only ~{intended_bytes} bytes against a "
             f"{capacity_bytes}-byte cap -- eviction never exercised; raise "
-            f"EVICTION_N or lower the capacity for this path",
+            f"EVICTION_N, or lower this model's capacity (the path default "
+            f"or ModelSpec.eviction_capacity_gb) toward one cache object",
         )
         _expect(
             failures,
@@ -573,8 +606,10 @@ def run_preemption(spec: ModelSpec) -> dict:
         # 4, 784 on Qwen3.8) and a tolerance stated in the wrong unit is
         # either vacuous or spuriously red.
         chunk = harness.chunk
+        replayed_tokens = 0
         for req in requests:
             again = harness.run(req)
+            replayed_tokens += again.lookup_tokens
             _check_text(failures, harness, req, again.text, f"T0.11 replay {req.key}")
             _expect(
                 failures,
@@ -583,35 +618,50 @@ def run_preemption(spec: ModelSpec) -> dict:
                 f"{again.lookup_tokens} tokens after the preemption batch",
             )
 
-        # Under-storage guard: preemption must not silently drop stores.
-        # (No upper bound here: a preempted request legitimately re-stores.)
-        # A resumed request re-looks-up its already-DECODED tokens (they are
-        # input tokens for the recompute), counting them as misses -- but the
-        # save path, by save_decode_cache=False design, never stores
-        # decode-origin tokens. So each preemption legitimately contributes
-        # up to its decoded length (<= PREEMPTION_MAX_TOKENS, chunk-aligned)
-        # of missed-but-never-stored tokens. Verified deterministic:
-        # 2 preemptions x 80 decoded tokens = exactly the observed gap; the
-        # replay full-hit check above still catches any real store loss.
-        decode_relookup_slack = (
-            preemptions * ((PREEMPTION_MAX_TOKENS + chunk - 1) // chunk) * chunk
-        )
+        # Under-storage guard: preemption must not silently drop stores. This
+        # is an independent signal from the replay hits above, and the only
+        # one left after this scenario opts out of the unloaded-hit rule
+        # (harness.unloaded_hits_allowed): the replay proves the tokens came
+        # BACK, this proves LMCache was asked to save them rather than vLLM's
+        # own prefix cache having served them. No upper bound -- a preempted
+        # request legitimately re-stores.
+        #
+        # The reference is the DISTINCT prompt-token count, summed over the
+        # replay pass, not `batch.lookup_tokens - batch.lookup_hits`. A
+        # request that waits in the queue is looked up again on every
+        # scheduler step, so the batch counters count the same tokens many
+        # times over: measured on Gemma 3-4B, 26730 "missed" tokens for six
+        # ~700-token prompts, a 6.4x inflation that made the old bound
+        # unsatisfiable. Any request queues as soon as the block pool cannot
+        # admit the whole batch at once, which is precisely the pressure this
+        # scenario exists to create -- so the old formula was invalid in its
+        # own target regime, and it happened to pass only while every prompt
+        # was small enough to be admitted in a single step. Counting distinct
+        # tokens also removes the need for the decode-relookup slack the old
+        # bound carried, which existed only to absorb the same double count.
+        #
+        # Slack per request: the leading shared region (these requests share
+        # a salt and pad and differ only in image, so a later request may
+        # legitimately find that prefix already stored and skip it -- one
+        # image_span_margin by construction) plus one partial chunk, which
+        # LMCache never stores.
+        store_slack = PREEMPTION_N * (harness.image_span_margin + chunk)
         stored_delta = harness.stored_tokens_total() - stored_before
-        missed = batch.lookup_tokens - batch.lookup_hits
         _expect(
             failures,
-            stored_delta >= missed - PREEMPTION_N * chunk - decode_relookup_slack,
-            f"under-storage across preemption: batch missed {missed} tokens "
-            f"but only {stored_delta} were store-requested "
-            f"(slack: {PREEMPTION_N * chunk} partial-chunk + "
-            f"{decode_relookup_slack} decode-relookup over {preemptions} "
-            f"preemptions)",
+            stored_delta >= replayed_tokens - store_slack,
+            f"under-storage across preemption: the batch's six prompts hold "
+            f"{replayed_tokens} distinct tokens but only {stored_delta} were "
+            f"store-requested (slack {store_slack} = {PREEMPTION_N} x "
+            f"({harness.image_span_margin} shared prefix + {chunk} partial "
+            f"chunk))",
         )
         metrics["preemptions"] = preemptions
         metrics["chunk"] = chunk
         metrics["batch"] = {
             "lookup_tokens": batch.lookup_tokens,
             "lookup_hits": batch.lookup_hits,
+            "distinct_prompt_tokens": replayed_tokens,
             "stored_delta": stored_delta,
         }
     return {"failures": failures, "metrics": metrics}
@@ -880,6 +930,19 @@ SCENARIOS = {
     "preemption": run_preemption,
     "mp_connector": run_mp_connector,
 }
+
+# The routing module names the scenarios; this module implements them. A name
+# only in one of the two places would surface as a model quietly running
+# fewer scenarios than its certificate claims, so check the two agree here
+# rather than at the point where one of them is missing.
+_MISSING = set(ALL_SCENARIOS) - set(SCENARIOS)
+_UNROUTED = set(SCENARIOS) - set(ALL_SCENARIOS)
+if _MISSING or _UNROUTED:
+    raise RuntimeError(
+        f"scenario registry disagrees with isolated_routing: "
+        f"routed but not implemented {sorted(_MISSING)}, "
+        f"implemented but never routed {sorted(_UNROUTED)}"
+    )
 
 
 def main(argv: list[str]) -> int:

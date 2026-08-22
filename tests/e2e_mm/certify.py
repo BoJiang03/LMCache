@@ -33,6 +33,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 # First Party (test-local)
 from benchmark_parity import parity_gate  # noqa: E402
 from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
+from isolated_routing import (  # noqa: E402
+    CAPACITY_EVICTION,
+    CHUNKED_PREFILL,
+    PREEMPTION,
+    isolated_scenarios,
+)
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
 CERTIFICATE_SCHEMA_VERSION = 3
@@ -59,13 +65,6 @@ HYBRID_NOT_COVERED = [
     "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
     "cache manager only to connectors that advertise support for it, so a "
     "hybrid model fails engine init there outright",
-    "chunked-prefill step boundaries falling inside an image span: that "
-    "scenario pins the scheduler's batched-token budget far below one "
-    "prompt, which a recurrent-state hybrid cannot accept (it needs a step "
-    "wide enough for one whole 544-784 token block so its state snapshot "
-    "lands on a boundary), and it is untested for a sliding-window hybrid "
-    "whose smaller blocks would in principle allow it "
-    "(see IN_PROCESS_SCENARIOS)",
     "recovery from a failed KV load (the connector's degraded mode): vLLM "
     "rewinds the affected requests through "
     "`_update_requests_with_invalid_blocks`, which unpacks a single KV "
@@ -73,17 +72,76 @@ HYBRID_NOT_COVERED = [
     "load error is fatal to the engine, not recoverable",
 ]
 
-# Exclusion for a hybrid whose preemption block pool has not been measured.
-# The pool must sit above what one max-length request costs and below what
-# the running batch costs; that window follows from the model's KV bytes per
-# token, so it has to be read off vLLM's own refusal message per model
-# rather than derived. Until it is, the scenario cannot start an engine at
-# all, so claiming it would be claiming an untested path.
-UNSIZED_POOL_NOT_COVERED = [
-    "preemption-driven recompute: this model has no measured "
-    "`preemption_gpu_blocks`, and a hybrid's block pool cannot be sized "
-    "from the spec, so the scenario is not run for it",
-]
+# Exclusion for any hybrid the preemption scenario is not run for -- two
+# different reasons again, and the difference matters: one is a measurement
+# nobody has taken, the other is a wall.
+_PREEMPTION_NOT_COVERED = {
+    # A sliding-window hybrid needs a pool that admits all six padded
+    # prompts and still cannot hold their decode growth. That window is per
+    # model -- it follows from the model's KV bytes per token AND from
+    # whether its sliding window is wider than the prompt, since a window
+    # narrower than the prompt makes the per-request footprint saturate and
+    # the batch always fit. So it is measured, not derived, and for one
+    # registered model (Gemma 4-E4B) a 2.25x sweep of pools found no value
+    # that works. Either way the model declares no `preemption_gpu_blocks`
+    # and its ModelSpec comment says which case it is.
+    HybridFamily.SLIDING_WINDOW: [
+        "preemption-driven recompute: this model declares no "
+        "`preemption_gpu_blocks`, so the scenario is not run for it. The "
+        "pool it needs -- large enough to admit the whole batch, too small "
+        "to hold its decode growth -- is measured per model and may not "
+        "exist at all when the model's sliding window is narrower than the "
+        "prompt; see the model's ModelSpec comment for which applies",
+    ],
+    # A recurrent-state hybrid cannot run it at any pool size, and the
+    # numbers below are the whole argument -- all on Qwen3.5-2B, 6 requests
+    # of 3518 tokens, block 544, measured 2026-08-22.
+    #
+    # Above the crash region the scenario is vacuous. At the mandatory
+    # minimum step budget (one block) vLLM never runs two of these requests
+    # at once, so there is nothing to preempt at ANY pool: raising the
+    # budget by 6 tokens is the single variable that turns 0 preemptions
+    # into 1 on plain vLLM at 32 blocks. Even with that budget, the
+    # connector's external prefix hits remove enough prefill work that 32
+    # blocks no longer fills (0 preemptions), so pressure needs a smaller
+    # pool.
+    #
+    # Below it the engine dies. With the MP connector attached, 24, 20 and
+    # 16 blocks all abort in vLLM's block-pool bookkeeping
+    # (`block_pool.cache_full_blocks: assert blk.block_hash is None`, from
+    # the RUNNING branch at 24/20 and the WAITING branch at 16), while plain
+    # vLLM at those exact pools completes cleanly. So the pool region that
+    # would create pressure is the region that crashes, and the two do not
+    # overlap.
+    HybridFamily.RECURRENT_STATE: [
+        "preemption-driven recompute, at any pool size: align mode's "
+        "one-block step budget means two of these requests never run at "
+        "once, so a pool large enough to survive has nothing to preempt "
+        "(measured: 128, 48 and 32 blocks all yield 0 preemptions), while "
+        "every pool small enough to create pressure aborts the engine with "
+        "the connector attached -- 24, 20 and 16 blocks each hit "
+        "`block_pool.cache_full_blocks: assert blk.block_hash is None`, "
+        "which plain vLLM at the same pools does not. Not a missing "
+        "measurement; the two regions do not overlap",
+    ],
+}
+
+# Exclusion for any model the chunked-prefill scenario is not run for, i.e.
+# every hybrid -- for one of two different reasons, so say which.
+_CHUNKED_PREFILL_NOT_COVERED = {
+    HybridFamily.RECURRENT_STATE: [
+        "chunked-prefill step boundaries falling inside an image span: that "
+        "scenario pins the batched-token budget far below one prompt, while "
+        "align mode needs the opposite -- a step wide enough for one whole "
+        "544-784 token block, so the state snapshot lands on a boundary. "
+        "Contradictory by construction, not a plumbing gap",
+    ],
+    HybridFamily.SLIDING_WINDOW: [
+        "chunked-prefill step boundaries falling inside an image span: this "
+        "family's smaller blocks would in principle allow it (it needs no "
+        "step-width guarantee at all), but it is untested here",
+    ],
+}
 
 # Additional exclusions specific to a recurrent-state (Mamba/GDN) hybrid.
 RECURRENT_STATE_NOT_COVERED = [
@@ -91,15 +149,18 @@ RECURRENT_STATE_NOT_COVERED = [
     "and a hit RESTORES a recurrent-state page rather than reproducing KV "
     "bit-for-bit, so output equality is gated by the MME flip/score budget, "
     "not bytes",
-    "capacity eviction: one object here is a whole recurrent-state page "
-    "(~205 MB on Qwen3.6-27B), larger than the eviction scenario's entire "
-    "cap, so the scenario could not store a single object and would fail "
-    "for a reason unrelated to eviction; it needs a capacity measured for "
-    "this family first",
+    "genuinely concurrent execution of a submitted batch: align mode pins "
+    "the step budget to one unified block, and vLLM schedules running "
+    "requests first, so a single decoding request leaves too little budget "
+    "for any other request's block-aligned prefill chunk (which vLLM then "
+    "truncates to zero and skips). Measured on Qwen3.5-2B: a 6-request "
+    "batch never had more than one request running, and adding 6 tokens to "
+    "the budget is enough to change that. So the suite exercises concurrent "
+    "SUBMISSION and the connector's batched store/lookup traffic, but not "
+    "two of these requests occupying the GPU at the same time",
 ]
 
-# How the certificate describes each hybrid family's chunk size and the
-# scheduling regimes that family actually exercises.
+# How the certificate describes each hybrid family's chunk size.
 _CHUNK_NOTE = {
     HybridFamily.RECURRENT_STATE: "vLLM unified block size (Mamba/GDN align mode)",
     HybridFamily.SLIDING_WINDOW: (
@@ -107,16 +168,54 @@ _CHUNK_NOTE = {
         "hybrid; vLLM reports the smallest of them as cache_config.block_size)"
     ),
 }
-_HYBRID_SCHEDULING = {
-    HybridFamily.RECURRENT_STATE: [
-        "chunked prefill (inherent: a scheduler step advances one unified block)",
-        "concurrent batches",
-    ],
-    HybridFamily.SLIDING_WINDOW: [
-        "single-step and chunked prefill",
-        "concurrent batches",
-    ],
+
+# Scheduling regimes the suite drives. The prefill and batch shapes follow
+# from the model's family (align mode pins the step budget; the other two
+# families leave it alone), while everything else is contributed by an
+# isolated scenario -- so those entries are read from ``isolated_routing``
+# rather than restated here. Restating them is exactly how Gemma 4's
+# certificate came to omit two scenarios it had passed.
+_PREFILL_REGIME = {
+    HybridFamily.NONE: "single-step and chunked prefill",
+    HybridFamily.RECURRENT_STATE: (
+        "chunked prefill (inherent: a scheduler step advances one unified block)"
+    ),
+    HybridFamily.SLIDING_WINDOW: (
+        "single-step prefill (prompts fit one scheduler step; no budget is pinned)"
+    ),
 }
+_BATCH_REGIME = {
+    HybridFamily.NONE: "concurrent batches",
+    HybridFamily.RECURRENT_STATE: (
+        "concurrent batch submission (vLLM executes it serially -- see "
+        "known_not_covered)"
+    ),
+    HybridFamily.SLIDING_WINDOW: "concurrent batches",
+}
+_SCENARIO_REGIME = {
+    CAPACITY_EVICTION: "capacity eviction",
+    PREEMPTION: "preemption-driven recompute",
+}
+
+
+def _scheduling(spec: ModelSpec) -> list[str]:
+    """Scheduling regimes a green run for ``spec`` actually exercised.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The certificate's ``scope.scheduling`` list: the family's prefill
+        and batch shapes, plus one entry per isolated scenario that adds a
+        regime of its own and is applicable to this model.
+    """
+    scenarios = isolated_scenarios(spec)
+    return [
+        _PREFILL_REGIME[spec.hybrid_family],
+        _BATCH_REGIME[spec.hybrid_family],
+        *(text for name, text in _SCENARIO_REGIME.items() if name in scenarios),
+    ]
+
 
 IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
 MP_PATH = (
@@ -148,7 +247,7 @@ def certified_scope(spec: ModelSpec) -> dict:
             "chunk_size": spec.hybrid_block_tokens,
             "chunk_size_note": _CHUNK_NOTE[spec.hybrid_family],
             "backend": "MP cache server L1, separate object groups",
-            "scheduling": _HYBRID_SCHEDULING[spec.hybrid_family],
+            "scheduling": _scheduling(spec),
         }
     return {
         "deployment_paths": [IN_PROCESS_PATH, MP_PATH],
@@ -156,17 +255,16 @@ def certified_scope(spec: ModelSpec) -> dict:
         "chunk_size": LMCACHE_TEST_CHUNK_SIZE,
         "chunk_size_note": "LMCache chunk size",
         "backend": "LocalCPUBackend (in-process) / MP cache server L1",
-        "scheduling": [
-            "single-step and chunked prefill",
-            "concurrent batches",
-            "capacity eviction",
-            "preemption-driven recompute",
-        ],
+        "scheduling": _scheduling(spec),
     }
 
 
 def known_not_covered(spec: ModelSpec) -> list[str]:
     """List what a green run for ``spec`` leaves outside the claim.
+
+    The scenario-shaped exclusions are keyed off ``isolated_scenarios``,
+    the same predicate the pytest parametrization uses, so a scenario that
+    starts (or stops) running for a model cannot leave a stale claim here.
 
     Args:
         spec: The model under certification.
@@ -174,13 +272,16 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     Returns:
         The universal exclusions plus the ones its deployment path adds.
     """
+    scenarios = isolated_scenarios(spec)
     if not spec.hybrid_block_tokens:
         return KNOWN_NOT_COVERED + DUAL_PATH_NOT_COVERED
     extra = list(HYBRID_NOT_COVERED)
+    if CHUNKED_PREFILL not in scenarios:
+        extra += _CHUNKED_PREFILL_NOT_COVERED[spec.hybrid_family]
     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
         extra += RECURRENT_STATE_NOT_COVERED
-    if not spec.preemption_gpu_blocks:
-        extra += UNSIZED_POOL_NOT_COVERED
+    if PREEMPTION not in scenarios:
+        extra += _PREEMPTION_NOT_COVERED[spec.hybrid_family]
     return KNOWN_NOT_COVERED + extra
 
 

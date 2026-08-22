@@ -186,6 +186,18 @@ class ModelSpec:
             16-token-block model, but a hybrid pays per group -- Gemma 4-E4B
             needs 0.11 GiB for one request while 128 of its blocks give
             0.03 GiB -- so the deeper hybrids have to raise it.
+        eviction_capacity_gb: Cache capacity (GB) for the capacity-eviction
+            scenario, overriding the default for this model's deployment
+            path (0 = use it). The scenario needs a cap small enough that
+            its traffic overflows it several times over and large enough to
+            hold at least one whole cache object -- a cap below one object
+            cannot store anything, and the run then fails for a reason that
+            has nothing to do with eviction. A block's objects cost
+            ``layers x page_size`` and that spans two orders of magnitude
+            across the registered hybrids (12 MB on Qwen3.5-2B against
+            ~205 MB on the 27Bs), so the deepest models have to raise it.
+            Must be a whole multiple of the MP host allocator's 64 MB
+            expansion unit, which silently rounds a sub-unit request up.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -217,6 +229,7 @@ class ModelSpec:
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
     preemption_gpu_blocks: int = 0
+    eviction_capacity_gb: float = 0.0
     answer_extract_pattern: str = ""
 
     def __post_init__(self) -> None:
@@ -398,6 +411,16 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # the isolated modules' 0.35 default cannot even load the model
             # ("No available memory for the cache blocks").
             isolated_gpu_utilization=0.75,
+            # The eviction scenario's one-unit (64 MB) MP default cannot hold
+            # a single object here: a 784-token block costs ~205 MB across
+            # all 64 layers, arriving as two objects of which the
+            # recurrent-state one is ~154 MB. 8 units (512 MB) is the first
+            # size that holds a whole block with room for the 0.80 eviction
+            # watermark to act on, and the scenario stays far from vacuous
+            # because the traffic is enormous by comparison. Measured
+            # 2026-08-22: 6 resident objects, 513802240 bytes = 0.957 of the
+            # cap, against 11.65 GB of intended traffic -- 21.7x overflow.
+            eviction_capacity_gb=0.5,
         ),
         ModelSpec(
             key="qwen3.8-27b",
@@ -440,6 +463,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             mme_max_local_cpu_gb=120.0,
             mp_server_l1_gb=200.0,
             isolated_gpu_utilization=0.75,
+            eviction_capacity_gb=0.5,
         ),
         ModelSpec(
             key="gemma-4-e4b",
@@ -503,26 +527,39 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 56 KB/token over ~2374 questions of <=1000 prompt tokens is
             # ~130 GB, well past the runner's 40 GB default.
             mme_max_local_cpu_gb=280.0,
-            # The preemption window is narrow here and measured, not guessed.
-            # vLLM reports 0.03 GiB for the default 128 blocks and names 544
-            # as the max length that buys -- so ~251 KB/block, ~59 KB/token.
-            # One max-length (2048) request therefore needs ~482 blocks, the
-            # floor vLLM refuses to start below, while the six concurrent
-            # requests (a 280-soft-token image, a question and 112 forced
-            # decodes each, ~422 tokens) need ~595. 512 is inside that
-            # 482-595 window: it admits every prompt and still cannot hold
-            # the batch, which is exactly the pressure this scenario wants.
+            # NO preemption_gpu_blocks, and this is a retraction rather than
+            # an omission. b1836ce1 set 512 here and recorded it as verified;
+            # that verification ran the scenario WITHOUT the conftest's
+            # hybrid prompt padding, which the suite always applies, so the
+            # number describes an engine the suite never builds. Under the
+            # padded prompts it is vacuous, and so is every other pool tried
+            # (measured 2026-08-22, each the whole scenario):
             #
-            # It yields exactly ONE preemption, which clears the scenario's
-            # >0 vacuity bar but not by much. Measured, not assumed: 496
-            # produces the same single preemption, so the count is set by
-            # the decode schedule rather than by pool slack, and squeezing
-            # the pool only moves it nearer the floor where vLLM refuses to
-            # start. 512 is the safer end of the window for the same
-            # result. One preemption is enough for what this scenario
-            # actually verifies -- the round-trip is exercised, and all six
-            # outputs and all six replays are then checked regardless.
-            preemption_gpu_blocks=512,
+            #     blocks | pool tokens | preemptions
+            #        512 |       2,314 | 0   <- the shipped value
+            #        768 |       3,472 | 0
+            #        992 |       4,484 | 0
+            #       1024 |       4,629 | 0
+            #       1152 |       5,208 | 0
+            #   512, unpadded prompts  | 1   <- what b1836ce1 measured
+            #
+            # A 2.25x sweep with nothing in it, so this is not a number
+            # waiting to be found. The mechanism: the scenario needs a pool
+            # that admits all six prompts and still cannot hold their decode
+            # growth, and this model's per-request footprint SATURATES --
+            # its sliding window is 512 tokens while the padded prompt is
+            # ~504 lookup tokens over a much longer span, so the sliding
+            # groups free blocks behind the window and 112 more decode
+            # tokens cost nothing there. Unpadded, prompts were 299 tokens,
+            # inside the window, nothing was freed, and the batch could
+            # outgrow the pool -- which is exactly why the old measurement
+            # looked fine. Gemma 3-4B (window 1024, wider than its prompt)
+            # does not saturate and still preempts at 1024 blocks.
+            #
+            # Widening the scenario's decode budget would restore the
+            # pressure, but PREEMPTION_MAX_TOKENS is shared with every
+            # certified model, so that is a separate change with its own
+            # re-verification; recorded rather than done here.
         ),
         ModelSpec(
             key="gemma-3-4b",
@@ -569,12 +606,21 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # so none of the 667520 skipped tokens came from vLLM's own
             # prefix cache.
             #
-            # Measured the same way as Gemma 4's, and much larger because
-            # this model shares no KV: vLLM reports 0.04 GiB for the default
-            # 128 blocks and names 272 as the length that buys (~328
-            # KB/block), so one max-length (2048) request needs ~964 blocks
-            # while the six ~400-token requests need ~1129. 1024 sits in
-            # that window.
+            # The preemption pool. Derived first from vLLM's own refusal --
+            # it reports 0.04 GiB for the default 128 blocks and names 272
+            # as the length that buys (~328 KB/block), so one max-length
+            # (2048) request needs ~964 blocks, the floor it will not start
+            # below -- and then confirmed under the padded prompts the suite
+            # actually uses: 1024 blocks buys 2,325 tokens and yields 1
+            # preemption (2026-08-22).
+            #
+            # That re-measurement matters, because the same number for
+            # Gemma 4-E4B did NOT survive it (see that spec). This model
+            # keeps working for a reason: its sliding window is 1024 tokens,
+            # wider than the ~700-token padded prompt, so its per-request
+            # footprint does not saturate and the batch can still outgrow
+            # the pool. Gemma 4's 512-token window is narrower than its
+            # prompt, and that is the difference.
             preemption_gpu_blocks=1024,
         ),
         ModelSpec(

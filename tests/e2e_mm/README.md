@@ -210,13 +210,20 @@ solely to connectors that advertise support for it, which the in-process
 `LMCacheConnectorV1` does not: engine init fails outright with "Hybrid KV
 cache manager is disabled but failed to convert the KV cache specs to one
 unified type". For a model with `hybrid_block_tokens` set, the whole suite
-therefore runs on the MP path (the `harness` fixture starts the server),
-the three in-process isolated scenarios are excluded from parametrization,
-and the certificate claims the MP path only. Two consequences worth
-knowing: chunked prefill is covered for free (a scheduler step advances
-exactly one unified block, so every padded prompt spans several steps), and
-capacity eviction / preemption stay uncovered until those scenarios grow an
-MP variant.
+therefore runs on the MP path (the `harness` fixture starts the server) and
+the certificate claims the MP path only.
+
+Which isolated scenarios a model runs is decided in one place,
+`isolated_routing.isolated_scenarios`, which both the parametrization and
+the certificate read — they are the same statement seen from two sides, and
+they drifted apart once when only one of them was updated. `mp_connector`
+and `capacity_eviction` apply to every model; eviction's cap becomes
+per-model wherever one cache object is too big for the shared default
+(`ModelSpec.eviction_capacity_gb`, needed by the 27B recurrent-state
+hybrids whose state page is ~154 MB). `chunked_prefill` stays in-process.
+`preemption` needs a measured `ModelSpec.preemption_gpu_blocks` on a
+hybrid, and is unavailable to the `RECURRENT_STATE` family at any pool
+size — `certify._PREEMPTION_NOT_COVERED` carries the measurements.
 
 The two kinds differ in what else the engine needs, which is why
 `hybrid_family` exists alongside `hybrid_block_tokens`:
