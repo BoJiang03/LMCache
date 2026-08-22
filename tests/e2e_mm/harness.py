@@ -140,8 +140,12 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
 # reads the health event, and a server that really died fails the run
 # anyway (every load times out). What it does mean is that degraded-mode
 # behaviour is NOT exercised here, which the certificate already states.
+# The server refuses a reap timeout above its worker-registration grace
+# ("worker registration grace must be >= the worker reap timeout"), so the
+# grace is raised alongside it.
 MP_HEARTBEAT_INTERVAL_S = 21600.0
 MP_WORKER_REAP_TIMEOUT_S = 86400.0
+MP_WORKER_REGISTRATION_GRACE_S = 86400.0
 
 # CPU-side thread pool size for every MP cache server the suite starts,
 # raised from the server's default of ONE because that pool serves PING and
@@ -225,6 +229,8 @@ def start_mp_cache_server(
         "LRU",
         "--worker-reap-timeout-seconds",
         str(MP_WORKER_REAP_TIMEOUT_S),
+        "--worker-registration-grace-seconds",
+        str(MP_WORKER_REGISTRATION_GRACE_S),
         "--max-cpu-workers",
         str(MP_SERVER_CPU_WORKERS),
     ]
