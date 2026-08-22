@@ -59,13 +59,30 @@ HYBRID_NOT_COVERED = [
     "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
     "cache manager only to connectors that advertise support for it, so a "
     "hybrid model fails engine init there outright",
-    "capacity eviction and preemption-driven recompute: both isolated "
-    "scenarios drive the in-process connector (see IN_PROCESS_SCENARIOS)",
+    "chunked-prefill step boundaries falling inside an image span: that "
+    "scenario pins the scheduler's batched-token budget far below one "
+    "prompt, which a recurrent-state hybrid cannot accept (it needs a step "
+    "wide enough for one whole 544-784 token block so its state snapshot "
+    "lands on a boundary), and it is untested for a sliding-window hybrid "
+    "whose smaller blocks would in principle allow it "
+    "(see IN_PROCESS_SCENARIOS)",
     "recovery from a failed KV load (the connector's degraded mode): vLLM "
     "rewinds the affected requests through "
     "`_update_requests_with_invalid_blocks`, which unpacks a single KV "
     "cache group and therefore raises on a hybrid -- so on this path a "
     "load error is fatal to the engine, not recoverable",
+]
+
+# Exclusion for a hybrid whose preemption block pool has not been measured.
+# The pool must sit above what one max-length request costs and below what
+# the running batch costs; that window follows from the model's KV bytes per
+# token, so it has to be read off vLLM's own refusal message per model
+# rather than derived. Until it is, the scenario cannot start an engine at
+# all, so claiming it would be claiming an untested path.
+UNSIZED_POOL_NOT_COVERED = [
+    "preemption-driven recompute: this model has no measured "
+    "`preemption_gpu_blocks`, and a hybrid's block pool cannot be sized "
+    "from the spec, so the scenario is not run for it",
 ]
 
 # Additional exclusions specific to a recurrent-state (Mamba/GDN) hybrid.
@@ -74,6 +91,11 @@ RECURRENT_STATE_NOT_COVERED = [
     "and a hit RESTORES a recurrent-state page rather than reproducing KV "
     "bit-for-bit, so output equality is gated by the MME flip/score budget, "
     "not bytes",
+    "capacity eviction: one object here is a whole recurrent-state page "
+    "(~205 MB on Qwen3.6-27B), larger than the eviction scenario's entire "
+    "cap, so the scenario could not store a single object and would fail "
+    "for a reason unrelated to eviction; it needs a capacity measured for "
+    "this family first",
 ]
 
 # How the certificate describes each hybrid family's chunk size and the
@@ -157,6 +179,8 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     extra = list(HYBRID_NOT_COVERED)
     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
         extra += RECURRENT_STATE_NOT_COVERED
+    if not spec.preemption_gpu_blocks:
+        extra += UNSIZED_POOL_NOT_COVERED
     return KNOWN_NOT_COVERED + extra
 
 

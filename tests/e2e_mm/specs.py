@@ -177,6 +177,15 @@ class ModelSpec:
             hybrids; a capacity that cannot hold one test's working set
             makes the cache evict mid-test and the store-conservation
             audits fail for a reason that has nothing to do with LMCache.
+        preemption_gpu_blocks: vLLM GPU block pool for the preemption
+            scenario, overriding its 128 default (0 = use it). The pool has
+            to straddle a window: big enough to hold one max-length request
+            (vLLM refuses outright otherwise) and too small to hold the
+            whole batch (or nothing is preempted and the scenario reports
+            itself vacuous). 128 blocks is that window for a uniform
+            16-token-block model, but a hybrid pays per group -- Gemma 4-E4B
+            needs 0.11 GiB for one request while 128 of its blocks give
+            0.03 GiB -- so the deeper hybrids have to raise it.
         answer_extract_pattern: Regex whose LAST match's group(1) is the
             model's final answer inside a generated text ('' = the whole
             text is the answer). For models that phrase a preamble before a
@@ -207,6 +216,7 @@ class ModelSpec:
     hf_overrides: dict[str, object] = field(default_factory=dict)
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
+    preemption_gpu_blocks: int = 0
     answer_extract_pattern: str = ""
 
     def __post_init__(self) -> None:
@@ -493,6 +503,26 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 56 KB/token over ~2374 questions of <=1000 prompt tokens is
             # ~130 GB, well past the runner's 40 GB default.
             mme_max_local_cpu_gb=280.0,
+            # The preemption window is narrow here and measured, not guessed.
+            # vLLM reports 0.03 GiB for the default 128 blocks and names 544
+            # as the max length that buys -- so ~251 KB/block, ~59 KB/token.
+            # One max-length (2048) request therefore needs ~482 blocks, the
+            # floor vLLM refuses to start below, while the six concurrent
+            # requests (a 280-soft-token image, a question and 112 forced
+            # decodes each, ~422 tokens) need ~595. 512 is inside that
+            # 482-595 window: it admits every prompt and still cannot hold
+            # the batch, which is exactly the pressure this scenario wants.
+            #
+            # It yields exactly ONE preemption, which clears the scenario's
+            # >0 vacuity bar but not by much. Measured, not assumed: 496
+            # produces the same single preemption, so the count is set by
+            # the decode schedule rather than by pool slack, and squeezing
+            # the pool only moves it nearer the floor where vLLM refuses to
+            # start. 512 is the safer end of the window for the same
+            # result. One preemption is enough for what this scenario
+            # actually verifies -- the round-trip is exercised, and all six
+            # outputs and all six replays are then checked regardless.
+            preemption_gpu_blocks=512,
         ),
         ModelSpec(
             key="gemma-3-4b",
@@ -538,6 +568,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # really crossed the connector: pass2_local_cached_tokens is 0,
             # so none of the 667520 skipped tokens came from vLLM's own
             # prefix cache.
+            #
+            # Measured the same way as Gemma 4's, and much larger because
+            # this model shares no KV: vLLM reports 0.04 GiB for the default
+            # 128 blocks and names 272 as the length that buys (~328
+            # KB/block), so one max-length (2048) request needs ~964 blocks
+            # while the six ~400-token requests need ~1129. 1024 sits in
+            # that window.
+            preemption_gpu_blocks=1024,
         ),
         ModelSpec(
             key="glm-4.6v-flash",

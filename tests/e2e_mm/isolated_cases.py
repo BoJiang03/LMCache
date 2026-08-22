@@ -17,6 +17,8 @@ would misattribute model weakness to the cache.
 """
 
 # Standard
+from collections.abc import Iterator
+import contextlib
 import importlib.util
 import json
 import os
@@ -80,6 +82,24 @@ CHUNKED_PAD_PHASES = (40, 56, 72, 88)
 EVICTION_CAPACITY_GB = 0.05
 EVICTION_N = 32
 
+# The same cap for the MP path, which needs a different number.
+#
+# The in-process tier honors 0.05 GB to the byte (measured: 53673984 resident
+# against a 53687091 cap). The MP server's host allocator instead expands in
+# 64 MB units, so a request below one unit is silently rounded UP: asking for
+# 0.05 GB yields a 64 MB pool ("Total allocated size: 61.25 MB, free 2.75
+# MB"), and eviction then correctly bounds usage to 64 MB while the scenario
+# compares it against 51.2 MB and calls a working backend broken.
+#
+# So ask for a whole number of units -- and exactly ONE unit, which is
+# forced rather than tidy. At one unit both registered hybrids overflow the
+# cap well past the 2x vacuity bar (Gemma 4: 252 MB intended, 3.8x, landing
+# at 0.992 of the cap; Gemma 3: 184 MB, 2.7x, at 0.771) with 76 and 153
+# resident objects respectively, fine enough granularity for the 10% bound
+# below. At two units Gemma 3's 184 MB would be only 1.44x and the scenario
+# would fail itself as vacuous.
+EVICTION_CAPACITY_GB_MP = 0.0625
+
 # Isolated engines coexist with (at most) one session engine on the GPU, so
 # they claim a smaller fraction than the spec default. A model whose weights
 # alone exceed this fraction overrides it via
@@ -107,6 +127,22 @@ def isolated_gpu_utilization(spec: ModelSpec) -> float:
 PREEMPTION_GPU_BLOCKS = 128
 PREEMPTION_N = 6
 PREEMPTION_MAX_TOKENS = 112
+
+# Context length for the preemption engine, decoupled from the block count.
+#
+# These two used to be one expression, ``PREEMPTION_GPU_BLOCKS * CHUNK``,
+# which silently assumed vLLM's block size equals LMCache's chunk. That
+# holds only for uniform 16-token-block models. On a hybrid the two differ
+# per group, so the product stopped describing the pool: Gemma 4-E4B needs
+# 0.11 GiB for one max-length request (2048 tokens x 56 KB/token) while 128
+# blocks of its 256 KB give 0.03 GiB, and vLLM refuses a pool that cannot
+# hold one max-length request.
+#
+# Kept numerically identical (128 * 16) so every already-certified model
+# sees the exact same engine, while a hybrid can now raise its pool via
+# ``ModelSpec.preemption_gpu_blocks`` without also stretching the context
+# it has to fit.
+PREEMPTION_MAX_MODEL_LEN = 128 * 16
 
 # MP connector scenario: ports for the cache server subprocess, derived from
 # the PID so concurrent runs on one host do not collide.
@@ -152,6 +188,110 @@ def _check_replay(
         harness.check_replay_text(request, reference_text, text, where)
     except AssertionError as exc:
         failures.append(str(exc))
+
+
+@contextlib.contextmanager
+def _deployment_harness(
+    spec: ModelSpec,
+    requests: list[MMRequest],
+    extra_engine_kwargs: dict[str, object],
+    metrics: dict[str, object],
+    cache_capacity_gb: float = 0.0,
+) -> "Iterator[MMHarness]":
+    """Yield a harness on the only deployment path *spec* can actually run.
+
+    A model with more than one KV cache group needs vLLM's hybrid KV cache
+    manager, and vLLM offers that only to connectors implementing
+    ``SupportsHMA``. Of ours only ``LMCacheMPConnector`` does, so for a
+    hybrid the in-process path is not merely slower: vLLM logs "Turning off
+    hybrid kv cache manager because --kv-transfer-config selects a KV
+    connector that does not support it" and engine init then dies inside
+    ``get_attn_backends_for_group`` on a layer the collapsed spec dropped.
+    That is why these scenarios were listed as not covered on every hybrid
+    certificate -- not because the paths were untestable, but because they
+    only ever built the harness that cannot load the model.
+
+    Hybrids therefore bring up a real MP cache server, which is also where
+    their capacity lives (the server's ``l1_size_gb``) rather than in a
+    harness kwarg.
+
+    Baselines are computed here because both paths need them under the same
+    engine config, and their temporary directory has to outlive the server
+    log it also holds.
+
+    Args:
+        spec: The model under certification.
+        requests: Requests whose plain-vLLM baselines the scenario checks
+            against.
+        extra_engine_kwargs: Additional/overriding vLLM ``LLM(...)`` kwargs.
+        metrics: Scenario metrics; the server's log tail is recorded here on
+            exit, so a failure that only shows up server-side is diagnosable
+            after the temporary directory is gone.
+        cache_capacity_gb: Cache capacity to impose, in GB. 0 selects the
+            path's own default, which is what every scenario except
+            eviction wants.
+
+    Yields:
+        A started harness. It, and the server if one was started, are torn
+        down on exit.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = pathlib.Path(tmp)
+        baselines = compute_baselines(
+            spec, requests, tmpdir, extra_engine_kwargs=extra_engine_kwargs
+        )
+
+        if not spec.hybrid_block_tokens:
+            # Pass the capacity only when one is imposed, so the harness's
+            # own default stays the single source of truth for it.
+            capacity_kwargs: dict[str, float] = {}
+            if cache_capacity_gb:
+                capacity_kwargs["max_local_cpu_gb"] = cache_capacity_gb
+            harness: MMHarness = MMHarness(
+                spec,
+                baselines=baselines,
+                extra_engine_kwargs=extra_engine_kwargs,
+                **capacity_kwargs,
+            )
+            try:
+                yield harness
+            finally:
+                harness.close()
+            return
+
+        zmq_port = 25000 + (os.getpid() % 5000)
+        http_port = zmq_port + 5000
+        log_path = tmpdir / "mp_server.log"
+        server = start_mp_cache_server(
+            zmq_port=zmq_port,
+            http_port=http_port,
+            # A hybrid's chunk must be vLLM's unified block size, and its
+            # per-group layers need their own cache objects.
+            chunk_size=spec.hybrid_block_tokens,
+            log_path=log_path,
+            l1_size_gb=(
+                cache_capacity_gb or spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID
+            ),
+            separate_object_groups=True,
+            start_timeout_s=MP_SERVER_START_TIMEOUT_S,
+        )
+        harness = MPHarness(
+            spec,
+            baselines=baselines,
+            zmq_port=zmq_port,
+            http_port=http_port,
+            extra_engine_kwargs=extra_engine_kwargs,
+        )
+        try:
+            yield harness
+        finally:
+            harness.close()
+            server.process.terminate()
+            try:
+                server.process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                server.process.kill()
+            metrics["server_log_tail"] = log_path.read_text()[-8000:]
 
 
 def run_chunked_prefill(spec: ModelSpec) -> dict:
@@ -264,9 +404,10 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     """T0.10: correctness and conservation once the cache overflows.
 
     Runs ``EVICTION_N`` distinct images through a cache capped at
-    ``EVICTION_CAPACITY_GB``. Eviction must keep resident bytes under the
-    cap, never manufacture false hits, and evicted requests must recompute
-    to exactly their first-pass output.
+    ``EVICTION_CAPACITY_GB`` (``EVICTION_CAPACITY_GB_MP`` on the MP path,
+    whose allocator cannot honor a sub-unit capacity). Eviction must keep
+    resident bytes under the cap, never manufacture false hits, and evicted
+    requests must recompute to exactly their first-pass output.
 
     Args:
         spec: The model under certification.
@@ -275,25 +416,22 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
     requests = eviction_requests(EVICTION_N)
-    with tempfile.TemporaryDirectory() as tmp:
-        baselines = compute_baselines(
-            spec,
-            requests,
-            pathlib.Path(tmp),
-            extra_engine_kwargs={
-                "gpu_memory_utilization": isolated_gpu_utilization(spec)
-            },
-        )
-    harness = MMHarness(
-        spec,
-        baselines=baselines,
-        extra_engine_kwargs={"gpu_memory_utilization": isolated_gpu_utilization(spec)},
-        max_local_cpu_gb=EVICTION_CAPACITY_GB,
-    )
     failures: list[str] = []
     metrics: dict[str, object] = {}
-    capacity_bytes = int(EVICTION_CAPACITY_GB * 1024**3)
-    try:
+    # Assert against the capacity actually configured, not a nominal one the
+    # tier never agreed to.
+    capacity_gb = (
+        EVICTION_CAPACITY_GB_MP if spec.hybrid_block_tokens else EVICTION_CAPACITY_GB
+    )
+    capacity_bytes = int(capacity_gb * 1024**3)
+    metrics["capacity_gb"] = capacity_gb
+    with _deployment_harness(
+        spec,
+        requests,
+        {"gpu_memory_utilization": isolated_gpu_utilization(spec)},
+        metrics,
+        cache_capacity_gb=capacity_gb,
+    ) as harness:
         pass1 = [harness.run(r) for r in requests]
 
         for req, res in zip(requests, pass1, strict=True):
@@ -324,14 +462,20 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
             snapshot.num_keys > 0,
             "no resident keys after the eviction traffic",
         )
-        bytes_per_token = snapshot.total_bytes / max(1, snapshot.num_keys * CHUNK)
+        # Per the model's own chunk, not the module default: a resident key
+        # holds one chunk, so on a hybrid (chunk 32 on Gemma 4, 784 on
+        # Qwen3.8) dividing by 16 would inflate bytes_per_token by the ratio
+        # and make the overflow assertion below meaningless.
+        bytes_per_token = snapshot.total_bytes / max(
+            1, snapshot.num_keys * harness.chunk
+        )
         intended_bytes = int(stored_tokens * bytes_per_token)
         _expect(
             failures,
             intended_bytes > 2 * capacity_bytes,
             f"traffic stored only ~{intended_bytes} bytes against a "
             f"{capacity_bytes}-byte cap -- eviction never exercised; raise "
-            f"EVICTION_N or lower EVICTION_CAPACITY_GB",
+            f"EVICTION_N or lower the capacity for this path",
         )
         _expect(
             failures,
@@ -361,8 +505,6 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
                 again.text,
                 f"T0.10 post-eviction rerun {req.key}",
             )
-    finally:
-        harness.close()
     return {"failures": failures, "metrics": metrics}
 
 
@@ -385,28 +527,21 @@ def run_preemption(spec: ModelSpec) -> dict:
     Returns:
         Report dict with ``failures`` (empty = pass) and ``metrics``.
     """
-    engine_kwargs = {
+    engine_kwargs: dict[str, object] = {
         "gpu_memory_utilization": isolated_gpu_utilization(spec),
-        "num_gpu_blocks_override": PREEMPTION_GPU_BLOCKS,
-        # vLLM refuses a block pool smaller than one max-length request, so
-        # the context length must shrink along with the pool.
-        "max_model_len": PREEMPTION_GPU_BLOCKS * CHUNK,
+        # vLLM refuses a block pool smaller than one max-length request. The
+        # pool must still be too small for the whole batch, or nothing is
+        # preempted and the scenario asserts itself vacuous below.
+        "num_gpu_blocks_override": spec.preemption_gpu_blocks or PREEMPTION_GPU_BLOCKS,
+        "max_model_len": PREEMPTION_MAX_MODEL_LEN,
         "max_num_seqs": PREEMPTION_N,
         "disable_log_stats": False,  # the preemption counter needs stats on
     }
     requests = preemption_requests(PREEMPTION_N, PREEMPTION_MAX_TOKENS)
-    with tempfile.TemporaryDirectory() as tmp:
-        baselines = compute_baselines(
-            spec,
-            requests,
-            pathlib.Path(tmp),
-            extra_engine_kwargs=engine_kwargs,
-        )
-    harness = MMHarness(spec, baselines=baselines, extra_engine_kwargs=engine_kwargs)
     failures: list[str] = []
     metrics: dict[str, object] = {}
-    stored_before = harness.stored_tokens_total()
-    try:
+    with _deployment_harness(spec, requests, engine_kwargs, metrics) as harness:
+        stored_before = harness.stored_tokens_total()
         preemptions_before = vllm_preemption_total()
         # A preempted request is deliberately NOT reloaded from LMCache, so
         # the batch reports hits it then recomputes; that recompute is what
@@ -432,12 +567,18 @@ def run_preemption(spec: ModelSpec) -> dict:
         # different numeric regime, and the ignore_eos garbage tail amplifies
         # kernel-level numeric differences chaotically; contamination is
         # still caught hard, because the probe would name the wrong color.
+        # Tolerances below are in units of the MODEL's chunk (harness.chunk),
+        # not the module-level CHUNK. They are the same 16 for every uniform
+        # model, but a hybrid's chunk is its unified block size (32 on Gemma
+        # 4, 784 on Qwen3.8) and a tolerance stated in the wrong unit is
+        # either vacuous or spuriously red.
+        chunk = harness.chunk
         for req in requests:
             again = harness.run(req)
             _check_text(failures, harness, req, again.text, f"T0.11 replay {req.key}")
             _expect(
                 failures,
-                again.lookup_hits >= again.lookup_tokens - 2 * CHUNK,
+                again.lookup_hits >= again.lookup_tokens - 2 * chunk,
                 f"{req.key}: replay hit only {again.lookup_hits} of "
                 f"{again.lookup_tokens} tokens after the preemption batch",
             )
@@ -453,27 +594,26 @@ def run_preemption(spec: ModelSpec) -> dict:
         # 2 preemptions x 80 decoded tokens = exactly the observed gap; the
         # replay full-hit check above still catches any real store loss.
         decode_relookup_slack = (
-            preemptions * ((PREEMPTION_MAX_TOKENS + CHUNK - 1) // CHUNK) * CHUNK
+            preemptions * ((PREEMPTION_MAX_TOKENS + chunk - 1) // chunk) * chunk
         )
         stored_delta = harness.stored_tokens_total() - stored_before
         missed = batch.lookup_tokens - batch.lookup_hits
         _expect(
             failures,
-            stored_delta >= missed - PREEMPTION_N * CHUNK - decode_relookup_slack,
+            stored_delta >= missed - PREEMPTION_N * chunk - decode_relookup_slack,
             f"under-storage across preemption: batch missed {missed} tokens "
             f"but only {stored_delta} were store-requested "
-            f"(slack: {PREEMPTION_N * CHUNK} partial-chunk + "
+            f"(slack: {PREEMPTION_N * chunk} partial-chunk + "
             f"{decode_relookup_slack} decode-relookup over {preemptions} "
             f"preemptions)",
         )
         metrics["preemptions"] = preemptions
+        metrics["chunk"] = chunk
         metrics["batch"] = {
             "lookup_tokens": batch.lookup_tokens,
             "lookup_hits": batch.lookup_hits,
             "stored_delta": stored_delta,
         }
-    finally:
-        harness.close()
     return {"failures": failures, "metrics": metrics}
 
 
