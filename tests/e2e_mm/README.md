@@ -71,9 +71,8 @@ tokens; equality holds there in practice).
 only the deployment paths listed in the certificate scope are certified —
 currently the in-process `LMCacheConnectorV1` and the `LMCacheMPConnector`
 + MP cache server pair, each on a single GPU (TP=1). TP>1, remote/disk
-backends, the audio modality (no audio model registered), and
-allocator-level buffer accounting are outside the claim until their tests
-exist; on the MP path the chunk-boundary phases and collision pressure
+backends, and allocator-level buffer accounting are outside the claim
+until their tests exist; on the MP path the chunk-boundary phases and collision pressure
 tiers run only in-process (cache keys are computed identically on both
 paths, so the keyspace properties are transport-independent).
 
@@ -146,17 +145,32 @@ that guard the suite can silently certify a different source tree.
 |---|---|---|
 | T2.1 | Multi-image order | A request with images (A, B) and one with (B, A) do not cross-hit and each answers correctly. |
 | T2.2 | Partial sharing | Request [A] then request [A, C]: shared prefix hits, C computed correctly. |
-| T2.3 | Other modalities | For models whose spec declares `video`: synthetic solid-color MP4s rerun T0.1/T0.3/T1 on the video ingestion path (multi-frame decode, temporal merge). Deselected — not skipped — at collection for models without the modality, so certification stays exactly as wide as the spec. Audio: no audio model registered yet. |
+| T2.3 | Other modalities — video | For models whose spec declares `video`: synthetic solid-color MP4s rerun T0.1/T0.3/T1 on the video ingestion path (multi-frame decode, temporal merge). Deselected — not skipped — at collection for models without the modality, so certification stays exactly as wide as the spec. |
+| T2.4 | Other modalities — audio | For models whose spec declares `audio`: synthetic clips rerun T0.1/T0.3/T1 on the audio ingestion path (own processor, resampler and encoder). Paired with its **own** negative control: the image control proves nothing about audio, because if audio items never reached vLLM's `mm_features` the isolation assertion would pass trivially and look green. Same collection-time deselection policy. |
 
 ### T0.6 — Benchmark score parity (`benchmark_parity.py`)
 
 The synthetic matrix proves cache-key isolation; this tier proves the cache
-HIT path does not degrade real model quality. It scores the full **MME**
-benchmark (2374 yes/no questions, standard Perception/Cognition scoring)
-three ways: plain-vLLM baseline, LMCache cold pass (miss path), and an
-identical second pass where every prompt's KV is restored from LMCache (hit
-path). Pass criteria: answer flips ≤ 0.5% and |total score delta| ≤ 10
-points (of 2800) on BOTH comparisons (pass1 vs baseline, pass2 vs pass1),
+HIT path does not degrade real model quality. It scores a benchmark three
+ways: plain-vLLM baseline, LMCache cold pass (miss path), and an identical
+second pass where every prompt's KV is restored from LMCache (hit path).
+Which benchmark comes from `ModelSpec.parity_benchmark`:
+
+| `--benchmark` | Data | Scoring | Score delta budget |
+| --- | --- | --- | --- |
+| `mme` (default) | lmms-lab/MME, 2374 yes/no questions over images | standard Perception/Cognition | ≤ 10 of 2800 |
+| `mmau` | TwinkStart/MMAU test-mini, 1000 four-way questions over audio | mean of per-task (sound/speech/music) accuracy | ≤ 1.0 of 100 |
+
+An image benchmark cannot measure an audio model's quality, so a
+`Benchmark` subclass supplies the four things that differ — items,
+conversations, answer parsing, scoring — and everything else (the three
+passes, the counters, the hit-coverage arithmetic, the gate) is shared. The
+per-task breakdown is load-bearing for MMAU: accuracy ranges from 59 to 71
+across its three tasks, so an aggregate-only score would average away a
+regression confined to one of them.
+
+Pass criteria: answer flips ≤ 0.5% and |total score delta| within the
+benchmark's budget on BOTH comparisons (pass1 vs baseline, pass2 vs pass1),
 plus a non-vacuity gate on the hit path. The pass1-vs-baseline gate
 matters: cross-image contamination poisons the cache on the cold pass and
 then replays deterministically, so the pass2-vs-pass1 comparison alone

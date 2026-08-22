@@ -152,7 +152,7 @@ def harness(request, tmp_path_factory):
     ("Hybrid KV cache manager is disabled but failed to convert the KV
     cache specs to one unified type").
     """
-    from catalog import catalog, pressure_requests, video_requests
+    from catalog import audio_requests, catalog, pressure_requests, video_requests
     from harness import (
         MMHarness,
         MPHarness,
@@ -177,6 +177,8 @@ def harness(request, tmp_path_factory):
     all_requests = list(catalog().values()) + pressure_requests(pressure_n())
     if "video" in spec.modalities:
         all_requests += list(video_requests().values())
+    if "audio" in spec.modalities:
+        all_requests += list(audio_requests().values())
     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
     baselines = compute_baselines(spec, all_requests, workdir)
     if not spec.hybrid_block_tokens:

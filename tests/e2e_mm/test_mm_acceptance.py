@@ -24,6 +24,8 @@ import pytest
 # First Party (test-local)
 from catalog import (
     BOUNDARY_PHASES,
+    audio_kind_request,
+    audio_requests,
     catalog,
     color_request,
     pressure_requests,
@@ -334,6 +336,82 @@ def test_t2_video_isolation_and_hit(harness):
     assert b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin, (
         f"video B hit {b1.lookup_hits} tokens, too close to A's full hit "
         f"{a2.lookup_hits} -- cross-video false hit"
+    )
+
+
+@pytest.mark.requires_modality("audio")
+def test_t2_audio_isolation_and_hit(harness):
+    """T2.4: T0.1 + T0.3 + T1 rerun on the audio modality.
+
+    Audio reaches vLLM through an ingestion path that shares nothing with
+    images: its own processor, its own resampler and its own encoder. The
+    LMCache guarantees must hold regardless -- content identity in the
+    cache keys, hit-path equivalence, and no cross-item hits.
+
+    The identity claim is the one worth stating explicitly, because the
+    substitution that provides it (``apply_mm_hashes_to_token_ids``) is
+    modality-agnostic by construction: it walks whatever vLLM reports in
+    ``mm_features``. Reading the code says audio should therefore be keyed
+    correctly; this test is what actually establishes it, and the audio
+    negative control below is what proves this test could have failed.
+
+    Deselected at collection for models whose spec does not declare audio.
+    """
+    audios = audio_requests()
+    req_a, req_b = audios["t24-A"], audios["t24-B"]
+
+    a1 = harness.run(req_a)
+    harness.check_output(req_a, a1, "T2.4 first audio A")
+    assert a1.lookup_hits == 0, "fresh case salt must not hit anything"
+    assert a1.identifiers, "audio request produced no multimodal identifiers"
+
+    b1 = harness.run(req_b)
+    harness.check_output(req_b, b1, "T2.4 different audio B")
+
+    a2 = harness.run(req_a)
+    harness.check_output(req_a, a2, "T2.4 repeat audio A")
+    harness.check_replay_text(req_a, a1.text, a2.text, "T2.4 repeat audio A")
+    assert a2.lookup_hits > 0, "audio requests must actually hit (no bypass)"
+    assert a2.lookup_hits >= a2.lookup_tokens - 2 * harness.chunk
+
+    # B shares only the text prefix with A; hits into the audio span would
+    # be cross-audio contamination. The margin is 4 chunks and the audio
+    # span is ~105 tokens by construction (see catalog.AUDIO_SECONDS), so
+    # this comparison is answerable rather than vacuous.
+    assert b1.lookup_hits <= a2.lookup_hits - harness.image_span_margin, (
+        f"audio B hit {b1.lookup_hits} tokens, too close to A's full hit "
+        f"{a2.lookup_hits} -- cross-audio false hit"
+    )
+
+
+@pytest.mark.requires_modality("audio")
+def test_audio_detector_sensitivity_negative_control(harness):
+    """The audio tripwire must FIRE when MM identity is deliberately broken.
+
+    The image negative control cannot stand in for this one. It proves the
+    counter detector fires when image identity is dropped, which says
+    nothing about whether audio placeholder spans are wide enough, or
+    reported by vLLM at all, for the same detection to work: if audio items
+    never reached ``mm_features``, the positive test above would pass
+    trivially (no substitution to make, nothing to collide) and look green.
+
+    So: disable the substitution for a fresh salt and require that clip B
+    DOES falsely hit into clip A's entries. If this does not trip, the
+    audio isolation assertion is measuring nothing.
+    """
+    req_a = audio_kind_request("t24blind-A", "t24blind", 0)
+    req_b = audio_kind_request("t24blind-B", "t24blind", 2)
+
+    with harness.identity_blindness():
+        a1 = harness.run(req_a)
+        assert a1.lookup_hits == 0, "fresh case salt must not hit anything"
+        b1 = harness.run(req_b)
+
+    assert b1.lookup_hits > b1.lookup_tokens - harness.image_span_margin, (
+        f"audio negative control did not trip: with identity substitution "
+        f"disabled, clip B hit only {b1.lookup_hits} of {b1.lookup_tokens} "
+        f"tokens -- the counter detector would not have seen a real "
+        f"cross-audio collision either"
     )
 
 

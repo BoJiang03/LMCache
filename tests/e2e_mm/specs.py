@@ -154,6 +154,26 @@ class ModelSpec:
             value>)`` -- so without this the full-attention layers are
             built at the sliding-window geometry and weight loading dies
             on a shape mismatch.
+        parity_benchmark: Which benchmark the parity check (T0.6) scores
+            for this model -- a ``benchmark_parity.BENCHMARKS`` key; empty
+            means "mme". Set it to "mmau" for a model certified on audio,
+            whose quality cannot be measured by an image benchmark. Note
+            that the ``mme_*`` knobs below apply to whichever benchmark is
+            selected here despite their names; renaming them is a separate
+            mechanical change.
+        mm_encoder_attn_backend: vLLM multimodal-encoder attention backend
+            for every engine the suite starts for this model; empty leaves
+            vLLM's own choice. Applies to the same set of engines as
+            ``hf_overrides`` and for the same reason -- it changes how the
+            encoder computes, so a baseline without it is not comparable.
+            Qwen3-Omni needs "TORCH_SDPA" on vLLM 0.23.0, whose vision
+            tower hands its ``cu_seqlens`` to the attention kernel without
+            moving it to the device; profiling then aborts with
+            ``cu_seqlens_q must be on CUDA`` even for an audio-only run,
+            and modality limits cannot route around it (setting a modality
+            to 0 skips loading its weights and fails later on a meta
+            tensor). Fixed upstream in 0.27.1 at
+            ``qwen3_omni_moe_thinker.py:982``.
         hybrid_family: Which kind of multi-group KV cache this model has
             (see ``HybridFamily``); it selects the mandatory engine
             settings. Must be set exactly when ``hybrid_block_tokens`` is.
@@ -226,6 +246,8 @@ class ModelSpec:
     hybrid_family: HybridFamily = HybridFamily.NONE
     hybrid_object_groups: int = 0
     hf_overrides: dict[str, object] = field(default_factory=dict)
+    parity_benchmark: str = ""
+    mm_encoder_attn_backend: str = ""
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
     preemption_gpu_blocks: int = 0
@@ -652,6 +674,38 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             answer_extract_pattern=(
                 r"<\|begin_of_box\|>((?:(?!<\|begin_of_box\|>).)*?)<\|end_of_box\|>"
             ),
+        ),
+        ModelSpec(
+            key="qwen3-omni-30b",
+            hf_id="Qwen/Qwen3-Omni-30B-A3B-Instruct",
+            # The first AUDIO model in the suite. Audio reaches vLLM through
+            # its own processor, resampler and encoder, none of which the
+            # image path touches, and its contribution to the LMCache cache
+            # key had never been exercised.
+            modalities=frozenset({"image", "audio"}),
+            # NOT a hybrid, measured two ways: the config's thinker text
+            # tower is 48 uniform layers with no ``layer_types`` and
+            # ``sliding_window=None`` (the MoE is FFN-only and does not
+            # affect KV geometry), and the engine reports a single KV cache
+            # group. So it runs the in-process path, unlike the Qwen3.5/3.6/
+            # 3.8 hybrids. GQA-4 over 48 layers at head_dim 128 is
+            # 96 KB/token, confirmed against the engine's own
+            # 56.02 GiB / 611,888 tokens.
+            #
+            # 59.4 GiB of weights needs most of the card.
+            gpu_memory_utilization=0.85,
+            # Required on vLLM 0.23.0; see mm_encoder_attn_backend. Without
+            # it the engine cannot start AT ALL for this model, audio-only
+            # runs included.
+            mm_encoder_attn_backend="TORCH_SDPA",
+            parity_benchmark="mmau",
+            # MMAU rather than MME: the audio benchmark. Full 1000-question
+            # parity measured 0 flips on both comparisons, byte-identical
+            # scores across baseline/pass1/pass2 (66.90; music 70.06 /
+            # sound 71.47 / speech 59.16) and a 1.000 lookup hit ratio, so
+            # the default flip budget is untouched. Prompts average ~234
+            # tokens, moving ~28 GB through the cache, well inside the
+            # runner's 40 GB default -- no capacity override needed.
         ),
     ]
 }

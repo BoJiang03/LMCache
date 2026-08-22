@@ -1,9 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Deterministic synthetic images and request builders for the MM suite.
+"""Deterministic synthetic media and request builders for the MM suite.
 
 Images are solid-color squares with a deterministic per-index pattern, so
 that (a) every index yields distinct bytes (distinct vLLM ``mm_hash``), and
 (b) the dominant color is a one-word semantic probe the model can answer.
+
+Audio follows the same two rules, but its answer space had to be measured
+rather than assumed, and several plausible probes turned out to be unusable.
+Beep COUNTING, pitch height and pitch DIRECTION are all answered wrongly
+and, worse, wrongly in a way that COLLAPSES distinct items onto the same
+answer -- precisely the failure that blinds a cross-item detector, since
+item A returning item B's cached answer is invisible when both answer
+alike. Naming two clips in order, tried as a way to widen the space, failed
+outright (0/9 correct), so audio probes stay single-clip.
+
+What does work is the coarse KIND of sound. Five kinds -- tone, static
+noise, repeated beeping, low rumble, warbling tone -- were each measured on
+the certification target as correctly named, stable across two passes, and
+distinct from every other. Silence is deliberately excluded: that model
+calls it "tone", stably, colliding with the real tone. Note the boundary
+this draws: beeping as a KIND is reliable while the NUMBER of beeps is not.
 
 Every test case uses a unique ``salt`` as the first words of its system
 message, so the very first token chunk already differs between cases and
@@ -15,8 +31,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 import base64
 import io
+import math
 import os
 import tempfile
+import wave
 
 # Third Party
 from PIL import Image
@@ -131,6 +149,188 @@ def video_data_uri(index: int) -> str:
     return f"data:video/mp4;base64,{encoded}"
 
 
+AUDIO_SAMPLE_RATE = 16000
+# Chosen from a measurement, not for convenience. Qwen3-Omni expands audio
+# at a very steady 13.1-13.3 placeholder tokens per second (measured 20 /
+# 53 / 79 / 105 / 131 tokens at 1.5 / 4 / 6 / 8 / 10 s). The isolation
+# cases prove a hit did NOT reach the media by requiring a separation of
+# ``Harness.image_span_margin`` = 4 chunks = 64 tokens, so the span has to
+# be comfortably WIDER than that: at the 1.5 s used while designing the
+# stimuli the span is only 20 tokens, narrower than the margin, and the
+# assertion could never have been satisfied however correct the cache was.
+# 8 s gives 105 tokens, about 6.5 chunks, leaving room for the span not
+# being chunk-aligned.
+AUDIO_SECONDS = 8.0
+AUDIO_LEAD_SILENCE = 0.1
+AUDIO_TONE_HZ = 440.0
+AUDIO_RUMBLE_HZ = 60.0
+AUDIO_WARBLE_CENTER_HZ = 600.0
+AUDIO_WARBLE_DEPTH_HZ = 300.0
+AUDIO_WARBLE_RATE_HZ = 3.0
+AUDIO_BEEP_SECONDS = 0.28
+AUDIO_BEEP_GAP_SECONDS = 0.18
+AUDIO_EDGE_SECONDS = 0.006
+
+# Five kinds, every one of them measured on the certification target
+# (Qwen3-Omni-30B) as correctly named, stable across two passes, and
+# answered differently from all the others. Two things are deliberately
+# NOT in this list:
+#
+# silence   named "tone" by the 30B, stably -- which COLLIDES with the real
+#           tone. A collision is the one failure a cross-item detector
+#           cannot see through, since item A returning item B's cached
+#           answer is invisible when both answer alike. (The 3B does name
+#           silence correctly; the palette follows the model being
+#           certified, not the most convenient one.)
+# counting  "how many beeps" and both pitch-height and pitch-direction
+#           labels were measured to collapse onto shared answers. Note the
+#           distinction: BEEPING as a coarse kind is reliable, while the
+#           NUMBER of beeps is not, so this list names the kind and never
+#           the count.
+_AUDIO_KINDS = ("tone", "noise", "beeping", "rumble", "warble")
+
+
+def audio_kind_name(index: int) -> str:
+    """Return the expected one-word kind of the audio clip at ``index``."""
+    return _AUDIO_KINDS[index % len(_AUDIO_KINDS)]
+
+
+def _lcg(seed: int):
+    """Yield a deterministic pseudorandom stream, seeded by ``seed``.
+
+    A local generator rather than ``random`` so a clip's bytes depend only
+    on its index, never on global interpreter state or call order.
+    """
+    state = (seed * 2 + 1) & 0x7FFFFFFF
+    while True:
+        state = (1103515245 * state + 12345) & 0x7FFFFFFF
+        yield state
+
+
+def _fade_edges(values: list[float], edge: int) -> list[float]:
+    """Apply raised-cosine fades in place and return the same list.
+
+    A hard start or stop is a click, and a click is a different sound from
+    the one being probed.
+    """
+    count = len(values)
+    for i in range(min(edge, count // 2)):
+        weight = 0.5 * (1.0 - math.cos(math.pi * i / edge))
+        values[i] *= weight
+        values[count - 1 - i] *= weight
+    return values
+
+
+def _audio_body(kind: str, count: int, rand) -> list[float]:
+    """Build ``count`` samples of the named kind, in [-1.0, 1.0].
+
+    Args:
+        kind: One of ``_AUDIO_KINDS``.
+        count: Number of samples to produce.
+        rand: Pseudorandom stream from ``_lcg`` (used by ``noise``).
+
+    Returns:
+        The sample values, already faded at both ends.
+
+    Raises:
+        ValueError: If ``kind`` is not a known audio kind.
+    """
+    edge = max(1, int(AUDIO_EDGE_SECONDS * AUDIO_SAMPLE_RATE))
+    step = 2.0 * math.pi / AUDIO_SAMPLE_RATE
+    if kind == "tone":
+        return _fade_edges(
+            [0.6 * math.sin(step * AUDIO_TONE_HZ * i) for i in range(count)], edge
+        )
+    if kind == "rumble":
+        return _fade_edges(
+            [0.75 * math.sin(step * AUDIO_RUMBLE_HZ * i) for i in range(count)], edge
+        )
+    if kind == "noise":
+        return _fade_edges(
+            [0.35 * (next(rand) / 0x3FFFFFFF - 1.0) for i in range(count)], edge
+        )
+    if kind == "warble":
+        # Frequency swept continuously; phase is accumulated so the sweep
+        # stays continuous and the clip has no discontinuity to click at.
+        values: list[float] = []
+        phase = 0.0
+        for i in range(count):
+            freq = AUDIO_WARBLE_CENTER_HZ + AUDIO_WARBLE_DEPTH_HZ * math.sin(
+                step * AUDIO_WARBLE_RATE_HZ * i
+            )
+            phase += step * freq
+            values.append(0.6 * math.sin(phase))
+        return _fade_edges(values, edge)
+    if kind == "beeping":
+        # Beeps repeat for the WHOLE clip rather than a fixed count: with a
+        # fixed three, lengthening the clip to widen the placeholder span
+        # would leave most of it trailing silence, and what the model calls
+        # the clip could change under us. The count is never probed (beep
+        # COUNTING was measured unreliable), only the kind, so filling the
+        # duration is both safe and duration-independent.
+        beep = int(AUDIO_BEEP_SECONDS * AUDIO_SAMPLE_RATE)
+        gap = int(AUDIO_BEEP_GAP_SECONDS * AUDIO_SAMPLE_RATE)
+        values = []
+        while len(values) < count:
+            values.extend(
+                _fade_edges(
+                    [0.6 * math.sin(step * AUDIO_TONE_HZ * i) for i in range(beep)],
+                    edge,
+                )
+            )
+            values.extend([0.0] * gap)
+        return values[:count]
+    raise ValueError(f"unknown audio kind: {kind}")
+
+
+@lru_cache(maxsize=256)
+def audio_data_uri(index: int) -> str:
+    """Build the deterministic test clip at ``index`` as a WAV data URI.
+
+    The clip's KIND cycles with ``index % 5`` and is what the semantic probe
+    checks. Independently, every index gets unique BYTES (and therefore a
+    unique vLLM ``mm_hash``) from a per-index dither of one least
+    significant bit applied to every sample: at roughly -90 dBFS it cannot
+    change which kind a listener reports, but it does mean two clips of the
+    same kind are still two distinct cache entries. That matters because
+    the isolation cases need same-answer/different-content pairs -- without
+    the dither, two "tone" indices would be byte-identical and a false hit
+    between them would be undetectable in principle.
+
+    Duration is identical for every index on purpose: a per-index length
+    would shift the placeholder span and quietly move the chunk boundaries
+    that the boundary-phase cases are built to control.
+
+    Args:
+        index: Clip index; any non-negative integer.
+
+    Returns:
+        A ``data:audio/wav;base64,...`` URI of 16-bit mono PCM.
+    """
+    n_lead = int(AUDIO_SAMPLE_RATE * AUDIO_LEAD_SILENCE)
+    n_body = int(AUDIO_SAMPLE_RATE * AUDIO_SECONDS)
+    rand = _lcg(index + 1)
+    body = _audio_body(audio_kind_name(index), n_body, rand)
+    pcm = bytearray()
+    for value in [0.0] * n_lead + body:
+        sample = int(max(-1.0, min(1.0, value)) * 32767.0)
+        # Bit 16, not bit 0: in a power-of-two-modulus LCG the low bit
+        # alternates in a pattern that does NOT depend on the seed, so
+        # ``& 1`` here gave every index an identical dither and left whole
+        # kinds byte-identical across indices -- the exact collision this
+        # dither exists to prevent.
+        sample += 1 if (next(rand) >> 16) & 1 else -1
+        pcm += max(-32768, min(32767, sample)).to_bytes(2, "little", signed=True)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(AUDIO_SAMPLE_RATE)
+        out.writeframes(bytes(pcm))
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:audio/wav;base64,{encoded}"
+
+
 COLOR_QUESTION = (
     "What is the dominant color of this image? Answer with exactly one word."
 )
@@ -140,6 +340,13 @@ VIDEO_COLOR_QUESTION = (
 MULTI_COLOR_QUESTION = (
     "List the dominant color of each image in the order given, "
     "separated by a comma. Answer with color words only."
+)
+# Every option is listed explicitly so the model picks from a fixed
+# vocabulary; the wording is the one the palette was measured with.
+AUDIO_KIND_QUESTION = (
+    "Which of these best describes the audio: a steady musical tone, "
+    "static noise, repeated beeping, a low rumble, or a warbling tone? "
+    "Reply with one word: tone, noise, beeping, rumble, or warble."
 )
 TEXT_ONLY_QUESTION = "What is the capital of France? Answer with exactly one word."
 
@@ -162,6 +369,10 @@ class MMRequest:
         video_indices: Indices of videos attached, in order (after images).
         ignore_eos: Force the full ``max_tokens`` decode (the preemption
             scenario needs guaranteed KV growth during decode).
+        audio_indices: Indices of audio clips attached, in order (after
+            images and videos). Audio probes are single-clip: naming two
+            clips in order was measured at 0/9 correct, so a case with more
+            than one clip has no usable semantic probe.
     """
 
     key: str
@@ -173,6 +384,7 @@ class MMRequest:
     needs_baseline: bool = True
     video_indices: tuple[int, ...] = ()
     ignore_eos: bool = False
+    audio_indices: tuple[int, ...] = ()
 
     def messages(self) -> list[dict]:
         """Build the OpenAI-style chat messages for this request.
@@ -188,6 +400,10 @@ class MMRequest:
         items.extend(
             {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
             for i in self.video_indices
+        )
+        items.extend(
+            {"type": "audio_url", "audio_url": {"url": audio_data_uri(i)}}
+            for i in self.audio_indices
         )
         mid_pad = mid_pad_words()
         content: list[dict] = []
@@ -249,6 +465,18 @@ def video_color_request(key: str, salt: str, video_index: int) -> MMRequest:
         image_indices=(),
         expected_probe=(image_color_name(video_index),),
         video_indices=(video_index,),
+    )
+
+
+def audio_kind_request(key: str, salt: str, audio_index: int) -> MMRequest:
+    """Build a single-clip request probing the clip's kind of sound."""
+    return MMRequest(
+        key=key,
+        salt=salt,
+        question=AUDIO_KIND_QUESTION,
+        image_indices=(),
+        expected_probe=(audio_kind_name(audio_index),),
+        audio_indices=(audio_index,),
     )
 
 
@@ -450,6 +678,29 @@ def video_requests() -> dict[str, MMRequest]:
         # Same-shape, different-color videos behind an identical prompt.
         video_color_request("t23-A", "t23", 0),  # red
         video_color_request("t23-B", "t23", 2),  # blue
+    ]
+    return {r.key: r for r in requests}
+
+
+def audio_requests() -> dict[str, MMRequest]:
+    """T2.4 audio requests, keyed by request key.
+
+    Kept OUT of ``catalog()`` for the same reason as ``video_requests``:
+    they are only valid, and only get baselines, for a spec that declares
+    the ``audio`` modality; another model's baseline engine would reject
+    the input.
+
+    The two clips are different KINDS, not merely different bytes, so the
+    semantic probe can tell them apart -- a false hit shows up as clip B
+    answering with clip A's kind. Same-kind pairs would still have distinct
+    bytes (see ``audio_data_uri``) but no observable answer difference, and
+    a detector that cannot see the collision it is looking for proves
+    nothing.
+    """
+    requests = [
+        # tone (index 0) and beeping (index 2) behind an identical prompt.
+        audio_kind_request("t24-A", "t24", 0),
+        audio_kind_request("t24-B", "t24", 2),
     ]
     return {r.key: r for r in requests}
 

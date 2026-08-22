@@ -341,6 +341,8 @@ def spec_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
     kwargs = hybrid_engine_kwargs(spec.hybrid_block_tokens, spec.hybrid_family)
     if spec.hf_overrides:
         kwargs["hf_overrides"] = dict(spec.hf_overrides)
+    if spec.mm_encoder_attn_backend:
+        kwargs["mm_encoder_attn_backend"] = spec.mm_encoder_attn_backend
     return kwargs
 
 
@@ -550,6 +552,10 @@ def mm_limits(spec: ModelSpec) -> dict[str, int]:
     limits = {"image": 2}
     if "video" in spec.modalities:
         limits["video"] = 1
+    if "audio" in spec.modalities:
+        # One clip: naming two clips in order was measured at 0/9 correct,
+        # so a multi-clip audio case would have no usable semantic probe.
+        limits["audio"] = 1
     return limits
 
 
@@ -851,7 +857,7 @@ class MMHarness:
 
     @property
     def image_span_margin(self) -> int:
-        """Hit-count separation that proves a hit did NOT reach the image.
+        """Hit-count separation that proves a hit did NOT reach the media.
 
         Test images are 448x448 (hundreds of placeholder tokens), so four
         chunks of separation is unambiguous at the 16-token default. At a
@@ -861,6 +867,12 @@ class MMHarness:
         several more after it, and a request that differs only in image
         content hits exactly the leading shared blocks — while a false hit
         reaches the trailing blocks too.
+
+        The same margin serves audio, but only because the clip length was
+        chosen to make it valid: audio expands at ~13 tokens/second, so
+        ``catalog.AUDIO_SECONDS`` is set to give a ~105-token span, wider
+        than the 64 tokens subtracted here. A shorter clip would make this
+        assertion unsatisfiable rather than merely weak.
         """
         return (2 if self.spec.hybrid_block_tokens else 4) * self.chunk
 
