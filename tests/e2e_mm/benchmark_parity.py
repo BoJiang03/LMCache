@@ -602,6 +602,10 @@ def parity_gate(
     Returns:
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
         the hit criterion that applied, and the thresholds used.
+        ``pass2_hit_coverage`` is None when the run provides no denominator
+        for it (an in-process run has no per-request lookup lengths); that
+        is "not measured", not a coverage of zero, and it fails a coverage
+        gate rather than satisfying one.
     """
     # First Party (test-local)
     from harness import LMCACHE_TEST_CHUNK_SIZE
@@ -631,10 +635,17 @@ def parity_gate(
     # hybrids) a replay served out of GPU memory still reports a full
     # LMCache hit, so only this number proves the retrieve path ran.
     loaded = report.get("pass2_external_cached_tokens", 0)
-    coverage = round(loaded / achievable, 4) if achievable else 0.0
+    # None, not 0.0, when the denominator is missing: the per-request token
+    # list comes from MPTransportCounters, which is installed only on the MP
+    # path, so an in-process run has no denominator at all. Publishing 0.0
+    # there reads as "the cache achieved nothing" for a run whose raw hit
+    # ratio was 1.0 -- an unmeasured quantity must not look like a measured
+    # zero.
+    coverage = round(loaded / achievable, 4) if achievable else None
     if granularity > LMCACHE_TEST_CHUNK_SIZE:
         hit_criterion = "coverage"
-        hit_ok = coverage >= MIN_HIT_COVERAGE
+        # An unmeasurable coverage cannot satisfy a coverage gate.
+        hit_ok = coverage is not None and coverage >= MIN_HIT_COVERAGE
     else:
         hit_criterion = "raw_hit_ratio"
         hit_ok = hit_ratio >= MIN_HIT_RATIO
@@ -1058,9 +1069,16 @@ def main() -> int:
         t1, h1 = lookup_stats()
         local_p2 = prefill.local_cached - local0
         external_p2 = prefill.external_cached - external0
-        achievable_p2 = achievable_hit_tokens(
-            counters.lookup_request_tokens[lookups0:] if counters else [],
-            args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+        # Only the MP counters expose per-request lookup lengths, so an
+        # in-process run cannot form the coverage denominator. Report that
+        # as absent rather than as a zero it could be mistaken for.
+        achievable_p2 = (
+            achievable_hit_tokens(
+                counters.lookup_request_tokens[lookups0:],
+                args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+            )
+            if counters
+            else None
         )
         hit_ratio = (h1 - h0) / max(1, t1 - t0)
     finally:
@@ -1125,10 +1143,15 @@ def main() -> int:
     with open(answers_path, "w") as f:
         json.dump({"pass1": answers_p1, "pass2": answers_p2}, f)
 
+    coverage_text = (
+        "n/a (in-process: no per-request denominator)"
+        if gate["pass2_hit_coverage"] is None
+        else f"{gate['pass2_hit_coverage']:.3f}"
+    )
     print(json.dumps(report, indent=2))
     print(
         f"[parity] hit_ratio={hit_ratio:.3f} "
-        f"hit_coverage={gate['pass2_hit_coverage']:.3f} "
+        f"hit_coverage={coverage_text} "
         f"(gated on {gate['hit_criterion']}) "
         f"score_delta(pass2-pass1)={gate['score_delta_pass2_vs_pass1']:.2f} "
         f"score_delta(pass1-baseline)="

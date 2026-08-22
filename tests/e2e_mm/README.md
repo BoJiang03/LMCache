@@ -328,17 +328,43 @@ python certify.py qwen2.5-vl-3b                         # suite only
 ```
 
 It runs the entire synthetic suite (including the isolated scenarios and
-the negative control), combines it with an MME parity result, and writes
-`certificate_<model>.json` recording the verdict, the exact commit, the
-certified scope (deployment paths, modalities, backend), all measurements,
-and the known-not-covered list. Exit codes: 0 `SUPPORTED`,
-2 `PROVISIONAL` (suite green, parity not provided), 1 `NOT_SUPPORTED`.
-A skipped or empty suite can never certify (skips are counted as failure).
+the negative control), combines it with a benchmark parity result (MME for
+image/video models, MMAU for audio), and writes `certificate_<model>.json`
+recording the verdict, the tested tree, the certified scope (deployment
+paths, modalities, backend), all measurements, and the known-not-covered
+list. Exit codes: 0 `SUPPORTED`, 2 `PROVISIONAL` (suite green, parity not
+provided), 1 `NOT_SUPPORTED`. A skipped or empty suite can never certify
+(skips are counted as failure).
+
+Three fields exist because a certificate that overstates itself is worse
+than no certificate, and each began as a real defect in a published one:
+
+- **`tested_tree`** — HEAD is read at launch *and* again at write time,
+  with a dirty-tree check on both. `commit` names the tree under test only
+  when `tested_tree.stable` is true; committing (or editing) mid-run makes
+  it false and prints a warning. The first Qwen3-Omni certificate recorded
+  a commit that was not the tree it had measured.
+- **the audio exclusion** — emitted only for a model whose spec does not
+  declare `audio`. It used to be unconditional, which made Qwen3-Omni's
+  certificate list audio in `scope.modalities` and disclaim it in
+  `known_not_covered`, in the same document.
+- **`gate.pass2_hit_coverage`** — `null`, never `0.0`, when the run has no
+  denominator for it. Per-request lookup lengths come from the MP
+  counters, so an in-process run cannot form one; a literal `0.0` there
+  read as "the cache achieved nothing" for runs whose raw hit ratio was
+  1.0. The in-process gate keys on `raw_hit_ratio`, so no verdict ever
+  depended on the bad number — only its readers did.
+
+The scenario-shaped entries in `known_not_covered` are derived from
+`isolated_scenarios(spec)`, the same predicate the pytest parametrization
+uses, so a scenario that starts or stops running for a model cannot leave a
+stale claim behind. Restating them by hand is how Gemma 4's certificate came
+to omit two scenarios it had actually passed.
 
 ## Support levels
 
 - ✅ **Supported**: certificate verdict `SUPPORTED` — synthetic suite green
-  AND MME parity gate passed, for the scope named in the certificate.
+  AND the parity gate passed, for the scope named in the certificate.
 - ⚠️ **Safe but not accelerated**: T0 green with an explicit MM bypass
   (T1.3 waived and documented).
 - ❌ **Not supported**: any T0 failure or a failed parity gate.

@@ -2,8 +2,9 @@
 """Single-command support certification for one multimodal model.
 
 Runs the full synthetic acceptance suite (T0/T1/T2 + isolated scenarios +
-the detector negative control) and combines it with an MME benchmark-parity
-result (T0.6) into one machine-readable certificate. The certificate — not
+the detector negative control) and combines it with a benchmark-parity
+result (T0.6 -- MME for image/video models, MMAU for audio) into one
+machine-readable certificate. The certificate — not
 any individual green test — is the artifact behind the claim "LMCache
 supports model X": it records exactly what was verified, on which code, on
 which deployment path, and what remains outside the claim.
@@ -41,17 +42,26 @@ from isolated_routing import (  # noqa: E402
 )
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
-CERTIFICATE_SCHEMA_VERSION = 3
+CERTIFICATE_SCHEMA_VERSION = 4
 
 # What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [
     "tensor-parallel (TP>1) and pipeline-parallel deployments",
     "remote / disk storage backends and cross-instance sharing",
-    "audio modality: the suite has no audio probes, so a model with an "
-    "audio tower (Gemma 4 has one) is certified on its image/video paths "
-    "only",
     "allocator-level buffer accounting (tracked by the pin-count project)",
 ]
+
+# Audio stopped being a universal exclusion when the suite grew audio cases
+# (T2.4) and a cross-modal pair (T2.5). It is now a statement about the
+# MODEL, so it must not be emitted for a model certified WITH audio -- doing
+# so made the first Qwen3-Omni certificate list audio in `scope.modalities`
+# and disclaim it two blocks later, in the same document.
+AUDIO_NOT_COVERED = (
+    "audio modality: this model's spec does not declare `audio`, so none of "
+    "the suite's audio or cross-modal cases ran for it and it is certified "
+    "on its image/video paths only -- note that a checkpoint can carry an "
+    "audio tower and still be certified this way (Gemma 4 does)"
+)
 
 # Additional exclusions for a model certified on both paths: the suite's
 # bulk runs in-process and only the T3 scenario crosses the transport.
@@ -147,8 +157,8 @@ _CHUNKED_PREFILL_NOT_COVERED = {
 RECURRENT_STATE_NOT_COVERED = [
     "bit-exact generation -- the GDN kernels have no batch-invariant mode, "
     "and a hit RESTORES a recurrent-state page rather than reproducing KV "
-    "bit-for-bit, so output equality is gated by the MME flip/score budget, "
-    "not bytes",
+    "bit-for-bit, so output equality is gated by the parity benchmark's "
+    "flip/score budget, not bytes",
     "genuinely concurrent execution of a submitted batch: align mode pins "
     "the step budget to one unified block, and vLLM schedules running "
     "requests first, so a single decoding request leaves too little budget "
@@ -217,6 +227,58 @@ def _scheduling(spec: ModelSpec) -> list[str]:
     ]
 
 
+def parity_benchmark_label(spec: ModelSpec, parity: dict) -> str:
+    """Name the benchmark whose parity backs (or would back) the verdict.
+
+    Read from the report that was actually used, falling back to the spec's
+    declared benchmark and only then to the historical default. Hardcoding
+    "MME" here is what made Qwen3-Omni's certificate claim MME parity while
+    its own parity block recorded an MMAU run.
+
+    Args:
+        spec: The model under certification.
+        parity: The certificate's ``parity`` block, whose ``report`` (when
+            present) carries the benchmark name written by
+            ``benchmark_parity.py``.
+
+    Returns:
+        The benchmark name, upper-cased for prose.
+    """
+    reported = (parity.get("report") or {}).get("benchmark")
+    return str(reported or spec.parity_benchmark or "mme").upper()
+
+
+def git_head(cwd: pathlib.Path) -> str:
+    """Return the current HEAD commit, or ``"unknown"`` if git cannot say.
+
+    Args:
+        cwd: Directory to run git in.
+
+    Returns:
+        The full 40-character SHA, or ``"unknown"``.
+    """
+    rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True
+    )
+    return rev.stdout.strip() if rev.returncode == 0 else "unknown"
+
+
+def git_dirty(cwd: pathlib.Path) -> bool:
+    """Report whether the working tree has uncommitted changes.
+
+    Args:
+        cwd: Directory to run git in.
+
+    Returns:
+        True if ``git status --porcelain`` prints anything, False if it is
+        clean or if git cannot be consulted.
+    """
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True
+    )
+    return bool(status.stdout.strip()) if status.returncode == 0 else False
+
+
 IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
 MP_PATH = (
     "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
@@ -270,11 +332,15 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
         spec: The model under certification.
 
     Returns:
-        The universal exclusions plus the ones its deployment path adds.
+        The universal exclusions, the modality ones this model's spec
+        implies, plus the ones its deployment path adds.
     """
     scenarios = isolated_scenarios(spec)
+    base = list(KNOWN_NOT_COVERED)
+    if "audio" not in spec.modalities:
+        base.append(AUDIO_NOT_COVERED)
     if not spec.hybrid_block_tokens:
-        return KNOWN_NOT_COVERED + DUAL_PATH_NOT_COVERED
+        return base + DUAL_PATH_NOT_COVERED
     extra = list(HYBRID_NOT_COVERED)
     if CHUNKED_PREFILL not in scenarios:
         extra += _CHUNKED_PREFILL_NOT_COVERED[spec.hybrid_family]
@@ -282,7 +348,7 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
         extra += RECURRENT_STATE_NOT_COVERED
     if PREEMPTION not in scenarios:
         extra += _PREEMPTION_NOT_COVERED[spec.hybrid_family]
-    return KNOWN_NOT_COVERED + extra
+    return base + extra
 
 
 def run_suite(model_key: str, pressure_n: int, workdir: pathlib.Path) -> dict:
@@ -459,12 +525,8 @@ def main() -> int:
     here = pathlib.Path(__file__).resolve().parent
     out_path = pathlib.Path(args.out or f"certificate_{args.model_key}.json")
 
-    commit = "unknown"
-    rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=here, capture_output=True, text=True
-    )
-    if rev.returncode == 0:
-        commit = rev.stdout.strip()
+    commit = git_head(here)
+    dirty_at_start = git_dirty(here)
 
     suite = run_suite(args.model_key, args.pressure_n, out_path.parent.resolve())
 
@@ -493,17 +555,43 @@ def main() -> int:
     else:
         verdict, exit_code = "NOT_SUPPORTED", 1
 
+    bench = parity_benchmark_label(spec, parity)
+    # Re-read HEAD now that the suite is done. A commit landing mid-run does
+    # not corrupt the measurements, but it does mean `commit` no longer names
+    # the tree that was tested -- so say whether it still does instead of
+    # quietly recording the launch value as if it were verified.
+    commit_at_finish = git_head(here)
+    dirty_at_finish = git_dirty(here)
+    tree_stable = (
+        commit != "unknown"
+        and commit == commit_at_finish
+        and not dirty_at_start
+        and not dirty_at_finish
+    )
+
     certificate = {
         "schema_version": CERTIFICATE_SCHEMA_VERSION,
         "verdict": verdict,
         "verdict_meaning": {
-            "SUPPORTED": "synthetic suite + MME parity green on the paths below",
-            "PROVISIONAL": "synthetic suite green; MME parity not yet recorded",
+            "SUPPORTED": (f"synthetic suite + {bench} parity green on the paths below"),
+            "PROVISIONAL": f"synthetic suite green; {bench} parity not yet recorded",
             "NOT_SUPPORTED": "at least one certification layer failed",
         }[verdict],
         "model_key": args.model_key,
         "hf_id": spec.hf_id,
         "commit": commit,
+        "tested_tree": {
+            "commit_at_start": commit,
+            "commit_at_finish": commit_at_finish,
+            "dirty_at_start": dirty_at_start,
+            "dirty_at_finish": dirty_at_finish,
+            "stable": tree_stable,
+            "note": (
+                "`commit` names the tree under test only when `stable` is "
+                "true; otherwise HEAD moved or the tree carried uncommitted "
+                "changes while the suite ran"
+            ),
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": certified_scope(spec),
         "suite": suite,
@@ -511,6 +599,15 @@ def main() -> int:
         "known_not_covered": known_not_covered(spec),
     }
     out_path.write_text(json.dumps(certificate, indent=2))
+    if not tree_stable:
+        print(
+            f"[certify] WARNING: the tree moved while the suite ran "
+            f"(start={commit[:8]} finish={commit_at_finish[:8]} "
+            f"dirty={dirty_at_start}/{dirty_at_finish}); `commit` does not "
+            f"name the tested tree -- re-run on a quiet tree before "
+            f"publishing this certificate",
+            file=sys.stderr,
+        )
     print(f"[certify] {args.model_key}: {verdict} -> {out_path}")
     return exit_code
 
