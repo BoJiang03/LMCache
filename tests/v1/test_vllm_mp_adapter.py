@@ -682,6 +682,118 @@ def test_dropped_retrieve_reported_once_via_healthy_get_finished(
     assert finished_retrieves == set()
 
 
+def _submit_retrieve_with_result(
+    adapter: LMCacheMPWorkerAdapter,
+    block_ids: list[list[int]],
+    result: bool,
+) -> None:
+    """Submit a retrieve on a healthy *adapter* whose future has already
+    completed with *result*."""
+    future = MagicMock(name="retrieve_future")
+    future.query.return_value = True
+    future.result.return_value = result
+    transfer_ctx = MagicMock()
+    transfer_ctx.submit_retrieve.return_value = future
+    adapter.transfer_ctx = transfer_ctx
+    adapter.kv_caches = {"layer.0": MagicMock()}
+    adapter.submit_retrieve_request("req-1", _op(block_ids), MagicMock())
+
+
+def test_failed_retrieve_flags_its_blocks_for_recompute(fake_adapter) -> None:
+    """A retrieve that the server answers with False wrote nothing into the
+    blocks it was given, so their ids must reach vLLM as load errors. Without
+    this the scheduler keeps the tokens it already counted as computed and the
+    request reads whatever those blocks held -- corrupt output, not a miss."""
+    adapter, _send_mock, _ = fake_adapter
+    _submit_retrieve_with_result(adapter, [[3, 4], [9]], result=False)
+    assert adapter.is_healthy
+
+    _ret_stores, finished_retrieves = adapter.get_finished(set())
+
+    # Still reported as finished: an unreported async load hangs the request
+    # in WAITING_FOR_REMOTE_KVS instead of recomputing.
+    assert finished_retrieves == {"req-1"}
+    assert adapter.get_block_ids_with_load_errors() == {3, 4, 9}
+
+
+def test_successful_retrieve_flags_no_blocks(fake_adapter) -> None:
+    """Negative control for the test above: a retrieve the server answers
+    with True must flag nothing, or every load would be recomputed."""
+    adapter, _send_mock, _ = fake_adapter
+    _submit_retrieve_with_result(adapter, [[3, 4], [9]], result=True)
+
+    _ret_stores, finished_retrieves = adapter.get_finished(set())
+
+    assert finished_retrieves == {"req-1"}
+    assert adapter.get_block_ids_with_load_errors() == set()
+
+
+def test_failed_retrieve_flags_its_blocks_in_lazy_offload_mode(fake_adapter) -> None:
+    """Lazy offload has its own copy of the drain loop; a failed retrieve
+    must flag its blocks there too."""
+    _adapter, _send_mock, _ = fake_adapter
+    adapter = _make_worker_adapter(extra_config={"lmcache.mp.lazy_offload": True})
+    _submit_retrieve_with_result(adapter, [[7]], result=False)
+
+    _stores, finished_retrieves = adapter.get_finished_with_lazy_offload()
+
+    assert finished_retrieves == {"req-1"}
+    assert adapter.get_block_ids_with_load_errors() == {7}
+
+
+def test_register_warns_when_the_engine_has_multiple_kv_groups(
+    fake_adapter, monkeypatch
+) -> None:
+    """vLLM cannot recompute a failed load for a multi-group model (its
+    scheduler unpacks the request's blocks as a single group), so
+    registration warns that a load failure aborts the engine."""
+    adapter, _send_mock, _ = fake_adapter
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        adapter_mod.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(str(msg) % args),
+    )
+    fake_tensor = MagicMock()
+    fake_tensor.device.type = "cuda"
+
+    adapter.register_kv_caches(
+        {"layer.0": fake_tensor, "layer.1": fake_tensor},
+        engine_group_infos=[
+            EngineGroupInfo(engine_group_id=0, layer_indices=(0,), tokens_per_block=16),
+            EngineGroupInfo(engine_group_id=1, layer_indices=(1,), tokens_per_block=16),
+        ],
+    )
+
+    assert any("2 KV cache groups" in msg for msg in warnings)
+
+
+def test_register_does_not_warn_for_one_group_split_by_transfer_identity(
+    fake_adapter, monkeypatch
+) -> None:
+    """Two EngineGroupInfos may describe one engine group split by transfer
+    identity. vLLM still sees a single group, so this must not warn."""
+    adapter, _send_mock, _ = fake_adapter
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        adapter_mod.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(str(msg) % args),
+    )
+    fake_tensor = MagicMock()
+    fake_tensor.device.type = "cuda"
+
+    adapter.register_kv_caches(
+        {"layer.0": fake_tensor, "layer.1": fake_tensor},
+        engine_group_infos=[
+            EngineGroupInfo(engine_group_id=0, layer_indices=(0,), tokens_per_block=16),
+            EngineGroupInfo(engine_group_id=0, layer_indices=(1,), tokens_per_block=16),
+        ],
+    )
+
+    assert not any("KV cache groups" in msg for msg in warnings)
+
+
 def test_shutdown_stops_heartbeat_before_unregister(fake_adapter) -> None:
     """shutdown() stops the heartbeat before sending UNREGISTER, so no
     stray heartbeat ping can race the closing mq_client."""
