@@ -229,7 +229,9 @@ def achievable_hit_tokens(prompt_lengths: list[int], granularity: int) -> int:
     return sum(granularity * ((t - 1) // granularity) for t in prompt_lengths)
 
 
-def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
+def parity_gate(
+    report: dict, max_flip_fraction: float = 0.0, min_parse_ratio: float = 0.0
+) -> dict:
     """Evaluate the parity thresholds against a report dict.
 
     Shared by this script's exit code and by ``certify.py`` when it ingests
@@ -241,6 +243,10 @@ def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
         max_flip_fraction: Per-model override of the flip budget
             (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default
             ``MAX_FLIP_FRACTION``.
+        min_parse_ratio: Per-model override of the baseline parse-rate
+            floor (``ModelSpec.mme_min_parse_ratio``); 0 keeps
+            ``MIN_PARSE_RATIO``. Only for models that abstain rather than
+            truncate; see that field's docstring.
 
     Returns:
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
@@ -251,6 +257,7 @@ def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
 
     scores = report["scores"]
     flip_fraction = max_flip_fraction or MAX_FLIP_FRACTION
+    parse_floor = min_parse_ratio or MIN_PARSE_RATIO
     max_flips = flip_fraction * report["num_questions"]
     delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
     delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
@@ -281,7 +288,7 @@ def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
         and delta_p2_p1 <= MAX_SCORE_DELTA
         and delta_p1_base <= MAX_SCORE_DELTA
         and hit_ok
-        and parse_ratio >= MIN_PARSE_RATIO
+        and parse_ratio >= parse_floor
     )
     return {
         "pass": ok,
@@ -297,7 +304,7 @@ def parity_gate(report: dict, max_flip_fraction: float = 0.0) -> dict:
             "max_score_delta": MAX_SCORE_DELTA,
             "min_hit_ratio": MIN_HIT_RATIO,
             "min_hit_coverage": MIN_HIT_COVERAGE,
-            "min_parse_ratio": MIN_PARSE_RATIO,
+            "min_parse_ratio": parse_floor,
         },
     }
 
@@ -457,6 +464,14 @@ def main() -> int:
         "the LMCache pass onto the MP deployment path -- the only one vLLM "
         "offers its hybrid KV cache manager to -- with a cache server "
         "started here at that block size",
+    )
+    parser.add_argument(
+        "--min-parse-ratio",
+        type=float,
+        default=0.0,
+        help="Baseline parse-rate floor override "
+        "(ModelSpec.mme_min_parse_ratio); 0 = the 0.9 default. Only for a "
+        "model that ABSTAINS rather than truncates",
     )
     parser.add_argument(
         "--hf-overrides",
@@ -682,7 +697,7 @@ def main() -> int:
             sum(1 for a in answers_base if parse_yes_no(a)) / max(1, len(items)), 4
         ),
     }
-    gate = parity_gate(report, args.max_flip_fraction)
+    gate = parity_gate(report, args.max_flip_fraction, args.min_parse_ratio)
     report["gate"] = gate
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2)

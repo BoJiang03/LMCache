@@ -243,6 +243,8 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--max-tokens", str(mme_tokens)]
     if spec.mme_max_flip_fraction:
         cmd += ["--max-flip-fraction", str(spec.mme_max_flip_fraction)]
+    if spec.mme_min_parse_ratio:
+        cmd += ["--min-parse-ratio", str(spec.mme_min_parse_ratio)]
     if spec.mme_max_local_cpu_gb:
         cmd += ["--max-local-cpu-gb", str(spec.mme_max_local_cpu_gb)]
     if spec.hybrid_block_tokens:
@@ -262,7 +264,10 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
 
 
 def load_parity_report(
-    path: pathlib.Path, spec: ModelSpec, max_flip_fraction: float = 0.0
+    path: pathlib.Path,
+    spec: ModelSpec,
+    max_flip_fraction: float = 0.0,
+    min_parse_ratio: float = 0.0,
 ) -> dict:
     """Load a previously recorded parity report and re-evaluate its gate.
 
@@ -274,6 +279,8 @@ def load_parity_report(
             certified on the MP path only).
         max_flip_fraction: Per-model flip-budget override
             (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default.
+        min_parse_ratio: Per-model parse-rate floor override
+            (``ModelSpec.mme_min_parse_ratio``); 0 keeps the default.
 
     Returns:
         The report dict with a freshly evaluated ``gate``.
@@ -297,7 +304,7 @@ def load_parity_report(
             f"deployment path, but {spec.key} is certified on "
             f"{expected_path!r}"
         )
-    report["gate"] = parity_gate(report, max_flip_fraction)
+    report["gate"] = parity_gate(report, max_flip_fraction, min_parse_ratio)
     return report
 
 
@@ -338,6 +345,7 @@ def main() -> int:
             pathlib.Path(args.parity_report),
             spec,
             spec.mme_max_flip_fraction,
+            spec.mme_min_parse_ratio,
         )
         parity = {"source": f"recorded:{args.parity_report}", "report": report}
     elif args.run_parity:
