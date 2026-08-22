@@ -21,7 +21,7 @@ import warnings
 
 # First Party (test-local)
 from catalog import MMRequest
-from specs import ModelSpec
+from specs import HybridFamily, ModelSpec
 
 LMCACHE_TEST_CHUNK_SIZE = 16
 
@@ -222,31 +222,64 @@ def start_mp_cache_server(
     )
 
 
-def hybrid_engine_kwargs(block_tokens: int) -> dict[str, object]:
-    """vLLM engine kwargs a Mamba/GDN hybrid model requires.
+def hybrid_engine_kwargs(
+    block_tokens: int, family: HybridFamily = HybridFamily.RECURRENT_STATE
+) -> dict[str, object]:
+    """vLLM engine kwargs a multi-KV-group model requires.
 
-    Empty when ``block_tokens`` is 0 (not a hybrid). The three settings are
-    mandatory, not tuning (see ``docs/source/mp/hybrid_models.rst``):
-    ``align`` is the only Mamba cache mode the GDN backends support, it
-    only works with vLLM prefix caching enabled, and a scheduler step must
-    advance at least one whole unified block for the state snapshot to land
-    on a block boundary.
+    Empty when ``block_tokens`` is 0 (single KV cache group), and empty for
+    a ``SLIDING_WINDOW`` hybrid too: its groups are all ordinary paged KV,
+    differing only in window and block size, so it needs no cache mode of
+    its own and keeps the suite's default scheduling (verified on Gemma
+    4-E4B: the MP connector registers and loads with prefix caching off).
+
+    For a ``RECURRENT_STATE`` hybrid the three settings are mandatory, not
+    tuning (see ``docs/source/mp/hybrid_models.rst``): ``align`` is the
+    only Mamba cache mode the GDN backends support, it only works with
+    vLLM prefix caching enabled, and a scheduler step must advance at
+    least one whole unified block for the state snapshot to land on a
+    block boundary.
 
     Args:
-        block_tokens: vLLM's unified block size for the model
-            (``ModelSpec.hybrid_block_tokens``); 0 for a non-hybrid.
+        block_tokens: LMCache chunk size for the model
+            (``ModelSpec.hybrid_block_tokens``); 0 for a single-group model.
+        family: Which kind of multi-group cache this is
+            (``ModelSpec.hybrid_family``). Defaults to
+            ``RECURRENT_STATE``, the only family that existed when callers
+            passed the block size alone.
 
     Returns:
         Engine kwargs to merge into every engine for this model (test
         engine, baseline engine, isolated scenarios, MME parity).
     """
-    if not block_tokens:
+    if not block_tokens or family is not HybridFamily.RECURRENT_STATE:
         return {}
     return {
         "mamba_cache_mode": "align",
         "enable_prefix_caching": True,
         "max_num_batched_tokens": block_tokens,
     }
+
+
+def spec_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
+    """Engine kwargs every engine for this model MUST share.
+
+    Both settings change the numeric regime or the model's geometry, so an
+    engine that has them and a baseline that does not are not comparable
+    and their difference would be misattributed to LMCache. Kept in one
+    function so the test engine, the baseline subprocess, the isolated
+    scenarios and the MME parity runs cannot drift apart.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        Engine kwargs to merge into every engine for this model.
+    """
+    kwargs = hybrid_engine_kwargs(spec.hybrid_block_tokens, spec.hybrid_family)
+    if spec.hf_overrides:
+        kwargs["hf_overrides"] = dict(spec.hf_overrides)
+    return kwargs
 
 
 def reset_vllm_prefix_cache(llm) -> str:
@@ -727,7 +760,7 @@ class MMHarness:
             enable_prefix_caching=False,
             limit_mm_per_prompt=mm_limits(spec),
         )
-        engine_kwargs.update(hybrid_engine_kwargs(spec.hybrid_block_tokens))
+        engine_kwargs.update(spec_engine_kwargs(spec))
         engine_kwargs.update(extra_engine_kwargs)
         self.llm = LLM(**engine_kwargs)
         self._validate_block_size()
@@ -785,27 +818,61 @@ class MMHarness:
         return self.chunk * ((lookup_tokens - 1) // self.chunk)
 
     def _validate_block_size(self) -> None:
-        """Fail loudly if a hybrid spec's declared block size is wrong.
+        """Fail loudly if a hybrid spec's declared chunk size is wrong.
 
         ``ModelSpec.hybrid_block_tokens`` drives the MP server's chunk
         size, the scheduler budget, and every hit tolerance in the suite.
-        vLLM derives the real unified block size from the model's head
-        dimensions and GDN state size, so a stale declared value would
+        vLLM derives each group's real block size from the model's head
+        dimensions and state size, so a stale declared value would
         silently produce meaningless (or trivially passing) assertions.
 
+        Checks LMCache's own rule rather than equality against
+        ``cache_config.block_size``: the chunk must be a multiple of every
+        PAGED group's block size (recurrent-state groups keep one page per
+        sequence and report ``tokens_per_block = 0``, so they impose
+        nothing). Equality happens to hold for the Mamba/GDN hybrids,
+        whose only paged group is full attention, but not for a
+        sliding-window hybrid whose paged groups sit at different block
+        sizes -- there the correct chunk is their common multiple and
+        ``cache_config.block_size`` is the smallest of them.
+
         Raises:
-            RuntimeError: If the engine's block size differs from the spec.
+            RuntimeError: If the declared chunk is not a multiple of some
+                paged group's block size.
         """
         if not self.spec.hybrid_block_tokens:
             return
-        actual = self.llm.llm_engine.vllm_config.cache_config.block_size
-        if actual != self.spec.hybrid_block_tokens:
+        chunk = self.spec.hybrid_block_tokens
+        offenders = [
+            f"{name} block_size={size}"
+            for name, size in self._paged_group_block_sizes().items()
+            if chunk % size
+        ]
+        if offenders:
             raise RuntimeError(
-                f"{self.spec.key}: spec declares hybrid_block_tokens="
-                f"{self.spec.hybrid_block_tokens} but vLLM chose {actual}; "
-                f"update the spec (the value drives the MP server chunk "
-                f"size and every hit tolerance)"
+                f"{self.spec.key}: spec declares hybrid_block_tokens={chunk}, "
+                f"which is not a multiple of {', '.join(offenders)}; LMCache "
+                f"refuses to register such a chunk, and the value also drives "
+                f"the MP server chunk size and every hit tolerance"
             )
+
+    def _paged_group_block_sizes(self) -> dict[str, int]:
+        """Block size of every paged KV cache group, by spec class name.
+
+        Returns:
+            Mapping of KV-cache-spec class name to that group's block size,
+            covering only groups vLLM pages by token (recurrent-state
+            groups hold one page per sequence and are excluded).
+        """
+        core = self.llm.llm_engine.engine_core.engine_core
+        sizes: dict[str, int] = {}
+        for group in core.scheduler.kv_cache_config.kv_cache_groups:
+            spec = group.kv_cache_spec
+            name = type(spec).__name__
+            if "Mamba" in name:
+                continue
+            sizes[name] = spec.block_size
+        return sizes
 
     def _kv_transfer_config(self):
         """Build the KV transfer config selecting the deployment path."""
@@ -1040,14 +1107,18 @@ class MMHarness:
         """Drop vLLM's OWN prefix cache so LMCache is the only hit source.
 
         No-op for models the suite runs with vLLM prefix caching disabled
-        (the default). Hybrid models cannot disable it — ``align`` mode
+        (the default, and what every model but a recurrent-state hybrid
+        gets). A recurrent-state hybrid cannot disable it — ``align`` mode
         requires it — so without this reset vLLM would serve repeats from
         GPU memory while LMCache still reported a hit, and the suite's hit
-        arithmetic would describe the wrong cache. That the reset worked is
-        verified per step by ``_check_hit_provenance``; see
+        arithmetic would describe the wrong cache. Conditioned on the
+        engine's own setting rather than on the spec being hybrid: a
+        sliding-window hybrid is on the MP path with prefix caching off,
+        and there is no cache to reset. That the reset worked is verified
+        per step by ``_check_hit_provenance``; see
         ``reset_vllm_prefix_cache`` for why it has to be forced.
         """
-        if self.spec.hybrid_block_tokens:
+        if self.llm.llm_engine.vllm_config.cache_config.enable_prefix_caching:
             reset_vllm_prefix_cache(self.llm)
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
@@ -1290,11 +1361,12 @@ def compute_baselines(
         RuntimeError: If the baseline subprocess fails.
     """
     todo = [r for r in requests if r.needs_baseline]
-    # A hybrid model's baseline must run the same mandatory engine settings
-    # as the engine under test (align mode changes the numeric regime), so
-    # an output difference can only come from LMCache.
+    # The baseline must run the same mandatory engine settings as the engine
+    # under test (align mode changes the numeric regime; hf_overrides change
+    # the model's geometry), so an output difference can only come from
+    # LMCache.
     extra_engine_kwargs = {
-        **hybrid_engine_kwargs(spec.hybrid_block_tokens),
+        **spec_engine_kwargs(spec),
         **extra_engine_kwargs,
     }
     spec_json = {

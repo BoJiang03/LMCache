@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 # First Party (test-local)
 from benchmark_parity import parity_gate  # noqa: E402
 from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
-from specs import MODEL_SPECS, ModelSpec  # noqa: E402
+from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
 CERTIFICATE_SCHEMA_VERSION = 3
 
@@ -41,7 +41,9 @@ CERTIFICATE_SCHEMA_VERSION = 3
 KNOWN_NOT_COVERED = [
     "tensor-parallel (TP>1) and pipeline-parallel deployments",
     "remote / disk storage backends and cross-instance sharing",
-    "audio modality (no audio model registered yet)",
+    "audio modality: the suite has no audio probes, so a model with an "
+    "audio tower (Gemma 4 has one) is certified on its image/video paths "
+    "only",
     "allocator-level buffer accounting (tracked by the pin-count project)",
 ]
 
@@ -52,21 +54,47 @@ DUAL_PATH_NOT_COVERED = [
     "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
 ]
 
-# Additional exclusions for a Mamba/GDN hybrid, which is MP-only.
+# Additional exclusions for ANY multi-KV-group model, which is MP-only.
 HYBRID_NOT_COVERED = [
     "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
     "cache manager only to connectors that advertise support for it, so a "
     "hybrid model fails engine init there outright",
     "capacity eviction and preemption-driven recompute: both isolated "
     "scenarios drive the in-process connector (see IN_PROCESS_SCENARIOS)",
-    "bit-exact generation -- the GDN kernels have no batch-invariant mode, "
-    "so output equality is gated by the MME flip/score budget, not bytes",
     "recovery from a failed KV load (the connector's degraded mode): vLLM "
     "rewinds the affected requests through "
     "`_update_requests_with_invalid_blocks`, which unpacks a single KV "
     "cache group and therefore raises on a hybrid -- so on this path a "
     "load error is fatal to the engine, not recoverable",
 ]
+
+# Additional exclusions specific to a recurrent-state (Mamba/GDN) hybrid.
+RECURRENT_STATE_NOT_COVERED = [
+    "bit-exact generation -- the GDN kernels have no batch-invariant mode, "
+    "and a hit RESTORES a recurrent-state page rather than reproducing KV "
+    "bit-for-bit, so output equality is gated by the MME flip/score budget, "
+    "not bytes",
+]
+
+# How the certificate describes each hybrid family's chunk size and the
+# scheduling regimes that family actually exercises.
+_CHUNK_NOTE = {
+    HybridFamily.RECURRENT_STATE: "vLLM unified block size (Mamba/GDN align mode)",
+    HybridFamily.SLIDING_WINDOW: (
+        "common multiple of the paged groups' block sizes (sliding-window "
+        "hybrid; vLLM reports the smallest of them as cache_config.block_size)"
+    ),
+}
+_HYBRID_SCHEDULING = {
+    HybridFamily.RECURRENT_STATE: [
+        "chunked prefill (inherent: a scheduler step advances one unified block)",
+        "concurrent batches",
+    ],
+    HybridFamily.SLIDING_WINDOW: [
+        "single-step and chunked prefill",
+        "concurrent batches",
+    ],
+}
 
 IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
 MP_PATH = (
@@ -77,11 +105,12 @@ MP_PATH = (
 def certified_scope(spec: ModelSpec) -> dict:
     """Describe exactly what a green run for ``spec`` covers.
 
-    The scope is deployment-path dependent: a Mamba/GDN hybrid runs the
-    whole suite on the MP path (the in-process connector cannot serve it)
-    at vLLM's unified block granularity, while every other model runs the
-    bulk in-process at the 16-token LMCache chunk size and crosses the
-    transport in the T3 scenario only.
+    The scope is deployment-path dependent: a model whose KV cache vLLM
+    splits into several groups runs the whole suite on the MP path (the
+    in-process connector cannot serve it) at that model's chunk
+    granularity, while every other model runs the bulk in-process at the
+    16-token LMCache chunk size and crosses the transport in the T3
+    scenario only.
 
     Args:
         spec: The model under certification.
@@ -95,13 +124,9 @@ def certified_scope(spec: ModelSpec) -> dict:
             "deployment_paths": [MP_PATH],
             "modalities": sorted(spec.modalities),
             "chunk_size": spec.hybrid_block_tokens,
-            "chunk_size_note": "vLLM unified block size (Mamba/GDN align mode)",
+            "chunk_size_note": _CHUNK_NOTE[spec.hybrid_family],
             "backend": "MP cache server L1, separate object groups",
-            "scheduling": [
-                "chunked prefill (inherent: a scheduler step advances one "
-                "unified block)",
-                "concurrent batches",
-            ],
+            "scheduling": _HYBRID_SCHEDULING[spec.hybrid_family],
         }
     return {
         "deployment_paths": [IN_PROCESS_PATH, MP_PATH],
@@ -127,7 +152,11 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     Returns:
         The universal exclusions plus the ones its deployment path adds.
     """
-    extra = HYBRID_NOT_COVERED if spec.hybrid_block_tokens else DUAL_PATH_NOT_COVERED
+    if not spec.hybrid_block_tokens:
+        return KNOWN_NOT_COVERED + DUAL_PATH_NOT_COVERED
+    extra = list(HYBRID_NOT_COVERED)
+    if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
+        extra += RECURRENT_STATE_NOT_COVERED
     return KNOWN_NOT_COVERED + extra
 
 
@@ -218,6 +247,10 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--max-local-cpu-gb", str(spec.mme_max_local_cpu_gb)]
     if spec.hybrid_block_tokens:
         cmd += ["--hybrid-block-tokens", str(spec.hybrid_block_tokens)]
+    if spec.hf_overrides:
+        cmd += ["--hf-overrides", json.dumps(spec.hf_overrides)]
+    if spec.hybrid_family is not HybridFamily.NONE:
+        cmd += ["--hybrid-family", spec.hybrid_family.value]
     subprocess.run(
         cmd,
         cwd=script.parent,

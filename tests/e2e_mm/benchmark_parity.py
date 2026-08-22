@@ -329,7 +329,11 @@ def run_batch(
 
 
 def engine_kwargs(
-    model: str, mm_processor_kwargs: dict, hybrid_block_tokens: int
+    model: str,
+    mm_processor_kwargs: dict,
+    hybrid_block_tokens: int,
+    hf_overrides: dict,
+    hybrid_family: str,
 ) -> dict:
     """Engine kwargs for both parity engines.
 
@@ -338,15 +342,18 @@ def engine_kwargs(
         mm_processor_kwargs: Model-specific image-token cap from the spec
             (``ModelSpec.mme_mm_processor_kwargs``); the historical default
             is the Qwen-style ``max_pixels`` cap.
-        hybrid_block_tokens: vLLM unified block size for a Mamba/GDN hybrid
+        hybrid_block_tokens: LMCache chunk size for a multi-KV-group model
             (``ModelSpec.hybrid_block_tokens``), 0 for every other model.
             Non-zero adds the mandatory hybrid settings -- to BOTH engines,
             since ``align`` mode changes the numeric regime and a mismatched
             baseline would misattribute the difference to LMCache.
+        hf_overrides: Config repairs from ``ModelSpec.hf_overrides``, also
+            applied to BOTH engines: they change the model's geometry, so a
+            baseline built without them is not comparable.
+        hybrid_family: ``ModelSpec.hybrid_family`` value, which decides
+            whether the align settings apply ('' = recurrent state, the
+            historical assumption).
     """
-    # First Party (test-local)
-    from harness import hybrid_engine_kwargs
-
     kwargs = dict(
         model=model,
         max_model_len=8192,
@@ -356,7 +363,16 @@ def engine_kwargs(
         limit_mm_per_prompt={"image": 1},
         mm_processor_kwargs=dict(mm_processor_kwargs) or {"max_pixels": MAX_PIXELS},
     )
-    kwargs.update(hybrid_engine_kwargs(hybrid_block_tokens))
+    # First Party (test-local)
+    from harness import hybrid_engine_kwargs
+    from specs import HybridFamily
+
+    family = (
+        HybridFamily(hybrid_family) if hybrid_family else HybridFamily.RECURRENT_STATE
+    )
+    kwargs.update(hybrid_engine_kwargs(hybrid_block_tokens, family))
+    if hf_overrides:
+        kwargs["hf_overrides"] = dict(hf_overrides)
     return kwargs
 
 
@@ -368,13 +384,23 @@ def run_baseline(
     mm_processor_kwargs: dict,
     max_tokens: int,
     hybrid_block_tokens: int,
+    hf_overrides: dict,
+    hybrid_family: str,
 ) -> None:
     """Subprocess role: plain vLLM answers for every question."""
     # Third Party
     from vllm import LLM
 
     items = load_items(limit)
-    llm = LLM(**engine_kwargs(model, mm_processor_kwargs, hybrid_block_tokens))
+    llm = LLM(
+        **engine_kwargs(
+            model,
+            mm_processor_kwargs,
+            hybrid_block_tokens,
+            hf_overrides,
+            hybrid_family,
+        )
+    )
     answers = run_batch(llm, items, chat_template_kwargs, max_tokens)
     with open(out_path, "w") as f:
         json.dump(answers, f)
@@ -432,6 +458,21 @@ def main() -> int:
         "offers its hybrid KV cache manager to -- with a cache server "
         "started here at that block size",
     )
+    parser.add_argument(
+        "--hf-overrides",
+        default="",
+        help="JSON object of vLLM hf_overrides from the model spec "
+        "(ModelSpec.hf_overrides), applied to BOTH parity engines; empty = "
+        "none. Gemma 4 needs it to see its full-attention head dims",
+    )
+    parser.add_argument(
+        "--hybrid-family",
+        default="",
+        choices=["", "recurrent_state", "sliding_window"],
+        help="ModelSpec.hybrid_family value, which decides whether the "
+        "mamba align settings apply; empty = recurrent_state (the only "
+        "family that existed before sliding-window hybrids)",
+    )
     args = parser.parse_args()
     chat_template_kwargs: dict = (
         json.loads(args.chat_template_kwargs) if args.chat_template_kwargs else {}
@@ -450,6 +491,8 @@ def main() -> int:
         reset_vllm_prefix_cache,
     )
 
+    hf_overrides: dict = json.loads(args.hf_overrides) if args.hf_overrides else {}
+
     configure_environment(args.max_local_cpu_gb or 40.0)
 
     if args.role == "baseline":
@@ -461,6 +504,8 @@ def main() -> int:
             mm_processor_kwargs,
             args.max_tokens,
             args.hybrid_block_tokens,
+            hf_overrides,
+            args.hybrid_family,
         )
         return 0
 
@@ -488,6 +533,10 @@ def main() -> int:
             str(args.max_tokens),
             "--hybrid-block-tokens",
             str(args.hybrid_block_tokens),
+            "--hf-overrides",
+            args.hf_overrides,
+            "--hybrid-family",
+            args.hybrid_family,
         ],
         timeout=7200,
     )
@@ -534,7 +583,13 @@ def main() -> int:
 
     llm = LLM(
         kv_transfer_config=kv_transfer_config,
-        **engine_kwargs(args.model, mm_processor_kwargs, args.hybrid_block_tokens),
+        **engine_kwargs(
+            args.model,
+            mm_processor_kwargs,
+            args.hybrid_block_tokens,
+            hf_overrides,
+            args.hybrid_family,
+        ),
     )
     if counters is None:
         # First Party
