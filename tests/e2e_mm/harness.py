@@ -154,6 +154,31 @@ MP_WORKER_REGISTRATION_GRACE_S = 86400.0
 # above).
 MP_SERVER_CPU_WORKERS = 16
 
+# L1 read-lock TTL, raised from the server default of 300s.
+#
+# A read lock is taken at LOOKUP time (StorageManager.submit_prefetch_task ->
+# L1Manager.reserve_read) and consumed much later at transfer time
+# (read_prefetched_results -> unsafe_read). TTLLock.is_locked() is
+# `counter > 0 AND now < expiration`, and only lock() refreshes the
+# expiration -- so if more than the TTL elapses between the two, the entry is
+# silently no longer readable. unsafe_read then returns KEY_NOT_READABLE, the
+# retrieve reports failure, and the load returns nothing.
+#
+# 300s is a sane bound for a live server, where lookup-to-transfer is
+# milliseconds. It is the wrong bound for this suite, which submits all 2374
+# MME questions in one llm.chat() call: vLLM looks a request's prefix up when
+# it enters the waiting queue but only transfers once blocks free, so on a
+# slow model the queue wait crosses 300s and every lock reserved before the
+# crossing expires. That is what corrupted Gemma 4 -- the failures start 332s
+# into pass2, not at question 1 -- while Gemma 3, whose whole two-pass run is
+# 643s, never held a lock long enough to notice.
+#
+# Same reasoning as the reap timeout above: a batch benchmark is not a live
+# server, so make the timeout irrelevant rather than tune it. This does not
+# paper over a leak -- finish_read_prefetched still releases every lock; it
+# only stops the clock from firing mid-queue.
+MP_SERVER_L1_READ_TTL_S = 86400
+
 
 @dataclass(frozen=True)
 class MPServerHandle:
@@ -233,6 +258,8 @@ def start_mp_cache_server(
         str(MP_WORKER_REGISTRATION_GRACE_S),
         "--max-cpu-workers",
         str(MP_SERVER_CPU_WORKERS),
+        "--l1-read-ttl-seconds",
+        str(MP_SERVER_L1_READ_TTL_S),
     ]
     if separate_object_groups:
         command.append("--separate-object-groups")
