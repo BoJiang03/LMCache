@@ -108,42 +108,46 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
 
 
 # Heartbeat window for every MP-path engine the suite starts, and the
-# matching server-side reap timeout (which must clear 3x the interval or
-# the server evicts a worker that is merely slow to ping).
+# matching server-side reap timeout. Both are deliberately enormous: this
+# turns the liveness probe into a single ping at startup and then, for the
+# length of any run, silence.
 #
-# The interval is also the ping's patience -- HeartbeatThread._execute
-# calls send_ping(timeout=self._interval) -- and ONE ping that runs out of
-# patience is read as server death, with no retry and no
-# consecutive-failure count. The connector then reports the in-flight
-# retrieve's blocks as load errors, which vLLM cannot recover on a hybrid
-# at all (see HYBRID_NOT_COVERED in certify.py): the run dies rather than
-# degrading.
+# Why the suite must not run a live heartbeat. The interval is also the
+# ping's patience (``send_ping(timeout=self._interval)``), and ONE ping
+# that does not come back is read as server death -- no retry, no
+# consecutive-failure count. The connector then reports its in-flight
+# retrieve's blocks as load errors, and on a hybrid model vLLM cannot
+# recover from that at all (see HYBRID_NOT_COVERED in certify.py): the run
+# dies instead of degrading.
 #
-# Two measured reasons the default 10s is far too tight here:
+# Measured on Gemma 4-E4B (2026-08-21), three MME parity runs, each killed
+# by the FIRST ping issued after the request flood began:
 #
-#  * a real KV load is reported back to vLLM 0.3-20s after submission even
-#    though the server completes the transfer in ~3ms (records/2026/08/21);
-#  * a ping QUEUES BEHIND THE DATA PLANE. The server registers PING in the
-#    same thread pool as LOOKUP, so the probe waits for the workload it is
-#    monitoring. At Gemma 4's 32-token chunk an 800-token prompt issues
-#    ~25 lookups (a GDN hybrid issues one), and with 2374 prompts in
-#    flight the wait exceeded a 60s window in two runs -- both times the
-#    5th ping timed out and killed the parity run while the server log
-#    showed retrieves completing in 4ms.
+#   interval  workers  died at              ping
+#   60s       1        300s after start     5th
+#   60s       4        300s after start     5th
+#   300s      16       600s after start     2nd
 #
-# So the window has to exceed the queue wait, not the transfer time. 300s
-# with a wider worker pool below; the pool alone was not enough (four
-# workers cut the wait ~4x and the 60s window still expired).
-MP_HEARTBEAT_INTERVAL_S = 300.0
-MP_WORKER_REAP_TIMEOUT_S = 900.0
+# Patience and pool size both moved the deadline and neither prevented it,
+# so the ping is not merely queued behind the data plane -- its future
+# never resolves while the client is saturated. That is the client-side
+# response-dispatch defect already recorded in records/2026/08/21 (a real
+# retrieve is reported back 0.3-20s after the server finishes it in ~3ms);
+# Gemma 4 just amplifies it, because a 32-token chunk turns one 800-token
+# prompt into ~25 lookups where a GDN hybrid needs one.
+#
+# Disabling the probe costs the suite nothing it was measuring: no oracle
+# reads the health event, and a server that really died fails the run
+# anyway (every load times out). What it does mean is that degraded-mode
+# behaviour is NOT exercised here, which the certificate already states.
+MP_HEARTBEAT_INTERVAL_S = 21600.0
+MP_WORKER_REAP_TIMEOUT_S = 86400.0
 
 # CPU-side thread pool size for every MP cache server the suite starts,
-# raised from the server's default of ONE so the shared PING/LOOKUP pool
-# drains faster (see MP_HEARTBEAT_INTERVAL_S for the measurement). This
-# shortens the probe's queue wait; it does not bound it, which is why the
-# heartbeat window carries the actual guarantee. That a liveness probe
-# shares a queue with the data plane is a recorded upstream defect, not
-# something the suite can fix.
+# raised from the server's default of ONE because that pool serves PING and
+# LOOKUP together, and Gemma 4's small chunk makes lookups frequent. It
+# shortens queue waits; it is not what keeps the heartbeat quiet (see
+# above).
 MP_SERVER_CPU_WORKERS = 16
 
 
