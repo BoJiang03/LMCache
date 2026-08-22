@@ -123,6 +123,23 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
 MP_HEARTBEAT_INTERVAL_S = 60.0
 MP_WORKER_REAP_TIMEOUT_S = 300.0
 
+# CPU-side thread pool size for every MP cache server the suite starts.
+#
+# The server puts PING in the same NORMAL pool as LOOKUP
+# (management.py / lookup.py both register ThreadPoolType.NORMAL), and that
+# pool defaults to ONE worker -- so a liveness probe queues behind the very
+# workload it is monitoring. At a coarse chunk size that is invisible: a
+# Mamba/GDN hybrid caches an 800-token prompt as one 784-token chunk, so
+# lookups are rare. At Gemma 4's 32-token chunk the same prompt issues ~25
+# lookups, the ping never reaches the worker, and after five 60s intervals
+# the connector declares the server dead (measured 2026-08-21: unhealthy at
+# exactly 300s while the server log showed retrieves completing in 4ms) --
+# which on a hybrid is fatal, not degraded (see HYBRID_NOT_COVERED). Extra
+# workers keep the probe answerable; that a health check shares a queue
+# with the data plane is a recorded upstream defect, not something the
+# suite can fix.
+MP_SERVER_CPU_WORKERS = 4
+
 
 @dataclass(frozen=True)
 class MPServerHandle:
@@ -198,6 +215,8 @@ def start_mp_cache_server(
         "LRU",
         "--worker-reap-timeout-seconds",
         str(MP_WORKER_REAP_TIMEOUT_S),
+        "--max-cpu-workers",
+        str(MP_SERVER_CPU_WORKERS),
     ]
     if separate_object_groups:
         command.append("--separate-object-groups")

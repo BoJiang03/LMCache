@@ -239,6 +239,18 @@ rather than equality. Only 24 of its 42 layers have their own KV at all:
 `num_kv_shared_layers=18` makes the rest reuse another layer's, so per-token
 cost is measured, not derived from layer count.
 
+**A small chunk size starves the server's heartbeat, which is why the MP
+servers run several CPU workers.** The server registers `PING` in the same
+NORMAL thread pool as `LOOKUP`, and that pool defaults to one worker, so a
+liveness probe queues behind the workload it is monitoring. A GDN hybrid
+hides this (one 784-token chunk per prompt, so lookups are rare); Gemma 4's
+32-token chunk issues ~25 lookups per prompt and the ping never lands --
+measured 2026-08-21, the connector declared the server dead after five 60s
+intervals while the server log showed retrieves completing in 4ms, and the
+run then died in the fatal-load-error path below. `MP_SERVER_CPU_WORKERS`
+keeps the probe answerable. That a health check shares a queue with the
+data plane is an upstream defect, not something the suite can fix.
+
 **A failed KV load is fatal on a hybrid, so the suite must not manufacture
 one.** When the connector reports load errors, vLLM rewinds the affected
 requests in `_update_requests_with_invalid_blocks`, which unpacks a single

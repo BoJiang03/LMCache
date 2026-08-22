@@ -92,6 +92,20 @@ class ModelSpec:
             (parse ''), with no corruption signature. Real KV corruption
             is still caught by the byte-identical replay oracles, the
             hit-ratio gate, and the score-delta gates.
+        mme_min_parse_ratio: Floor on the fraction of BASELINE answers that
+            must parse to yes/no. 0 keeps the gate's 0.9 default. The gate
+            exists to catch a model whose verdict never lands inside the
+            decode budget -- then all three passes parse to '' and the
+            flip/score comparisons pass while measuring nothing -- so it
+            may only be lowered for a model that ABSTAINS rather than
+            truncates, and only after measuring that a larger budget does
+            not help. Gemma 4-E4B declines 239 of 2374 questions
+            (artwork 117, celebrity 82, landmark 14) and resolved 0 of them
+            at 8, 64 or 256 tokens, so its ceiling is 0.8993 whatever the
+            budget. Lowering the floor stays safe because a refusal is
+            stable text: if the hit path corrupted one of those answers,
+            the parsed verdict would change from '' and the flip counter
+            would see it.
         mme_max_local_cpu_gb: LMCache local-CPU capacity (GB) for the MME
             parity run. 0 keeps the runner's 40 GB default, which holds the
             full benchmark's KV for the certified GQA-2 models (28-36
@@ -185,6 +199,7 @@ class ModelSpec:
     min_decode_tokens: int = 0
     mme_max_tokens: int = 0
     mme_max_flip_fraction: float = 0.0
+    mme_min_parse_ratio: float = 0.0
     mme_max_local_cpu_gb: float = 0.0
     hybrid_block_tokens: int = 0
     hybrid_family: HybridFamily = HybridFamily.NONE
@@ -469,6 +484,12 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # (vision_soft_tokens_per_image), so no pixel budget is needed
             # for the MME photos -- unlike every Qwen/GLM spec above.
             #
+            # Declines to answer 239 of 2374 MME questions -- "I cannot
+            # determine the name of the person" on celebrity/artwork/
+            # landmark items -- and measured resolves 0 of them at 8, 64 or
+            # 256 decode tokens, so 0.8993 is its ceiling and no budget
+            # buys the gate's 0.9 default. See mme_min_parse_ratio.
+            mme_min_parse_ratio=0.85,
             # 56 KB/token over ~2374 questions of <=1000 prompt tokens is
             # ~130 GB, well past the runner's 40 GB default.
             mme_max_local_cpu_gb=280.0,
