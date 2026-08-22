@@ -698,6 +698,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # it the engine cannot start AT ALL for this model, audio-only
             # runs included.
             mm_encoder_attn_backend="TORCH_SDPA",
+            # Measured, not guessed: at the 0.35 default the three scenarios
+            # that let vLLM profile its own KV memory (chunked_prefill,
+            # capacity_eviction, mp_connector) all died with "No available
+            # memory for the cache blocks" -- 0.35 of a 140 GiB H200 is
+            # 49 GiB against 59.4 GiB of weights. The preemption scenario
+            # survived only because num_gpu_blocks_override skips that
+            # check, which is exactly how a too-small fraction hides.
+            isolated_gpu_utilization=0.75,
             parity_benchmark="mmau",
             # MMAU rather than MME: the audio benchmark. Full 1000-question
             # parity measured 0 flips on both comparisons, byte-identical

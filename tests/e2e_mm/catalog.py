@@ -348,7 +348,18 @@ AUDIO_KIND_QUESTION = (
     "static noise, repeated beeping, a low rumble, or a warbling tone? "
     "Reply with one word: tone, noise, beeping, rumble, or warble."
 )
+# Both halves name their option set explicitly, for the same reason the
+# audio question does: the answer has to come from a fixed vocabulary or
+# the probe cannot tell a wrong answer from a differently-worded one.
+CROSS_MODAL_QUESTION = (
+    "Answer with exactly two words separated by a comma: first the dominant "
+    "color of the image, then which of these best describes the audio "
+    "-- tone, noise, beeping, rumble, or warble."
+)
 TEXT_ONLY_QUESTION = "What is the capital of France? Answer with exactly one word."
+# Historical item order, kept as the default so every pre-existing case
+# builds byte-identical prompts to before ``media_order`` existed.
+MEDIA_ORDER_DEFAULT = ("image", "video", "audio")
 
 
 @dataclass(frozen=True)
@@ -373,6 +384,11 @@ class MMRequest:
             images and videos). Audio probes are single-clip: naming two
             clips in order was measured at 0/9 correct, so a case with more
             than one clip has no usable semantic probe.
+        media_order: Modality names giving the order the media groups appear
+            in, e.g. ``("audio", "image")`` to put the clip first. Empty
+            means ``MEDIA_ORDER_DEFAULT``. Every modality that has items
+            must be named, so an incomplete order raises rather than
+            silently dropping media.
     """
 
     key: str
@@ -385,6 +401,7 @@ class MMRequest:
     video_indices: tuple[int, ...] = ()
     ignore_eos: bool = False
     audio_indices: tuple[int, ...] = ()
+    media_order: tuple[str, ...] = ()
 
     def messages(self) -> list[dict]:
         """Build the OpenAI-style chat messages for this request.
@@ -392,19 +409,42 @@ class MMRequest:
         The multimodal items come first, then the question. When the pad
         knobs are set (hybrid models, see ``pre_pad_words``), filler text
         surrounds the items so the prompt spans several whole KV blocks.
+
+        Returns:
+            The system and user messages, in OpenAI chat format.
+
+        Raises:
+            ValueError: If ``media_order`` names an unknown modality, or
+                omits one this request actually attaches items for.
         """
-        items: list[dict] = [
-            {"type": "image_url", "image_url": {"url": image_data_uri(i)}}
-            for i in self.image_indices
+        groups: dict[str, list[dict]] = {
+            "image": [
+                {"type": "image_url", "image_url": {"url": image_data_uri(i)}}
+                for i in self.image_indices
+            ],
+            "video": [
+                {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
+                for i in self.video_indices
+            ],
+            "audio": [
+                {"type": "audio_url", "audio_url": {"url": audio_data_uri(i)}}
+                for i in self.audio_indices
+            ],
+        }
+        order = self.media_order or MEDIA_ORDER_DEFAULT
+        unknown = [modality for modality in order if modality not in groups]
+        if unknown:
+            raise ValueError(f"media_order names unknown modalities: {unknown}")
+        dropped = [
+            modality
+            for modality, group in groups.items()
+            if group and modality not in order
         ]
-        items.extend(
-            {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
-            for i in self.video_indices
-        )
-        items.extend(
-            {"type": "audio_url", "audio_url": {"url": audio_data_uri(i)}}
-            for i in self.audio_indices
-        )
+        if dropped:
+            raise ValueError(
+                f"media_order {order} omits modalities that have items: {dropped}"
+            )
+        items: list[dict] = [item for modality in order for item in groups[modality]]
         mid_pad = mid_pad_words()
         content: list[dict] = []
         for position, item in enumerate(items):
@@ -477,6 +517,40 @@ def audio_kind_request(key: str, salt: str, audio_index: int) -> MMRequest:
         image_indices=(),
         expected_probe=(audio_kind_name(audio_index),),
         audio_indices=(audio_index,),
+    )
+
+
+def cross_modal_request(
+    key: str,
+    salt: str,
+    image_index: int,
+    audio_index: int,
+    media_order: tuple[str, ...] = ("image", "audio"),
+) -> MMRequest:
+    """Build a request carrying one image and one clip in a chosen order.
+
+    Args:
+        key: Unique request id.
+        salt: Case salt; cases meant to share a prefix must share it.
+        image_index: Index of the attached image.
+        audio_index: Index of the attached audio clip.
+        media_order: Order the two media items appear in.
+
+    Returns:
+        The request, probing the image color and the sound kind together.
+    """
+    return MMRequest(
+        key=key,
+        salt=salt,
+        question=CROSS_MODAL_QUESTION,
+        image_indices=(image_index,),
+        expected_probe=(
+            image_color_name(image_index),
+            audio_kind_name(audio_index),
+        ),
+        max_tokens=16,
+        audio_indices=(audio_index,),
+        media_order=media_order,
     )
 
 
@@ -701,6 +775,34 @@ def audio_requests() -> dict[str, MMRequest]:
         # tone (index 0) and beeping (index 2) behind an identical prompt.
         audio_kind_request("t24-A", "t24", 0),
         audio_kind_request("t24-B", "t24", 2),
+    ]
+    return {r.key: r for r in requests}
+
+
+def cross_modal_requests() -> dict[str, MMRequest]:
+    """T2.5 image+audio requests, keyed by request key.
+
+    Only valid for a spec declaring BOTH modalities, so they live outside
+    ``catalog()`` like the video and audio sets.
+
+    Three cases sharing one salt, which is what makes them comparable --
+    the system prefix is identical, so every divergence in hit counts comes
+    from the media:
+
+    ``t25-IA``  image 0 (red) then clip 0 (tone)
+    ``t25-IB``  image 0 (red) then clip 2 (beeping) -- the image is held
+                CONSTANT, so only the audio hash can separate the two. If
+                audio identity were missing from the key, IB would be a
+                full hit on IA's entries; that is the one test in the suite
+                where audio identity alone carries the isolation.
+    ``t25-AI``  clip 0 then image 0 -- the same two items as IA in the
+                other order. Order is not content, but a positional key
+                must still treat the two prompts as different.
+    """
+    requests = [
+        cross_modal_request("t25-IA", "t25", 0, 0, ("image", "audio")),
+        cross_modal_request("t25-IB", "t25", 0, 2, ("image", "audio")),
+        cross_modal_request("t25-AI", "t25", 0, 0, ("audio", "image")),
     ]
     return {r.key: r for r in requests}
 

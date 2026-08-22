@@ -28,6 +28,7 @@ from catalog import (
     audio_requests,
     catalog,
     color_request,
+    cross_modal_requests,
     pressure_requests,
     video_requests,
 )
@@ -412,6 +413,78 @@ def test_audio_detector_sensitivity_negative_control(harness):
         f"disabled, clip B hit only {b1.lookup_hits} of {b1.lookup_tokens} "
         f"tokens -- the counter detector would not have seen a real "
         f"cross-audio collision either"
+    )
+
+
+@pytest.mark.requires_modality("image")
+@pytest.mark.requires_modality("audio")
+def test_t2_cross_modal_isolation(harness):
+    """T2.5: one prompt carrying an image AND a clip, swapped two ways.
+
+    Coverage no image-only model can reach, and it is not just "audio again
+    with a picture attached". Two distinct claims, one per comparison:
+
+    IB vs IA holds the IMAGE constant and swaps only the clip. Everything
+    up to the audio placeholder is byte-identical, so the audio hash is the
+    only thing that can keep the two prompts apart. Elsewhere in the suite
+    audio isolation is always confounded with a differing text or image
+    prefix; here it carries the separation alone -- if audio identity were
+    absent from the key, IB would be a full hit on IA.
+
+    AI vs IA keeps both items and reverses their order. The content is
+    identical, so nothing about content identity can separate them; only
+    position can. A key that hashed the multiset of items rather than the
+    token sequence would collide here and nowhere else.
+
+    Both comparisons share one salt, so the system prefix is common and
+    every difference in hit counts comes from the media.
+
+    One limit, measured rather than assumed: IA and AI answer with the SAME
+    text ("red, tone" both ways round, 5/5 combos), so the semantic probe
+    cannot see an order collision -- only the hit counter can. That is the
+    opposite of the clip swap, where a false hit would also show up as IB
+    answering with IA's sound kind.
+    """
+    requests = cross_modal_requests()
+    req_ia, req_ib, req_ai = (
+        requests["t25-IA"],
+        requests["t25-IB"],
+        requests["t25-AI"],
+    )
+
+    ia1 = harness.run(req_ia)
+    harness.check_output(req_ia, ia1, "T2.5 first image+audio")
+    assert ia1.lookup_hits == 0, "fresh case salt must not hit anything"
+    assert ia1.identifiers, "image+audio request produced no MM identifiers"
+
+    ib1 = harness.run(req_ib)
+    harness.check_output(req_ib, ib1, "T2.5 same image, other clip")
+    ai1 = harness.run(req_ai)
+    harness.check_output(req_ai, ai1, "T2.5 reversed item order")
+
+    ia2 = harness.run(req_ia)
+    harness.check_output(req_ia, ia2, "T2.5 repeat image+audio")
+    harness.check_replay_text(req_ia, ia1.text, ia2.text, "T2.5 repeat")
+    assert ia2.lookup_hits >= ia2.lookup_tokens - 2 * harness.chunk
+
+    # Positive half: IB shares the entire image with IA, so its hit must
+    # reach past the image span, not stop at the text prefix.
+    assert ib1.lookup_hits >= harness.image_span_margin + harness.chunk, (
+        f"shared image prefix not reused across a clip swap: only "
+        f"{ib1.lookup_hits} tokens hit"
+    )
+    # Negative half: it must stop before the clip. The audio span is ~105
+    # tokens by construction (catalog.AUDIO_SECONDS) against a 4-chunk
+    # margin, so this is answerable rather than vacuous.
+    assert ib1.lookup_hits <= ia2.lookup_hits - harness.image_span_margin, (
+        f"clip swap hit {ib1.lookup_hits} tokens, too close to IA's full "
+        f"hit {ia2.lookup_hits} -- audio identity missing from the key"
+    )
+    # Order swap diverges at the FIRST media item, so it must break the
+    # shared prefix strictly earlier than the clip swap did.
+    assert ai1.lookup_hits <= ib1.lookup_hits - harness.image_span_margin, (
+        f"reversed order hit {ai1.lookup_hits} tokens, no earlier than the "
+        f"clip swap's {ib1.lookup_hits} -- item position not in the key"
     )
 
 

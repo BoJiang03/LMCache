@@ -101,11 +101,19 @@ def pytest_collection_modifyitems(config, items):
         spec = MODEL_SPECS[model_key] if model_key is not None else None
         gated_out = False
         if spec is not None:
-            modality = item.get_closest_marker("requires_modality")
+            # ALL requires_modality markers must be satisfied, not just the
+            # closest one: a cross-modal test needs two modalities at once,
+            # and reading only the closest marker would silently run it on a
+            # model missing the other.
+            modalities = {
+                arg
+                for marker in item.iter_markers("requires_modality")
+                for arg in marker.args
+            }
             extra = item.get_closest_marker("requires_extra_suite")
-            gated_out = (
-                modality is not None and modality.args[0] not in spec.modalities
-            ) or (extra is not None and extra.args[0] not in spec.extra_suites)
+            gated_out = not modalities <= spec.modalities or (
+                extra is not None and extra.args[0] not in spec.extra_suites
+            )
         if gated_out:
             deselected.append(item)
             continue
@@ -152,7 +160,13 @@ def harness(request, tmp_path_factory):
     ("Hybrid KV cache manager is disabled but failed to convert the KV
     cache specs to one unified type").
     """
-    from catalog import audio_requests, catalog, pressure_requests, video_requests
+    from catalog import (
+        audio_requests,
+        catalog,
+        cross_modal_requests,
+        pressure_requests,
+        video_requests,
+    )
     from harness import (
         MMHarness,
         MPHarness,
@@ -179,6 +193,8 @@ def harness(request, tmp_path_factory):
         all_requests += list(video_requests().values())
     if "audio" in spec.modalities:
         all_requests += list(audio_requests().values())
+    if {"image", "audio"} <= spec.modalities:
+        all_requests += list(cross_modal_requests().values())
     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
     baselines = compute_baselines(spec, all_requests, workdir)
     if not spec.hybrid_block_tokens:

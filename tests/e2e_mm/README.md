@@ -30,6 +30,7 @@ can fail and pointing at least one detector at every mode:
 | Preemption recompute corrupts state (stale keys, wrong restored tokens, poisoned cache) | wrong output after a preemption round-trip | T0.11 (dedicated tiny-block-pool engine, preemption PROVEN via the vLLM counter) |
 | A different deployment path skips or breaks the MM key handling (e.g. MP connector) | per-path cross-image serving | T3 mp_connector scenario (real MP cache server) incl. its own negative control |
 | Modality-specific ingestion misses identity (video frames, temporal merge) | cross-video KV serving | T2.3 per declared modality |
+| One modality's identity is dropped while another's covers for it, or items are keyed as a set rather than a sequence | cross-modal false hit invisible to every single-modality test | T2.5 (image held constant while the clip swaps; then the same two items reversed) |
 | Quality drift only visible on real data (resolutions, aspect ratios, numerics) | statistical score loss | T0.6 MME three-way parity |
 | The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check (run on BOTH deployment paths) |
 | A "hit" is reported but the retrieve path never ran (vLLM's own prefix cache served it) | green suite proving nothing about the load path | hit-provenance oracle on every measured step (see below) |
@@ -147,6 +148,7 @@ that guard the suite can silently certify a different source tree.
 | T2.2 | Partial sharing | Request [A] then request [A, C]: shared prefix hits, C computed correctly. |
 | T2.3 | Other modalities — video | For models whose spec declares `video`: synthetic solid-color MP4s rerun T0.1/T0.3/T1 on the video ingestion path (multi-frame decode, temporal merge). Deselected — not skipped — at collection for models without the modality, so certification stays exactly as wide as the spec. |
 | T2.4 | Other modalities — audio | For models whose spec declares `audio`: synthetic clips rerun T0.1/T0.3/T1 on the audio ingestion path (own processor, resampler and encoder). Paired with its **own** negative control: the image control proves nothing about audio, because if audio items never reached vLLM's `mm_features` the isolation assertion would pass trivially and look green. Same collection-time deselection policy. |
+| T2.5 | Cross-modal — image + audio | For models declaring **both** modalities (all `requires_modality` markers must hold, not just the closest one). One prompt carries an image and a clip, and two swaps are compared against it. Holding the **image constant** while swapping only the clip makes the audio hash the sole separator — everywhere else in the suite audio isolation is confounded with a differing text or image prefix. Reversing the **order** of the same two items changes no content at all, so only position can separate them; a key over the multiset of items would collide here and nowhere else. Measured caveat: both orders answer identically (`red, tone` either way, 5/5 combos), so the order half is a counter-only assertion. |
 
 ### T0.6 — Benchmark score parity (`benchmark_parity.py`)
 
