@@ -495,6 +495,51 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             mme_max_local_cpu_gb=280.0,
         ),
         ModelSpec(
+            key="gemma-3-4b",
+            hf_id="google/gemma-3-4b-it",
+            # Image only, and not a scoping choice: vLLM's Gemma 3
+            # processor declares get_supported_mm_limits() == {"image":
+            # None}, with no video entry, so the suite's video probes
+            # deselect because the model cannot take video at all.
+            modalities=frozenset({"image"}),
+            # The second SLIDING_WINDOW hybrid, and the controlled
+            # comparison Gemma 4 could not provide. Measured at engine init
+            # (2026-08-22): 34 text layers as 29 sliding (window 1024) plus
+            # 5 full attention, which vLLM splits into 7 KV cache groups --
+            # 6 SlidingWindowSpec plus 1 FullAttentionSpec -- so it needs
+            # the hybrid cache manager and therefore the MP deployment path.
+            #
+            # Unlike Gemma 4, every group is at block_size 16 and page size
+            # 65536, so the chunk is 16 -- the SAME chunk the five
+            # full-attention SUPPORTED certificates were taken at. Gemma 4
+            # confounded chunk size (32) with multi-group sliding windows;
+            # this model separates them, which is the point of certifying
+            # it: chunk 16 with one group is green five times over, so a
+            # failure here is attributable to the grouping alone.
+            hybrid_block_tokens=16,
+            hybrid_family=HybridFamily.SLIDING_WINDOW,
+            # Two object-group buckets: the sliding groups (window 1024)
+            # and the full-attention group (no window).
+            hybrid_object_groups=2,
+            # No hf_overrides: Gemma 3 keeps its attention dims as flat
+            # config attributes, so vLLM reads them without the
+            # per_layer_config indirection that Gemma 4 needs.
+            #
+            # 136 KB/token, measured (65536 bytes x 34 layers / block 16) --
+            # 2.4x Gemma 4, which shares KV across 18 of its 42 layers
+            # while Gemma 3 shares none.
+            mme_max_local_cpu_gb=280.0,
+            # No threshold overrides: the defaults pass with room to spare.
+            # Measured 2026-08-22 on the full 2374-question MME parity
+            # (deployment_path mp, granularity 16): pass1 scores 1715.68
+            # against a baseline of 1715.68 -- 0 flips, byte-identical --
+            # and pass2_hit 1714.93 for 1 flip against a budget of 11.87,
+            # hit ratio 0.965, coverage 1.0056, parse ratio 0.992. The hits
+            # really crossed the connector: pass2_local_cached_tokens is 0,
+            # so none of the 667520 skipped tokens came from vLLM's own
+            # prefix cache.
+        ),
+        ModelSpec(
             key="glm-4.6v-flash",
             hf_id="zai-org/GLM-4.6V-Flash",
             modalities=frozenset({"image", "video"}),
