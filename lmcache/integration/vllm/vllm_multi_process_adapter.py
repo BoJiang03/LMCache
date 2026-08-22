@@ -1340,6 +1340,25 @@ class LMCacheMPWorkerAdapter:
                 )
         self.kv_caches = kv_caches
         self.engine_group_infos = list(engine_group_infos)
+        # vLLM recovers from a reported load error by trimming the request
+        # back to its longest valid prefix, but its scheduler unpacks the
+        # request's blocks as a single KV cache group
+        # (_update_requests_with_invalid_blocks, "TODO: add support for
+        # hybrid memory allocator"). With more than one group that unpacking
+        # raises, so a failed load aborts the engine instead of recomputing.
+        # Say so at registration: it decides whether a load failure is a
+        # slow request or an outage, and it is not visible from the logs
+        # once it happens. Count distinct engine groups, not
+        # EngineGroupInfos: several of ours may split one engine group by
+        # transfer identity, and it is the engine's groups that vLLM unpacks.
+        num_engine_groups = len({info.engine_group_id for info in engine_group_infos})
+        if num_engine_groups > 1:
+            logger.warning(
+                "This model has %d KV cache groups. vLLM cannot recompute a "
+                "failed KV load for multi-group models, so a load failure "
+                "will abort the engine rather than fall back to recompute.",
+                num_engine_groups,
+            )
         self._send_register_kv_caches_request(kv_caches)
 
     def _block_ids_per_group(self, op: LoadStoreOp) -> list[list[int]]:
@@ -1668,6 +1687,44 @@ class LMCacheMPWorkerAdapter:
         self._returned_finished.update(ret_stores)
         return ret_stores
 
+    def _collect_finished_retrieves(self) -> set[str]:
+        """Drain completed retrieve futures, flagging the failed ones.
+
+        A retrieve whose result is False wrote nothing into the blocks it was
+        given -- a failed L1 read, a block-id underflow, or an exception
+        mid-transfer -- while the scheduler has already advanced the
+        request's ``num_computed_tokens`` past them. Adding the block ids to
+        ``error_block_ids`` is the only channel that makes vLLM recompute
+        them; without it the request reads whatever those blocks happened to
+        hold, which is silent output corruption rather than a slow path.
+
+        A server that is still answering does not make its failures more
+        trustworthy, so this matches the unhealthy-drain handling.
+
+        Returns:
+            Request ids whose retrieve future has completed, successfully or
+            not. Both must be reported to vLLM, or an async load hangs in
+            WAITING_FOR_REMOTE_KVS.
+        """
+        finished_retrieves: set[str] = set()
+        for request_id, (r_future, r_block_ids) in self.retrieve_futures.items():
+            if not r_future.query():
+                continue
+
+            r_result = r_future.result(timeout=60)
+            finished_retrieves.add(request_id)
+
+            if not r_result:
+                self.error_block_ids.update(r_block_ids)
+                logger.error(
+                    "Retrieve failed for request_id=%s (result=%s); flagging "
+                    "%d block ids for recompute",
+                    request_id,
+                    r_result,
+                    len(r_block_ids),
+                )
+        return finished_retrieves
+
     @_lmcache_nvtx_annotate
     def get_finished(
         self, finished_req_ids_from_engine: set[str]
@@ -1733,7 +1790,6 @@ class LMCacheMPWorkerAdapter:
             return ret_stores, finished_retrieves
 
         finished_stores = set()
-        finished_retrieves = set()
         for request_id, s_future in self.store_futures.items():
             if not s_future.query():
                 continue
@@ -1748,21 +1804,7 @@ class LMCacheMPWorkerAdapter:
                     request_id,
                 )
 
-        for request_id, (r_future, r_block_ids) in self.retrieve_futures.items():
-            if not r_future.query():
-                continue
-
-            r_result = r_future.result(timeout=60)
-            finished_retrieves.add(request_id)
-
-            if not r_result:
-                self.error_block_ids.update(r_block_ids)
-                logger.error(
-                    "Something went wrong when processing the "
-                    "retrieve request for request_id=%s, result=%s",
-                    request_id,
-                    r_result,
-                )
+        finished_retrieves = self._collect_finished_retrieves()
 
         # Remove the finished requests from the tracking dicts
         for request_id in finished_stores:
@@ -1854,7 +1896,6 @@ class LMCacheMPWorkerAdapter:
             return None, finished_retrieves
 
         finished_stores = set()
-        finished_retrieves = set()
         for request_id, s_future in self.store_futures.items():
             if not s_future.query():
                 continue
@@ -1869,21 +1910,7 @@ class LMCacheMPWorkerAdapter:
                     request_id,
                 )
 
-        for request_id, (r_future, r_block_ids) in self.retrieve_futures.items():
-            if not r_future.query():
-                continue
-
-            r_result = r_future.result(timeout=60)
-            finished_retrieves.add(request_id)
-
-            if not r_result:
-                self.error_block_ids.update(r_block_ids)
-                logger.error(
-                    "Something went wrong when processing the "
-                    "retrieve request for request_id=%s, result=%s",
-                    request_id,
-                    r_result,
-                )
+        finished_retrieves = self._collect_finished_retrieves()
 
         # Remove the finished requests from the tracking dicts
         for request_id in finished_stores:
