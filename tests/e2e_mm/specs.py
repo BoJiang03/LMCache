@@ -291,6 +291,47 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             isolated_gpu_utilization=0.75,
         ),
         ModelSpec(
+            key="qwen3.8-27b",
+            hf_id="Qwen/Qwen3.8-27B",
+            modalities=frozenset({"image", "video"}),
+            # Every field below is copied from qwen3.6-27b deliberately: the
+            # two config.json files are IDENTICAL apart from
+            # ``transformers_version`` (4.57.1 vs 5.8.0.dev0) -- same
+            # ``Qwen3_5ForConditionalGeneration``, same 64 layers with the
+            # same ``layer_types`` (16 full attention + 48 Gated-DeltaNet),
+            # same 5120 hidden / 256 head_dim / 4 KV heads, same empty
+            # ``deepstack_visual_indexes``, same 27-layer vision tower. So
+            # 3.8-27B is a retrained 3.6-27B, not a new architecture, and
+            # vLLM 0.23.0 runs it on the code path this suite already
+            # certified -- the "needs a newer vLLM" note in
+            # records/2026/08/21/2_ was research, not measurement, and is
+            # wrong for this model.
+            #
+            # Consequences of that identity, each inherited rather than
+            # re-derived: block geometry (784 tokens, 4 KV cache groups ->
+            # 2 object groups), per-block cost (~205 MB = 262 KB/token
+            # across 64 layers), and therefore every capacity number.
+            gpu_memory_utilization=0.8,
+            hybrid_block_tokens=784,
+            hybrid_object_groups=2,
+            chat_template_kwargs={"enable_thinking": False},
+            mme_mm_processor_kwargs={
+                "size": {"shortest_edge": 65536, "longest_edge": 786432}
+            },
+            # A PREDICTION, not yet a measurement. records/2026/08/21/10_
+            # argues hybrid flip rates track linear-attention depth (18 GDN
+            # layers -> 0.21%, 48 -> 0.505%) because a hit restores a lossy
+            # recurrent-state page instead of reproducing KV bit-for-bit.
+            # This model has the same 48 GDN layers, so the same ~0.5% and
+            # the same 1% budget should hold; a rate far off that number
+            # falsifies the depth argument and belongs in a record rather
+            # than in a widened budget here.
+            mme_max_flip_fraction=0.01,
+            mme_max_local_cpu_gb=120.0,
+            mp_server_l1_gb=200.0,
+            isolated_gpu_utilization=0.75,
+        ),
+        ModelSpec(
             key="glm-4.6v-flash",
             hf_id="zai-org/GLM-4.6V-Flash",
             modalities=frozenset({"image", "video"}),
