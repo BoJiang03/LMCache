@@ -111,34 +111,40 @@ def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
 # matching server-side reap timeout (which must clear 3x the interval or
 # the server evicts a worker that is merely slow to ping).
 #
-# The default 10s window is too tight here for a reason worth stating: a
-# real KV load on the MP path is reported back to vLLM 0.3-20s after it is
-# submitted, even though the server completes the transfer in ~3ms (traced
-# in records/2026/08/21). One ping that loses its turn inside such a gap is
-# read as server death, and the connector then reports the in-flight
-# retrieve's blocks as load errors -- which vLLM cannot recover on a hybrid
-# model at all (see HYBRID_NOT_COVERED in certify.py). Widening the window
-# keeps the suite measuring cache behaviour instead of that latency; the
-# latency itself is a separate, recorded defect.
-MP_HEARTBEAT_INTERVAL_S = 60.0
-MP_WORKER_REAP_TIMEOUT_S = 300.0
-
-# CPU-side thread pool size for every MP cache server the suite starts.
+# The interval is also the ping's patience -- HeartbeatThread._execute
+# calls send_ping(timeout=self._interval) -- and ONE ping that runs out of
+# patience is read as server death, with no retry and no
+# consecutive-failure count. The connector then reports the in-flight
+# retrieve's blocks as load errors, which vLLM cannot recover on a hybrid
+# at all (see HYBRID_NOT_COVERED in certify.py): the run dies rather than
+# degrading.
 #
-# The server puts PING in the same NORMAL pool as LOOKUP
-# (management.py / lookup.py both register ThreadPoolType.NORMAL), and that
-# pool defaults to ONE worker -- so a liveness probe queues behind the very
-# workload it is monitoring. At a coarse chunk size that is invisible: a
-# Mamba/GDN hybrid caches an 800-token prompt as one 784-token chunk, so
-# lookups are rare. At Gemma 4's 32-token chunk the same prompt issues ~25
-# lookups, the ping never reaches the worker, and after five 60s intervals
-# the connector declares the server dead (measured 2026-08-21: unhealthy at
-# exactly 300s while the server log showed retrieves completing in 4ms) --
-# which on a hybrid is fatal, not degraded (see HYBRID_NOT_COVERED). Extra
-# workers keep the probe answerable; that a health check shares a queue
-# with the data plane is a recorded upstream defect, not something the
-# suite can fix.
-MP_SERVER_CPU_WORKERS = 4
+# Two measured reasons the default 10s is far too tight here:
+#
+#  * a real KV load is reported back to vLLM 0.3-20s after submission even
+#    though the server completes the transfer in ~3ms (records/2026/08/21);
+#  * a ping QUEUES BEHIND THE DATA PLANE. The server registers PING in the
+#    same thread pool as LOOKUP, so the probe waits for the workload it is
+#    monitoring. At Gemma 4's 32-token chunk an 800-token prompt issues
+#    ~25 lookups (a GDN hybrid issues one), and with 2374 prompts in
+#    flight the wait exceeded a 60s window in two runs -- both times the
+#    5th ping timed out and killed the parity run while the server log
+#    showed retrieves completing in 4ms.
+#
+# So the window has to exceed the queue wait, not the transfer time. 300s
+# with a wider worker pool below; the pool alone was not enough (four
+# workers cut the wait ~4x and the 60s window still expired).
+MP_HEARTBEAT_INTERVAL_S = 300.0
+MP_WORKER_REAP_TIMEOUT_S = 900.0
+
+# CPU-side thread pool size for every MP cache server the suite starts,
+# raised from the server's default of ONE so the shared PING/LOOKUP pool
+# drains faster (see MP_HEARTBEAT_INTERVAL_S for the measurement). This
+# shortens the probe's queue wait; it does not bound it, which is why the
+# heartbeat window carries the actual guarantee. That a liveness probe
+# shares a queue with the data plane is a recorded upstream defect, not
+# something the suite can fix.
+MP_SERVER_CPU_WORKERS = 16
 
 
 @dataclass(frozen=True)
