@@ -186,6 +186,33 @@ class ModelSpec:
             same set of engines as ``hf_overrides`` -- if the engine under
             test can read the config and the baseline cannot, there is no
             baseline to compare against.
+        mm_bidirectional_attention: Whether the model attends BIDIRECTIONALLY
+            over its multimodal placeholder span -- vLLM's
+            ``ModelConfig.is_mm_prefix_lm``. It is a routing fact, not a
+            performance note: ``platforms/cuda.py`` forces
+            ``disable_chunked_mm_input`` for such a model, and vLLM then
+            refuses to start at all when ``max_num_batched_tokens`` is
+            below the model's worst-case mm item. That makes the
+            chunked-prefill scenario contradictory for this class -- a
+            budget small enough to split an image span aborts engine init,
+            and one large enough to start cannot split it -- so
+            ``isolated_routing`` excludes the scenario and the certificate
+            says so. Measured 2026-08-22 via ``create_model_config()`` for
+            all 12 registered models: True for Molmo 2-4B and Gemma 3-4B
+            only. Gemma 4-E4B measures False, which is worth stating rather
+            than silently encoding -- it was registered partly to exercise
+            bidirectional image attention, and on vLLM 0.23.0 it does not
+            carry the flag its predecessor does.
+        supports_system_role: Whether this model's chat template accepts a
+            ``system`` message. Every suite request carries one -- it holds
+            the per-case salt, which is what keeps otherwise-identical
+            requests from sharing a cache prefix -- so a template that
+            rejects it fails every request rather than degrading. Molmo 2's
+            template raises ``jinja2 TemplateError: Conversation roles must
+            alternate user/assistant/...`` on a system message; setting this
+            False folds the same text, salt included, into the front of the
+            first user message, which keeps the salt ahead of the media
+            items and so keeps case isolation intact.
         hybrid_family: Which kind of multi-group KV cache this model has
             (see ``HybridFamily``); it selects the mandatory engine
             settings. Must be set exactly when ``hybrid_block_tokens`` is.
@@ -261,6 +288,8 @@ class ModelSpec:
     parity_benchmark: str = ""
     mm_encoder_attn_backend: str = ""
     trust_remote_code: bool = False
+    mm_bidirectional_attention: bool = False
+    supports_system_role: bool = True
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
     preemption_gpu_blocks: int = 0
@@ -504,6 +533,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             key="gemma-4-e4b",
             hf_id="google/gemma-4-E4B-it",
             modalities=frozenset({"image", "video"}),
+            # NOT marked mm_bidirectional_attention, and that is a
+            # measurement rather than an omission: `create_model_config()`
+            # reports is_mm_prefix_lm=False for this model on vLLM 0.23.0
+            # while reporting True for Gemma 3-4B. This model was picked
+            # partly to exercise bidirectional image attention (vLLM
+            # #40106), so the flag being absent here is itself the finding:
+            # either the checkpoint does not use it, or vLLM is running the
+            # image span causally for it. Not yet resolved.
             # A SLIDING-WINDOW hybrid, not a Mamba/GDN one: 42 layers of
             # 5 sliding (window 512, head_dim 256) to 1 full attention
             # (head_dim 512), which vLLM splits into 6 KV cache groups --
@@ -604,6 +641,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # None}, with no video entry, so the suite's video probes
             # deselect because the model cannot take video at all.
             modalities=frozenset({"image"}),
+            # Measured 2026-08-22: is_mm_prefix_lm=True, i.e. vLLM does
+            # attend bidirectionally over this model's image span. It
+            # changes nothing about which scenarios run -- being a hybrid
+            # already excludes chunked prefill -- but the certificate now
+            # names both reasons instead of only the hybrid one. Gemma 4
+            # measures False on the same vLLM; see that spec.
+            mm_bidirectional_attention=True,
             # The second SLIDING_WINDOW hybrid, and the controlled
             # comparison Gemma 4 could not provide. Measured at engine init
             # (2026-08-22): 34 text layers as 29 sliding (window 1024) plus
@@ -745,6 +789,19 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # probe with the flag loads and answers a synthetic image
             # correctly; the same probe without it dies in ModelConfig.
             trust_remote_code=True,
+            # Measured, not assumed: `create_model_config()` reports
+            # is_mm_prefix_lm=True, so vLLM forces disable_chunked_mm_input
+            # and refuses any batched-token budget below this model's
+            # worst-case mm item (8134 tokens). The first NON-HYBRID model
+            # in the suite with this property, which is why the
+            # chunked-prefill exclusion had to stop being keyed on
+            # hybrid family.
+            mm_bidirectional_attention=True,
+            # Its chat template raises `Conversation roles must alternate
+            # user/assistant/...` on the system message every suite request
+            # carries; the salt moves to the front of the user message
+            # instead.
+            supports_system_role=False,
             # Measured (2026-08-22) on the live engine: ONE KV cache group
             # (FullAttentionSpec, block 16, 36 layers, 64 KiB per page), so
             # 144 KB/token -- GQA-8 at head_dim 128, the widest KV of any

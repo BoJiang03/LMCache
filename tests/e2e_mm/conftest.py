@@ -43,11 +43,14 @@ HYBRID_MP_SERVER_L1_GB = 60.0
 
 
 def pytest_configure(config):
-    """Set the prompt shape for hybrid models BEFORE test modules import.
+    """Set the prompt shape BEFORE test modules import.
 
-    ``test_mm_acceptance`` builds its catalog at import time, so the pad
-    environment must be in place before collection imports it; a later
-    change would give the tests different salts than the baselines.
+    ``test_mm_acceptance`` builds its catalog at import time, so the
+    prompt-shape environment must be in place before collection imports it;
+    a later change would give the tests different salts than the baselines.
+
+    Two shapes are set here: the hybrid pads, and whether requests may use
+    a ``system`` role at all.
 
     Args:
         config: The pytest config (unused).
@@ -55,11 +58,21 @@ def pytest_configure(config):
     Raises:
         RuntimeError: If a hybrid model is selected together with other
             models — the prompt shape is global, so one run certifies one
-            hybrid model.
+            hybrid model. Or if the selected models disagree about the
+            system role, which is the same kind of global shape.
     """
     from specs import MODEL_SPECS
 
     keys = _model_keys()
+    no_system = [k for k in keys if not MODEL_SPECS[k].supports_system_role]
+    if no_system:
+        if len(keys) > 1:
+            raise RuntimeError(
+                f"model {no_system[0]!r} needs a prompt shape with no system "
+                f"role, which applies to the whole run; select it alone "
+                f"(got {keys})"
+            )
+        os.environ["LMCACHE_MM_E2E_NO_SYSTEM_ROLE"] = "1"
     hybrid = [k for k in keys if MODEL_SPECS[k].hybrid_block_tokens]
     if not hybrid:
         return

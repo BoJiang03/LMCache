@@ -136,22 +136,56 @@ _PREEMPTION_NOT_COVERED = {
     ],
 }
 
-# Exclusion for any model the chunked-prefill scenario is not run for, i.e.
-# every hybrid -- for one of two different reasons, so say which.
-_CHUNKED_PREFILL_NOT_COVERED = {
-    HybridFamily.RECURRENT_STATE: [
-        "chunked-prefill step boundaries falling inside an image span: that "
-        "scenario pins the batched-token budget far below one prompt, while "
-        "align mode needs the opposite -- a step wide enough for one whole "
-        "544-784 token block, so the state snapshot lands on a boundary. "
-        "Contradictory by construction, not a plumbing gap",
-    ],
-    HybridFamily.SLIDING_WINDOW: [
-        "chunked-prefill step boundaries falling inside an image span: this "
-        "family's smaller blocks would in principle allow it (it needs no "
-        "step-width guarantee at all), but it is untested here",
-    ],
+# Why the chunked-prefill scenario did not run, for a model it is excluded
+# for. Several reasons can hold at once (Gemma 3 and Gemma 4 are hybrids AND
+# mm-prefix-LMs), so this is a list of every applicable one rather than a
+# single lookup: a certificate that named only the hybrid reason would read
+# as if the other were absent.
+_CHUNKED_PREFILL_PREFIX = (
+    "chunked-prefill step boundaries falling inside an image span: "
+)
+_CHUNKED_PREFILL_BY_FAMILY = {
+    HybridFamily.RECURRENT_STATE: (
+        "that scenario pins the batched-token budget far below one prompt, "
+        "while align mode needs the opposite -- a step wide enough for one "
+        "whole 544-784 token block, so the state snapshot lands on a "
+        "boundary. Contradictory by construction, not a plumbing gap"
+    ),
+    HybridFamily.SLIDING_WINDOW: (
+        "this family's smaller blocks would in principle allow it (it needs "
+        "no step-width guarantee at all), but it is untested here"
+    ),
 }
+_CHUNKED_PREFILL_BIDIRECTIONAL = (
+    "this model attends bidirectionally over its multimodal span "
+    "(vLLM's is_mm_prefix_lm), so vLLM forces disable_chunked_mm_input and "
+    "refuses to start when the batched-token budget is below the model's "
+    "worst-case mm item -- a budget small enough to split an image span "
+    "aborts engine init, and one large enough to start cannot split it. "
+    "Contradictory by construction, like align mode"
+)
+
+
+def chunked_prefill_not_covered(spec: ModelSpec) -> list[str]:
+    """Every reason the chunked-prefill scenario is excluded for ``spec``.
+
+    Args:
+        spec: The model under certification; only called when
+            ``isolated_routing`` actually excludes the scenario.
+
+    Returns:
+        One entry per applicable reason. Empty would mean the scenario was
+        excluded for a reason nobody wrote down, so callers must treat an
+        empty result as a bug rather than as "no exclusion".
+    """
+    reasons: list[str] = []
+    if spec.mm_bidirectional_attention:
+        reasons.append(_CHUNKED_PREFILL_PREFIX + _CHUNKED_PREFILL_BIDIRECTIONAL)
+    family = _CHUNKED_PREFILL_BY_FAMILY.get(spec.hybrid_family)
+    if family:
+        reasons.append(_CHUNKED_PREFILL_PREFIX + family)
+    return reasons
+
 
 # Additional exclusions specific to a recurrent-state (Mamba/GDN) hybrid.
 RECURRENT_STATE_NOT_COVERED = [
@@ -206,22 +240,38 @@ _SCENARIO_REGIME = {
     CAPACITY_EVICTION: "capacity eviction",
     PREEMPTION: "preemption-driven recompute",
 }
+# What a single-group model drives when the chunked-prefill scenario is
+# excluded for it anyway. The NONE entry above claims BOTH halves, which was
+# true only while every single-group model ran the scenario.
+_PREFILL_REGIME_UNCHUNKABLE = (
+    "single-step prefill (chunked prefill is not available: vLLM refuses a "
+    "batched-token budget below one multimodal item for this model)"
+)
 
 
 def _scheduling(spec: ModelSpec) -> list[str]:
     """Scheduling regimes a green run for ``spec`` actually exercised.
 
+    The prefill entry is read against ``isolated_scenarios``, not against
+    the hybrid family alone: a single-group model whose chunked-prefill
+    scenario is excluded drives single-step prefill only, and claiming the
+    family's usual "single-step and chunked" would assert a regime no test
+    ran.
+
     Args:
         spec: The model under certification.
 
     Returns:
-        The certificate's ``scope.scheduling`` list: the family's prefill
-        and batch shapes, plus one entry per isolated scenario that adds a
-        regime of its own and is applicable to this model.
+        The certificate's ``scope.scheduling`` list: the prefill and batch
+        shapes this model actually drove, plus one entry per isolated
+        scenario that adds a regime of its own and is applicable to it.
     """
     scenarios = isolated_scenarios(spec)
+    prefill = _PREFILL_REGIME[spec.hybrid_family]
+    if spec.hybrid_family is HybridFamily.NONE and CHUNKED_PREFILL not in scenarios:
+        prefill = _PREFILL_REGIME_UNCHUNKABLE
     return [
-        _PREFILL_REGIME[spec.hybrid_family],
+        prefill,
         _BATCH_REGIME[spec.hybrid_family],
         *(text for name, text in _SCENARIO_REGIME.items() if name in scenarios),
     ]
@@ -339,11 +389,17 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     base = list(KNOWN_NOT_COVERED)
     if "audio" not in spec.modalities:
         base.append(AUDIO_NOT_COVERED)
+    # Checked for EVERY model, not just hybrids. Molmo 2 is the first
+    # non-hybrid the scenario is excluded for, and the old shape -- an early
+    # return for non-hybrids, with the chunked-prefill exclusion emitted
+    # only after it -- would have silently dropped the exclusion from its
+    # certificate: the omission of a true limit, which reads exactly like
+    # the absence of one.
+    if CHUNKED_PREFILL not in scenarios:
+        base += chunked_prefill_not_covered(spec)
     if not spec.hybrid_block_tokens:
         return base + DUAL_PATH_NOT_COVERED
     extra = list(HYBRID_NOT_COVERED)
-    if CHUNKED_PREFILL not in scenarios:
-        extra += _CHUNKED_PREFILL_NOT_COVERED[spec.hybrid_family]
     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
         extra += RECURRENT_STATE_NOT_COVERED
     if PREEMPTION not in scenarios:

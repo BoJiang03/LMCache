@@ -411,7 +411,10 @@ class MMRequest:
         surrounds the items so the prompt spans several whole KV blocks.
 
         Returns:
-            The system and user messages, in OpenAI chat format.
+            The messages in OpenAI chat format: a system message plus a
+            user message, or -- for a model whose template rejects a system
+            role (``ModelSpec.supports_system_role``) -- a single user
+            message whose first text item carries the same framing.
 
         Raises:
             ValueError: If ``media_order`` names an unknown modality, or
@@ -455,18 +458,23 @@ class MMRequest:
         question = (
             f"{_filler(post_pad)}\n{self.question}" if post_pad else self.question
         )
-        content.append({"type": "text", "text": question})
         pre_pad = pre_pad_words()
         preamble = f" {_filler(pre_pad)}" if pre_pad else ""
-        return [
-            {
-                "role": "system",
-                "content": (
-                    f"Session {self.salt}.{preamble} You are a concise assistant."
-                ),
-            },
-            {"role": "user", "content": content},
-        ]
+        framing = f"Session {self.salt}.{preamble} You are a concise assistant."
+        if system_role_supported():
+            content.append({"type": "text", "text": question})
+            return [
+                {"role": "system", "content": framing},
+                {"role": "user", "content": content},
+            ]
+        # No system role: the framing text leads the user message instead.
+        # It has to stay AHEAD of the media items, because the salt inside
+        # it is what makes two otherwise-identical requests differ in their
+        # first chunk -- move it to the back and every case would share a
+        # cache prefix with every other.
+        content.insert(0, {"type": "text", "text": framing})
+        content.append({"type": "text", "text": question})
+        return [{"role": "user", "content": content}]
 
 
 def color_request(
@@ -616,6 +624,22 @@ def mid_pad_words() -> int:
     stopping at the shared pre-pad.
     """
     return int(os.environ.get("LMCACHE_MM_E2E_MID_PAD_WORDS", "0"))
+
+
+def system_role_supported() -> bool:
+    """Whether requests may carry a ``system`` message for this run.
+
+    Set via ``LMCACHE_MM_E2E_NO_SYSTEM_ROLE`` from
+    ``ModelSpec.supports_system_role`` -- by the conftest for a pytest run,
+    and by ``isolated_cases.main`` so a scenario invoked directly builds the
+    same prompts the suite does. Default is True, so every model registered
+    before Molmo 2 keeps the exact prompt shape it was certified on.
+
+    Returns:
+        False only when the selected model's chat template rejects a system
+        message.
+    """
+    return os.environ.get("LMCACHE_MM_E2E_NO_SYSTEM_ROLE", "0") != "1"
 
 
 def _filler(words: int) -> str:

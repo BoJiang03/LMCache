@@ -58,6 +58,17 @@ def isolated_scenarios(spec: ModelSpec) -> tuple[str, ...]:
     blocks would in principle allow it, but that is untested, and the
     certificate says which of the two reasons applies.
 
+    A model with ``mm_bidirectional_attention`` is excluded for a THIRD,
+    independent reason, and it is why this exclusion cannot be keyed on the
+    hybrid family: vLLM forces ``disable_chunked_mm_input`` for a
+    mm-prefix-LM (``platforms/cuda.py``) and then refuses to start when the
+    batched-token budget is below the model's worst-case mm item. So a
+    budget small enough to split an image span aborts engine init, and one
+    large enough to start cannot split the span -- contradictory the same
+    way align mode is. Molmo 2 is the first NON-hybrid model in this class;
+    before it, every such model happened to be a hybrid and the family gate
+    hid the second reason (Gemma 3 and Gemma 4 are both mm-prefix-LMs too).
+
     ``preemption`` needs a MEASURED GPU block pool on a hybrid. The pool
     has to sit above what one max-length request costs (vLLM refuses to
     start below that) and below what the running batch costs, and that
@@ -79,7 +90,7 @@ def isolated_scenarios(spec: ModelSpec) -> tuple[str, ...]:
         Scenario names, in the order the parametrization should run them.
     """
     scenarios: list[str] = []
-    if spec.hybrid_family is HybridFamily.NONE:
+    if spec.hybrid_family is HybridFamily.NONE and not spec.mm_bidirectional_attention:
         scenarios.append(CHUNKED_PREFILL)
     scenarios.append(CAPACITY_EVICTION)
     pool_sizable = spec.hybrid_family is not HybridFamily.RECURRENT_STATE

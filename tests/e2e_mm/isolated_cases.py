@@ -965,6 +965,13 @@ def main(argv: list[str]) -> int:
         print(f"unknown scenario {scenario_name!r}", file=sys.stderr)
         return 2
     spec = MODEL_SPECS[model_key]
+    # The prompt shape is normally set by the conftest and inherited by this
+    # subprocess. Set it here too so a scenario invoked directly builds the
+    # same prompts -- otherwise a hand-run scenario would send a system
+    # message to a model whose template rejects it and fail for a reason
+    # that has nothing to do with the scenario.
+    if not spec.supports_system_role:
+        os.environ["LMCACHE_MM_E2E_NO_SYSTEM_ROLE"] = "1"
     report = SCENARIOS[scenario_name](spec)
     report["scenario"] = scenario_name
     report["model"] = model_key
