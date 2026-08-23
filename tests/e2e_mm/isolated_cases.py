@@ -826,23 +826,30 @@ def run_mp_connector(spec: ModelSpec) -> dict:
                 f"swapped order hit {ba.lookup_hits} vs full {ab2.lookup_hits}",
             )
 
-            # T2.2 partial sharing.
+            # T2.2 partial sharing. Gated on the same spec property as the
+            # in-process case: the whole check rests on [A] being a token
+            # prefix of [A, C], which is false for a model whose processor
+            # lays out the image SET rather than appending each item. The
+            # requests still RUN -- their outputs and the conservation audit
+            # below are model-independent -- only the prefix assertions are
+            # skipped.
             s1 = harness.run(cat["t22-A"])
             singles.append(s1)
             _check_text(failures, harness, cat["t22-A"], s1.text, "T3 t22 A")
             s2 = harness.run(cat["t22-AC"])
             singles.append(s2)
             _check_text(failures, harness, cat["t22-AC"], s2.text, "T3 t22 AC")
-            _expect(
-                failures,
-                s2.lookup_hits >= harness.image_span_margin + harness.chunk,
-                f"shared image prefix not reused: {s2.lookup_hits}",
-            )
-            _expect(
-                failures,
-                s2.lookup_hits < s2.lookup_tokens,
-                "the second image is new; a full hit here is a false hit",
-            )
+            if spec.media_prefix_stable:
+                _expect(
+                    failures,
+                    s2.lookup_hits >= harness.image_span_margin + harness.chunk,
+                    f"shared image prefix not reused: {s2.lookup_hits}",
+                )
+                _expect(
+                    failures,
+                    s2.lookup_hits < s2.lookup_tokens,
+                    "the second image is new; a full hit here is a false hit",
+                )
 
             # Conservation on the MP path: everything the lookups missed must
             # have been submitted for storage, and the server must actually
@@ -972,6 +979,8 @@ def main(argv: list[str]) -> int:
     # that has nothing to do with the scenario.
     if not spec.supports_system_role:
         os.environ["LMCACHE_MM_E2E_NO_SYSTEM_ROLE"] = "1"
+    if spec.media_first_template:
+        os.environ["LMCACHE_MM_E2E_MEDIA_FIRST"] = "1"
     report = SCENARIOS[scenario_name](spec)
     report["scenario"] = scenario_name
     report["model"] = model_key

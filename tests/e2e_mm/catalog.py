@@ -24,6 +24,14 @@ this draws: beeping as a KIND is reliable while the NUMBER of beeps is not.
 Every test case uses a unique ``salt`` as the first words of its system
 message, so the very first token chunk already differs between cases and
 cases cannot hit each other's cache entries.
+
+That last sentence held by accident until Molmo 2: it assumes the chat
+template renders text before media. A template that hoists media above the
+conversation puts a byte-identical image span in front of the salt, and two
+cases using the same image index then DO share a cached prefix -- measured
+at 762 tokens between two T0.4 phases. For such a model the case identity
+moves into the media itself (``case_media_bits``), which restores the
+invariant without depending on the template's ordering.
 """
 
 # Standard
@@ -35,6 +43,7 @@ import math
 import os
 import tempfile
 import wave
+import zlib
 
 # Third Party
 from PIL import Image
@@ -61,8 +70,50 @@ def image_color_name(index: int) -> str:
     return _PALETTE[index % len(_PALETTE)][0]
 
 
+def case_media_bits(salt: str) -> int:
+    """Extra content bits that make synthetic media unique per CASE.
+
+    Normally a case is isolated by its salt leading the prompt, so two
+    cases never share a cached prefix even when they use the same image.
+    That holds only while the chat template renders text before media.
+    Molmo 2's does not -- it hoists every media item above the whole
+    conversation -- and then the image span is the prompt's first ~750
+    tokens and is byte-identical across cases: measured 2026-08-22, two
+    T0.4 phases sharing image index 3 share a 762-token prefix, so the
+    later phase reused the earlier one's entry and the cross-image
+    isolation assertion was comparing against the wrong entry.
+
+    For such a model the identity has to live in the media itself. These
+    bits are mixed into the synthetic content the same way the index
+    already is, so a case's media stays identical WITHIN the case and
+    differs ACROSS cases.
+
+    Args:
+        salt: The request's case salt.
+
+    Returns:
+        24 bits derived from the salt, or 0 when the model's template puts
+        text first (then the salt already leads the prompt, and returning 0
+        keeps the media byte-identical to what every model certified before
+        Molmo 2 was measured on).
+    """
+    if not salt or not media_first_template():
+        return 0
+    return zlib.crc32(salt.encode("utf-8")) & 0xFFFFFF
+
+
+def _paint_bits(px, value: int, origin_x: int, dark: tuple) -> None:
+    """Paint a 24-bit value as an 8x3 grid of 12px blocks at ``origin_x``."""
+    for bit in range(24):
+        if (value >> bit) & 1:
+            bx, by = origin_x + (bit % 8) * 12, (bit // 8) * 12
+            for x in range(bx, bx + 12):
+                for y in range(by, by + 12):
+                    px[x, y] = dark
+
+
 @lru_cache(maxsize=4096)
-def image_data_uri(index: int) -> str:
+def image_data_uri(index: int, salt: str = "") -> str:
     """Build the deterministic test image at ``index`` as a PNG data URI.
 
     The image is a solid square of ``image_color_name(index)`` with a small
@@ -72,6 +123,10 @@ def image_data_uri(index: int) -> str:
 
     Args:
         index: Image index; any non-negative integer.
+        salt: The requesting case's salt. Ignored unless the model's chat
+            template renders media before text, in which case a second
+            block pattern derived from it (``case_media_bits``) keeps two
+            cases that use the same index from sharing a cache entry.
 
     Returns:
         A ``data:image/png;base64,...`` URI.
@@ -79,23 +134,23 @@ def image_data_uri(index: int) -> str:
     _, rgb = _PALETTE[index % len(_PALETTE)]
     img = Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), rgb)
     # Deterministic per-index pattern: encode the index in a 8x8 grid of
-    # slightly darker blocks in the top-left 96x96 corner.
+    # slightly darker blocks in the top-left 96x96 corner. The case bits,
+    # when they apply, get their own corner so the index pattern stays
+    # exactly where it was.
     px = img.load()
     dark = tuple(max(0, c - 40) for c in rgb)
-    for bit in range(24):
-        if (index >> bit) & 1:
-            bx, by = (bit % 8) * 12, (bit // 8) * 12
-            for x in range(bx, bx + 12):
-                for y in range(by, by + 12):
-                    px[x, y] = dark
+    _paint_bits(px, index, 0, dark)
+    case_bits = case_media_bits(salt)
+    if case_bits:
+        _paint_bits(px, case_bits, IMAGE_SIZE - 96, dark)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
 
-@lru_cache(maxsize=64)
-def video_data_uri(index: int) -> str:
+@lru_cache(maxsize=256)
+def video_data_uri(index: int, salt: str = "") -> str:
     """Build the deterministic test video at ``index`` as an MP4 data URI.
 
     Every frame is a solid square of ``image_color_name(index)`` with the
@@ -106,6 +161,8 @@ def video_data_uri(index: int) -> str:
 
     Args:
         index: Video index; any non-negative integer.
+        salt: The requesting case's salt; see ``image_data_uri``. Ignored
+            unless the model's template renders media before text.
 
     Returns:
         A ``data:video/mp4;base64,...`` URI.
@@ -116,12 +173,18 @@ def video_data_uri(index: int) -> str:
 
     _, rgb = _PALETTE[index % len(_PALETTE)]
     dark = tuple(max(0, c - 40) for c in rgb)
+    case_bits = case_media_bits(salt)
     frames = []
     for t in range(VIDEO_FRAMES):
         frame = np.full((VIDEO_SIZE, VIDEO_SIZE, 3), rgb, dtype=np.uint8)
         for bit in range(24):
             if (index >> bit) & 1:
                 bx, by = (bit % 8) * 8, (bit // 8) * 8
+                frame[by : by + 8, bx : bx + 8] = dark
+        for bit in range(24):
+            if (case_bits >> bit) & 1:
+                bx = VIDEO_SIZE - 64 + (bit % 8) * 8
+                by = (bit // 8) * 8
                 frame[by : by + 8, bx : bx + 8] = dark
         # A moving marker so consecutive frames differ (a genuine video).
         mx = 8 * t
@@ -284,7 +347,7 @@ def _audio_body(kind: str, count: int, rand) -> list[float]:
 
 
 @lru_cache(maxsize=256)
-def audio_data_uri(index: int) -> str:
+def audio_data_uri(index: int, salt: str = "") -> str:
     """Build the deterministic test clip at ``index`` as a WAV data URI.
 
     The clip's KIND cycles with ``index % 5`` and is what the semantic probe
@@ -303,13 +366,18 @@ def audio_data_uri(index: int) -> str:
 
     Args:
         index: Clip index; any non-negative integer.
+        salt: The requesting case's salt; see ``image_data_uri``. Ignored
+            unless the model's template renders media before text, in which
+            case it joins the dither seed so two cases using the same index
+            are still two cache entries. It cannot change the kind: the
+            dither is one LSB either way.
 
     Returns:
         A ``data:audio/wav;base64,...`` URI of 16-bit mono PCM.
     """
     n_lead = int(AUDIO_SAMPLE_RATE * AUDIO_LEAD_SILENCE)
     n_body = int(AUDIO_SAMPLE_RATE * AUDIO_SECONDS)
-    rand = _lcg(index + 1)
+    rand = _lcg(index + 1 + case_media_bits(salt))
     body = _audio_body(audio_kind_name(index), n_body, rand)
     pcm = bytearray()
     for value in [0.0] * n_lead + body:
@@ -422,15 +490,24 @@ class MMRequest:
         """
         groups: dict[str, list[dict]] = {
             "image": [
-                {"type": "image_url", "image_url": {"url": image_data_uri(i)}}
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_data_uri(i, self.salt)},
+                }
                 for i in self.image_indices
             ],
             "video": [
-                {"type": "video_url", "video_url": {"url": video_data_uri(i)}}
+                {
+                    "type": "video_url",
+                    "video_url": {"url": video_data_uri(i, self.salt)},
+                }
                 for i in self.video_indices
             ],
             "audio": [
-                {"type": "audio_url", "audio_url": {"url": audio_data_uri(i)}}
+                {
+                    "type": "audio_url",
+                    "audio_url": {"url": audio_data_uri(i, self.salt)},
+                }
                 for i in self.audio_indices
             ],
         }
@@ -624,6 +701,22 @@ def mid_pad_words() -> int:
     stopping at the shared pre-pad.
     """
     return int(os.environ.get("LMCACHE_MM_E2E_MID_PAD_WORDS", "0"))
+
+
+def media_first_template() -> bool:
+    """Whether this run's chat template renders media before all text.
+
+    Set via ``LMCACHE_MM_E2E_MEDIA_FIRST`` from
+    ``ModelSpec.media_first_template``, by the conftest for a pytest run
+    and by ``isolated_cases.main`` for a directly invoked scenario. The
+    harness re-derives it from the live tokenizer and raises if the spec
+    disagrees, so a new model cannot land on the wrong side by silence.
+
+    Returns:
+        True only for a model whose template hoists media above the
+        conversation, which moves the case salt out of the prompt's prefix.
+    """
+    return os.environ.get("LMCACHE_MM_E2E_MEDIA_FIRST", "0") == "1"
 
 
 def system_role_supported() -> bool:

@@ -63,6 +63,17 @@ AUDIO_NOT_COVERED = (
     "audio tower and still be certified this way (Gemma 4 does)"
 )
 
+# Exclusion for a model whose prompt is not append-only in media, so the
+# T2.2 partial-sharing case has no prefix to measure.
+MEDIA_PREFIX_NOT_COVERED = (
+    "partial sharing across a growing media list (T2.2): this model's "
+    "processor lays out the whole image SET rather than appending each "
+    "item, so a one-image prompt is not a token prefix of the same-image-"
+    "plus-one prompt (measured: they share ONE token). Reuse across "
+    "requests with the SAME media list is covered as usual; what is not is "
+    "reuse when the list grows"
+)
+
 # Additional exclusions for a model certified on both paths: the suite's
 # bulk runs in-process and only the T3 scenario crosses the transport.
 DUAL_PATH_NOT_COVERED = [
@@ -397,6 +408,8 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     # the absence of one.
     if CHUNKED_PREFILL not in scenarios:
         base += chunked_prefill_not_covered(spec)
+    if not spec.media_prefix_stable:
+        base.append(MEDIA_PREFIX_NOT_COVERED)
     if not spec.hybrid_block_tokens:
         return base + DUAL_PATH_NOT_COVERED
     extra = list(HYBRID_NOT_COVERED)

@@ -488,8 +488,16 @@ def test_t2_cross_modal_isolation(harness):
     )
 
 
+@pytest.mark.requires_media_prefix_stability
 def test_t2_partial_sharing(harness):
-    """T2.2: request [A] then [A, C]: shared prefix hits, C computed fresh."""
+    """T2.2: request [A] then [A, C]: shared prefix hits, C computed fresh.
+
+    Requires the prompt to be append-only in media: the whole case rests on
+    ``[A]`` being a token prefix of ``[A, C]``. Molmo 2 is not (measured:
+    the two prompts share ONE token), so the case is deselected for it and
+    the certificate records the gap rather than the suite reporting a cache
+    failure for a prefix that does not exist.
+    """
     req_a, req_ac = CATALOG["t22-A"], CATALOG["t22-AC"]
 
     a1 = harness.run(req_a)

@@ -203,6 +203,33 @@ class ModelSpec:
             than silently encoding -- it was registered partly to exercise
             bidirectional image attention, and on vLLM 0.23.0 it does not
             carry the flag its predecessor does.
+        media_first_template: Whether this model's chat template renders
+            media items BEFORE the conversation text. The suite isolates its
+            cases with a per-case salt at the head of the prompt, which only
+            works if text comes first; Molmo 2 emits ``<|image|>`` ahead of
+            ``<|im_start|>``, so the image span becomes the prompt's first
+            ~750 tokens and is byte-identical across cases. Measured
+            2026-08-22: two T0.4 phases using the same image share a
+            762-token prefix, and the later phase reused the earlier one's
+            entry -- correct caching, but it made the cross-image assertion
+            compare against the wrong entry. Setting this True moves the
+            case identity into the synthetic media itself
+            (``catalog.case_media_bits``). The harness re-derives this from
+            the live tokenizer and raises if the spec disagrees, so a new
+            model cannot land on the wrong side by silence.
+        media_prefix_stable: Whether adding a media item to a prompt leaves
+            the tokens of the items already there unchanged -- i.e. whether
+            the one-image prompt is a token PREFIX of the same-image-plus-one
+            prompt. Every model registered before Molmo 2 is; Molmo 2 is not,
+            measured 2026-08-22 on the live engine: ``t22-A`` (787 tokens)
+            and ``t22-AC`` (1553) share exactly ONE token, because its
+            processor emits a layout derived from the whole image SET before
+            any single image's tiles. T2.2 (partial sharing) is deselected
+            when this is False -- its premise is the prefix, so running it
+            would report a cache failure for a prefix that does not exist.
+            NOT auto-validated, unlike ``media_first_template``: the check
+            needs EXPANDED prompts, which means putting requests through the
+            engine, which would seed the cache the tests then measure.
         supports_system_role: Whether this model's chat template accepts a
             ``system`` message. Every suite request carries one -- it holds
             the per-case salt, which is what keeps otherwise-identical
@@ -289,6 +316,8 @@ class ModelSpec:
     mm_encoder_attn_backend: str = ""
     trust_remote_code: bool = False
     mm_bidirectional_attention: bool = False
+    media_first_template: bool = False
+    media_prefix_stable: bool = True
     supports_system_role: bool = True
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
@@ -802,6 +831,17 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # carries; the salt moves to the front of the user message
             # instead.
             supports_system_role=False,
+            # ...which is still not enough, because the template then hoists
+            # `<|image|>` above `<|im_start|>` -- the content order is not
+            # the caller's to choose. So the case identity goes into the
+            # media bytes instead. Measured: `<|image|>` precedes the
+            # conversation in every rendered prompt.
+            media_first_template=True,
+            # And its prompt is not append-only in media either: adding a
+            # second image changes the tokens from index 1 (measured: the
+            # one-image and two-image prompts share exactly ONE token), so
+            # T2.2's shared-prefix premise does not hold.
+            media_prefix_stable=False,
             # Measured (2026-08-22) on the live engine: ONE KV cache group
             # (FullAttentionSpec, block 16, 36 layers, 64 KiB per page), so
             # 144 KB/token -- GQA-8 at head_dim 128, the widest KV of any

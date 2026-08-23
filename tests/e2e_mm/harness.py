@@ -25,6 +25,11 @@ from specs import HybridFamily, ModelSpec
 
 LMCACHE_TEST_CHUNK_SIZE = 16
 
+# Salt for the startup probe that checks media/text ordering. Deliberately
+# not a real case salt: it must never collide with one, and it must be a
+# literal that survives tokenizer round-tripping unchanged.
+_SHAPE_PROBE_SALT = "shapeprobe"
+
 
 @dataclass(frozen=True)
 class StorageSnapshot:
@@ -835,6 +840,7 @@ class MMHarness:
         engine_kwargs.update(extra_engine_kwargs)
         self.llm = LLM(**engine_kwargs)
         self._validate_block_size()
+        self._validate_prompt_shape()
         self._setup_stats()
 
     @property
@@ -931,6 +937,81 @@ class MMHarness:
                 f"which is not a multiple of {', '.join(offenders)}; LMCache "
                 f"refuses to register such a chunk, and the value also drives "
                 f"the MP server chunk size and every hit tolerance"
+            )
+
+    def _validate_prompt_shape(self) -> None:
+        """Fail loudly if ``media_first_template`` misdescribes the model.
+
+        The suite isolates its cases with a salt at the head of the prompt,
+        which only holds while the chat template renders text before media.
+        A model whose template hoists media above the conversation needs the
+        case identity in the media bytes instead
+        (``catalog.case_media_bits``), and a WRONG declaration is silent in
+        both directions: declared False when true, two cases share a
+        byte-identical media prefix and the cross-image assertions compare
+        against the wrong entry; declared True when false, the media carries
+        redundant bits and the model is measured on prompts no other model
+        was.
+
+        Checked against the live tokenizer rather than a list of model
+        names: the marker's position is found by rendering the same request
+        with and without its image and diffing, so it needs no per-model
+        knowledge of what the placeholder looks like.
+
+        Raises:
+            RuntimeError: If the rendered order disagrees with the spec, or
+                if the probe cannot be rendered at all.
+        """
+        # First Party (test-local)
+        from catalog import color_request
+
+        probe = color_request("shapeprobe", _SHAPE_PROBE_SALT, 0)
+        with_media = probe.messages()
+        without_media = [
+            {
+                **message,
+                "content": [
+                    item for item in message["content"] if item.get("type") == "text"
+                ],
+            }
+            if isinstance(message.get("content"), list)
+            else message
+            for message in with_media
+        ]
+        tokenizer = self.llm.get_tokenizer()
+        try:
+            rendered = tokenizer.apply_chat_template(
+                with_media, tokenize=False, add_generation_prompt=True
+            )
+            bare = tokenizer.apply_chat_template(
+                without_media, tokenize=False, add_generation_prompt=True
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{self.spec.key}: could not render a probe prompt to check "
+                f"the media/text order that case isolation depends on: {exc}"
+            ) from exc
+        media_at = next(
+            (i for i, (a, b) in enumerate(zip(rendered, bare, strict=False)) if a != b),
+            len(bare),
+        )
+        salt_at = rendered.find(_SHAPE_PROBE_SALT)
+        if salt_at < 0:
+            raise RuntimeError(
+                f"{self.spec.key}: the case salt does not appear in the "
+                f"rendered prompt at all, so nothing isolates one case from "
+                f"another"
+            )
+        media_first = media_at < salt_at
+        if media_first != self.spec.media_first_template:
+            raise RuntimeError(
+                f"{self.spec.key}: spec declares "
+                f"media_first_template={self.spec.media_first_template}, but "
+                f"the chat template renders the media marker at character "
+                f"{media_at} and the case salt at {salt_at}. Case isolation "
+                f"depends on which comes first (see "
+                f"catalog.case_media_bits), so this must be declared "
+                f"correctly, not left at the default"
             )
 
     def _paged_group_block_sizes(self) -> dict[str, int]:

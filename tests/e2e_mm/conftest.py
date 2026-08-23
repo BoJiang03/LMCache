@@ -49,17 +49,18 @@ def pytest_configure(config):
     prompt-shape environment must be in place before collection imports it;
     a later change would give the tests different salts than the baselines.
 
-    Two shapes are set here: the hybrid pads, and whether requests may use
-    a ``system`` role at all.
+    Three shapes are set here: the hybrid pads, whether requests may use a
+    ``system`` role at all, and whether the case identity has to live in the
+    media bytes rather than in a leading text salt.
 
     Args:
         config: The pytest config (unused).
 
     Raises:
-        RuntimeError: If a hybrid model is selected together with other
-            models — the prompt shape is global, so one run certifies one
-            hybrid model. Or if the selected models disagree about the
-            system role, which is the same kind of global shape.
+        RuntimeError: If a model needing any of these shapes is selected
+            together with others. Each shape is global to the run — it
+            changes the prompts every model in the run sends — so a model
+            that needs one is certified alone.
     """
     from specs import MODEL_SPECS
 
@@ -73,6 +74,15 @@ def pytest_configure(config):
                 f"(got {keys})"
             )
         os.environ["LMCACHE_MM_E2E_NO_SYSTEM_ROLE"] = "1"
+    media_first = [k for k in keys if MODEL_SPECS[k].media_first_template]
+    if media_first:
+        if len(keys) > 1:
+            raise RuntimeError(
+                f"model {media_first[0]!r} needs case identity carried in the "
+                f"media, which changes the synthetic bytes for the whole run; "
+                f"select it alone (got {keys})"
+            )
+        os.environ["LMCACHE_MM_E2E_MEDIA_FIRST"] = "1"
     hybrid = [k for k in keys if MODEL_SPECS[k].hybrid_block_tokens]
     if not hybrid:
         return
@@ -124,8 +134,13 @@ def pytest_collection_modifyitems(config, items):
                 for arg in marker.args
             }
             extra = item.get_closest_marker("requires_extra_suite")
-            gated_out = not modalities <= spec.modalities or (
-                extra is not None and extra.args[0] not in spec.extra_suites
+            needs_stable_prefix = (
+                item.get_closest_marker("requires_media_prefix_stability") is not None
+            )
+            gated_out = (
+                not modalities <= spec.modalities
+                or (extra is not None and extra.args[0] not in spec.extra_suites)
+                or (needs_stable_prefix and not spec.media_prefix_stable)
             )
         if gated_out:
             deselected.append(item)
