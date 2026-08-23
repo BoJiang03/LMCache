@@ -979,12 +979,25 @@ class MMHarness:
             for message in with_media
         ]
         tokenizer = self.llm.get_tokenizer()
+        # Qwen3-Omni keeps its chat template on the PROCESSOR, not the
+        # tokenizer, so a tokenizer-only render raises for it. Fall back
+        # rather than fail: this check must not be able to break a model it
+        # has nothing to say about.
+        template = getattr(tokenizer, "chat_template", None)
+        if not template:
+            template = self._processor_chat_template()
         try:
             rendered = tokenizer.apply_chat_template(
-                with_media, tokenize=False, add_generation_prompt=True
+                with_media,
+                tokenize=False,
+                add_generation_prompt=True,
+                chat_template=template,
             )
             bare = tokenizer.apply_chat_template(
-                without_media, tokenize=False, add_generation_prompt=True
+                without_media,
+                tokenize=False,
+                add_generation_prompt=True,
+                chat_template=template,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1013,6 +1026,24 @@ class MMHarness:
                 f"catalog.case_media_bits), so this must be declared "
                 f"correctly, not left at the default"
             )
+
+    def _processor_chat_template(self) -> str:
+        """The chat template this model keeps on its processor, if any.
+
+        Returns:
+            The template string, or '' when the model has no processor-level
+            template (then the tokenizer's own is the only one there is).
+        """
+        # Third Party
+        from transformers import AutoProcessor
+
+        try:
+            processor = AutoProcessor.from_pretrained(
+                self.spec.hf_id, trust_remote_code=self.spec.trust_remote_code
+            )
+        except Exception:
+            return ""
+        return getattr(processor, "chat_template", "") or ""
 
     def _paged_group_block_sizes(self) -> dict[str, int]:
         """Block size of every paged KV cache group, by spec class name.
