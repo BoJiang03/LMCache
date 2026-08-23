@@ -174,6 +174,18 @@ class ModelSpec:
             to 0 skips loading its weights and fails later on a meta
             tensor). Fixed upstream in 0.27.1 at
             ``qwen3_omni_moe_thinker.py:982``.
+        trust_remote_code: Pass vLLM's ``trust_remote_code`` to every engine
+            the suite starts for this model. Only for a repo whose CONFIG
+            cannot be read without it -- Molmo 2 ships ``auto_map`` and
+            transformers 5.15 refuses the config outright ("contains custom
+            code which must be executed"), even though vLLM implements the
+            model natively (``molmo2.py``) and never runs the repo's own
+            modeling code. Set it on the smallest set of models that need
+            it, and never to work around a processor bug: it executes code
+            from the model repo in every suite subprocess. Applies to the
+            same set of engines as ``hf_overrides`` -- if the engine under
+            test can read the config and the baseline cannot, there is no
+            baseline to compare against.
         hybrid_family: Which kind of multi-group KV cache this model has
             (see ``HybridFamily``); it selects the mandatory engine
             settings. Must be set exactly when ``hybrid_block_tokens`` is.
@@ -248,6 +260,7 @@ class ModelSpec:
     hf_overrides: dict[str, object] = field(default_factory=dict)
     parity_benchmark: str = ""
     mm_encoder_attn_backend: str = ""
+    trust_remote_code: bool = False
     isolated_gpu_utilization: float = 0.0
     mp_server_l1_gb: float = 0.0
     preemption_gpu_blocks: int = 0
@@ -714,6 +727,39 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # the default flip budget is untouched. Prompts average ~234
             # tokens, moving ~28 GB through the cache, well inside the
             # runner's 40 GB default -- no capacity override needed.
+        ),
+        ModelSpec(
+            key="molmo2-4b",
+            hf_id="allenai/Molmo2-4B",
+            # The only member of the four-model "hitchhiker" batch that vLLM
+            # 0.23.0 can serve at all; the other three fail before LMCache
+            # is involved (see records/2026/08/22/10_).
+            #
+            # Image only, deliberately: the config carries frame tokens and
+            # vLLM registers a video processor, but neither was exercised
+            # here, so the certificate must not claim video.
+            modalities=frozenset({"image"}),
+            # transformers 5.15 refuses this repo's config without it
+            # ("contains custom code which must be executed"), even though
+            # vLLM implements Molmo 2 natively in `molmo2.py`. Measured: a
+            # probe with the flag loads and answers a synthetic image
+            # correctly; the same probe without it dies in ModelConfig.
+            trust_remote_code=True,
+            # Measured (2026-08-22) on the live engine: ONE KV cache group
+            # (FullAttentionSpec, block 16, 36 layers, 64 KiB per page), so
+            # 144 KB/token -- GQA-8 at head_dim 128, the widest KV of any
+            # in-process model in the suite. Not a hybrid, so no
+            # hybrid_block_tokens.
+            #
+            # Full MME is 2374 questions at ~770 prompt tokens (measured:
+            # a 1540x1540 photo lands at 770 including the template), so
+            # ~263 GB of KV. The 40 GB default would evict every entry
+            # before its pass-2 revisit and fail the hit gate at ~0; 340 GB
+            # holds the run with room for longer questions.
+            mme_max_local_cpu_gb=340.0,
+            # No mme_mm_processor_kwargs: the other specs cap photos at
+            # ~768 image tokens, and Molmo 2's own processor already lands
+            # there (770 total for a 1540x1540 input) without a cap.
         ),
     ]
 }

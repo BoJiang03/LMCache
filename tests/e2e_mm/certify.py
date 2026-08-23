@@ -448,6 +448,8 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--hf-overrides", json.dumps(spec.hf_overrides)]
     if spec.hybrid_family is not HybridFamily.NONE:
         cmd += ["--hybrid-family", spec.hybrid_family.value]
+    if spec.trust_remote_code:
+        cmd += ["--trust-remote-code"]
     subprocess.run(
         cmd,
         cwd=script.parent,

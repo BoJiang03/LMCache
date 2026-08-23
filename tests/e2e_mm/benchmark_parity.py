@@ -715,6 +715,7 @@ def engine_kwargs(
     hf_overrides: dict,
     hybrid_family: str,
     mm_encoder_attn_backend: str,
+    trust_remote_code: bool,
 ) -> dict:
     """Engine kwargs for both parity engines.
 
@@ -746,6 +747,11 @@ def engine_kwargs(
             the affected kernel. Applied to BOTH engines: it changes how
             the encoder computes, so a baseline built without it is not
             comparable.
+        trust_remote_code: ``ModelSpec.trust_remote_code`` -- whether this
+            model's repo config can only be read by executing repo code
+            (Molmo 2). Applied to BOTH engines: without it the engine that
+            has it would be the only one that starts, leaving nothing to
+            compare against.
     """
     kwargs = dict(
         model=model,
@@ -760,6 +766,8 @@ def engine_kwargs(
     )
     if mm_encoder_attn_backend:
         kwargs["mm_encoder_attn_backend"] = mm_encoder_attn_backend
+    if trust_remote_code:
+        kwargs["trust_remote_code"] = True
     # First Party (test-local)
     from harness import hybrid_engine_kwargs
     from specs import HybridFamily
@@ -785,6 +793,7 @@ def run_baseline(
     hf_overrides: dict,
     hybrid_family: str,
     mm_encoder_attn_backend: str,
+    trust_remote_code: bool,
 ) -> None:
     """Subprocess role: plain vLLM answers for every question."""
     # Third Party
@@ -800,6 +809,7 @@ def run_baseline(
             hf_overrides,
             hybrid_family,
             mm_encoder_attn_backend,
+            trust_remote_code,
         )
     )
     answers = run_batch(llm, benchmark, items, chat_template_kwargs, max_tokens)
@@ -896,6 +906,15 @@ def main() -> int:
         "vLLM 0.23.0, whose vision tower otherwise aborts profiling even "
         "for an audio-only run (see engine_kwargs)",
     )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="pass vLLM's trust_remote_code to BOTH engines "
+        "(ModelSpec.trust_remote_code). Only for a repo whose config cannot "
+        "be read without it -- Molmo 2 ships auto_map and transformers 5.15 "
+        "refuses the config outright, though vLLM implements the model "
+        "natively and never runs the repo's modeling code",
+    )
     args = parser.parse_args()
     benchmark = BENCHMARKS[args.benchmark]
     chat_template_kwargs: dict = (
@@ -932,6 +951,7 @@ def main() -> int:
             hf_overrides,
             args.hybrid_family,
             args.mm_encoder_attn_backend,
+            args.trust_remote_code,
         )
         return 0
 
@@ -939,6 +959,9 @@ def main() -> int:
     print(f"[parity] {len(items)} {benchmark.key.upper()} questions loaded")
 
     baseline_path = pathlib.Path(args.out).with_suffix(".baseline.json")
+    # A store_true flag cannot be forwarded as an empty string like the
+    # others, so it is appended only when set.
+    trust_flag = ["--trust-remote-code"] if args.trust_remote_code else []
     proc = subprocess.run(
         [
             sys.executable,
@@ -967,7 +990,8 @@ def main() -> int:
             args.hybrid_family,
             "--mm-encoder-attn-backend",
             args.mm_encoder_attn_backend,
-        ],
+        ]
+        + trust_flag,
         timeout=7200,
     )
     if proc.returncode != 0:
@@ -1021,6 +1045,7 @@ def main() -> int:
             hf_overrides,
             args.hybrid_family,
             args.mm_encoder_attn_backend,
+            args.trust_remote_code,
         ),
     )
     if counters is None:

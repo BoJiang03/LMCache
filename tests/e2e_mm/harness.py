@@ -326,11 +326,12 @@ def hybrid_engine_kwargs(
 def spec_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
     """Engine kwargs every engine for this model MUST share.
 
-    Both settings change the numeric regime or the model's geometry, so an
-    engine that has them and a baseline that does not are not comparable
-    and their difference would be misattributed to LMCache. Kept in one
-    function so the test engine, the baseline subprocess, the isolated
-    scenarios and the MME parity runs cannot drift apart.
+    Every setting here changes the numeric regime, the model's geometry, or
+    whether the model can be built at all, so an engine that has them and a
+    baseline that does not are not comparable and their difference would be
+    misattributed to LMCache. Kept in one function so the test engine, the
+    baseline subprocess, the isolated scenarios and the MME parity runs
+    cannot drift apart.
 
     Args:
         spec: The model under certification.
@@ -343,6 +344,8 @@ def spec_engine_kwargs(spec: ModelSpec) -> dict[str, object]:
         kwargs["hf_overrides"] = dict(spec.hf_overrides)
     if spec.mm_encoder_attn_backend:
         kwargs["mm_encoder_attn_backend"] = spec.mm_encoder_attn_backend
+    if spec.trust_remote_code:
+        kwargs["trust_remote_code"] = True
     return kwargs
 
 
