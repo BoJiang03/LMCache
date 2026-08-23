@@ -854,6 +854,17 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # before its pass-2 revisit and fail the hit gate at ~0; 340 GB
             # holds the run with room for longer questions.
             mme_max_local_cpu_gb=340.0,
+            # The 128-block default makes the preemption scenario VACUOUS
+            # here (measured: 0 preemptions), and the reason is prompt
+            # length in tokens, not KV width -- the pool is counted in
+            # blocks, so every model gets the same 2048 tokens. One Molmo 2
+            # image request is 787 tokens = 50 blocks against roughly a
+            # tenth of that on the Qwen models, so at 128 blocks only two
+            # of the six requests ever run and their decode growth
+            # (7 blocks each) never overflows. The window is
+            # [6 x 50 = 300, 6 x 57 = 342): admit all six prompts, refuse
+            # to hold their decode growth. 320 sits inside it.
+            preemption_gpu_blocks=320,
             # No mme_mm_processor_kwargs: the other specs cap photos at
             # ~768 image tokens, and Molmo 2's own processor already lands
             # there (770 total for a 1540x1540 input) without a cap.
