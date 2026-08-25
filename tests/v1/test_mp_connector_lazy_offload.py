@@ -60,6 +60,18 @@ class _RecordingManager:
     candidates: list[LMCacheMPRequestMetadata] = field(default_factory=list)
     bound_pools: list[object] = field(default_factory=list)
     final_log_calls: int = 0
+    covered_prefix_queries: list[tuple[str, int]] = field(default_factory=list)
+    covered_prefix_answer: int = 0
+
+    def covered_prefix_tokens(
+        self,
+        cache_salt: str,
+        allocated_block_ids: dict[int, list[int]],
+        tokens_per_chunk: int,
+        from_tokens: int,
+    ) -> int:
+        self.covered_prefix_queries.append((cache_salt, from_tokens))
+        return max(from_tokens, self.covered_prefix_answer)
 
     def on_scheduler_step(self, scheduler_output: object) -> LazyOffloadActions:
         self.scheduler_steps.append(scheduler_output)
@@ -659,3 +671,114 @@ def test_shutdown_delegates_final_log_before_adapter_shutdown() -> None:
 
     assert harness.manager.final_log_calls == 1
     assert harness.adapter.shutdown_calls == 1
+
+
+def test_lazy_store_skips_the_prefix_a_buffered_op_already_covers() -> None:
+    """A follower over a deferred prefix must stage only its own delta.
+
+    Its LMCache lookup misses -- the covering store is still buffered
+    scheduler-side, so the server has never heard of it -- and without the
+    pending-queue consultation the request would re-stage the whole shared
+    prefix from token 0. That range is filtered out again server-side, but
+    only after being hashed, reserved chunk by chunk, and sent as one
+    oversized store on the thread that retrieves also run on.
+    """
+    harness = _make_connector()
+    harness.manager.covered_prefix_answer = 2 * TOKENS_PER_BLOCK
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="L-follower",
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (0, False)
+    tracker = harness.connector.request_trackers["L-follower"]
+    tracker.allocated_block_ids = {0: [1, 2, 3, 4]}
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[SimpleNamespace(req_id="L-follower")],
+        num_scheduled_tokens={"L-follower": 4 * TOKENS_PER_BLOCK},
+    )
+
+    harness.connector._process_new_requests(
+        scheduler_output,
+        LMCacheMPConnectorMetadata(),  # type: ignore[arg-type]
+    )
+
+    store = harness.manager.candidates[0]
+    assert (store.op.start, store.op.end) == (
+        2 * TOKENS_PER_BLOCK,
+        4 * TOKENS_PER_BLOCK,
+    )
+    assert harness.manager.covered_prefix_queries == [("", 0)]
+
+
+def test_lazy_cached_request_also_skips_a_covered_prefix() -> None:
+    """The cached-request path takes the same fork: APC backfill goes through it."""
+    harness = _make_connector()
+    harness.manager.covered_prefix_answer = 2 * TOKENS_PER_BLOCK
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="L-cached",
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (0, False)
+    tracker = harness.connector.request_trackers["L-cached"]
+    tracker.allocated_block_ids = {0: [1, 2, 3, 4]}
+    scheduler_output = SimpleNamespace(
+        scheduled_cached_reqs=SimpleNamespace(
+            req_ids=["L-cached"],
+            new_block_ids=[None],
+            resumed_req_ids=set(),
+        ),
+        num_scheduled_tokens={"L-cached": 4 * TOKENS_PER_BLOCK},
+    )
+
+    harness.connector._process_cached_requests(
+        scheduler_output,
+        LMCacheMPConnectorMetadata(),  # type: ignore[arg-type]
+    )
+
+    store = harness.manager.candidates[0]
+    assert store.op.start == 2 * TOKENS_PER_BLOCK
+
+
+def test_eager_never_consults_the_pending_queue() -> None:
+    """There is no pending queue in eager mode; the store range is unchanged."""
+    harness = _make_connector()
+    harness.connector.lazy_offload = False
+    harness.manager.covered_prefix_answer = 2 * TOKENS_PER_BLOCK
+    tokens = list(range(4 * TOKENS_PER_BLOCK))
+    request = SimpleNamespace(
+        request_id="E-req",
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (0, False)
+    tracker = harness.connector.request_trackers["E-req"]
+    tracker.allocated_block_ids = {0: [1, 2, 3, 4]}
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[SimpleNamespace(req_id="E-req")],
+        num_scheduled_tokens={"E-req": 4 * TOKENS_PER_BLOCK},
+    )
+    connector_metadata = LMCacheMPConnectorMetadata()
+
+    harness.connector._process_new_requests(
+        scheduler_output,
+        connector_metadata,  # type: ignore[arg-type]
+    )
+
+    assert harness.manager.covered_prefix_queries == []
+    assert connector_metadata.requests[0].op.start == 0

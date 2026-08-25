@@ -1119,3 +1119,184 @@ class TestFreeQueueSnapshotBound:
         assert stats.free_queue_blocks_read == 4
         assert stats.requests_validated == 2
         assert stats.blocks_validated == 4
+
+
+class TestCoveredPrefix:
+    """A deferred store must be visible to the next request over that prefix.
+
+    ``num_stored_tokens`` in the request tracker advances from an LMCache
+    lookup, which only ever reports what the *server* holds. A buffered
+    operation is by definition not there yet, so without these queries the
+    follower request over a shared prefix re-stages all of it: the whole
+    range is hashed, one reservation round-trip is paid per chunk, and the
+    result is a single oversized store on the transfer thread that
+    retrieves share. The server discards the duplicate content, so the
+    symptom is latency rather than a wrong cache.
+    """
+
+    def test_empty_queue_covers_nothing(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool)
+        assert queue.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0
+
+    def test_pending_op_covers_a_shared_prefix(self) -> None:
+        """The case the A/B run measured: turn N is buffered, turn N+1 asks."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+
+        # Turn 2 shares blocks 1-2 through vLLM's prefix cache and adds 3-4.
+        assert queue.covered_prefix_tokens("", {0: [1, 2, 3, 4]}, [16], 32, 0) == 32
+
+    def test_uncovered_block_stops_the_run(self) -> None:
+        """Only a leading run counts: a hole cannot be skipped over."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4, 5, 6], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+        # Blocks 5-6 are covered too, but 3-4 are not, so the run ends at 2.
+        queue.admit(make_op("other", [5, 6], pool, prefix_end_tokens=32))
+
+        covered = queue.covered_prefix_tokens("", {0: [1, 2, 3, 4, 5, 6]}, [16], 32, 0)
+        assert covered == 32
+
+    def test_result_is_floored_to_a_chunk(self) -> None:
+        """A store range must be chunk-aligned, so a partial chunk is not covered."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2, 3], pool, prefix_end_tokens=48))
+
+        # Three 16-token blocks are covered; one 32-token chunk fits.
+        assert queue.covered_prefix_tokens("", {0: [1, 2, 3]}, [16], 32, 0) == 32
+
+    def test_a_different_salt_covers_nothing(self) -> None:
+        """Two salts are two key namespaces; neither covers the other."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=False)
+        queue = make_queue(pool)
+        queue.admit(
+            make_op("turn-1", [1, 2], pool, prefix_end_tokens=32, cache_salt="tenant-a")
+        )
+
+        assert queue.covered_prefix_tokens("tenant-b", {0: [1, 2]}, [16], 32, 0) == 0
+        assert queue.covered_prefix_tokens("tenant-a", {0: [1, 2]}, [16], 32, 0) == 32
+
+    def test_stale_snapshot_covers_nothing(self) -> None:
+        """A pending op whose block was recycled has no data left to cover with."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+        pool.evict(1)
+
+        assert queue.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0
+
+    def test_dropping_an_op_restores_coverage_to_the_next_request(self) -> None:
+        """Drop recovery: a lost op must not leave its range permanently skipped.
+
+        The follower that already skipped the range cannot be recalled, but
+        the range stops counting as covered the moment the operation dies,
+        so the next request over that prefix stages it again.
+        """
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+        assert queue.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 32
+
+        pool.evict(2)
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=1)
+        result = queue.collect_due()
+        assert len(result.dropped_evicted) == 1
+
+        assert queue.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0
+
+    def test_emitting_an_op_releases_its_cover(self) -> None:
+        """An emitted op leaves the pending index, so it stops answering here.
+
+        The range is on its way to the server and a lookup will report it
+        once the store lands; the gap between the two is the length of one
+        store, whereas the gap this query exists to close is the whole
+        eviction horizon.
+        """
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=2)
+        result = queue.collect_due()
+        assert len(result.to_store) == 1
+
+        assert queue.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0
+
+    def test_least_covered_group_bounds_the_answer(self) -> None:
+        """Hybrid models store a prefix only as far as every group has it."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 5], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+
+        # Group 1's 32-token block is not covered, so nothing is storable.
+        assert (
+            queue.covered_prefix_tokens("", {0: [1, 2], 1: [5]}, [16, 32], 32, 0) == 0
+        )
+
+        queue.admit(make_op("turn-1b", [5], pool, prefix_end_tokens=32))
+        assert (
+            queue.covered_prefix_tokens("", {0: [1, 2], 1: [5]}, [16, 32], 32, 0) == 32
+        )
+
+    def test_probing_starts_at_the_callers_watermark(self) -> None:
+        """Cost property: a request pays for each block once, not once per step.
+
+        Walking from zero on every scheduler step would make the query
+        O(prefix) per step on the scheduler's critical path -- thousands of
+        block probes per step for the long prefixes this fix exists for.
+        """
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2, 3, 4], pool, prefix_end_tokens=64))
+        pool.hash_requests.clear()
+
+        assert queue.covered_prefix_tokens("", {0: [1, 2, 3, 4]}, [16], 32, 32) == 64
+        assert pool.hash_requests == [3, 4]
+
+    def test_counters_separate_effect_from_cost(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+
+        assert queue.covered_prefix_tokens("", {0: [1, 2, 3]}, [16], 32, 0) == 32
+        stats = queue.stats()
+        assert stats.covered_prefix_advances == 1
+        assert stats.covered_prefix_tokens_skipped == 32
+        # Blocks 1 and 2 matched, block 3 ended the run.
+        assert stats.covered_blocks_probed == 3
+
+    def test_a_skipped_prefix_is_outside_the_admission_ledger(self) -> None:
+        """The skipped range never becomes an op, so no ledger counter moves."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3], free=False)
+        queue = make_queue(pool)
+        queue.admit(make_op("turn-1", [1, 2], pool, prefix_end_tokens=32))
+        before = queue.stats()
+
+        queue.covered_prefix_tokens("", {0: [1, 2, 3]}, [16], 32, 0)
+        after = queue.stats()
+
+        assert after.admitted == before.admitted
+        assert after.deduplicated == before.deduplicated
+        assert after.emitted == before.emitted
+
+    def test_rejects_invalid_arguments(self) -> None:
+        pool = FakePoolView()
+        queue = make_queue(pool)
+        with pytest.raises(ValueError):
+            queue.covered_prefix_tokens("", {0: [1]}, [16], 0, 0)
+        with pytest.raises(ValueError):
+            queue.covered_prefix_tokens("", {0: [1]}, [16], 32, -1)

@@ -603,3 +603,19 @@ class TestEvictionAwareMode:
         store, _ = self._setup()
         with pytest.raises(ValueError, match="already bound"):
             store.bind_gpu_block_pool(_make_gpu_pool())
+
+
+class TestCoveredPrefixRouting:
+    def test_fifo_mode_covers_nothing(self) -> None:
+        """FIFO keeps no content index, so it can only answer conservatively.
+
+        Answering anything else would let a request skip a range no index
+        can prove is buffered.
+        """
+        store = LazyOffloadPendingStore(FIFO_CONFIG)
+        assert store.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0
+        assert store.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 64) == 64
+
+    def test_eviction_aware_mode_delegates_to_the_policy(self) -> None:
+        store = LazyOffloadPendingStore(None)
+        assert store.covered_prefix_tokens("", {0: [1, 2]}, [16], 32, 0) == 0

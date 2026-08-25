@@ -1128,6 +1128,35 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 metadata.add_request_metadata(r_metadata)
             request_tracker.state = LMCacheMPRequestState.READY
 
+    def _skip_pending_covered_prefix(
+        self, request_tracker: LMCacheMPRequestTracker
+    ) -> None:
+        """Advance a tracker's stored watermark over a deferred prefix.
+
+        ``num_stored_tokens`` normally advances only from an LMCache lookup
+        hit, which reports what the *server* holds. In lazy-offload mode a
+        predecessor's store can still be buffered scheduler-side, so the
+        lookup misses content that is already staged and the request would
+        re-stage the whole shared prefix from its own token 0. Consulting
+        the pending queue closes that gap; in eager mode there is no
+        pending queue and nothing to consult.
+
+        Args:
+            request_tracker: The tracker whose store range is about to be
+                computed. Mutated in place when a buffered operation covers
+                more of its prefix than the watermark reflects.
+        """
+        covered = self._lazy_offload_manager.covered_prefix_tokens(
+            request_tracker.cache_salt,
+            request_tracker.allocated_block_ids,
+            self.scheduler_adapter.lmcache_tokens_per_chunk,
+            request_tracker.num_stored_tokens,
+        )
+        if covered > request_tracker.num_stored_tokens:
+            request_tracker.increase_num_stored_tokens(
+                covered - request_tracker.num_stored_tokens
+            )
+
     def _process_new_requests(
         self,
         scheduler_output: SchedulerOutput,
@@ -1140,6 +1169,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
             num_new_tokens = scheduler_output.num_scheduled_tokens[new_request.req_id]
             request_tracker.increase_num_scheduled_tokens(num_new_tokens)
+
+            if self.lazy_offload:
+                self._skip_pending_covered_prefix(request_tracker)
 
             r_meta = LMCacheMPRequestMetadata.GetStoreMetadata(
                 request_tracker,
@@ -1173,6 +1205,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             # stay consistent with _process_new_requests.
             num_new_tokens = scheduler_output.num_scheduled_tokens[request_id]
             request_tracker.increase_num_scheduled_tokens(num_new_tokens)
+
+            if self.lazy_offload:
+                self._skip_pending_covered_prefix(request_tracker)
 
             r_meta = LMCacheMPRequestMetadata.GetStoreMetadata(
                 request_tracker,

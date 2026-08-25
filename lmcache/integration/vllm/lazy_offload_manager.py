@@ -254,6 +254,39 @@ class LazyOffloadManager:
         epoch = self._requests.ensure_active(metadata.request_id)
         return self._pending_store.add(metadata, epoch)
 
+    def covered_prefix_tokens(
+        self,
+        cache_salt: str,
+        allocated_block_ids: dict[int, list[int]],
+        tokens_per_chunk: int,
+        from_tokens: int,
+    ) -> int:
+        """Prefix length a still-buffered store already covers.
+
+        The caller uses this to shorten a request's store range: content
+        waiting in the pending queue is invisible to an LMCache lookup, so
+        without it every request over a deferred prefix stages that prefix
+        again.
+
+        Args:
+            cache_salt: The asking request's cache salt.
+            allocated_block_ids: Per-engine-group GPU block ids in prefix
+                order, as tracked by the request tracker.
+            tokens_per_chunk: LMCache chunk size; the answer is aligned to
+                it.
+            from_tokens: Prefix length the caller has already accounted for.
+
+        Returns:
+            A chunk-aligned prefix length, at least ``from_tokens``.
+        """
+        return self._pending_store.covered_prefix_tokens(
+            cache_salt,
+            allocated_block_ids,
+            self._group_tokens_per_block,
+            tokens_per_chunk,
+            from_tokens,
+        )
+
     def on_scheduler_step(
         self, scheduler_output: "SchedulerOutput"
     ) -> LazyOffloadActions:

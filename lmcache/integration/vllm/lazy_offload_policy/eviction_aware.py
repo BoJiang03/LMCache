@@ -391,8 +391,19 @@ class LazyOffloadCounters:
     comparable with the number of steps rather than with the other
     counters.
 
-    ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated`` and
-    ``blocks_validated`` are the cost sensors for the per-step decision
+    ``covered_prefix_advances`` and ``covered_prefix_tokens_skipped`` are
+    the effectiveness sensors of
+    :meth:`EvictionAwareStoreQueue.covered_prefix_tokens`: how often, and
+    by how many tokens, a request's store range was shortened because a
+    still-buffered operation already covers that prefix. They stand
+    outside the admission ledger on purpose -- the skipped range never
+    becomes an operation, so it is counted in neither ``admitted`` nor any
+    drop counter -- and measure work the
+    deferral no longer costs the next request over the same prefix.
+
+    ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated``,
+    ``blocks_validated`` and ``covered_blocks_probed`` are the cost sensors
+    for the per-step decision
     itself, which runs on the scheduler's critical path and is therefore
     paid by every token's decode latency. Divided by ``drain_steps`` they
     give the mean free-queue depth a step walks and the mean number of
@@ -412,11 +423,14 @@ class LazyOffloadCounters:
     dropped_failed_store: int = 0
     dropped_id_reuse: int = 0
     deduplicated: int = 0
+    covered_prefix_advances: int = 0
+    covered_prefix_tokens_skipped: int = 0
     throttled_drains: int = 0
     drain_steps: int = 0
     free_queue_blocks_read: int = 0
     requests_validated: int = 0
     blocks_validated: int = 0
+    covered_blocks_probed: int = 0
 
     def decisions(self) -> tuple[int, ...]:
         """The counters that only a policy decision moves.
@@ -441,6 +455,8 @@ class LazyOffloadCounters:
             self.dropped_failed_store,
             self.dropped_id_reuse,
             self.deduplicated,
+            self.covered_prefix_advances,
+            self.covered_prefix_tokens_skipped,
             self.throttled_drains,
         )
 
@@ -492,6 +508,15 @@ class _PendingOperations:
         self._request_order: dict[str, int] = {}
         self._next_request_order = 0
         self._requests_to_validate: set[str] = set()
+        # Block content that some live pending op already stages, refcounted
+        # by (salt, block id, hash snapshot). This is what makes a deferred
+        # store visible to the *next* request over the same prefix: that
+        # request's LMCache lookup misses (the covering op has not been
+        # emitted, so the server has never heard of it) and would otherwise
+        # re-stage the whole shared prefix from token 0. The hash is part of
+        # the key rather than a stored value so a stale snapshot can never
+        # be mistaken for current content.
+        self._covered_blocks: dict[tuple[str, int, "BlockHashWithGroupId"], int] = {}
 
     def __bool__(self) -> bool:
         return bool(self._by_request)
@@ -505,6 +530,28 @@ class _PendingOperations:
     def covering_op(self, op: PendingStoreOp) -> PendingStoreOp | None:
         return self._content.get(_content_key(op))
 
+    def covers_block(
+        self,
+        cache_salt: str,
+        block_id: int,
+        block_hash: "BlockHashWithGroupId",
+    ) -> bool:
+        """Whether a live pending op already stages this exact block content.
+
+        Args:
+            cache_salt: Cache salt of the asking request. Two requests with
+                the same block content but different salts store under
+                different keys, so neither covers the other.
+            block_id: GPU block id to test.
+            block_hash: The block's *current* prefix-cache hash. A pending
+                op whose snapshot no longer matches the pool does not cover
+                anything: its own data is already lost.
+
+        Returns:
+            True when some pending operation covers this block content.
+        """
+        return (cache_salt, block_id, block_hash) in self._covered_blocks
+
     def add(self, op: PendingStoreOp) -> None:
         """Add one admitted operation and all of its index entries."""
         if op.request_id not in self._by_request:
@@ -512,7 +559,11 @@ class _PendingOperations:
             self._next_request_order += 1
         self._by_request.setdefault(op.request_id, []).append(op)
         self._content[_content_key(op)] = op
-        for block_id in op.block_hashes:
+        for block_id, block_hash in op.block_hashes.items():
+            covered_key = (op.cache_salt, block_id, block_hash)
+            self._covered_blocks[covered_key] = (
+                self._covered_blocks.get(covered_key, 0) + 1
+            )
             ref_key = (op.request_id, block_id)
             refs = self._request_block_refs.get(ref_key, 0) + 1
             self._request_block_refs[ref_key] = refs
@@ -525,7 +576,13 @@ class _PendingOperations:
             key = _content_key(op)
             if self._content.get(key) is op:
                 del self._content[key]
-            for block_id in op.block_hashes:
+            for block_id, block_hash in op.block_hashes.items():
+                covered_key = (op.cache_salt, block_id, block_hash)
+                covered_refs = self._covered_blocks.get(covered_key, 0) - 1
+                if covered_refs > 0:
+                    self._covered_blocks[covered_key] = covered_refs
+                else:
+                    self._covered_blocks.pop(covered_key, None)
                 ref_key = (op.request_id, block_id)
                 refs = self._request_block_refs[ref_key] - 1
                 if refs > 0:
@@ -661,6 +718,90 @@ class EvictionAwareStoreQueue:
         self._ema_initialized = False
         self._next_step_estimate = 0
         self._counters = LazyOffloadCounters()
+
+    def covered_prefix_tokens(
+        self,
+        cache_salt: str,
+        allocated_block_ids: dict[int, list[int]],
+        group_tokens_per_block: list[int],
+        tokens_per_chunk: int,
+        from_tokens: int,
+    ) -> int:
+        """Length of the request prefix a live pending operation already stages.
+
+        A request whose prefix is served from vLLM's prefix cache learns
+        nothing from its LMCache lookup about content that is merely
+        *deferred*: the covering operation is still buffered here, the
+        server has never been told about it, so the lookup misses and the
+        request would stage the whole shared prefix again from
+        ``from_tokens``. The redundant range is filtered out again further
+        down (the server reserves new keys only), but only after the
+        request has paid for hashing it, one reservation round-trip per
+        chunk, and one oversized atomic store on the transfer thread that
+        retrieves share. Answering it here is what keeps a deferred store
+        from costing the *next* request anything.
+
+        Blocks are walked from ``from_tokens`` rather than from zero: the
+        caller's watermark never moves backwards, so a request pays for
+        each of its blocks at most once across its whole lifetime instead
+        of once per scheduler step.
+
+        Args:
+            cache_salt: The asking request's cache salt.
+            allocated_block_ids: Per-engine-group GPU block ids in prefix
+                order, as tracked by the caller.
+            group_tokens_per_block: Tokens covered by one block of each
+                engine group. Must be non-empty for a positive answer.
+            tokens_per_chunk: LMCache chunk size; the result is floored to
+                it because a store range must be chunk-aligned.
+            from_tokens: Prefix length already accounted for by the caller.
+                Blocks below it are not probed.
+
+        Returns:
+            A chunk-aligned prefix length, at least ``from_tokens``, that a
+            pending operation covers in every engine group. Equal to
+            ``from_tokens`` when nothing further is covered.
+
+        Raises:
+            ValueError: If ``tokens_per_chunk`` is not positive or
+                ``from_tokens`` is negative.
+        """
+        if tokens_per_chunk <= 0:
+            raise ValueError(f"tokens_per_chunk must be > 0, got {tokens_per_chunk}")
+        if from_tokens < 0:
+            raise ValueError(f"from_tokens must be >= 0, got {from_tokens}")
+        if not group_tokens_per_block or not self._pending_ops:
+            return from_tokens
+        covered_tokens = -1
+        for engine_group_idx, tokens_per_block in enumerate(group_tokens_per_block):
+            block_ids = allocated_block_ids.get(engine_group_idx, [])
+            # Blocks below the caller's watermark are already accounted for;
+            # a partially covered block cannot extend the run either way.
+            index = from_tokens // tokens_per_block
+            group_tokens = index * tokens_per_block
+            while index < len(block_ids):
+                block_id = block_ids[index]
+                block_hash = self._pool.block_hash(block_id)
+                self._counters.covered_blocks_probed += 1
+                if block_hash is None or not self._pending_ops.covers_block(
+                    cache_salt, block_id, block_hash
+                ):
+                    break
+                index += 1
+                group_tokens += tokens_per_block
+            covered_tokens = (
+                group_tokens
+                if covered_tokens < 0
+                else min(covered_tokens, group_tokens)
+            )
+            if covered_tokens <= from_tokens:
+                return from_tokens
+        aligned = covered_tokens // tokens_per_chunk * tokens_per_chunk
+        if aligned <= from_tokens:
+            return from_tokens
+        self._counters.covered_prefix_advances += 1
+        self._counters.covered_prefix_tokens_skipped += aligned - from_tokens
+        return aligned
 
     def admit(self, op: PendingStoreOp) -> AdmitResult:
         """Admit a store operation into the pending queue.

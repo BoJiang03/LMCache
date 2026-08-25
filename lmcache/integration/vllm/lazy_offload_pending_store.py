@@ -576,6 +576,39 @@ class LazyOffloadPendingStore:
             blocked_request_ids,
         )
 
+    def covered_prefix_tokens(
+        self,
+        cache_salt: str,
+        allocated_block_ids: dict[int, list[int]],
+        group_tokens_per_block: list[int],
+        tokens_per_chunk: int,
+        from_tokens: int,
+    ) -> int:
+        """Prefix length a buffered store already covers for this request.
+
+        Args:
+            cache_salt: The asking request's cache salt.
+            allocated_block_ids: Per-engine-group GPU block ids in prefix
+                order.
+            group_tokens_per_block: Tokens covered by one block of each
+                engine group.
+            tokens_per_chunk: LMCache chunk size.
+            from_tokens: Prefix length the caller has already accounted for.
+
+        Returns:
+            A chunk-aligned prefix length, at least ``from_tokens``. Always
+            ``from_tokens`` in FIFO mode, which keeps no content index.
+        """
+        if self._eviction_queue is None:
+            return from_tokens
+        return self._eviction_queue.covered_prefix_tokens(
+            cache_salt,
+            allocated_block_ids,
+            group_tokens_per_block,
+            tokens_per_chunk,
+            from_tokens,
+        )
+
     def has_pending_request(self, req_id: str) -> bool:
         """Whether the selected policy has buffered operations for an id."""
         if self._eviction_queue is not None:
