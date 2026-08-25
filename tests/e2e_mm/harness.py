@@ -17,6 +17,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import warnings
 
 # First Party (test-local)
@@ -1504,23 +1505,114 @@ class MPHarness(MMHarness):
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
         return (self._counters.lookup_tokens, self._counters.lookup_hits)
 
+    # Store settling: on the MP path a store is asynchronous twice over --
+    # the worker submits it around the time the engine answers, and the
+    # server holds each key write-locked between reserve_write and
+    # finish_write (50-300ms observed under load). Without a barrier, a
+    # back-to-back request's lookup beats the previous request's store
+    # (KEY_NOT_EXIST) or lands inside the write-lock window
+    # (KEY_NOT_READABLE), and the prefix fold turns one such chunk into a
+    # whole-prompt miss. The suite certifies cache correctness, not request
+    # pacing, so each run waits for its own stores to become readable.
+    _SETTLE_SUBMIT_TIMEOUT_S = 10.0
+    _SETTLE_SERVER_TIMEOUT_S = 30.0
+    _SETTLE_POLL_INTERVAL_S = 0.1
+    _SETTLE_QUIET_POLLS = 4
+
+    def run(self, request: MMRequest) -> StepResult:
+        """Run one request, then wait for its stores to become readable.
+
+        The returned stats are unaffected by the wait: they are read by the
+        base implementation before the barrier starts.
+        """
+        stored_before = self.stored_tokens_total()
+        result = super().run(request)
+        # Everything the lookup missed must be store-submitted, except the
+        # trailing partial chunk, which LMCache never stores.
+        expected_new = result.lookup_tokens - result.lookup_hits - self.chunk
+        self._settle_stores(stored_before + max(0, expected_new))
+        return result
+
+    def run_batch(self, requests: list[MMRequest]) -> BatchResult:
+        """Run one batch, then wait for its stores to become readable.
+
+        Identical prefixes inside one batch are stored once but missed by
+        every request, so the aggregate miss count overstates what will be
+        submitted; the barrier therefore uses no submission target and
+        relies on quiescence alone.
+        """
+        result = super().run_batch(requests)
+        self._settle_stores(self.stored_tokens_total())
+        return result
+
     def stored_tokens_total(self) -> int:
         """Cumulative tokens submitted to the MP server for storage."""
         return self._counters.stored_tokens
 
     def storage(self) -> StorageSnapshot:
         """Resident object count/bytes from the MP server's /status API."""
+        l1 = self._fetch_l1_status()
+        return StorageSnapshot(
+            num_keys=l1["total_object_count"],
+            total_bytes=l1["memory_used_bytes"],
+        )
+
+    def _fetch_l1_status(self) -> dict:
+        """Fetch the server L1 manager's status dict over HTTP.
+
+        Returns:
+            The ``storage_manager.l1_manager`` section of the ``/status``
+            response; the keys used here are ``total_object_count``,
+            ``write_locked_count``, and ``memory_used_bytes``.
+        """
         # Standard
         import urllib.request
 
         url = f"http://localhost:{self._http_port}/status"
         with urllib.request.urlopen(url, timeout=30) as resp:
             status = json.loads(resp.read())
-        l1 = status["storage_manager"]["l1_manager"]
-        return StorageSnapshot(
-            num_keys=l1["total_object_count"],
-            total_bytes=l1["memory_used_bytes"],
-        )
+        return status["storage_manager"]["l1_manager"]
+
+    def _settle_stores(self, min_stored_tokens: int) -> None:
+        """Block until in-flight stores are submitted and readable.
+
+        Two phases, both bounded and non-fatal (on timeout the caller's own
+        assertions report whatever is actually wrong):
+
+        1. Submission: wait until the engine-side store counter reaches
+           ``min_stored_tokens``, so quiescence below cannot be observed in
+           the gap before the worker has even submitted the store.
+        2. Quiescence: wait until the server holds no write-locked objects
+           and (store counter, object count, lock count) is unchanged for
+           ``_SETTLE_QUIET_POLLS`` consecutive polls, i.e. the submitted
+           stores have arrived and finished writing.
+
+        Args:
+            min_stored_tokens: Cumulative ``stored_tokens_total`` value to
+                wait for in phase 1.
+        """
+        deadline = time.monotonic() + self._SETTLE_SUBMIT_TIMEOUT_S
+        while (
+            self.stored_tokens_total() < min_stored_tokens
+            and time.monotonic() < deadline
+        ):
+            time.sleep(self._SETTLE_POLL_INTERVAL_S)
+
+        deadline = time.monotonic() + self._SETTLE_SERVER_TIMEOUT_S
+        quiet = 0
+        previous: tuple[int, int, int] = (-1, -1, -1)
+        while time.monotonic() < deadline:
+            l1 = self._fetch_l1_status()
+            current = (
+                self.stored_tokens_total(),
+                l1["total_object_count"],
+                l1["write_locked_count"],
+            )
+            quiet = quiet + 1 if current == previous and current[2] == 0 else 0
+            previous = current
+            if quiet >= self._SETTLE_QUIET_POLLS:
+                return
+            time.sleep(self._SETTLE_POLL_INTERVAL_S)
 
     def close(self) -> None:
         """Tear down the engine (the MP server is managed by the caller)."""
