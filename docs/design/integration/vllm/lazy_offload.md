@@ -391,7 +391,7 @@ lmcache.mp.lazy_offload_horizon_steps = 2.5
 lmcache.mp.lazy_offload_min_prefix_tokens = 0
 lmcache.mp.lazy_offload_max_drain_per_step = 64
 lmcache.mp.lazy_offload_max_pending_ops = 0     # 0: backlog unbounded
-lmcache.mp.lazy_offload_store_release = eviction_head  # or: lru_tail
+lmcache.mp.lazy_offload_store_release = lru_tail  # or: eviction_head
 
 # Explicit legacy FIFO mode only
 lmcache.mp.lazy_offload_threshold = 100
@@ -401,10 +401,14 @@ lmcache.mp.lazy_offload_select_count = 10
 `lazy_offload_store_release` decides where a completed store batch's blocks
 re-enter vLLM's free queue. A batch pins its blocks out of the queue while the
 store is in flight and has to give the reference back, so the only choice is
-the position: `eviction_head` (the default) makes them the next allocation
-victims because their content now has a copy below the GPU, while `lru_tail`
-uses vLLM's own placement for a freed cached block, keeping the just-stored
-prefix available to the next turn of the same session.
+the position: `lru_tail` (the default) uses vLLM's own placement for a freed
+cached block, keeping the just-stored prefix available to the next turn of the
+same session, while `eviction_head` makes the blocks the next allocation
+victims because their content now has a copy below the GPU. On multi-turn
+workloads whose reuse distance is shorter than the pool turnover, the head
+placement evicts exactly the prefix the next turn asks for; it pays only when
+the working set exceeds the pool by enough that stored prefixes would be
+evicted before reuse either way.
 
 Lazy offload requires vLLM prefix caching. Eviction-aware mode depends on block
 hashes to prove that buffered data still occupies the same GPU blocks; the

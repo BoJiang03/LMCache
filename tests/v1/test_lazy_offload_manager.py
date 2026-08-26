@@ -784,9 +784,12 @@ def test_receipt_unpin_leaves_resurrected_block_pinned() -> None:
 
 
 def test_receipt_unpins_to_free_queue_head() -> None:
-    """Completed stores are unpinned with ``prepend=True``: the block has a
-    copy below the GPU, so it should be the next eviction victim."""
-    harness = _make_lazy_connector()
+    """With ``store_release="eviction_head"`` completed stores are unpinned
+    with ``prepend=True``: the block has a copy below the GPU, so it becomes
+    the next eviction victim."""
+    harness = _make_lazy_connector(
+        extra_config={"lmcache.mp.lazy_offload_store_release": "eviction_head"}
+    )
     _admit_op(harness, "req", [[5, 6]], 0, 32)
     harness.pool.make_free([5, 6])
     _drain(harness)
@@ -813,7 +816,10 @@ def test_receipt_unpin_survives_free_blocks_without_prepend() -> None:
     """vLLM releases without ``free_blocks(prepend=...)`` must still unpin
     completed stores -- at the free-queue tail -- instead of crashing the
     receipt path with a TypeError."""
-    harness = _make_lazy_connector(pool_cls=_LegacyFakeBlockPool)
+    harness = _make_lazy_connector(
+        pool_cls=_LegacyFakeBlockPool,
+        extra_config={"lmcache.mp.lazy_offload_store_release": "eviction_head"},
+    )
     _admit_op(harness, "req", [[5, 6]], 0, 32)
     harness.pool.make_free([5, 6])
     _drain(harness)
@@ -845,12 +851,12 @@ def test_lru_tail_release_keeps_the_stored_prefix_behind_older_blocks() -> None:
     assert harness.pool.free_block_ids() == [10, 11, 5, 6]
 
 
-def test_eviction_head_is_the_default_release_placement() -> None:
+def test_lru_tail_is_the_default_release_placement() -> None:
     """Naming the default explicitly must not change what an unconfigured
     manager does."""
     default = _make_lazy_connector()
     named = _make_lazy_connector(
-        extra_config={"lmcache.mp.lazy_offload_store_release": "eviction_head"}
+        extra_config={"lmcache.mp.lazy_offload_store_release": "lru_tail"}
     )
     for harness in (default, named):
         _admit_op(harness, "req", [[5, 6]], 0, 32)
@@ -858,7 +864,7 @@ def test_eviction_head_is_the_default_release_placement() -> None:
         _drain(harness)
         _report_store_complete(harness, "req")
 
-    assert default.pool.freed == named.pool.freed == [([5, 6], True)]
+    assert default.pool.freed == named.pool.freed == [([5, 6], False)]
 
 
 def test_rejects_unknown_store_release_placement() -> None:
@@ -934,7 +940,7 @@ def test_partial_worker_receipts_do_not_unpin() -> None:
     assert harness.adapter.ended_sessions == []
 
     _report_store_complete(harness, "req", count=1)
-    assert harness.pool.freed == [([1, 2], True)]
+    assert harness.pool.freed == [([1, 2], False)]
     assert harness.adapter.ended_sessions == ["req"]
 
 
@@ -994,10 +1000,10 @@ def test_lifecycle_store_completes_with_balanced_pins_and_one_teardown() -> None
     pinned = sorted(bid for pin in harness.pool.touched for bid in pin)
     unpinned = sorted(bid for freed, _ in harness.pool.freed for bid in freed)
     assert pinned == unpinned == [1, 2]
-    assert all(prepend for _, prepend in harness.pool.freed)
+    assert not any(prepend for _, prepend in harness.pool.freed)
     assert harness.adapter.ended_sessions == ["req"]
-    # The blocks ended up back in the free queue, ready for eviction,
-    # with no reference left behind.
+    # The blocks ended up back in the free queue with no reference left
+    # behind, at the tail per the default placement.
     assert harness.pool.free_block_ids() == [1, 2]
     assert harness.pool.blocks[1].ref_cnt == 0
 

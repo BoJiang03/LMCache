@@ -46,11 +46,14 @@ class StoreReleasePlacement(Enum):
     Attributes:
         EVICTION_HEAD: Requeue at the head, making the blocks the next
             allocation victims. Their content has a copy below the GPU, so
-            spending them first spares blocks that do not.
+            spending them first spares blocks that do not. Pays only when the
+            working set is so much larger than the pool that a stored prefix
+            would be evicted before its next use anyway.
         LRU_TAIL: Requeue at the tail, vLLM's own placement for a freed cached
-            block. In a multi-turn workload the just-stored prefix is what the
-            session's next turn asks for, so keeping its GPU entry avoids
-            paying a lower-tier fetch for content that is still resident.
+            block (the default). In a multi-turn workload the just-stored
+            prefix is what the session's next turn asks for, so keeping its
+            GPU entry avoids paying a lower-tier fetch for content that is
+            still resident.
     """
 
     EVICTION_HEAD = "eviction_head"
@@ -69,8 +72,8 @@ def _free_blocks_accepts_prepend(pool_cls: "type[BlockPool]") -> bool:
     head (``free_blocks(..., prepend=True)``); releases without the
     parameter place freed blocks themselves (uncached at the head, cached
     at the tail). Completed-store blocks keep their hashes, so on such a
-    vLLM they requeue at the tail and lose their preferred next-victim
-    placement -- an eviction-quality degradation, not a correctness one.
+    vLLM a configured ``eviction_head`` placement falls back to the tail
+    -- an eviction-quality degradation, not a correctness one.
 
     Args:
         pool_cls: The concrete block-pool class in use.
@@ -246,7 +249,7 @@ class LazyOffloadManager:
         Args:
             configs: vLLM connector extra configuration. Recognized here:
                 ``lmcache.mp.lazy_offload_store_release``, one of
-                ``"eviction_head"`` (default) or ``"lru_tail"``; see
+                ``"lru_tail"`` (default) or ``"eviction_head"``; see
                 :class:`StoreReleasePlacement`. The remaining lazy-offload
                 keys are read by :class:`LazyOffloadPendingStore`.
             group_tokens_per_block: Token capacity for each KV-cache group,
@@ -262,7 +265,7 @@ class LazyOffloadManager:
             str,
             (configs or {}).get(
                 "lmcache.mp.lazy_offload_store_release",
-                StoreReleasePlacement.EVICTION_HEAD.value,
+                StoreReleasePlacement.LRU_TAIL.value,
             ),
         )
         try:
