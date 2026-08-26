@@ -59,6 +59,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 # Pin THIS repo's lmcache package (see tests/e2e_mm/conftest.py).
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -954,13 +955,28 @@ def main() -> int:
         )
         return 0
 
+    # Progress markers, not decoration. Loading the full MME set takes
+    # 12-13 minutes (measured on 2374 questions, records/2026/08/26/7_),
+    # and until this run printed something a stalled log looked exactly
+    # like a live one -- which is how a healthy run got killed at the
+    # 14-minute mark for "hanging".
+    print(f"[parity] loading {args.benchmark.upper()} items (limit={args.limit})")
+    load_started = time.monotonic()
     items = benchmark.load_items(args.limit)
-    print(f"[parity] {len(items)} {benchmark.key.upper()} questions loaded")
+    print(
+        f"[parity] {len(items)} {benchmark.key.upper()} questions loaded "
+        f"in {time.monotonic() - load_started:.1f}s"
+    )
 
     baseline_path = pathlib.Path(args.out).with_suffix(".baseline.json")
     # A store_true flag cannot be forwarded as an empty string like the
     # others, so it is appended only when set.
     trust_flag = ["--trust-remote-code"] if args.trust_remote_code else []
+    print(
+        f"[parity] spawning the baseline subprocess -> {baseline_path} "
+        f"(its output is inherited, so it lands in this same stream)"
+    )
+    baseline_started = time.monotonic()
     proc = subprocess.run(
         [
             sys.executable,
@@ -992,6 +1008,10 @@ def main() -> int:
         ]
         + trust_flag,
         timeout=7200,
+    )
+    print(
+        f"[parity] baseline subprocess exited {proc.returncode} after "
+        f"{time.monotonic() - baseline_started:.1f}s"
     )
     if proc.returncode != 0:
         raise RuntimeError(f"baseline subprocess failed with {proc.returncode}")
