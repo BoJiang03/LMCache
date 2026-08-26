@@ -826,6 +826,50 @@ def test_receipt_unpin_survives_free_blocks_without_prepend() -> None:
     assert harness.pool.free_block_ids() == [10, 11, 5, 6]
 
 
+def test_lru_tail_release_keeps_the_stored_prefix_behind_older_blocks() -> None:
+    """``store_release="lru_tail"`` requeues a completed store at the tail, so
+    the just-stored prefix keeps its GPU cache entry until older free blocks
+    have been spent."""
+    harness = _make_lazy_connector(
+        extra_config={"lmcache.mp.lazy_offload_store_release": "lru_tail"}
+    )
+    _admit_op(harness, "req", [[5, 6]], 0, 32)
+    harness.pool.make_free([5, 6])
+    _drain(harness)
+    # Other blocks joined the free queue while the store was in flight.
+    harness.pool.make_free([10, 11])
+
+    _report_store_complete(harness, "req")
+
+    assert harness.pool.freed == [([5, 6], False)]
+    assert harness.pool.free_block_ids() == [10, 11, 5, 6]
+
+
+def test_eviction_head_is_the_default_release_placement() -> None:
+    """Naming the default explicitly must not change what an unconfigured
+    manager does."""
+    default = _make_lazy_connector()
+    named = _make_lazy_connector(
+        extra_config={"lmcache.mp.lazy_offload_store_release": "eviction_head"}
+    )
+    for harness in (default, named):
+        _admit_op(harness, "req", [[5, 6]], 0, 32)
+        harness.pool.make_free([5, 6])
+        _drain(harness)
+        _report_store_complete(harness, "req")
+
+    assert default.pool.freed == named.pool.freed == [([5, 6], True)]
+
+
+def test_rejects_unknown_store_release_placement() -> None:
+    """An unrecognized placement is a configuration error, not a silent
+    fallback to the default."""
+    with pytest.raises(ValueError, match="store release placement"):
+        _make_lazy_connector(
+            extra_config={"lmcache.mp.lazy_offload_store_release": "somewhere"}
+        )
+
+
 def test_receipt_for_running_request_keeps_session() -> None:
     """A store completing while the request is still running must not end
     the session."""

@@ -9,7 +9,8 @@ connector only forwards lifecycle events and applies the returned actions.
 
 # Standard
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from enum import Enum
+from typing import TYPE_CHECKING, Protocol, cast
 import inspect
 
 # First Party
@@ -31,6 +32,29 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
+
+
+class StoreReleasePlacement(Enum):
+    """Where a completed store batch's blocks re-enter vLLM's free queue.
+
+    A store batch pins its blocks out of the free queue (``pool.touch``) and
+    must give the reference back when the store completes, so the only choice
+    is the queue position the blocks land in. vLLM allocates from the head, so
+    the position decides how long the just-stored prefix keeps its GPU-side
+    prefix-cache entry.
+
+    Attributes:
+        EVICTION_HEAD: Requeue at the head, making the blocks the next
+            allocation victims. Their content has a copy below the GPU, so
+            spending them first spares blocks that do not.
+        LRU_TAIL: Requeue at the tail, vLLM's own placement for a freed cached
+            block. In a multi-turn workload the just-stored prefix is what the
+            session's next turn asks for, so keeping its GPU entry avoids
+            paying a lower-tier fetch for content that is still resident.
+    """
+
+    EVICTION_HEAD = "eviction_head"
+    LRU_TAIL = "lru_tail"
 
 
 # Cached per concrete pool class; a plain dict instead of functools.lru_cache
@@ -220,12 +244,33 @@ class LazyOffloadManager:
         """Create an unbound scheduler-side manager.
 
         Args:
-            configs: vLLM connector extra configuration.
+            configs: vLLM connector extra configuration. Recognized here:
+                ``lmcache.mp.lazy_offload_store_release``, one of
+                ``"eviction_head"`` (default) or ``"lru_tail"``; see
+                :class:`StoreReleasePlacement`. The remaining lazy-offload
+                keys are read by :class:`LazyOffloadPendingStore`.
             group_tokens_per_block: Token capacity for each KV-cache group,
                 used to estimate the next scheduler step's block pressure.
             completion_tracker: Scheduler adapter view that aggregates
                 per-worker completion receipt counts.
+
+        Raises:
+            ValueError: If ``lmcache.mp.lazy_offload_store_release`` names an
+                unknown placement.
         """
+        placement = cast(
+            str,
+            (configs or {}).get(
+                "lmcache.mp.lazy_offload_store_release",
+                StoreReleasePlacement.EVICTION_HEAD.value,
+            ),
+        )
+        try:
+            self._store_release = StoreReleasePlacement(placement)
+        except ValueError as e:
+            raise ValueError(
+                f"Unknown lazy-offload store release placement: {placement}"
+            ) from e
         self._pending_store = LazyOffloadPendingStore(configs)
         self._group_tokens_per_block = list(group_tokens_per_block)
         self._completion_tracker = completion_tracker
@@ -365,7 +410,9 @@ class LazyOffloadManager:
                 continue
             batch = self._requests.complete_batch(request_id)
             batch_blocks = [pool.blocks[block_id] for block_id in batch.block_ids]
-            if _free_blocks_accepts_prepend(type(pool)):
+            if self._store_release is StoreReleasePlacement.EVICTION_HEAD and (
+                _free_blocks_accepts_prepend(type(pool))
+            ):
                 # The blocks have a copy below the GPU: requeue them at the
                 # eviction head so they are the next victims.
                 pool.free_blocks(batch_blocks, prepend=True)
