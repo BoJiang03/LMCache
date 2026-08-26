@@ -871,6 +871,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # [6 x 50 = 300, 6 x 57 = 342): admit all six prompts, refuse
             # to hold their decode growth. 320 sits inside it.
             preemption_gpu_blocks=320,
+            # Eight units of the eviction path's default, because one is
+            # not enough to hold a single request: at 64 MB this model
+            # stored zero bytes (0 active allocations, 32 requests missing
+            # on pass 1). At 512 MB the scenario is healthy -- 181 resident
+            # keys, 427032576 bytes, 0.795 of the cap, against 3.70 GB of
+            # intended traffic (6.9x overflow). See the reasoning at
+            # isolated_cases.EVICTION_CAPACITY_GB.
+            eviction_capacity_gb=0.5,
             # No mme_mm_processor_kwargs: the other specs cap photos at
             # ~768 image tokens, and Molmo 2's own processor already lands
             # there (770 total for a 1540x1540 input) without a cap.

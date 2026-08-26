@@ -104,6 +104,19 @@ EVICTION_N = 32
 # object is a ~154 MB state page, need more, and they say so via
 # ``ModelSpec.eviction_capacity_gb``: the exclusion here is per-model object
 # size, not per hybrid family.
+#
+# Molmo 2-4B overrides it too, and it is the counterexample to reading the
+# unit as object size. Its objects are 2.36 MB (16 tokens at 144 KB/token,
+# the widest KV in the suite) and 28 would fit one unit, yet at one unit the
+# server stored NOTHING: 0 active allocations, the full 64 MB free, 32
+# requests missing on pass 1. At eight units it is healthy -- 181 resident
+# keys, 427032576 bytes at 0.795 of the cap, against 3.70 GB of intended
+# traffic (6.9x). One Molmo 2 image request is ~787 tokens = ~115 MB of KV,
+# so both runs fit a store that is reserved per request and refused whole
+# when the request outgrows the pool, rather than filled object by object.
+# That mechanism is inferred from the two measurements, not read out of the
+# store path; what this scenario can state is the requirement it implies:
+# the cap has to hold one whole request's KV, not one cache object.
 EVICTION_CAPACITY_GB = 0.0625
 
 # Isolated engines coexist with (at most) one session engine on the GPU, so
