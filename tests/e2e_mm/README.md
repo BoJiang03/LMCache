@@ -158,10 +158,10 @@ ways: plain-vLLM baseline, LMCache cold pass (miss path), and an identical
 second pass where every prompt's KV is restored from LMCache (hit path).
 Which benchmark comes from `ModelSpec.parity_benchmark`:
 
-| `--benchmark` | Data | Scoring | Score delta budget |
-| --- | --- | --- | --- |
-| `mme` (default) | lmms-lab/MME, 2374 yes/no questions over images | standard Perception/Cognition | ≤ 10 of 2800 |
-| `mmau` | TwinkStart/MMAU test-mini, 1000 four-way questions over audio | mean of per-task (sound/speech/music) accuracy | ≤ 1.0 of 100 |
+| `--benchmark` | Data | Scoring |
+| --- | --- | --- |
+| `mme` (default) | lmms-lab/MME, 2374 yes/no questions over images | standard Perception/Cognition |
+| `mmau` | TwinkStart/MMAU test-mini, 1000 four-way questions over audio | mean of per-task (sound/speech/music) accuracy |
 
 An image benchmark cannot measure an audio model's quality, so a
 `Benchmark` subclass supplies the four things that differ — items,
@@ -171,12 +171,19 @@ per-task breakdown is load-bearing for MMAU: accuracy ranges from 59 to 71
 across its three tasks, so an aggregate-only score would average away a
 regression confined to one of them.
 
-Pass criteria: answer flips ≤ 0.5% and |total score delta| within the
-benchmark's budget on BOTH comparisons (pass1 vs baseline, pass2 vs pass1),
-plus a non-vacuity gate on the hit path. The pass1-vs-baseline gate
-matters: cross-image contamination poisons the cache on the cold pass and
-then replays deterministically, so the pass2-vs-pass1 comparison alone
-cannot detect it.
+Pass criteria: verdict-to-verdict answer flips ≤ 0.5% on BOTH comparisons
+(pass1 vs baseline, pass2 vs pass1), parse-ratio movement ≤ 0.02 between
+the passes of each comparison, plus a non-vacuity gate on the hit path.
+`''`↔verdict parse flips are counted apart from answer flips: they measure
+how many answers sit on the model's own abstain/answer margin (gemma-4-e4b
+flips a two-digit number of them in both directions between identical
+runs), while a real hit-path defect moves parseability in one direction —
+that is what the parse-ratio delta bounds. Score deltas are reported for
+diagnosis but not gated: MME quantizes single borderline questions at ~7.5
+points, so a score budget hands individual marginal answers the verdict.
+The pass1-vs-baseline gate matters: cross-image contamination poisons the
+cache on the cold pass and then replays deterministically, so the
+pass2-vs-pass1 comparison alone cannot detect it.
 
 The non-vacuity gate is granularity-dependent. At the 16-token chunk size
 it is the raw pass-2 lookup hit ratio (≥ 0.8). A hybrid model caches at

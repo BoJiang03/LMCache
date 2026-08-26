@@ -44,6 +44,14 @@ from isolated_routing import (  # noqa: E402
 )
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
+# 7: the parity gate under the certificate splits verdict-to-verdict
+# answer flips (still budgeted by flip fraction) from ''<->verdict parse
+# flips (bounded by the parse-ratio delta between passes) and reports
+# score deltas without gating them. A schema-6 certificate's parity
+# verdict counted both flip kinds against one budget and let a ~7.5-point
+# score quantum decide passes, which made gemma-4-e4b's verdict
+# unreproducible across identical runs (records/2026/08/26/8_ and 9_);
+# verdicts at 6 and 7 are therefore not comparable for models that abstain.
 # 6: certificates carry a ``runtime`` block naming the vLLM, torch,
 # transformers and lmcache builds the suite ran against. Up to 5 they did
 # not, so a certificate said which LMCache commit was tested but not which
@@ -57,7 +65,7 @@ from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 # below was produced by the two-path suite and its scope block no longer
 # describes what the suite measures -- those models need re-certifying,
 # not re-labelling.
-CERTIFICATE_SCHEMA_VERSION = 6
+CERTIFICATE_SCHEMA_VERSION = 7
 
 # What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [

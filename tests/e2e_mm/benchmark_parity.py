@@ -51,6 +51,7 @@ Exit code 0 = parity holds (see THRESHOLDS below), 1 = parity violated.
 import abc
 import argparse
 import base64
+import dataclasses
 import glob
 import io
 import json
@@ -99,10 +100,14 @@ MAX_PIXELS = 768 * 28 * 28
 # poisons the cache on the COLD pass and then replays deterministically, so
 # pass2-vs-pass1 alone cannot see it.
 #
-# The score-delta budget is NOT here: it lives on each Benchmark, because
-# the totals are on different scales (MME 2800, MMAU 100) and were
-# calibrated against different answer regimes.
-MAX_FLIP_FRACTION = 0.005  # per-item answer flips, both comparisons
+# Score deltas are reported but NOT gated. MME's per-category scores are
+# quantized at ~7.5 points per borderline question, so a 10.0-point budget
+# handed single marginal answers the verdict: the same deterministic
+# 18-question flip core measured 9.00 / 2.25 / 9.75 across three identical
+# qwen2-vl-2b runs (records/2026/08/26/8_). The flip SET is the stable,
+# gateable quantity; a concentration of flips in one category is diagnosed
+# from the per-category table the report already carries.
+MAX_FLIP_FRACTION = 0.005  # verdict-to-verdict answer flips, both comparisons
 MIN_HIT_RATIO = 0.8  # pass2 lookup hit ratio (else parity is vacuous)
 # Fraction of what pass 1 stored that pass 2 must actually LOAD back.
 # Replaces the raw hit-ratio floor when the cache granularity is coarse: a
@@ -119,6 +124,22 @@ MIN_HIT_COVERAGE = 0.95
 # Measured satisfiable on both benchmarks: 1.0 for Qwen3-Omni on a
 # 45-question MMAU sample.
 MIN_PARSE_RATIO = 0.9
+# Parse flips (a verdict on one side, '' on the other) are budgeted apart
+# from answer flips: they measure how many answers sit on the model's own
+# abstain/answer margin, not whether the cache changed a verdict.
+# gemma-4-e4b is the measured case (records/2026/08/26/8_): at parse ratio
+# 0.896 -- 239 hard refusals that no decode budget resolves, see
+# ModelSpec.mme_min_parse_ratio -- its two full MME runs flipped 4 and 14
+# answers ''<->verdict in BOTH directions (net parse-ratio movement 0.0008
+# and 0.0000) while flipping 1 and 1 actual verdicts. Counting parse flips
+# against MAX_FLIP_FRACTION made the gate verdict an unreproducible coin
+# toss (PASS then FAIL, flip-set jaccard 0.11). A real hit-path defect
+# moves parseability in ONE direction instead: the 2026-08-21
+# KEY_NOT_READABLE regression truncated enough pass-2 answers to move the
+# parse ratio by ~0.4. So the gate bounds the parse-ratio DELTA between
+# passes; 0.02 sits an order of magnitude above the measured marginality
+# noise and an order below the measured defect.
+MAX_PARSE_RATIO_DELTA = 0.02
 
 
 class Benchmark(abc.ABC):
@@ -135,15 +156,13 @@ class Benchmark(abc.ABC):
         modality: vLLM ``limit_mm_per_prompt`` key for the medium each
             question carries ("image", "audio").
         score_scale: Maximum value ``scores()["total"]`` can take. Recorded
-            for readers; ``max_score_delta`` is what the gate uses.
-        max_score_delta: Largest ``|total|`` difference between two passes
-            that still counts as parity, on this benchmark's own scale.
+            for readers; score deltas are reported, not gated (see the
+            threshold block above ``MAX_FLIP_FRACTION``).
     """
 
     key: str
     modality: str
     score_scale: float
-    max_score_delta: float
 
     @abc.abstractmethod
     def load_items(self, limit: int) -> list[dict]:
@@ -198,9 +217,6 @@ class MMEBenchmark(Benchmark):
     modality = "image"
     # 14 categories x (acc*100 + acc+*100): Perception 2000 + Cognition 800.
     score_scale = 2800.0
-    # 10 points of 2800 = 0.36%, calibrated on Qwen2.5-VL against the
-    # engine's own batch-shape nondeterminism.
-    max_score_delta = 10.0
 
     def default_mm_processor_kwargs(self) -> dict:
         """Qwen-style pixel cap; see MAX_PIXELS."""
@@ -347,22 +363,12 @@ class MMAUBenchmark(Benchmark):
 
     key = MMAU_KEY
     modality = "audio"
-    # Mean per-task accuracy, as a percentage.
+    # Mean per-task accuracy, as a percentage. The measured nondeterminism
+    # floor on this benchmark is zero: Qwen3-Omni-30B over the full 1000
+    # questions returned byte-identical scores (66.90; music 70.06 / sound
+    # 71.47 / speech 59.16) with 0 flips on BOTH comparisons -- including
+    # baseline-vs-pass1, which crosses processes and engine configs.
     score_scale = 100.0
-    # Calibrated on Qwen3-Omni-30B over the full 1000 questions: baseline,
-    # pass1 and pass2 returned byte-identical scores (66.90; music 70.06 /
-    # sound 71.47 / speech 59.16) for a measured delta of 0.00 and 0 flips
-    # on BOTH comparisons -- including baseline-vs-pass1, which crosses
-    # processes and engine configs and is where MME's flip budget came
-    # from. So the observed nondeterminism floor here is zero, and this
-    # budget is headroom above it rather than a fitted value: one flipped
-    # answer of 1000 moves the total by ~0.1, so 1.0 tolerates ~10
-    # same-direction flips, keeping the flip gate the one that binds first
-    # as it is for MME. MME's 0.36%-of-scale ratio was deliberately NOT
-    # inherited: it was calibrated on a yes/no model, and four-way choice
-    # over an audio encoder is a different numeric regime. One run bounds
-    # the floor, it does not prove it is always zero.
-    max_score_delta = 1.0
 
     # 970 rows offer four options, 20 offer five and 10 offer two. Five
     # letters cover every row, so none is dropped for its option count.
@@ -582,6 +588,83 @@ def achievable_hit_tokens(prompt_lengths: list[int], granularity: int) -> int:
     return sum(granularity * ((t - 1) // granularity) for t in prompt_lengths)
 
 
+@dataclasses.dataclass(frozen=True)
+class FlipCounts:
+    """Tally of changed verdicts between two aligned answer passes.
+
+    Attributes:
+        answer_flips: Questions where both passes parsed to a verdict and
+            the verdicts differ -- the only kind of flip a KV defect must
+            produce, and what ``MAX_FLIP_FRACTION`` budgets.
+        parse_flips: Questions where exactly one pass parsed to a verdict.
+            These measure abstain/answer marginality and are bounded via
+            the parse-ratio delta instead (``MAX_PARSE_RATIO_DELTA``).
+    """
+
+    answer_flips: int
+    parse_flips: int
+
+    @property
+    def total(self) -> int:
+        """Every flipped question; what the pre-split gate counted."""
+        return self.answer_flips + self.parse_flips
+
+
+def count_flips(
+    benchmark: Benchmark,
+    items: list[dict],
+    answers_x: list[str],
+    answers_y: list[str],
+) -> FlipCounts:
+    """Classify every changed verdict between two aligned passes.
+
+    Args:
+        benchmark: Supplies ``parse_answer``.
+        items: The questions, aligned with both answer lists.
+        answers_x: Generated answers of one pass, in item order.
+        answers_y: Generated answers of the other pass, same order.
+
+    Returns:
+        The flip tally; both counts are zero when the passes agree on
+        every question.
+    """
+    answer_flips = 0
+    parse_flips = 0
+    for a, b, item in zip(answers_x, answers_y, items, strict=True):
+        verdict_a = benchmark.parse_answer(a, item)
+        verdict_b = benchmark.parse_answer(b, item)
+        if verdict_a == verdict_b:
+            continue
+        if verdict_a and verdict_b:
+            answer_flips += 1
+        else:
+            parse_flips += 1
+    return FlipCounts(answer_flips=answer_flips, parse_flips=parse_flips)
+
+
+def answer_parse_ratio(
+    benchmark: Benchmark, items: list[dict], answers: list[str]
+) -> float:
+    """Fraction of one pass's answers that parse to a verdict.
+
+    Args:
+        benchmark: Supplies ``parse_answer``.
+        items: The questions, aligned with the answers.
+        answers: Generated answers of one pass, in item order.
+
+    Returns:
+        The ratio in [0, 1], rounded to 4 places; 0.0 for no questions.
+    """
+    if not items:
+        return 0.0
+    parsed = sum(
+        1
+        for a, item in zip(answers, items, strict=True)
+        if benchmark.parse_answer(a, item)
+    )
+    return round(parsed / len(items), 4)
+
+
 def parity_gate(
     report: dict, max_flip_fraction: float = 0.0, min_parse_ratio: float = 0.0
 ) -> dict:
@@ -603,11 +686,13 @@ def parity_gate(
 
     Returns:
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
-        the hit criterion that applied, and the thresholds used.
-        ``pass2_hit_coverage`` is None when the report provides no
-        denominator for it (one recorded before the coverage fields
-        existed); that is "not measured", not a coverage of zero, and it
-        fails a coverage gate rather than satisfying one.
+        the hit criterion that applied, and the thresholds used. Score
+        deltas appear for observability but do not gate (see the threshold
+        block above ``MAX_FLIP_FRACTION``). ``pass2_hit_coverage`` is None
+        when the report provides no denominator for it (one recorded
+        before the coverage fields existed); that is "not measured", not a
+        coverage of zero, and it fails a coverage gate rather than
+        satisfying one.
     """
     # First Party (test-local)
     from harness import LMCACHE_TEST_CHUNK_SIZE
@@ -615,14 +700,38 @@ def parity_gate(
     scores = report["scores"]
     flip_fraction = max_flip_fraction or MAX_FLIP_FRACTION
     parse_floor = min_parse_ratio or MIN_PARSE_RATIO
-    # Score scales differ per benchmark (MME's total runs to 2800, MMAU's to
-    # 100), so the delta budget travels with the benchmark. Reports written
-    # before this field existed are all MME, whose budget is unchanged.
-    benchmark = BENCHMARKS[report.get("benchmark", MME_KEY)]
-    max_score_delta = benchmark.max_score_delta
     max_flips = flip_fraction * report["num_questions"]
     delta_p2_p1 = abs(scores["pass2_hit"]["total"] - scores["pass1_miss"]["total"])
     delta_p1_base = abs(scores["pass1_miss"]["total"] - scores["baseline"]["total"])
+    # Reports recorded before the answer/parse split carry only the
+    # combined flip counts; gating those combined counts is the pre-split
+    # behavior and can only over-fail (the combined count includes parse
+    # flips), never let a defect through.
+    answer_flips_p2_p1 = report.get(
+        "answer_flips_pass2_vs_pass1", report["flips_pass2_vs_pass1"]
+    )
+    answer_flips_p1_base = report.get(
+        "answer_flips_pass1_vs_baseline", report["flips_pass1_vs_baseline"]
+    )
+    # Parse-flip movement is bounded through the per-pass parse ratios; a
+    # report without them (pre-split) contributes no deltas and is bounded
+    # by its combined flip counts above.
+    parse_ratio_deltas: dict[str, float] = {}
+    for delta_key, ratio_a, ratio_b in (
+        ("pass2_vs_pass1", "pass2_answer_parse_ratio", "pass1_answer_parse_ratio"),
+        (
+            "pass1_vs_baseline",
+            "pass1_answer_parse_ratio",
+            "baseline_answer_parse_ratio",
+        ),
+    ):
+        if ratio_a in report and ratio_b in report:
+            parse_ratio_deltas[delta_key] = round(
+                abs(report[ratio_a] - report[ratio_b]), 4
+            )
+    parse_stable = all(
+        delta <= MAX_PARSE_RATIO_DELTA for delta in parse_ratio_deltas.values()
+    )
     hit_ratio = report["pass2_lookup_hit_ratio"]
     # Reports recorded before the parse-ratio guard existed lack the field;
     # their high absolute MME scores already prove the answers parsed.
@@ -652,16 +761,18 @@ def parity_gate(
         hit_criterion = "raw_hit_ratio"
         hit_ok = hit_ratio >= MIN_HIT_RATIO
     ok = (
-        report["flips_pass2_vs_pass1"] <= max_flips
-        and report["flips_pass1_vs_baseline"] <= max_flips
-        and delta_p2_p1 <= max_score_delta
-        and delta_p1_base <= max_score_delta
+        answer_flips_p2_p1 <= max_flips
+        and answer_flips_p1_base <= max_flips
+        and parse_stable
         and hit_ok
         and parse_ratio >= parse_floor
     )
     return {
         "pass": ok,
         "max_flips": max_flips,
+        "answer_flips_pass2_vs_pass1": answer_flips_p2_p1,
+        "answer_flips_pass1_vs_baseline": answer_flips_p1_base,
+        "parse_ratio_deltas": parse_ratio_deltas,
         "score_delta_pass2_vs_pass1": delta_p2_p1,
         "score_delta_pass1_vs_baseline": delta_p1_base,
         "baseline_answer_parse_ratio": parse_ratio,
@@ -670,7 +781,7 @@ def parity_gate(
         "pass2_hit_coverage": coverage,
         "thresholds": {
             "max_flip_fraction": flip_fraction,
-            "max_score_delta": max_score_delta,
+            "max_parse_ratio_delta": MAX_PARSE_RATIO_DELTA,
             "min_hit_ratio": MIN_HIT_RATIO,
             "min_hit_coverage": MIN_HIT_COVERAGE,
             "min_parse_ratio": parse_floor,
@@ -1124,22 +1235,20 @@ def main() -> int:
         "pass1_miss": benchmark.scores(items, answers_p1),
         "pass2_hit": benchmark.scores(items, answers_p2),
     }
-    flips_p1_base = sum(
-        benchmark.parse_answer(a, item) != benchmark.parse_answer(b, item)
-        for a, b, item in zip(answers_p1, answers_base, items, strict=True)
-    )
-    flips_p2_p1 = sum(
-        benchmark.parse_answer(a, item) != benchmark.parse_answer(b, item)
-        for a, b, item in zip(answers_p2, answers_p1, items, strict=True)
-    )
+    flips_p1_base = count_flips(benchmark, items, answers_p1, answers_base)
+    flips_p2_p1 = count_flips(benchmark, items, answers_p2, answers_p1)
     report = {
         "model": args.model,
         "benchmark": benchmark.key,
         "deployment_path": "mp",
         "num_questions": len(items),
         "scores": scores,
-        "flips_pass1_vs_baseline": flips_p1_base,
-        "flips_pass2_vs_pass1": flips_p2_p1,
+        "flips_pass1_vs_baseline": flips_p1_base.total,
+        "flips_pass2_vs_pass1": flips_p2_p1.total,
+        "answer_flips_pass1_vs_baseline": flips_p1_base.answer_flips,
+        "parse_flips_pass1_vs_baseline": flips_p1_base.parse_flips,
+        "answer_flips_pass2_vs_pass1": flips_p2_p1.answer_flips,
+        "parse_flips_pass2_vs_pass1": flips_p2_p1.parse_flips,
         "pass2_lookup_hit_ratio": round(hit_ratio, 4),
         "cache_granularity_tokens": (
             args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE
@@ -1156,15 +1265,11 @@ def main() -> int:
         # was loaded from it, and is what the coverage gate uses.
         "pass2_external_cached_tokens": external_p2,
         "pass2_local_cached_tokens": local_p2,
-        "baseline_answer_parse_ratio": round(
-            sum(
-                1
-                for a, item in zip(answers_base, items, strict=True)
-                if benchmark.parse_answer(a, item)
-            )
-            / max(1, len(items)),
-            4,
+        "baseline_answer_parse_ratio": answer_parse_ratio(
+            benchmark, items, answers_base
         ),
+        "pass1_answer_parse_ratio": answer_parse_ratio(benchmark, items, answers_p1),
+        "pass2_answer_parse_ratio": answer_parse_ratio(benchmark, items, answers_p2),
     }
     gate = parity_gate(report, args.max_flip_fraction, args.min_parse_ratio)
     report["gate"] = gate
@@ -1190,8 +1295,12 @@ def main() -> int:
         f"score_delta(pass2-pass1)={gate['score_delta_pass2_vs_pass1']:.2f} "
         f"score_delta(pass1-baseline)="
         f"{gate['score_delta_pass1_vs_baseline']:.2f} "
-        f"flips(pass2 vs pass1)={flips_p2_p1}/{len(items)} "
-        f"flips(pass1 vs baseline)={flips_p1_base}/{len(items)} "
+        f"answer_flips(pass2 vs pass1)="
+        f"{flips_p2_p1.answer_flips}/{len(items)} "
+        f"(+{flips_p2_p1.parse_flips} parse) "
+        f"answer_flips(pass1 vs baseline)="
+        f"{flips_p1_base.answer_flips}/{len(items)} "
+        f"(+{flips_p1_base.parse_flips} parse) "
         f"=> {'PASS' if gate['pass'] else 'FAIL'}"
     )
     return 0 if gate["pass"] else 1
