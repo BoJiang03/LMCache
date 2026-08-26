@@ -40,6 +40,7 @@ from catalog import (
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
 from harness import (
     MMHarness,
+    MPServerHandle,
     compute_baselines,
     start_mp_cache_server,
     vllm_preemption_total,
@@ -169,6 +170,11 @@ MP_SERVER_L1_GB = 4
 # ``ModelSpec.mp_server_l1_gb`` (~205 MB per block on Qwen3.6-27B).
 MP_SERVER_L1_GB_HYBRID = 30
 MP_SERVER_START_TIMEOUT_S = 120
+# How long a terminated cache server gets to exit before it is killed. It
+# has to flush its L1 accounting, and a scenario that leaves one behind
+# leaks host and GPU memory into the next run (measured twice,
+# records/2026/08/26/6_).
+MP_SERVER_STOP_TIMEOUT_S = 30
 
 
 def _expect(failures: list[str], condition: bool, message: str) -> None:
@@ -204,6 +210,19 @@ def _check_replay(
         harness.check_replay_text(request, reference_text, text, where)
     except AssertionError as exc:
         failures.append(str(exc))
+
+
+def _stop_mp_server(server: MPServerHandle) -> None:
+    """Terminate a scenario's cache server, killing it if it will not stop.
+
+    Args:
+        server: The handle returned by ``start_mp_cache_server``.
+    """
+    server.process.terminate()
+    try:
+        server.process.wait(timeout=MP_SERVER_STOP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        server.process.kill()
 
 
 @contextlib.contextmanager
@@ -268,22 +287,33 @@ def _scenario_harness(
             separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
-        harness = MMHarness(
-            spec,
-            baselines=baselines,
-            zmq_port=zmq_port,
-            http_port=http_port,
-            extra_engine_kwargs=extra_engine_kwargs,
-        )
+        try:
+            harness = MMHarness(
+                spec,
+                baselines=baselines,
+                zmq_port=zmq_port,
+                http_port=http_port,
+                extra_engine_kwargs=extra_engine_kwargs,
+            )
+        except Exception as exc:
+            # A server that stops answering after its health check makes the
+            # engine fail with "cannot reach the LMCache MP server", which
+            # says nothing about why. The reason is in the server log, and
+            # the enclosing temporary directory is about to delete it, so
+            # fold the tail into the error here. Reaping the server matters
+            # too: without it the process exits and leaves the server
+            # reparented to init, holding host and GPU memory (measured
+            # twice, records/2026/08/26/6_).
+            _stop_mp_server(server)
+            raise RuntimeError(
+                f"scenario harness failed to start against its cache "
+                f"server; server log tail:\n{log_path.read_text()[-8000:]}"
+            ) from exc
         try:
             yield harness
         finally:
             harness.close()
-            server.process.terminate()
-            try:
-                server.process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                server.process.kill()
+            _stop_mp_server(server)
             metrics["server_log_tail"] = log_path.read_text()[-8000:]
 
 
@@ -456,22 +486,33 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
             snapshot.num_keys > 0,
             "no resident keys after the eviction traffic",
         )
+        # Only checked when something is resident, because the estimate is
+        # derived from the snapshot: at ``num_keys == 0`` bytes_per_token is
+        # 0, so intended_bytes is 0 however much traffic ran, and the
+        # assertion fires with advice ("raise EVICTION_N") pointing away
+        # from the real cause that the no-resident-keys failure above
+        # already names. Measured 2026-08-26 on Molmo 2-4B: 32 requests of
+        # real traffic, nothing stored, and this reported "stored only ~0
+        # bytes -- raise EVICTION_N".
+        #
         # Per the model's own chunk, not the module default: a resident key
         # holds one chunk, so on a hybrid (chunk 32 on Gemma 4, 784 on
         # Qwen3.8) dividing by 16 would inflate bytes_per_token by the ratio
-        # and make the overflow assertion below meaningless.
-        bytes_per_token = snapshot.total_bytes / max(
-            1, snapshot.num_keys * harness.chunk
-        )
-        intended_bytes = int(stored_tokens * bytes_per_token)
-        _expect(
-            failures,
-            intended_bytes > 2 * capacity_bytes,
-            f"traffic stored only ~{intended_bytes} bytes against a "
-            f"{capacity_bytes}-byte cap -- eviction never exercised; raise "
-            f"EVICTION_N, or lower this model's capacity (the path default "
-            f"or ModelSpec.eviction_capacity_gb) toward one cache object",
-        )
+        # and make the overflow assertion meaningless.
+        bytes_per_token = 0.0
+        intended_bytes = 0
+        if snapshot.num_keys > 0:
+            bytes_per_token = snapshot.total_bytes / (snapshot.num_keys * harness.chunk)
+            intended_bytes = int(stored_tokens * bytes_per_token)
+            _expect(
+                failures,
+                intended_bytes > 2 * capacity_bytes,
+                f"traffic stored only ~{intended_bytes} bytes against a "
+                f"{capacity_bytes}-byte cap -- eviction never exercised; "
+                f"raise EVICTION_N, or lower this model's capacity (the "
+                f"path default or ModelSpec.eviction_capacity_gb) toward "
+                f"one cache object",
+            )
         _expect(
             failures,
             snapshot.total_bytes <= int(capacity_bytes * 1.10),
@@ -711,13 +752,24 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
-        harness = MMHarness(
-            spec,
-            baselines=baselines,
-            zmq_port=zmq_port,
-            http_port=http_port,
-            extra_engine_kwargs=engine_kwargs,
-        )
+        try:
+            harness = MMHarness(
+                spec,
+                baselines=baselines,
+                zmq_port=zmq_port,
+                http_port=http_port,
+                extra_engine_kwargs=engine_kwargs,
+            )
+        except Exception as exc:
+            # Same reasoning as _scenario_harness: keep the server log the
+            # temporary directory is about to delete, and do not leave the
+            # server behind as an orphan.
+            _stop_mp_server(server)
+            log_path = pathlib.Path(tmp) / "mp_server.log"
+            raise RuntimeError(
+                f"MP-connector harness failed to start against its cache "
+                f"server; server log tail:\n{log_path.read_text()[-8000:]}"
+            ) from exc
         try:
             singles: list = []
 
@@ -903,11 +955,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             failures.append("engine exception:\n" + traceback.format_exc())
         finally:
             harness.close()
-            server.process.terminate()
-            try:
-                server.process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                server.process.kill()
+            _stop_mp_server(server)
         if failures:
             log_path = pathlib.Path(tmp) / "mp_server.log"
             metrics["server_log_tail"] = log_path.read_text()[-8000:]
