@@ -531,6 +531,21 @@ def run_preemption(spec: ModelSpec) -> dict:
         "max_model_len": PREEMPTION_MAX_MODEL_LEN,
         "max_num_seqs": PREEMPTION_N,
         "disable_log_stats": False,  # the preemption counter needs stats on
+        # Not a performance choice: with vLLM's default async scheduling
+        # this scenario livelocks instead of preempting. vLLM 0.27.1 sets
+        # ``defer_block_free`` whenever ``max_concurrent_batches > 1`` and
+        # the connector is a KV consumer (scheduler.py:150-156), so the
+        # blocks a preemption frees do not return to the pool in the same
+        # step. The scheduler then preempts the whole batch to satisfy one
+        # request, releases it all on the next step, and repeats: measured
+        # 430+ preemptions per request and zero progress until an external
+        # timeout (records/2026/08/26/3_). Forcing this off restores one
+        # concurrent batch, which is what this scenario is about -- it
+        # certifies LMCache's recompute path, not vLLM's scheduler. The
+        # default-configuration livelock is a known upstream defect tracked
+        # separately; the same value reaches the baseline engine through
+        # ``extra_engine_kwargs``, so the two stay config-matched.
+        "async_scheduling": False,
     }
     requests = preemption_requests(PREEMPTION_N, PREEMPTION_MAX_TOKENS)
     failures: list[str] = []
