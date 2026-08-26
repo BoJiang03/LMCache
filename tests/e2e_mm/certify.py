@@ -22,6 +22,8 @@ provided), 1 = NOT_SUPPORTED.
 # Standard
 from datetime import datetime, timezone
 import argparse
+import importlib.metadata
+import importlib.util
 import json
 import os
 import pathlib
@@ -42,13 +44,20 @@ from isolated_routing import (  # noqa: E402
 )
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
+# 6: certificates carry a ``runtime`` block naming the vLLM, torch,
+# transformers and lmcache builds the suite ran against. Up to 5 they did
+# not, so a certificate said which LMCache commit was tested but not which
+# vLLM it was tested on -- and support is a property of the pair. The 12
+# SUPPORTED certificates dated 2026-08-22 were all produced on vLLM 0.23
+# and none of them says so, which is why the same models had to be re-run
+# from scratch on 0.27.1 rather than compared.
 # 5: the suite dropped the in-process deployment path, so ``scope`` names
 # one path and the exclusions carry the in-process one (and, for a model
 # declaring it, the deepstack add-on suite). Every certificate at 4 or
 # below was produced by the two-path suite and its scope block no longer
 # describes what the suite measures -- those models need re-certifying,
 # not re-labelling.
-CERTIFICATE_SCHEMA_VERSION = 5
+CERTIFICATE_SCHEMA_VERSION = 6
 
 # What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [
@@ -362,6 +371,47 @@ def git_dirty(cwd: pathlib.Path) -> bool:
         ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True
     )
     return bool(status.stdout.strip()) if status.returncode == 0 else False
+
+
+# Support is a property of the (LMCache, vLLM) pair, so the certificate has
+# to name both halves. ``lmcache`` is here for the same reason its path is:
+# it installs editable, so which worktree it resolves to depends on
+# PYTHONPATH, and a certificate that names a commit while importing another
+# tree's package is worse than one that names nothing.
+RUNTIME_PACKAGES = ("vllm", "torch", "transformers", "lmcache")
+
+
+def runtime_versions() -> dict[str, dict[str, str]]:
+    """Describe the installed builds the suite is running against.
+
+    Versions come from distribution metadata and the path from the import
+    finder, so neither reads a module -- importing vLLM here would cost
+    minutes and initialise CUDA in the wrong process.
+
+    Returns:
+        One entry per name in ``RUNTIME_PACKAGES``, each with a
+        ``version`` (distribution metadata, or ``"unknown"``) and a
+        ``resolved_from`` (the directory or file the import system would
+        load, or ``"unknown"``).
+    """
+    runtime: dict[str, dict[str, str]] = {}
+    for name in RUNTIME_PACKAGES:
+        try:
+            version = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            version = "unknown"
+        location = "unknown"
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is not None:
+            if spec.submodule_search_locations:
+                location = str(list(spec.submodule_search_locations)[0])
+            elif spec.origin:
+                location = str(spec.origin)
+        runtime[name] = {"version": version, "resolved_from": location}
+    return runtime
 
 
 MP_PATH_FULL = "LMCacheMPConnector + MP cache server (single GPU, TP=1)"
@@ -682,6 +732,7 @@ def main() -> int:
             ),
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runtime": runtime_versions(),
         "scope": certified_scope(spec),
         "suite": suite,
         "parity": parity,
