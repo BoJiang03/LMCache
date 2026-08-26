@@ -801,7 +801,22 @@ def run_baseline(
     # Third Party
     from vllm import LLM
 
+    # This subprocess writes to the parent's stdout, so its lines carry a
+    # distinct tag -- otherwise the two streams interleave under one prefix
+    # and there is no telling which process is where.
+    #
+    # It reloads the dataset the parent already loaded, because the items
+    # (base64 data URIs for 1097 MME images) do not cross the process
+    # boundary. That is another 12-13 minutes of silent CPU before this
+    # role touches a GPU, and until these lines existed the log showed
+    # nothing at all for it.
+    print(f"[parity:baseline] loading {benchmark.key.upper()} items (limit={limit})")
+    load_started = time.monotonic()
     items = benchmark.load_items(limit)
+    print(
+        f"[parity:baseline] {len(items)} items loaded in "
+        f"{time.monotonic() - load_started:.1f}s; building the plain-vLLM engine"
+    )
     llm = LLM(
         **engine_kwargs(
             model,
