@@ -665,7 +665,6 @@ class MMHarness:
         extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
     ):
         configure_environment()
-        self._zmq_port = zmq_port
         self._http_port = http_port
         self._counters = MPTransportCounters()
         self.spec = spec
@@ -702,9 +701,9 @@ class MMHarness:
         self._validate_block_size()
         self._validate_prompt_shape()
 
-    # Store settling: a store is asynchronous twice over --
-    # the worker submits it around the time the engine answers, and the
-    # server holds each key write-locked between reserve_write and
+    # Store settling: a store is asynchronous twice over -- the worker
+    # submits it around the time the engine answers, and the server holds
+    # each key write-locked between reserve_write and
     # finish_write (50-300ms observed under load). Without a barrier, a
     # back-to-back request's lookup beats the previous request's store
     # (KEY_NOT_EXIST) or lands inside the write-lock window

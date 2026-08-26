@@ -42,7 +42,13 @@ from isolated_routing import (  # noqa: E402
 )
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
-CERTIFICATE_SCHEMA_VERSION = 4
+# 5: the suite dropped the in-process deployment path, so ``scope`` names
+# one path and the exclusions carry the in-process one (and, for a model
+# declaring it, the deepstack add-on suite). Every certificate at 4 or
+# below was produced by the two-path suite and its scope block no longer
+# describes what the suite measures -- those models need re-certifying,
+# not re-labelling.
+CERTIFICATE_SCHEMA_VERSION = 5
 
 # What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [

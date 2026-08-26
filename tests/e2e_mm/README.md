@@ -354,6 +354,13 @@ list. Exit codes: 0 `SUPPORTED`, 2 `PROVISIONAL` (suite green, parity not
 provided), 1 `NOT_SUPPORTED`. A skipped or empty suite can never certify
 (skips are counted as failure).
 
+`schema_version` is **5** since the in-process path was dropped. Every
+certificate at 4 or below was produced by the two-path suite: its `scope`
+block claims a deployment the suite no longer drives, and its
+`known_not_covered` list predates the in-process and deepstack
+exclusions. Those models need re-certifying, not re-labelling — no
+recorded certificate carries a claim this suite would issue today.
+
 Three fields exist because a certificate that overstates itself is worse
 than no certificate, and each began as a real defect in a published one:
 
