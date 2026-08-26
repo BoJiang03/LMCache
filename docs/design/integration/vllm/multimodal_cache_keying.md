@@ -109,6 +109,8 @@ need either substitution or an MM bypass guard):
   16-bit collision regression), `tests/v1/test_mp_connector_mm_keys.py`.
 - Acceptance: `tests/e2e_mm/` (real-engine matrix: cross-image isolation,
   collision pressure, chunk-boundary phases, mixed traffic, multi-image,
-  video modality, preemption recompute; T3 `mp_connector` scenario reruns
-  the T0/T1 core against a real MP cache server through the main MP
-  connector, including a per-path detector negative control).
+  video modality, preemption recompute). Every tier runs through the main
+  MP connector against a real cache server; the T3 `mp_connector` scenario
+  reruns the T0/T1 core on an engine and server of its own, each with its
+  own detector negative control. The in-process connector is exercised by
+  the unit tests above, not by that suite.
