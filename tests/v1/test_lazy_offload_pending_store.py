@@ -309,6 +309,26 @@ class TestEvictionAwareMode:
         store.add(_make_meta("req-0", num_blocks=2))
         assert _drain_store(store, 0, 0).items == []
 
+    def test_backlog_cap_reaches_the_policy(self) -> None:
+        """The cap releases the backlog with no eviction pressure at all,
+        which is the one release the danger depth can never make."""
+        store, _ = self._setup({"lmcache.mp.lazy_offload_max_pending_ops": 1})
+        store.add(_make_meta("req-0", num_blocks=1, end=256))
+        store.add(_make_meta("req-0", num_blocks=1, end=512))
+
+        result = _drain_store(store, 0, 0)
+
+        assert len(result.items) == 1
+        assert store.stats().backlog_emitted == 1
+
+    def test_unbounded_backlog_is_the_default(self) -> None:
+        store, _ = self._setup()
+        store.add(_make_meta("req-0", num_blocks=1, end=256))
+        store.add(_make_meta("req-0", num_blocks=1, end=512))
+
+        assert _drain_store(store, 0, 0).items == []
+        assert store.stats().backlog_emitted == 0
+
     def test_drain_reports_policy_neutral_emptied_request(self) -> None:
         store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
         store.add(_make_meta("req-0", num_blocks=1))

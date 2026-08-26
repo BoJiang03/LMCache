@@ -149,7 +149,9 @@ class LazyOffloadPendingStore:
                 or the legacy "FIFO" policy),
                 ``lmcache.mp.lazy_offload_horizon_steps`` (float),
                 ``lmcache.mp.lazy_offload_min_prefix_tokens`` (int),
-                ``lmcache.mp.lazy_offload_max_drain_per_step`` (int), and the
+                ``lmcache.mp.lazy_offload_max_drain_per_step`` (int),
+                ``lmcache.mp.lazy_offload_max_pending_ops`` (int, 0 leaves
+                the backlog unbounded), and the
                 FIFO-only ``lmcache.mp.lazy_offload_threshold`` /
                 ``lmcache.mp.lazy_offload_select_count``.
 
@@ -201,6 +203,12 @@ class LazyOffloadPendingStore:
                 cast(
                     str | int | float,
                     configs.get("lmcache.mp.lazy_offload_max_drain_per_step", 64),
+                )
+            ),
+            max_pending_ops=int(
+                cast(
+                    str | int | float,
+                    configs.get("lmcache.mp.lazy_offload_max_pending_ops", 0),
                 )
             ),
         )

@@ -347,11 +347,26 @@ class LazyOffloadPolicyConfig:
             rather than merely delayed. Sizing it therefore needs the
             workload, and the runtime sensor for having sized it wrong is
             ``LazyOffloadCounters.throttled_drains``.
+        max_pending_ops: Upper bound on how many operations may wait for
+            their eviction date at once; 0 leaves the backlog unbounded.
+            The danger depth is a forecast built from an EMA of per-step
+            allocation, so it cannot see a single admission that consumes
+            thousands of blocks at once -- the eviction that destroys a
+            waiting operation and the allocation that pays for the forecast
+            are the same event. Bounding the backlog bounds what one such
+            burst can destroy: above the cap the oldest operations are
+            emitted regardless of their rank, at ``max_drain_per_step``
+            per step. It costs the filtering the wait would have bought
+            (content evicted from the GPU after the operation was emitted
+            is stored either way), so size it against
+            ``LazyOffloadCounters.dropped_evicted``: a backlog deep enough
+            to lose operations is deeper than the workload can defend.
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
     min_prefix_tokens: int = 0
     max_drain_per_step: int = 64
+    max_pending_ops: int = 0
 
     def __post_init__(self) -> None:
         """Validate field ranges.
@@ -368,6 +383,10 @@ class LazyOffloadPolicyConfig:
         if self.max_drain_per_step < 1:
             raise ValueError(
                 f"max_drain_per_step must be >= 1, got {self.max_drain_per_step}"
+            )
+        if self.max_pending_ops < 0:
+            raise ValueError(
+                f"max_pending_ops must be >= 0, got {self.max_pending_ops}"
             )
 
 
@@ -401,6 +420,15 @@ class LazyOffloadCounters:
     drop counter -- and measure work the
     deferral no longer costs the next request over the same prefix.
 
+    ``backlog_emitted`` is the activity sensor for
+    :attr:`LazyOffloadPolicyConfig.max_pending_ops`: operations emitted
+    because the backlog exceeded the cap rather than because their blocks
+    came under eviction pressure. Zero means the cap never bound and the
+    policy behaved exactly as an unbounded backlog would; a share of
+    ``emitted`` rising towards 1 means the cap, not the eviction forecast,
+    is timing the stores. It is a subset of ``emitted``, not a separate
+    outcome, so it does not enter the admission ledger's arithmetic.
+
     ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated``,
     ``blocks_validated`` and ``covered_blocks_probed`` are the cost sensors
     for the per-step decision
@@ -425,6 +453,7 @@ class LazyOffloadCounters:
     deduplicated: int = 0
     covered_prefix_advances: int = 0
     covered_prefix_tokens_skipped: int = 0
+    backlog_emitted: int = 0
     throttled_drains: int = 0
     drain_steps: int = 0
     free_queue_blocks_read: int = 0
@@ -457,6 +486,7 @@ class LazyOffloadCounters:
             self.deduplicated,
             self.covered_prefix_advances,
             self.covered_prefix_tokens_skipped,
+            self.backlog_emitted,
             self.throttled_drains,
         )
 
@@ -648,6 +678,16 @@ class _PendingOperations:
 
     def admission_order(self, request_id: str) -> int:
         return self._request_order[request_id]
+
+    def requests_in_admission_order(self) -> list[str]:
+        """Pending request ids, oldest admission first.
+
+        Returns:
+            Every request holding pending operations, ordered by when it
+            first entered the queue. The backlog drain uses it to emit the
+            longest-waiting content first.
+        """
+        return sorted(self._by_request, key=self._request_order.__getitem__)
 
 
 class EvictionAwareStoreQueue:
@@ -1162,6 +1202,10 @@ class EvictionAwareStoreQueue:
         # already out of the queue does not shift it at all.
         shift_blocks = 0
         pinned_free_blocks: set[int] = set()
+        # Requests this drain has already emitted for. The pressure loop
+        # visits each request at most once, but the backlog drain iterates
+        # independently and must not put a second batch in flight.
+        emitted_request_ids: set[str] = set()
         while budget > 0:
             threshold = danger_depth + shift_blocks
             if window.depth() < threshold:
@@ -1210,10 +1254,95 @@ class EvictionAwareStoreQueue:
             shift_blocks += len(newly_pinned)
             remaining = surviving[len(emitted) :]
             self._replace_pending(request_id, emitted, remaining, result)
+            emitted_request_ids.add(request_id)
         self._counters.free_queue_blocks_read += window.depth()
+        if budget > 0 and self._config.max_pending_ops > 0:
+            self._drain_backlog(
+                budget,
+                blocked_request_ids | emitted_request_ids,
+                surviving_by_request,
+                result,
+            )
         if result.ops_held_back:
             self._counters.throttled_drains += 1
         return result
+
+    def _drain_backlog(
+        self,
+        budget: int,
+        skip_request_ids: set[str],
+        surviving_by_request: dict[str, list[PendingStoreOp]],
+        result: DrainResult,
+    ) -> None:
+        """Emit the oldest operations while the backlog exceeds its cap.
+
+        The danger depth forecasts eviction from an EMA of per-step
+        allocation, so one admission that consumes thousands of blocks --
+        a large external cache hit, whose blocks vLLM allocates in a single
+        step -- destroys waiting operations before any forecast built from
+        the preceding steps could have widened to cover them. The forecast
+        cannot be fixed by looking further ahead, because the burst *is*
+        the step it would have to predict; what can be bounded is how much
+        content is exposed to one. This drain does that, emitting the
+        longest-waiting operations regardless of their free-queue rank until
+        the backlog is back at ``max_pending_ops``.
+
+        Requests are taken in admission order and each contributes the
+        contiguous front run of its surviving operations, so prefix closure
+        and the one-batch-per-request constraint hold exactly as they do for
+        a pressure-driven emission.
+
+        Args:
+            budget: Operations this step may still emit
+                (``max_drain_per_step`` less what pressure already spent).
+                Must be positive.
+            skip_request_ids: Requests that must not emit -- ones with a
+                batch already in flight, and ones this drain already
+                emitted for.
+            surviving_by_request: Loss-check results this drain already
+                computed, extended in place for requests it reaches first.
+                Reusing it keeps a request's snapshots validated once per
+                step.
+            result: The drain result to extend with emissions and drops.
+        """
+        cap = self._config.max_pending_ops
+        for request_id in self._pending_ops.requests_in_admission_order():
+            if budget <= 0 or self._pending_ops.num_ops() <= cap:
+                return
+            if request_id in skip_request_ids:
+                continue
+            surviving = surviving_by_request.get(request_id)
+            if surviving is None:
+                ops = self._pending_ops.get(request_id)
+                if not ops:
+                    continue
+                surviving = self._drop_evicted_suffix(request_id, ops, result)
+                self._pending_ops.validation_complete(request_id)
+                surviving_by_request[request_id] = surviving
+            if not surviving:
+                continue
+            if self._fails_economy_gate(surviving):
+                # Same backstop as the pressure path: a chain eviction
+                # truncated back below break-even is not worth storing.
+                result.dropped_short_prefix.extend(surviving)
+                self._counters.rejected_short_prefix += len(surviving)
+                self._broken_prefixes.add(request_id)
+                self._replace_pending(request_id, surviving, [], result)
+                continue
+            # Emit only what the overflow calls for: the cap is a bound on
+            # the backlog, not an instruction to empty it.
+            overflow = self._pending_ops.num_ops() - cap
+            due_ops = _contiguous_front_run(surviving)
+            emitted = due_ops[: min(budget, overflow)]
+            if not emitted:
+                continue
+            budget -= len(emitted)
+            result.to_store.extend(emitted)
+            self._counters.emitted += len(emitted)
+            self._counters.backlog_emitted += len(emitted)
+            self._replace_pending(
+                request_id, emitted, surviving[len(emitted) :], result
+            )
 
     def _danger_depth(self) -> int:
         """Free-queue depth considered at risk within the horizon.

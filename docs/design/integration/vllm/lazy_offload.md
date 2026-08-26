@@ -343,7 +343,12 @@ Two policies are available:
   window. It validates admission-time block hashes, preserves prefix closure,
   deduplicates identical pending content, and holds chains below the
   configured break-even length out of its per-step machinery until they grow
-  past it, dropping them if their request finishes below it. Its decision
+  past it, dropping them if their request finishes below it. Because its
+  release trigger is a forecast, it also accepts a bound on how much
+  content may wait at once (``max_pending_ops``): a single admission that
+  allocates blocks for a whole lower-tier hit destroys waiting operations
+  before any forecast could have widened to cover it, so above the cap the
+  oldest operations are emitted regardless of their rank. Its decision
   model and full queue contract are
   in [lazy_offload_decision_model.md](lazy_offload_decision_model.md) and
   [lazy_offload_policy/eviction_aware.md](lazy_offload_policy/eviction_aware.md).
@@ -385,6 +390,7 @@ lmcache.mp.lazy_offload_policy = EVICTION_AWARE        # default
 lmcache.mp.lazy_offload_horizon_steps = 2.5
 lmcache.mp.lazy_offload_min_prefix_tokens = 0
 lmcache.mp.lazy_offload_max_drain_per_step = 64
+lmcache.mp.lazy_offload_max_pending_ops = 0     # 0: backlog unbounded
 
 # Explicit legacy FIFO mode only
 lmcache.mp.lazy_offload_threshold = 100
