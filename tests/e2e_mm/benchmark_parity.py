@@ -124,6 +124,14 @@ MIN_HIT_COVERAGE = 0.95
 # Measured satisfiable on both benchmarks: 1.0 for Qwen3-Omni on a
 # 45-question MMAU sample.
 MIN_PARSE_RATIO = 0.9
+# Stores are submitted when a request finishes but commit on the MP server
+# asynchronously. A full benchmark hides that tail (pass 1 keeps running
+# minutes past its last submit), but a --limit smoke run reaches pass 2
+# while pass 1's stores are still in flight and reads a misleadingly low
+# hit ratio: measured 0.14 at --limit 40 on a tree whose full run measures
+# 0.98. Sized on the 110-item probe runs, where 5s reliably yielded full
+# pass-2 hits.
+STORE_COMMIT_GRACE_S = 5.0
 # Parse flips (a verdict on one side, '' on the other) are budgeted apart
 # from answer flips: they measure how many answers sit on the model's own
 # abstain/answer margin, not whether the cache changed a verdict.
@@ -1212,6 +1220,9 @@ def main() -> int:
             llm, benchmark, items, chat_template_kwargs, args.max_tokens
         )
         stored_p1 = stored_tokens() - stored_before
+        # See STORE_COMMIT_GRACE_S: without this, a --limit run's pass 2
+        # laps pass 1's in-flight stores and under-reports the hit ratio.
+        time.sleep(STORE_COMMIT_GRACE_S)
         reset_local_prefix_cache()
         t0, h0 = lookup_stats()
         local0, external0 = prefill.local_cached, prefill.external_cached
