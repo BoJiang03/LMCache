@@ -209,8 +209,10 @@ vLLM hit instead of 0 on a lookup miss.
 - **Danger depth** = `ceil(max(EMA(gross allocation/step), next-step
   feedforward) × horizon_steps)`; below half a block over the horizon it is 0
   (a decayed EMA must not hold the depth at 1 forever). An idle engine never
-  drains — free-queue *position* alone is never a trigger (that would be the
-  inverted-gate-1 anti-pattern, decision model §6).
+  drains under pressure — free-queue *position* alone is never a trigger
+  (that would be the inverted-gate-1 anti-pattern, decision model §6). The
+  opt-in backlog and idle drains below emit by *age*, which is not position
+  either.
 - An op is **due** when any covered block's rank < danger depth. Blocks not
   in the free queue (in use / resurrected) are not at risk.
 - **Horizon calibration.** The default is 2.5 scheduler steps. A fine sweep
@@ -364,13 +366,53 @@ vLLM hit instead of 0 on a lookup miss.
   `emitted` rising towards 1 means the cap has taken over the timing
   entirely, which is eager offload with extra steps.
 
+- **Idle drain (`idle_drain_max_ops`)**: the pressure trigger has a phase
+  problem it cannot fix alone. It times an emission to the moment the
+  operation's blocks are about to be reallocated, and the allocator is
+  busiest exactly when a prefill burst runs — so deferred copies are
+  submitted in phase with the burst they waited out, competing with it for
+  the step. A step whose allocation rate is at or below
+  `idle_threshold_blocks` is the opposite moment: the drain emits up to
+  `idle_drain_max_ops` of the oldest operations, taken exactly as the
+  backlog drain takes them (admission order, contiguous front run, loss
+  check, economy backstop, one batch per request), so the backlog is
+  worked off in the gaps between bursts instead of inside them. `0` (the
+  default) disables it.
+
+  The rate is `max(EMA, next-step feedforward)`: the feedforward vetoes
+  the first step of a burst before the EMA has seen it, and the EMA
+  vetoes the trailing steps after the feedforward has fallen. Decode-only
+  traffic allocates about (running requests / tokens per block) blocks
+  per step, so the default threshold of 1.0 separates decode-only steps
+  from prefill at typical concurrency.
+
+  The trade is the backlog cap's: an idle emission gives up the wait's
+  remaining filtering, since content evicted after the emission is stored
+  either way. The sensors mirror it — `idle_emitted` is the share of
+  `emitted` the idle path timed rather than the forecast, and
+  `idle_drain_steps` counts the drains in which it emitted at all.
+
+- **Block volume cap (`max_drain_blocks_per_step`)**: `max_drain_per_step`
+  bounds a drain in operations, but a deferred backlog coalesces into one
+  contiguous copy per batch, so an op-count cap alone lets one step submit
+  an arbitrarily long prefix as a single D2H burst — a burst shape eager
+  offload never produces, storing chunk by chunk as the prefill runs. The
+  block cap bounds the same drain in blocks. One budget serves all three
+  emission paths (pressure, backlog, idle), and the bound is soft at the
+  boundary: the operation that crosses it still emits — progress must not
+  depend on an operation fitting under the cap — the overshoot is charged,
+  and everything after it waits for the next step. `0` (the default)
+  leaves the volume unbounded. What it holds back reports through the
+  same `ops_held_back` / `throttled_drains` sensors as the op-count cap.
+
 - **Idle consequences**: receipts travel in worker metadata, which only
   flows on steps that schedule tokens. If the engine goes idle with a
   batch in flight, its pins and its request's session stay held until the
   next non-empty step delivers the receipt; finished requests whose ops
   never come due likewise hold their sessions open. Both resolve on the
-  next activity — nothing leaks permanently, by design ("idle never
-  drains" also means "idle never settles").
+  next activity — nothing leaks permanently, by design. An engine that is
+  not stepping runs no drains at all; the idle drain above runs *within* a
+  low-allocation step, so it never changes this.
 
 ## Scheduler-path complexity
 
@@ -398,8 +440,9 @@ boundaries, so completed request ids do not accumulate.
 (drop rate: data lost before we drained — lower the horizon is too tight, or
 the backlog cap is too loose); `emitted / admitted` is store precision's
 denominator; `backlog_emitted` is the share of `emitted` that the backlog cap
-timed rather than the eviction forecast; `rejected_short_prefix`
-audits gate 3. Tests: `tests/v1/test_lazy_offload_eviction_aware.py` (pure, no vLLM).
+timed rather than the eviction forecast, `idle_emitted` the share the idle
+drain timed (`idle_drain_steps` counts the drains in which it fired);
+`rejected_short_prefix` audits gate 3. Tests: `tests/v1/test_lazy_offload_eviction_aware.py` (pure, no vLLM).
 
 Four counters measure the decision loop's own cost rather than any op's
 fate: `drain_steps`, `free_queue_blocks_read`, `requests_validated` and

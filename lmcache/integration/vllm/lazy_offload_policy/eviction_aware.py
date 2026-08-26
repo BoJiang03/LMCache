@@ -361,12 +361,46 @@ class LazyOffloadPolicyConfig:
             is stored either way), so size it against
             ``LazyOffloadCounters.dropped_evicted``: a backlog deep enough
             to lose operations is deeper than the workload can defend.
+        max_drain_blocks_per_step: Upper bound on GPU blocks emitted per
+            step, bounding the D2H burst in bytes where
+            ``max_drain_per_step`` bounds it in operations (a deferred
+            backlog coalesces, so an op-count cap alone lets one step
+            submit an arbitrarily long prefix as a single copy). The bound
+            is soft: the operation that crosses it is still emitted --
+            progress must not depend on an operation fitting under the cap
+            -- and the overshoot is charged, so everything after it waits
+            for the next step. 0 leaves the volume unbounded. The sizing
+            sensor is ``LazyOffloadCounters.throttled_drains``, shared
+            with the op-count cap.
+        idle_drain_max_ops: Operations the drain may emit on an idle step
+            beyond what eviction pressure calls for, oldest request first.
+            Pressure times an emission to the moment its blocks are about
+            to be reallocated -- which is when a prefill burst is
+            allocating, so the copy lands in phase with the burst. Idle
+            emission writes waiting content down in the gaps instead,
+            trading filtering (content evicted after emission is stored
+            either way) for staying out of the busy steps' way.
+            0 disables idle draining. Effectiveness sensors:
+            ``LazyOffloadCounters.idle_emitted`` and
+            ``LazyOffloadCounters.idle_drain_steps``.
+        idle_threshold_blocks: Allocation rate, in blocks per step, at or
+            below which a step counts as idle. Compared against both the
+            per-step EMA and the next step's estimate, so the first step
+            of a prefill burst is never idle even before the EMA has
+            caught up. Decode-only traffic allocates roughly (running
+            requests / tokens per block) blocks per step, well under the
+            default of 1.0 at typical concurrency, while a prefill step
+            allocates tens to hundreds. Consulted only when
+            ``idle_drain_max_ops`` > 0.
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
     min_prefix_tokens: int = 0
     max_drain_per_step: int = 64
     max_pending_ops: int = 0
+    max_drain_blocks_per_step: int = 0
+    idle_drain_max_ops: int = 0
+    idle_threshold_blocks: float = 1.0
 
     def __post_init__(self) -> None:
         """Validate field ranges.
@@ -387,6 +421,19 @@ class LazyOffloadPolicyConfig:
         if self.max_pending_ops < 0:
             raise ValueError(
                 f"max_pending_ops must be >= 0, got {self.max_pending_ops}"
+            )
+        if self.max_drain_blocks_per_step < 0:
+            raise ValueError(
+                "max_drain_blocks_per_step must be >= 0, got "
+                f"{self.max_drain_blocks_per_step}"
+            )
+        if self.idle_drain_max_ops < 0:
+            raise ValueError(
+                f"idle_drain_max_ops must be >= 0, got {self.idle_drain_max_ops}"
+            )
+        if self.idle_threshold_blocks <= 0:
+            raise ValueError(
+                f"idle_threshold_blocks must be > 0, got {self.idle_threshold_blocks}"
             )
 
 
@@ -429,6 +476,15 @@ class LazyOffloadCounters:
     is timing the stores. It is a subset of ``emitted``, not a separate
     outcome, so it does not enter the admission ledger's arithmetic.
 
+    ``idle_emitted`` and ``idle_drain_steps`` are the effectiveness
+    sensors for :attr:`LazyOffloadPolicyConfig.idle_drain_max_ops`:
+    operations emitted because the step was idle rather than because their
+    blocks came under eviction pressure, and the drains in which at least
+    one such emission happened. ``idle_emitted`` is a subset of
+    ``emitted``, like ``backlog_emitted``; zero alongside a standing
+    backlog means the workload never presents an idle step, or the
+    threshold sits below its decode-only allocation rate.
+
     ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated``,
     ``blocks_validated`` and ``covered_blocks_probed`` are the cost sensors
     for the per-step decision
@@ -454,6 +510,8 @@ class LazyOffloadCounters:
     covered_prefix_advances: int = 0
     covered_prefix_tokens_skipped: int = 0
     backlog_emitted: int = 0
+    idle_emitted: int = 0
+    idle_drain_steps: int = 0
     throttled_drains: int = 0
     drain_steps: int = 0
     free_queue_blocks_read: int = 0
@@ -470,7 +528,7 @@ class LazyOffloadCounters:
         quiet on an engine that is merely running.
 
         Returns:
-            Every counter except the four per-step cost sensors, in
+            Every counter except the five per-step cost sensors, in
             declaration order.
         """
         return (
@@ -487,6 +545,8 @@ class LazyOffloadCounters:
             self.covered_prefix_advances,
             self.covered_prefix_tokens_skipped,
             self.backlog_emitted,
+            self.idle_emitted,
+            self.idle_drain_steps,
             self.throttled_drains,
         )
 
@@ -511,7 +571,8 @@ class DrainResult:
             this drain. The controller combines this fact with request phase
             and submitted-batch state before ending a session.
         ops_held_back: Operations this drain found due but did not emit
-            because ``max_drain_per_step`` ran out. They stay pending and
+            because the emission budget (``max_drain_per_step`` or
+            ``max_drain_blocks_per_step``) ran out. They stay pending and
             are emitted by a later drain if their blocks survive that long.
             Counts only the segment the cap cut, so it is a lower bound:
             candidates the loop never reached are not counted, their
@@ -523,6 +584,59 @@ class DrainResult:
     dropped_short_prefix: list[PendingStoreOp] = field(default_factory=list)
     emptied_requests: list[str] = field(default_factory=list)
     ops_held_back: int = 0
+
+
+class _DrainBudget:
+    """One drain's shared emission allowance: operations and blocks.
+
+    Every emission path of a drain -- pressure, backlog, idle -- spends
+    from the same budget, so the per-step caps bound the step's total D2H
+    submission no matter which path asked. The block bound is soft: the
+    operation that crosses it is still taken, because progress must not
+    depend on an operation fitting under the cap, and the overshoot is
+    charged so everything after it waits for the next step.
+    """
+
+    def __init__(self, max_ops: int, max_blocks: int) -> None:
+        """Create the budget of a single drain.
+
+        Args:
+            max_ops: Operations the drain may emit. Must be >= 1.
+            max_blocks: GPU blocks the drain may emit; 0 means unbounded.
+        """
+        self._ops_left = max_ops
+        self._blocks_left = max_blocks if max_blocks > 0 else None
+
+    def exhausted(self) -> bool:
+        """Whether nothing more may be emitted by this drain."""
+        return self._ops_left <= 0 or (
+            self._blocks_left is not None and self._blocks_left <= 0
+        )
+
+    def take(self, ops: list[PendingStoreOp]) -> list[PendingStoreOp]:
+        """Take the front slice of ``ops`` the budget still allows.
+
+        Charges the budget for what it returns: the slice ends before the
+        first operation the remaining op count cannot pay for or that
+        starts at or past the block bound. While the budget is not
+        exhausted the first operation is always taken, even one larger
+        than the whole block bound (see the class docstring).
+
+        Args:
+            ops: Candidate operations in emission order.
+
+        Returns:
+            The operations to emit now, a front slice of ``ops``.
+        """
+        taken: list[PendingStoreOp] = []
+        for op in ops:
+            if self.exhausted():
+                break
+            taken.append(op)
+            self._ops_left -= 1
+            if self._blocks_left is not None:
+                self._blocks_left -= len(op.block_hashes)
+        return taken
 
 
 class _PendingOperations:
@@ -1083,6 +1197,15 @@ class EvictionAwareStoreQueue:
         the pool directly, not of the window, so a pin deeper than the
         window still counts and the widening cannot stall behind itself.
 
+        After the pressure pass, budget left over goes to the backlog cap
+        (``max_pending_ops``) and then, when the step's allocation rate is
+        at or below ``idle_threshold_blocks``, to idle draining: up to
+        ``idle_drain_max_ops`` of the oldest operations are emitted so the
+        backlog is worked off in the gaps between bursts instead of in
+        phase with them. All paths spend from one budget, capped in
+        operations (``max_drain_per_step``) and, when configured, in
+        blocks (``max_drain_blocks_per_step``).
+
         Args:
             blocked_request_ids: Requests that already have a store batch in
                 flight. They are left pending, and any validation this
@@ -1195,7 +1318,10 @@ class EvictionAwareStoreQueue:
         # full pending-queue scan on every scheduler step.
         discover(self._pending_ops.requests_to_check(window.ranks))
 
-        budget = self._config.max_drain_per_step
+        budget = _DrainBudget(
+            self._config.max_drain_per_step,
+            self._config.max_drain_blocks_per_step,
+        )
         # Blocks this drain has pinned out of the free queue, and so the
         # distance every block behind them moves toward the head. A shared
         # block shifts the queue only on its first pin; a block that was
@@ -1206,7 +1332,7 @@ class EvictionAwareStoreQueue:
         # visits each request at most once, but the backlog drain iterates
         # independently and must not put a second batch in flight.
         emitted_request_ids: set[str] = set()
-        while budget > 0:
+        while not budget.exhausted():
             threshold = danger_depth + shift_blocks
             if window.depth() < threshold:
                 revealed = window.extend_to(threshold)
@@ -1239,9 +1365,8 @@ class EvictionAwareStoreQueue:
                 self._broken_prefixes.add(request_id)
                 self._replace_pending(request_id, surviving, [], result)
                 continue
-            emitted = due_ops[:budget]
+            emitted = budget.take(due_ops)
             result.ops_held_back += len(due_ops) - len(emitted)
-            budget -= len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
             newly_pinned = {
@@ -1256,20 +1381,22 @@ class EvictionAwareStoreQueue:
             self._replace_pending(request_id, emitted, remaining, result)
             emitted_request_ids.add(request_id)
         self._counters.free_queue_blocks_read += window.depth()
-        if budget > 0 and self._config.max_pending_ops > 0:
-            self._drain_backlog(
-                budget,
-                blocked_request_ids | emitted_request_ids,
-                surviving_by_request,
-                result,
-            )
+        skip_request_ids = blocked_request_ids | emitted_request_ids
+        if not budget.exhausted() and self._config.max_pending_ops > 0:
+            self._drain_backlog(budget, skip_request_ids, surviving_by_request, result)
+        if (
+            not budget.exhausted()
+            and self._config.idle_drain_max_ops > 0
+            and self._step_is_idle()
+        ):
+            self._drain_idle(budget, skip_request_ids, surviving_by_request, result)
         if result.ops_held_back:
             self._counters.throttled_drains += 1
         return result
 
     def _drain_backlog(
         self,
-        budget: int,
+        budget: _DrainBudget,
         skip_request_ids: set[str],
         surviving_by_request: dict[str, list[PendingStoreOp]],
         result: DrainResult,
@@ -1293,12 +1420,12 @@ class EvictionAwareStoreQueue:
         a pressure-driven emission.
 
         Args:
-            budget: Operations this step may still emit
-                (``max_drain_per_step`` less what pressure already spent).
-                Must be positive.
+            budget: The drain's shared emission budget, not yet exhausted.
             skip_request_ids: Requests that must not emit -- ones with a
                 batch already in flight, and ones this drain already
-                emitted for.
+                emitted for. Requests this method emits for are added, so
+                a later emission path cannot put a second batch of theirs
+                in flight.
             surviving_by_request: Loss-check results this drain already
                 computed, extended in place for requests it reaches first.
                 Reusing it keeps a request's snapshots validated once per
@@ -1307,7 +1434,7 @@ class EvictionAwareStoreQueue:
         """
         cap = self._config.max_pending_ops
         for request_id in self._pending_ops.requests_in_admission_order():
-            if budget <= 0 or self._pending_ops.num_ops() <= cap:
+            if budget.exhausted() or self._pending_ops.num_ops() <= cap:
                 return
             if request_id in skip_request_ids:
                 continue
@@ -1333,16 +1460,105 @@ class EvictionAwareStoreQueue:
             # the backlog, not an instruction to empty it.
             overflow = self._pending_ops.num_ops() - cap
             due_ops = _contiguous_front_run(surviving)
-            emitted = due_ops[: min(budget, overflow)]
+            emitted = budget.take(due_ops[:overflow])
             if not emitted:
                 continue
-            budget -= len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
             self._counters.backlog_emitted += len(emitted)
             self._replace_pending(
                 request_id, emitted, surviving[len(emitted) :], result
             )
+            skip_request_ids.add(request_id)
+
+    def _drain_idle(
+        self,
+        budget: "_DrainBudget",
+        skip_request_ids: set[str],
+        surviving_by_request: dict[str, list[PendingStoreOp]],
+        result: DrainResult,
+    ) -> None:
+        """Emit the oldest waiting operations while the step is idle.
+
+        Eviction pressure times an emission to the moment its blocks are
+        about to be reallocated -- which is exactly when a prefill burst
+        is allocating, so the D2H copy lands in phase with the burst it
+        waited for. An idle step is the opposite moment: nothing is being
+        allocated, writing waiting content down costs the step nothing,
+        and every operation emitted now is one a later burst does not have
+        to flush in phase with itself.
+
+        Requests are taken in admission order and each contributes the
+        contiguous front run of its surviving operations, exactly as in
+        the backlog drain: prefix closure and one batch per request hold
+        unchanged. What an idle emission gives up is filtering -- content
+        evicted after the emission is stored either way -- which is why
+        the per-step allowance exists instead of the idle path emptying
+        the backlog outright.
+
+        Args:
+            budget: The drain's shared emission budget, not yet exhausted.
+            skip_request_ids: Requests that must not emit -- ones with a
+                batch already in flight, and ones this drain already
+                emitted for. Requests this method emits for are added.
+            surviving_by_request: Loss-check results this drain already
+                computed, extended in place for requests it reaches first.
+                Reusing it keeps a request's snapshots validated once per
+                step.
+            result: The drain result to extend with emissions and drops.
+        """
+        allowance = self._config.idle_drain_max_ops
+        emitted_any = False
+        for request_id in self._pending_ops.requests_in_admission_order():
+            if allowance <= 0 or budget.exhausted():
+                break
+            if request_id in skip_request_ids:
+                continue
+            surviving = surviving_by_request.get(request_id)
+            if surviving is None:
+                ops = self._pending_ops.get(request_id)
+                if not ops:
+                    continue
+                surviving = self._drop_evicted_suffix(request_id, ops, result)
+                self._pending_ops.validation_complete(request_id)
+                surviving_by_request[request_id] = surviving
+            if not surviving:
+                continue
+            if self._fails_economy_gate(surviving):
+                # Same backstop as the other paths: a chain eviction
+                # truncated back below break-even can never regrow (its
+                # prefix is marked broken) and is not worth storing.
+                result.dropped_short_prefix.extend(surviving)
+                self._counters.rejected_short_prefix += len(surviving)
+                self._broken_prefixes.add(request_id)
+                self._replace_pending(request_id, surviving, [], result)
+                continue
+            due_ops = _contiguous_front_run(surviving)
+            emitted = budget.take(due_ops[:allowance])
+            if not emitted:
+                continue
+            allowance -= len(emitted)
+            result.to_store.extend(emitted)
+            self._counters.emitted += len(emitted)
+            self._counters.idle_emitted += len(emitted)
+            self._replace_pending(
+                request_id, emitted, surviving[len(emitted) :], result
+            )
+            skip_request_ids.add(request_id)
+            emitted_any = True
+        if emitted_any:
+            self._counters.idle_drain_steps += 1
+
+    def _step_is_idle(self) -> bool:
+        """Whether the last observed step ran at an idle allocation rate.
+
+        Both the smoothed rate and the next step's estimate must sit at or
+        below the threshold: the estimate vetoes the first step of a burst
+        before the EMA has caught up, and the EMA vetoes the trailing
+        steps of one after the estimate has already fallen.
+        """
+        rate = max(self._blocks_per_step_ema, float(self._next_step_estimate))
+        return rate <= self._config.idle_threshold_blocks
 
     def _danger_depth(self) -> int:
         """Free-queue depth considered at risk within the horizon.

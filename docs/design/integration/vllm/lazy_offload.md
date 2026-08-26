@@ -391,6 +391,9 @@ lmcache.mp.lazy_offload_horizon_steps = 2.5
 lmcache.mp.lazy_offload_min_prefix_tokens = 0
 lmcache.mp.lazy_offload_max_drain_per_step = 64
 lmcache.mp.lazy_offload_max_pending_ops = 0     # 0: backlog unbounded
+lmcache.mp.lazy_offload_max_drain_blocks_per_step = 0  # 0: volume unbounded
+lmcache.mp.lazy_offload_idle_drain_max_ops = 0  # 0: idle drain disabled
+lmcache.mp.lazy_offload_idle_threshold_blocks = 1.0
 lmcache.mp.lazy_offload_store_release = lru_tail  # or: eviction_head
 
 # Explicit legacy FIFO mode only
