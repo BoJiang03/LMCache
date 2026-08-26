@@ -219,7 +219,10 @@ def _deployment_harness(
     metrics: dict[str, object],
     cache_capacity_gb: float = 0.0,
 ) -> "Iterator[MMHarness]":
-    """Yield a harness on the only deployment path *spec* can actually run.
+    """Yield a harness on the deployment path selected for *spec*.
+
+    ``LMCACHE_MM_E2E_PATH`` chooses it (see
+    ``harness.selected_deployment_path``); a hybrid model has no choice.
 
     A model with more than one KV cache group needs vLLM's hybrid KV cache
     manager, and vLLM offers that only to connectors implementing
@@ -350,19 +353,12 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
         )
         for pad in CHUNKED_PAD_PHASES
     }
-    with tempfile.TemporaryDirectory() as tmp:
-        baselines = compute_baselines(
-            spec,
-            [r for pair in pairs.values() for r in pair],
-            pathlib.Path(tmp),
-            extra_engine_kwargs=engine_kwargs,
-        )
-    harness = MMHarness(spec, baselines=baselines, extra_engine_kwargs=engine_kwargs)
     failures: list[str] = []
-    metrics: dict[str, dict] = {}
-    stored_before = harness.stored_tokens_total()
-    total_missed = 0
-    try:
+    metrics: dict[str, object] = {}
+    requests = [r for pair in pairs.values() for r in pair]
+    with _deployment_harness(spec, requests, engine_kwargs, metrics) as harness:
+        stored_before = harness.stored_tokens_total()
+        total_missed = 0
         for pad, (req_a, req_b) in pairs.items():
             a1 = harness.run(req_a)
             _expect(
@@ -422,8 +418,6 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
             f"tokens but only {stored_delta} were store-requested",
         )
         metrics["stored_delta"] = {"stored": stored_delta, "missed": total_missed}
-    finally:
-        harness.close()
     return {"failures": failures, "metrics": metrics}
 
 
@@ -448,7 +442,9 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     # Assert against the capacity actually configured, not a nominal one the
     # tier never agreed to.
     capacity_gb = spec.eviction_capacity_gb or (
-        EVICTION_CAPACITY_GB_MP if spec.hybrid_block_tokens else EVICTION_CAPACITY_GB
+        EVICTION_CAPACITY_GB_MP
+        if selected_deployment_path(spec) is DeploymentPath.MP
+        else EVICTION_CAPACITY_GB
     )
     capacity_bytes = int(capacity_gb * 1024**3)
     metrics["capacity_gb"] = capacity_gb
