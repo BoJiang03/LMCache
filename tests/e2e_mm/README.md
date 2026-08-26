@@ -91,6 +91,7 @@ Environment knobs:
 | `LMCACHE_MM_E2E` | unset | Must be `1` for any test to run (opt-in guard). |
 | `LMCACHE_MM_E2E_MODELS` | `qwen2.5-vl-3b` | Comma-separated model keys from `specs.py`. |
 | `LMCACHE_MM_E2E_PRESSURE_N` | `64` | Number of distinct images in the collision pressure test (T0.2). Nightly runs should raise this to `1000`. |
+| `LMCACHE_MM_E2E_PATH` | `auto` | Deployment path: `auto` runs hybrids on the multi-process path and every other model in-process, `mp` runs every model on the multi-process path, `in_process` forces the in-process path (rejected for a hybrid model). |
 
 Run from inside `tests/e2e_mm` so its local `pytest.ini` anchors the rootdir
 and the global `tests/conftest.py` (autouse mocks and allocator patches that

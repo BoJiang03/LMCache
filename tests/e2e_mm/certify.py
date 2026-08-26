@@ -33,7 +33,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 # First Party (test-local)
 from benchmark_parity import parity_gate  # noqa: E402
-from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
+from harness import (  # noqa: E402
+    LMCACHE_TEST_CHUNK_SIZE,
+    DeploymentPath,
+    selected_deployment_path,
+)
 from isolated_routing import (  # noqa: E402
     CAPACITY_EVICTION,
     CHUNKED_PREFILL,
@@ -79,6 +83,14 @@ MEDIA_PREFIX_NOT_COVERED = (
 DUAL_PATH_NOT_COVERED = [
     "MP path chunk-boundary phases and collision pressure "
     "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
+]
+
+# Additional exclusion for a NON-hybrid model run with
+# ``LMCACHE_MM_E2E_PATH=mp``: nothing was measured in-process. Unlike a
+# hybrid, this model could run there -- it just was not run there.
+MP_ONLY_NOT_COVERED = [
+    "the in-process LMCacheConnectorV1 path: this run certified the "
+    "multi-process deployment path only (LMCACHE_MM_E2E_PATH=mp)",
 ]
 
 # Additional exclusions for ANY multi-KV-group model, which is MP-only.
@@ -341,7 +353,11 @@ def git_dirty(cwd: pathlib.Path) -> bool:
 
 
 IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
-MP_PATH = (
+# The whole suite ran on the MP path (every hybrid, and any model run with
+# ``LMCACHE_MM_E2E_PATH=mp``).
+MP_PATH_FULL = "LMCacheMPConnector + MP cache server (single GPU, TP=1)"
+# Only the T3 scenario crossed the transport; the bulk ran in-process.
+MP_PATH_T3_CORE = (
     "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
 )
 
@@ -349,12 +365,13 @@ MP_PATH = (
 def certified_scope(spec: ModelSpec) -> dict:
     """Describe exactly what a green run for ``spec`` covers.
 
-    The scope is deployment-path dependent: a model whose KV cache vLLM
-    splits into several groups runs the whole suite on the MP path (the
-    in-process connector cannot serve it) at that model's chunk
-    granularity, while every other model runs the bulk in-process at the
-    16-token LMCache chunk size and crosses the transport in the T3
-    scenario only.
+    The scope follows the deployment path the run actually took (see
+    ``harness.selected_deployment_path``): on the MP path the whole suite
+    crossed the transport, and for a model whose KV cache vLLM splits into
+    several groups that is the only path there is -- the in-process
+    connector cannot serve it. An in-process run keeps its bulk in-process
+    at the 16-token LMCache chunk size and crosses the transport in the T3
+    scenario only, so it claims both paths at different depths.
 
     Args:
         spec: The model under certification.
@@ -363,17 +380,24 @@ def certified_scope(spec: ModelSpec) -> dict:
         The certificate's ``scope`` block: deployment paths, modalities,
         cache granularity, storage backend and scheduling regimes proven.
     """
-    if spec.hybrid_block_tokens:
+    if selected_deployment_path(spec) is DeploymentPath.MP:
+        hybrid = bool(spec.hybrid_block_tokens)
         return {
-            "deployment_paths": [MP_PATH],
+            "deployment_paths": [MP_PATH_FULL],
             "modalities": sorted(spec.modalities),
-            "chunk_size": spec.hybrid_block_tokens,
-            "chunk_size_note": _CHUNK_NOTE[spec.hybrid_family],
-            "backend": "MP cache server L1, separate object groups",
+            "chunk_size": spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+            "chunk_size_note": (
+                _CHUNK_NOTE[spec.hybrid_family] if hybrid else "LMCache chunk size"
+            ),
+            "backend": (
+                "MP cache server L1, separate object groups"
+                if hybrid
+                else "MP cache server L1"
+            ),
             "scheduling": _scheduling(spec),
         }
     return {
-        "deployment_paths": [IN_PROCESS_PATH, MP_PATH],
+        "deployment_paths": [IN_PROCESS_PATH, MP_PATH_T3_CORE],
         "modalities": sorted(spec.modalities),
         "chunk_size": LMCACHE_TEST_CHUNK_SIZE,
         "chunk_size_note": "LMCache chunk size",
@@ -411,6 +435,8 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     if not spec.media_prefix_stable:
         base.append(MEDIA_PREFIX_NOT_COVERED)
     if not spec.hybrid_block_tokens:
+        if selected_deployment_path(spec) is DeploymentPath.MP:
+            return base + MP_ONLY_NOT_COVERED
         return base + DUAL_PATH_NOT_COVERED
     extra = list(HYBRID_NOT_COVERED)
     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
@@ -563,7 +589,7 @@ def load_parity_report(
         )
     # Reports recorded before the field existed are all in-process runs.
     recorded_path = report.get("deployment_path", "in_process")
-    expected_path = "mp" if spec.hybrid_block_tokens else "in_process"
+    expected_path = selected_deployment_path(spec).value
     if recorded_path != expected_path:
         raise ValueError(
             f"parity report {path} was produced on the {recorded_path!r} "

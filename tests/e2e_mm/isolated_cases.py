@@ -39,9 +39,11 @@ from catalog import (
 )
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
 from harness import (
+    DeploymentPath,
     MMHarness,
     MPHarness,
     compute_baselines,
+    selected_deployment_path,
     start_mp_cache_server,
     vllm_preemption_total,
 )
@@ -260,7 +262,7 @@ def _deployment_harness(
             spec, requests, tmpdir, extra_engine_kwargs=extra_engine_kwargs
         )
 
-        if not spec.hybrid_block_tokens:
+        if selected_deployment_path(spec) is DeploymentPath.IN_PROCESS:
             # Pass the capacity only when one is imposed, so the harness's
             # own default stays the single source of truth for it.
             capacity_kwargs: dict[str, float] = {}
@@ -285,13 +287,19 @@ def _deployment_harness(
             zmq_port=zmq_port,
             http_port=http_port,
             # A hybrid's chunk must be vLLM's unified block size, and its
-            # per-group layers need their own cache objects.
-            chunk_size=spec.hybrid_block_tokens,
+            # per-group layers need their own cache objects; a non-hybrid
+            # model forced onto this path keeps the in-process chunk size.
+            chunk_size=spec.hybrid_block_tokens or CHUNK,
             log_path=log_path,
             l1_size_gb=(
-                cache_capacity_gb or spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID
+                cache_capacity_gb
+                or (
+                    (spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID)
+                    if spec.hybrid_block_tokens
+                    else MP_SERVER_L1_GB
+                )
             ),
-            separate_object_groups=True,
+            separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
         harness = MPHarness(

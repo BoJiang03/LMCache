@@ -40,6 +40,12 @@ HYBRID_WORDS_PER_TOKEN = 1.0
 # override this via ``ModelSpec.mp_server_l1_gb``; too small a capacity
 # evicts inside a test and fails its store-conservation audit.
 HYBRID_MP_SERVER_L1_GB = 60.0
+# The MP cache server backing a NON-hybrid run forced onto the MP path with
+# ``LMCACHE_MM_E2E_PATH=mp``. Mirrors the local CPU pool the in-process path
+# gets from ``configure_environment``, so the two paths certify the same
+# model under the same capacity and an eviction test means the same thing on
+# both.
+MM_MP_SERVER_L1_GB = 40.0
 
 
 def pytest_configure(config):
@@ -181,12 +187,15 @@ def _model_keys() -> list[str]:
 def harness(request, tmp_path_factory):
     """Session harness for one model: baselines + LMCache engine.
 
-    A Mamba/GDN hybrid model runs on the MP deployment path with a cache
-    server started here: vLLM's hybrid KV cache manager is only offered to
-    connectors that advertise support for it, and the in-process
-    ``LMCacheConnectorV1`` does not — it fails engine init outright
-    ("Hybrid KV cache manager is disabled but failed to convert the KV
-    cache specs to one unified type").
+    ``LMCACHE_MM_E2E_PATH`` selects the deployment path (see
+    ``harness.selected_deployment_path``); on the MP path a cache server is
+    started here and torn down with the harness.
+
+    A Mamba/GDN hybrid model always takes the MP path: vLLM's hybrid KV
+    cache manager is only offered to connectors that advertise support for
+    it, and the in-process ``LMCacheConnectorV1`` does not — it fails
+    engine init outright ("Hybrid KV cache manager is disabled but failed
+    to convert the KV cache specs to one unified type").
     """
     from catalog import (
         audio_requests,
@@ -196,10 +205,13 @@ def harness(request, tmp_path_factory):
         video_requests,
     )
     from harness import (
+        LMCACHE_TEST_CHUNK_SIZE,
+        DeploymentPath,
         MMHarness,
         MPHarness,
         compute_baselines,
         configure_environment,
+        selected_deployment_path,
         start_mp_cache_server,
     )
     from specs import MODEL_SPECS
@@ -225,19 +237,26 @@ def harness(request, tmp_path_factory):
         all_requests += list(cross_modal_requests().values())
     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
     baselines = compute_baselines(spec, all_requests, workdir)
-    if not spec.hybrid_block_tokens:
+    if selected_deployment_path(spec) is DeploymentPath.IN_PROCESS:
         h = MMHarness(spec, baselines)
         yield h
         h.close()
         return
 
+    # A hybrid's chunk must be vLLM's unified block size, and its
+    # recurrent-state layers need cache objects of their own; a non-hybrid
+    # model on this path keeps the chunk size the in-process path uses.
     server = start_mp_cache_server(
         zmq_port=24000 + (os.getpid() % 1000),
         http_port=24000 + (os.getpid() % 1000) + 1000,
-        chunk_size=spec.hybrid_block_tokens,
+        chunk_size=spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
         log_path=workdir / "mp_server.log",
-        l1_size_gb=spec.mp_server_l1_gb or HYBRID_MP_SERVER_L1_GB,
-        separate_object_groups=True,
+        l1_size_gb=(
+            (spec.mp_server_l1_gb or HYBRID_MP_SERVER_L1_GB)
+            if spec.hybrid_block_tokens
+            else MM_MP_SERVER_L1_GB
+        ),
+        separate_object_groups=bool(spec.hybrid_block_tokens),
     )
     # The hybrid engine settings themselves come from the spec via
     # MMHarness (shared with the baseline engine).

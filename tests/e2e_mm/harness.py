@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 import contextlib
+import enum
 import json
 import os
 import pathlib
@@ -25,6 +26,60 @@ from catalog import MMRequest
 from specs import HybridFamily, ModelSpec
 
 LMCACHE_TEST_CHUNK_SIZE = 16
+
+# Deployment path selection. Multi-process is the mode this project supports
+# first, so the suite must be able to certify ANY model on it -- not only the
+# Mamba/GDN hybrids that have no choice (vLLM offers its hybrid KV cache
+# manager only to connectors advertising ``SupportsHMA``, which the
+# in-process ``LMCacheConnectorV1`` does not, so a hybrid fails engine init
+# on that path). Default routing keeps the historical split.
+DEPLOYMENT_PATH_ENV_VAR = "LMCACHE_MM_E2E_PATH"
+
+
+class DeploymentPath(enum.Enum):
+    """Which LMCache deployment the harness drives for one model."""
+
+    IN_PROCESS = "in_process"
+    MP = "mp"
+
+
+def selected_deployment_path(spec: ModelSpec) -> DeploymentPath:
+    """Resolve the deployment path for one model from the environment.
+
+    ``LMCACHE_MM_E2E_PATH`` selects it: ``auto`` (the default) sends
+    hybrids to the multi-process path and every other model in-process;
+    ``mp`` sends every model to the multi-process path; ``in_process``
+    forces the in-process path, which a hybrid model cannot use.
+
+    Args:
+        spec: The model under certification.
+
+    Returns:
+        The deployment path this model's harness must use.
+
+    Raises:
+        ValueError: If the variable holds an unknown value, or asks for
+            the in-process path for a hybrid model.
+    """
+    requested = os.environ.get(DEPLOYMENT_PATH_ENV_VAR, "auto").strip().lower()
+    known = {"auto"} | {member.value for member in DeploymentPath}
+    if requested not in known:
+        raise ValueError(
+            f"{DEPLOYMENT_PATH_ENV_VAR}={requested!r} is not one of {sorted(known)}"
+        )
+    if spec.hybrid_block_tokens:
+        if requested == DeploymentPath.IN_PROCESS.value:
+            raise ValueError(
+                f"{spec.key} is a hybrid model: vLLM's hybrid KV cache "
+                "manager is offered only to connectors advertising "
+                "SupportsHMA, so the in-process path fails engine init. "
+                f"Drop {DEPLOYMENT_PATH_ENV_VAR} or set it to 'mp'."
+            )
+        return DeploymentPath.MP
+    if requested == DeploymentPath.MP.value:
+        return DeploymentPath.MP
+    return DeploymentPath.IN_PROCESS
+
 
 # Salt for the startup probe that checks media/text ordering. Deliberately
 # not a real case salt: it must never collide with one, and it must be a
