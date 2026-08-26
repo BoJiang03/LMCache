@@ -51,6 +51,10 @@ class ModelSpec:
         gpu_memory_utilization: Fraction of GPU memory for the engine.
         extra_suites: Special-architecture add-on suites this model needs
             (e.g. "deepstack", "bidirectional_image_attn", "modality_lora").
+            A declared suite the repo cannot currently run is NOT dropped
+            from the spec: it is a property of the model, and ``certify``
+            turns it into an exclusion so the gap is stated rather than
+            forgotten (see ``certify.DEEPSTACK_NOT_COVERED``).
         chat_template_kwargs: Extra kwargs passed to every ``llm.chat`` call
             (test engine, baseline runner, and MME parity runs alike), e.g.
             ``{"enable_thinking": False}`` for hybrid-thinking models whose
@@ -399,8 +403,10 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # DeepStack: the vision tower emits multiscale features from ViT
             # layers 5/11/17 that vLLM injects into LLM layers 0-2 via a
             # per-step side buffer OUTSIDE the paged KV. The add-on suite
-            # verifies the LMCache resume path against KV recomputed with
-            # that injection (see test_deepstack.py).
+            # that verified the LMCache resume path against KV recomputed
+            # with that injection needed to read stored KV back, which only
+            # the removed in-process path could do; the declaration stays
+            # so every certificate carries the gap as an exclusion.
             extra_suites=frozenset({"deepstack"}),
             # New-style processor size cap (Qwen2VLImageProcessorFast):
             # 16x16 patches with 2x2 merge = 1024 pixels per token, so

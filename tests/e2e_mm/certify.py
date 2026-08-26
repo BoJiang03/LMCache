@@ -33,11 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 # First Party (test-local)
 from benchmark_parity import parity_gate  # noqa: E402
-from harness import (  # noqa: E402
-    LMCACHE_TEST_CHUNK_SIZE,
-    DeploymentPath,
-    selected_deployment_path,
-)
+from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
 from isolated_routing import (  # noqa: E402
     CAPACITY_EVICTION,
     CHUNKED_PREFILL,
@@ -78,26 +74,36 @@ MEDIA_PREFIX_NOT_COVERED = (
     "reuse when the list grows"
 )
 
-# Additional exclusions for a model certified on both paths: the suite's
-# bulk runs in-process and only the T3 scenario crosses the transport.
-DUAL_PATH_NOT_COVERED = [
-    "MP path chunk-boundary phases and collision pressure "
-    "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
-]
+# The suite drives ONE deployment. Stated on every certificate, because a
+# reader who knows LMCache also ships an in-process connector would
+# otherwise have to guess whether it was covered.
+IN_PROCESS_NOT_COVERED = (
+    "the in-process LMCacheConnectorV1 path: the suite drives the "
+    "multi-process deployment only and no longer contains an in-process "
+    "harness (removed 2026-08-26; git history and branch "
+    "archive/e2e_mm-inprocess-and-mp carry it)"
+)
 
-# Additional exclusion for a NON-hybrid model run with
-# ``LMCACHE_MM_E2E_PATH=mp``: nothing was measured in-process. Unlike a
-# hybrid, this model could run there -- it just was not run there.
-MP_ONLY_NOT_COVERED = [
-    "the in-process LMCacheConnectorV1 path: this run certified the "
-    "multi-process deployment path only (LMCACHE_MM_E2E_PATH=mp)",
-]
+# Exclusion for a model whose spec declares the deepstack add-on suite.
+# That suite's oracle read stored KV back out of the in-process
+# LocalCPUBackend and compared it against a pre-eviction copy; the MP cache
+# server exposes no way to read a stored object back (its object listing
+# covers L2 only, and its checksum API hashes GPU blocks, which a recompute
+# never reproduces bit-exactly), so the suite cannot run at all. Every
+# output-based oracle was MEASURED blind to this fault class -- disabling
+# the injection entirely changed no output byte -- so there is nothing
+# weaker to fall back on. See records/2026/08/26.
+DEEPSTACK_NOT_COVERED = (
+    "mid-image-span resume of the DeepStack side buffer (TD.1-TD.4): the "
+    "only oracle sensitive to a lost or misaligned payload compares stored "
+    "KV before and after the resume, which requires reading a stored object "
+    "back -- the MP cache server has no such API, so the add-on suite was "
+    "removed with the in-process path rather than replaced by a check "
+    "measured to be blind"
+)
 
-# Additional exclusions for ANY multi-KV-group model, which is MP-only.
+# Additional exclusions for ANY multi-KV-group model.
 HYBRID_NOT_COVERED = [
-    "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
-    "cache manager only to connectors that advertise support for it, so a "
-    "hybrid model fails engine init there outright",
     "recovery from a failed KV load (the connector's degraded mode): vLLM "
     "rewinds the affected requests through "
     "`_update_requests_with_invalid_blocks`, which unpacks a single KV "
@@ -352,56 +358,36 @@ def git_dirty(cwd: pathlib.Path) -> bool:
     return bool(status.stdout.strip()) if status.returncode == 0 else False
 
 
-IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
-# The whole suite ran on the MP path (every hybrid, and any model run with
-# ``LMCACHE_MM_E2E_PATH=mp``).
 MP_PATH_FULL = "LMCacheMPConnector + MP cache server (single GPU, TP=1)"
-# Only the T3 scenario crossed the transport; the bulk ran in-process.
-MP_PATH_T3_CORE = (
-    "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
-)
 
 
 def certified_scope(spec: ModelSpec) -> dict:
     """Describe exactly what a green run for ``spec`` covers.
 
-    The scope follows the deployment path the run actually took (see
-    ``harness.selected_deployment_path``): on the MP path the whole suite
-    crossed the transport, and for a model whose KV cache vLLM splits into
-    several groups that is the only path there is -- the in-process
-    connector cannot serve it. An in-process run keeps its bulk in-process
-    at the 16-token LMCache chunk size and crosses the transport in the T3
-    scenario only, so it claims both paths at different depths.
+    Every tier of the suite crosses the MP transport -- it is the only
+    deployment the harness builds -- so the scope names one path, and the
+    in-process connector appears in the exclusions instead.
 
     Args:
         spec: The model under certification.
 
     Returns:
-        The certificate's ``scope`` block: deployment paths, modalities,
+        The certificate's ``scope`` block: deployment path, modalities,
         cache granularity, storage backend and scheduling regimes proven.
     """
-    if selected_deployment_path(spec) is DeploymentPath.MP:
-        hybrid = bool(spec.hybrid_block_tokens)
-        return {
-            "deployment_paths": [MP_PATH_FULL],
-            "modalities": sorted(spec.modalities),
-            "chunk_size": spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
-            "chunk_size_note": (
-                _CHUNK_NOTE[spec.hybrid_family] if hybrid else "LMCache chunk size"
-            ),
-            "backend": (
-                "MP cache server L1, separate object groups"
-                if hybrid
-                else "MP cache server L1"
-            ),
-            "scheduling": _scheduling(spec),
-        }
+    hybrid = bool(spec.hybrid_block_tokens)
     return {
-        "deployment_paths": [IN_PROCESS_PATH, MP_PATH_T3_CORE],
+        "deployment_paths": [MP_PATH_FULL],
         "modalities": sorted(spec.modalities),
-        "chunk_size": LMCACHE_TEST_CHUNK_SIZE,
-        "chunk_size_note": "LMCache chunk size",
-        "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+        "chunk_size": spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+        "chunk_size_note": (
+            _CHUNK_NOTE[spec.hybrid_family] if hybrid else "LMCache chunk size"
+        ),
+        "backend": (
+            "MP cache server L1, separate object groups"
+            if hybrid
+            else "MP cache server L1"
+        ),
         "scheduling": _scheduling(spec),
     }
 
@@ -417,11 +403,13 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
         spec: The model under certification.
 
     Returns:
-        The universal exclusions, the modality ones this model's spec
-        implies, plus the ones its deployment path adds.
+        The universal exclusions plus the ones this model's spec implies.
     """
     scenarios = isolated_scenarios(spec)
     base = list(KNOWN_NOT_COVERED)
+    base.append(IN_PROCESS_NOT_COVERED)
+    if "deepstack" in spec.extra_suites:
+        base.append(DEEPSTACK_NOT_COVERED)
     if "audio" not in spec.modalities:
         base.append(AUDIO_NOT_COVERED)
     # Checked for EVERY model, not just hybrids. Molmo 2 is the first
@@ -435,9 +423,7 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
     if not spec.media_prefix_stable:
         base.append(MEDIA_PREFIX_NOT_COVERED)
     if not spec.hybrid_block_tokens:
-        if selected_deployment_path(spec) is DeploymentPath.MP:
-            return base + MP_ONLY_NOT_COVERED
-        return base + DUAL_PATH_NOT_COVERED
+        return base
     extra = list(HYBRID_NOT_COVERED)
     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
         extra += RECURRENT_STATE_NOT_COVERED
@@ -565,10 +551,10 @@ def load_parity_report(
 
     Args:
         path: Path to a report written by ``benchmark_parity.py``.
-        spec: The model under certification; both its id and its deployment
-            path must match the report (a certificate must never cite
-            another model's parity run, nor an in-process run for a model
-            certified on the MP path only).
+        spec: The model under certification; its id must match the report,
+            and the report must have been produced on the multi-process
+            deployment (a certificate must never cite another model's
+            parity run, nor one measured on a path it does not claim).
         max_flip_fraction: Per-model flip-budget override
             (``ModelSpec.mme_max_flip_fraction``); 0 keeps the default.
         min_parse_ratio: Per-model parse-rate floor override
@@ -587,14 +573,14 @@ def load_parity_report(
             f"parity report {path} is for {report.get('model')!r}, "
             f"certificate is for {spec.hf_id!r}"
         )
-    # Reports recorded before the field existed are all in-process runs.
+    # Reports recorded before the field existed are all in-process runs,
+    # which this suite no longer certifies on.
     recorded_path = report.get("deployment_path", "in_process")
-    expected_path = selected_deployment_path(spec).value
-    if recorded_path != expected_path:
+    if recorded_path != "mp":
         raise ValueError(
             f"parity report {path} was produced on the {recorded_path!r} "
-            f"deployment path, but {spec.key} is certified on "
-            f"{expected_path!r}"
+            f"deployment path; certificates cover the multi-process path "
+            f"only, so this report has to be rerun"
         )
     report["gate"] = parity_gate(report, max_flip_fraction, min_parse_ratio)
     return report

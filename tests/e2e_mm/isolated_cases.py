@@ -39,11 +39,8 @@ from catalog import (
 )
 from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
 from harness import (
-    DeploymentPath,
     MMHarness,
-    MPHarness,
     compute_baselines,
-    selected_deployment_path,
     start_mp_cache_server,
     vllm_preemption_total,
 )
@@ -78,21 +75,19 @@ CHUNKED_TOKEN_BUDGET = 128
 # Pad lengths sweep the step boundary across different offsets of the span.
 CHUNKED_PAD_PHASES = (40, 56, 72, 88)
 
-# LMCache local CPU capacity (GB) for the eviction scenario, and the number
-# of distinct images pushed through it. The images' KV must overflow the
+# MP server L1 capacity (GB) for the eviction scenario, and the number of
+# distinct images pushed through it. The images' KV must overflow the
 # capacity several times over; the scenario verifies that it actually did
 # and fails if the traffic never reached capacity.
-EVICTION_CAPACITY_GB = 0.05
 EVICTION_N = 32
 
-# The same cap for the MP path, which needs a different number.
+# The cap must be a whole number of the server allocator's units.
 #
-# The in-process tier honors 0.05 GB to the byte (measured: 53673984 resident
-# against a 53687091 cap). The MP server's host allocator instead expands in
-# 64 MB units, so a request below one unit is silently rounded UP: asking for
-# 0.05 GB yields a 64 MB pool ("Total allocated size: 61.25 MB, free 2.75
-# MB"), and eviction then correctly bounds usage to 64 MB while the scenario
-# compares it against 51.2 MB and calls a working backend broken.
+# The MP server's host allocator expands in 64 MB units, so a request below
+# one unit is silently rounded UP: asking for 0.05 GB yields a 64 MB pool
+# ("Total allocated size: 61.25 MB, free 2.75 MB"), and eviction then
+# correctly bounds usage to 64 MB while the scenario compares it against
+# 51.2 MB and calls a working backend broken.
 #
 # So ask for a whole number of units -- and exactly ONE unit, which is
 # forced rather than tidy. At one unit both registered hybrids overflow the
@@ -108,7 +103,7 @@ EVICTION_N = 32
 # object is a ~154 MB state page, need more, and they say so via
 # ``ModelSpec.eviction_capacity_gb``: the exclusion here is per-model object
 # size, not per hybrid family.
-EVICTION_CAPACITY_GB_MP = 0.0625
+EVICTION_CAPACITY_GB = 0.0625
 
 # Isolated engines coexist with (at most) one session engine on the GPU, so
 # they claim a smaller fraction than the spec default. A model whose weights
@@ -212,36 +207,23 @@ def _check_replay(
 
 
 @contextlib.contextmanager
-def _deployment_harness(
+def _scenario_harness(
     spec: ModelSpec,
     requests: list[MMRequest],
     extra_engine_kwargs: dict[str, object],
     metrics: dict[str, object],
     cache_capacity_gb: float = 0.0,
 ) -> "Iterator[MMHarness]":
-    """Yield a harness on the deployment path selected for *spec*.
+    """Yield a harness, and the MP cache server behind it, for one scenario.
 
-    ``LMCACHE_MM_E2E_PATH`` chooses it (see
-    ``harness.selected_deployment_path``); a hybrid model has no choice.
+    Every scenario runs on the multi-process deployment (the only one the
+    suite drives), so each brings up a cache server of its own -- which is
+    also where its capacity lives (the server's ``l1_size_gb``) rather than
+    in a harness kwarg.
 
-    A model with more than one KV cache group needs vLLM's hybrid KV cache
-    manager, and vLLM offers that only to connectors implementing
-    ``SupportsHMA``. Of ours only ``LMCacheMPConnector`` does, so for a
-    hybrid the in-process path is not merely slower: vLLM logs "Turning off
-    hybrid kv cache manager because --kv-transfer-config selects a KV
-    connector that does not support it" and engine init then dies inside
-    ``get_attn_backends_for_group`` on a layer the collapsed spec dropped.
-    That is why these scenarios were listed as not covered on every hybrid
-    certificate -- not because the paths were untestable, but because they
-    only ever built the harness that cannot load the model.
-
-    Hybrids therefore bring up a real MP cache server, which is also where
-    their capacity lives (the server's ``l1_size_gb``) rather than in a
-    harness kwarg.
-
-    Baselines are computed here because both paths need them under the same
-    engine config, and their temporary directory has to outlive the server
-    log it also holds.
+    Baselines are computed here because the scenario needs them under the
+    same engine config, and their temporary directory has to outlive the
+    server log it also holds.
 
     Args:
         spec: The model under certification.
@@ -252,36 +234,17 @@ def _deployment_harness(
             exit, so a failure that only shows up server-side is diagnosable
             after the temporary directory is gone.
         cache_capacity_gb: Cache capacity to impose, in GB. 0 selects the
-            path's own default, which is what every scenario except
-            eviction wants.
+            default pool size, which is what every scenario except eviction
+            wants.
 
     Yields:
-        A started harness. It, and the server if one was started, are torn
-        down on exit.
+        A started harness. It and its server are torn down on exit.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = pathlib.Path(tmp)
         baselines = compute_baselines(
             spec, requests, tmpdir, extra_engine_kwargs=extra_engine_kwargs
         )
-
-        if selected_deployment_path(spec) is DeploymentPath.IN_PROCESS:
-            # Pass the capacity only when one is imposed, so the harness's
-            # own default stays the single source of truth for it.
-            capacity_kwargs: dict[str, float] = {}
-            if cache_capacity_gb:
-                capacity_kwargs["max_local_cpu_gb"] = cache_capacity_gb
-            harness: MMHarness = MMHarness(
-                spec,
-                baselines=baselines,
-                extra_engine_kwargs=extra_engine_kwargs,
-                **capacity_kwargs,
-            )
-            try:
-                yield harness
-            finally:
-                harness.close()
-            return
 
         zmq_port = 25000 + (os.getpid() % 5000)
         http_port = zmq_port + 5000
@@ -290,8 +253,8 @@ def _deployment_harness(
             zmq_port=zmq_port,
             http_port=http_port,
             # A hybrid's chunk must be vLLM's unified block size, and its
-            # per-group layers need their own cache objects; a non-hybrid
-            # model forced onto this path keeps the in-process chunk size.
+            # per-group layers need their own cache objects; every other
+            # model keeps the suite's 16-token chunk.
             chunk_size=spec.hybrid_block_tokens or CHUNK,
             log_path=log_path,
             l1_size_gb=(
@@ -305,7 +268,7 @@ def _deployment_harness(
             separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
-        harness = MPHarness(
+        harness = MMHarness(
             spec,
             baselines=baselines,
             zmq_port=zmq_port,
@@ -356,7 +319,7 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
     failures: list[str] = []
     metrics: dict[str, object] = {}
     requests = [r for pair in pairs.values() for r in pair]
-    with _deployment_harness(spec, requests, engine_kwargs, metrics) as harness:
+    with _scenario_harness(spec, requests, engine_kwargs, metrics) as harness:
         stored_before = harness.stored_tokens_total()
         total_missed = 0
         for pad, (req_a, req_b) in pairs.items():
@@ -425,10 +388,9 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     """T0.10: correctness and conservation once the cache overflows.
 
     Runs ``EVICTION_N`` distinct images through a cache capped at
-    ``EVICTION_CAPACITY_GB`` (``EVICTION_CAPACITY_GB_MP`` on the MP path,
-    whose allocator cannot honor a sub-unit capacity). Eviction must keep
-    resident bytes under the cap, never manufacture false hits, and evicted
-    requests must recompute to exactly their first-pass output.
+    ``EVICTION_CAPACITY_GB``. Eviction must keep resident bytes under the
+    cap, never manufacture false hits, and evicted requests must recompute
+    to exactly their first-pass output.
 
     Args:
         spec: The model under certification.
@@ -441,14 +403,10 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
     metrics: dict[str, object] = {}
     # Assert against the capacity actually configured, not a nominal one the
     # tier never agreed to.
-    capacity_gb = spec.eviction_capacity_gb or (
-        EVICTION_CAPACITY_GB_MP
-        if selected_deployment_path(spec) is DeploymentPath.MP
-        else EVICTION_CAPACITY_GB
-    )
+    capacity_gb = spec.eviction_capacity_gb or EVICTION_CAPACITY_GB
     capacity_bytes = int(capacity_gb * 1024**3)
     metrics["capacity_gb"] = capacity_gb
-    with _deployment_harness(
+    with _scenario_harness(
         spec,
         requests,
         {"gpu_memory_utilization": isolated_gpu_utilization(spec)},
@@ -577,7 +535,7 @@ def run_preemption(spec: ModelSpec) -> dict:
     requests = preemption_requests(PREEMPTION_N, PREEMPTION_MAX_TOKENS)
     failures: list[str] = []
     metrics: dict[str, object] = {}
-    with _deployment_harness(spec, requests, engine_kwargs, metrics) as harness:
+    with _scenario_harness(spec, requests, engine_kwargs, metrics) as harness:
         stored_before = harness.stored_tokens_total()
         preemptions_before = vllm_preemption_total()
         # A preempted request is deliberately NOT reloaded from LMCache, so
@@ -672,17 +630,23 @@ def run_preemption(spec: ModelSpec) -> dict:
 
 
 def run_mp_connector(spec: ModelSpec) -> dict:
-    """T3: the T0+T1 core on the multi-process connector deployment path.
+    """T3: the T0+T1 core on a dedicated engine and a freshly started server.
 
-    Starts a real LMCache MP cache server subprocess, drives a vLLM engine
-    through ``LMCacheMPConnector`` (this repo's version), and replays the
-    core acceptance set: cross-image isolation and hit equivalence (T0.1 /
-    T0.3), mixed traffic (T0.5), a concurrent batch (T0.8), prefix reuse
-    (T1.2), multi-image order (T2.1), partial sharing (T2.2), store
-    conservation against the server's resident-object API, and the
-    detector negative control. Chunk-boundary phases (T0.4) and collision
-    pressure (T0.2) are keyspace properties independent of the transport
-    and stay on the in-process path.
+    Starts an LMCache MP cache server subprocess of its own, drives a
+    separate vLLM engine through ``LMCacheMPConnector``, and replays the
+    core acceptance set against an empty cache: cross-image isolation and
+    hit equivalence (T0.1 / T0.3), mixed traffic (T0.5), a concurrent batch
+    (T0.8), prefix reuse (T1.2), multi-image order (T2.1), partial sharing
+    (T2.2), store conservation against the server's resident-object API,
+    and the detector negative control.
+
+    This was the tier that crossed the transport back when the session
+    suite ran in-process. Now that every tier is multi-process it is a
+    cold-start replay rather than a second deployment: what it still adds
+    over the session suite is a server whose L1 has seen nothing else and
+    an engine built at the isolated GPU fraction. Chunk-boundary phases
+    (T0.4) and collision pressure (T0.2) are keyspace properties and run
+    once, in the session suite.
 
     Args:
         spec: The model under certification.
@@ -732,7 +696,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             separate_object_groups=bool(spec.hybrid_block_tokens),
             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
         )
-        harness = MPHarness(
+        harness = MMHarness(
             spec,
             baselines=baselines,
             zmq_port=zmq_port,
@@ -831,7 +795,7 @@ def run_mp_connector(spec: ModelSpec) -> dict:
             )
 
             # T2.2 partial sharing. Gated on the same spec property as the
-            # in-process case: the whole check rests on [A] being a token
+            # session suite's case: the whole check rests on [A] being a token
             # prefix of [A, C], which is false for a model whose processor
             # lays out the image SET rather than appending each item. The
             # requests still RUN -- their outputs and the conservation audit

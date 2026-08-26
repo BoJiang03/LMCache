@@ -28,11 +28,11 @@ can fail and pointing at least one detector at every mode:
 | Concurrent store/lookup races in a batch | contamination or loss under load | T0.8 duplicate-in-batch; MME (2374 batched requests) |
 | Eviction misbehavior (false hit after evict, unbounded growth, corrupt recompute) | wrong output or OOM at capacity | T0.10 (dedicated tiny-capacity engine) |
 | Preemption recompute corrupts state (stale keys, wrong restored tokens, poisoned cache) | wrong output after a preemption round-trip | T0.11 (dedicated tiny-block-pool engine, preemption PROVEN via the vLLM counter) |
-| A different deployment path skips or breaks the MM key handling (e.g. MP connector) | per-path cross-image serving | T3 mp_connector scenario (real MP cache server) incl. its own negative control |
+| A cold cache server plus a fresh engine breaks the MM key handling | cross-image serving on a path nothing else exercises | T3 mp_connector scenario (its own server and engine) incl. its own negative control |
 | Modality-specific ingestion misses identity (video frames, temporal merge) | cross-video KV serving | T2.3 per declared modality |
 | One modality's identity is dropped while another's covers for it, or items are keyed as a set rather than a sequence | cross-modal false hit invisible to every single-modality test | T2.5 (image held constant while the clip swaps; then the same two items reversed) |
 | Quality drift only visible on real data (resolutions, aspect ratios, numerics) | statistical score loss | T0.6 MME three-way parity |
-| The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check (run on BOTH deployment paths) |
+| The detectors themselves are broken | false green on everything above | negative control: induced identity blindness MUST trip the counter check (run in the session suite AND in the T3 scenario) |
 | A "hit" is reported but the retrieve path never ran (vLLM's own prefix cache served it) | green suite proving nothing about the load path | hit-provenance oracle on every measured step (see below) |
 
 Layering: the synthetic tests are deterministic, minute-scale, and
@@ -69,13 +69,13 @@ pattern and no probe keep strict byte equality (Qwen answers are 1–8 direct
 tokens; equality holds there in practice).
 
 **What a pass does NOT claim** (recorded verbatim in every certificate):
-only the deployment paths listed in the certificate scope are certified —
-currently the in-process `LMCacheConnectorV1` and the `LMCacheMPConnector`
-+ MP cache server pair, each on a single GPU (TP=1). TP>1, remote/disk
-backends, and allocator-level buffer accounting are outside the claim
-until their tests exist; on the MP path the chunk-boundary phases and collision pressure
-tiers run only in-process (cache keys are computed identically on both
-paths, so the keyspace properties are transport-independent).
+only the deployment path listed in the certificate scope is certified —
+`LMCacheMPConnector` + MP cache server on a single GPU (TP=1). The
+in-process `LMCacheConnectorV1` path is NOT covered: the suite drives the
+multi-process deployment only and no longer contains an in-process harness
+(removed 2026-08-26; branch `archive/e2e_mm-inprocess-and-mp` and git
+history carry it). TP>1, remote/disk backends, and allocator-level buffer
+accounting are outside the claim until their tests exist.
 
 ## How to run
 
@@ -91,13 +91,12 @@ Environment knobs:
 | `LMCACHE_MM_E2E` | unset | Must be `1` for any test to run (opt-in guard). |
 | `LMCACHE_MM_E2E_MODELS` | `qwen2.5-vl-3b` | Comma-separated model keys from `specs.py`. |
 | `LMCACHE_MM_E2E_PRESSURE_N` | `64` | Number of distinct images in the collision pressure test (T0.2). Nightly runs should raise this to `1000`. |
-| `LMCACHE_MM_E2E_PATH` | `auto` | Deployment path: `auto` runs hybrids on the multi-process path and every other model in-process, `mp` runs every model on the multi-process path, `in_process` forces the in-process path (rejected for a hybrid model). |
 
 Run from inside `tests/e2e_mm` so its local `pytest.ini` anchors the rootdir
 and the global `tests/conftest.py` (autouse mocks and allocator patches that
 interfere with a real engine) is not loaded. The suite forces
-`VLLM_ENABLE_V1_MULTIPROCESSING=0` so the LMCache stats singleton is
-readable in-process. The conftest pins `import lmcache` to THIS repo and
+`VLLM_ENABLE_V1_MULTIPROCESSING=0` so the connector adapters it wraps for
+its lookup/store counters run in the test process. The conftest pins `import lmcache` to THIS repo and
 fails loudly if a stray editable install resolves it elsewhere — without
 that guard the suite can silently certify a different source tree.
 
@@ -126,12 +125,12 @@ that guard the suite can silently certify a different source tree.
 | T0.3 | Hit equivalence | The same request twice: the second run must hit and produce the identical output. |
 | T0.4 | Chunk-boundary phases | T0.1/T0.3 hold when the image placeholder span crosses chunk boundaries at varying phases (text prefix padded 0..chunk_size-1 words, chunk_size=16). |
 | T0.5 | Mixed traffic | Interleaved text-only and multimodal requests do not contaminate each other. |
-| T0.7 | Storage conservation | On the T0.2 traffic: every token the lookup missed is store-requested and lands as resident chunk keys in the local CPU backend (deficit = silently dropped KV); the full-hit replay stores ~nothing new, never loses resident keys, and resident bytes track keys (growth without keys = a leak). |
+| T0.7 | Storage conservation | On the T0.2 traffic: every token the lookup missed is store-requested and lands as resident objects in the MP server's L1 pool (deficit = silently dropped KV); the full-hit replay stores ~nothing new, never loses resident keys, and resident bytes track keys (growth without keys = a leak). |
 | T0.8 | Concurrent batch | One batch containing duplicate image requests plus mixed traffic: every entry's output verified, and the entry cached during the batch must fully hit afterwards. |
 | T0.9 | Chunked prefill | Dedicated engine with `max_num_batched_tokens` far below the prompt length, pad phases sweeping the step boundary across the image span: miss/full-hit/isolation invariants and store conservation all hold when stores end mid-image (`test_isolated_paths.py` / `isolated_cases.py`). Outputs are checked against a plain-vLLM baseline computed under the SAME scheduling config — small models misname colors behind long pads even without LMCache, so a bare probe would misattribute model weakness to the cache. |
 | T0.10 | Capacity eviction | Dedicated engine with a ~50 MB cache overflowed several times by distinct images: no false hits ever, resident bytes stay under the cap, and evicted requests recompute to exactly their first-pass output. |
 | T0.11 | Preemption recompute | Dedicated engine with a tiny GPU block pool and forced-length decodes so the scheduler MUST preempt (proven via `vllm:num_preemptions`; zero preemptions fails as vacuous): every batch output verifies against the config-matched baseline, and every request afterwards fully hits and verifies again — the preemption round-trip neither corrupts KV nor poisons the cache. (Byte-equality between the concurrent batch and the solo replay is not asserted: the ignore_eos garbage tail amplifies cross-regime kernel numerics; contamination still fails hard via the probe.) |
-| — | Detector negative control | With MM identity substitution deliberately disabled for a fresh salt, the T0.1-style counter check MUST trip (the second image must falsely hit). A failure here invalidates every green counter assertion. Run on the in-process path (main suite) AND inside the T3 MP scenario. |
+| — | Detector negative control | With MM identity substitution deliberately disabled for a fresh salt, the T0.1-style counter check MUST trip (the second image must falsely hit). A failure here invalidates every green counter assertion. Run in the session suite AND inside the T3 scenario. |
 
 ### T1 — Effectiveness (the cache must actually work)
 
@@ -192,8 +191,9 @@ parity report produced on a path the model is not certified on.
 cd tests/e2e_mm && CUDA_VISIBLE_DEVICES=0 python benchmark_parity.py
 ```
 
-`--hybrid-block-tokens N` moves the LMCache passes onto the MP path with a
-cache server started by the script (see T3 below), applies the mandatory
+The LMCache passes run against a cache server the script starts.
+`--hybrid-block-tokens N` chunks that server at the unified block size and
+gives each KV cache group its own objects, applies the mandatory
 hybrid engine settings to the baseline engine too, and empties vLLM's own
 prefix cache between passes — `align` mode forces vLLM prefix caching on,
 which would otherwise serve pass 2 out of GPU memory and leave LMCache
@@ -203,32 +203,38 @@ Long-running (three full benchmark passes); intended for nightly/release
 validation rather than PR CI. Certification for the "supported" level
 requires one recorded parity run per model.
 
-### T3 — Deployment paths
+### T3 — Cold-start replay on a dedicated engine and server
 
-The same T0+T1 core must pass per path. Implemented:
+The suite drives **one** deployment: `LMCacheMPConnector` + an
+`lmcache.v1.multiprocess.http_server` subprocess, with the engine pointed
+at this repo's connector via `kv_connector_module_path`. Lookup/hit
+counters come from wrapping the scheduler adapter's lookup submit/check
+calls; store intent from the worker adapter's batched store submissions;
+residency from the server's `/status` API.
 
-- **In-process `LMCacheConnectorV1`** — the full matrix above.
-- **`LMCacheMPConnector` + MP cache server** (`isolated_cases.py
-  mp_connector`): a real `lmcache.v1.multiprocess.http_server` subprocess,
-  the engine driven through this repo's connector via
-  `kv_connector_module_path`. Reruns T0.1/T0.3/T0.5/T0.8, T1.1–T1.3,
-  T2.1/T2.2, store conservation against the server's resident-object API
-  (`/status`), and its own detector negative control. Lookup/hit counters
-  come from wrapping the scheduler adapter's lookup submit/check calls;
-  store intent from the worker adapter's batched store submissions.
-  T0.4 phases and T0.2 pressure stay in-process: both paths compute cache
-  keys with the same `apply_mm_hashes_to_token_ids`, so keyspace properties
-  are transport-independent.
+The in-process `LMCacheConnectorV1` path was removed on 2026-08-26 (branch
+`archive/e2e_mm-inprocess-and-mp` keeps it). Two independent reasons: vLLM
+offers its hybrid KV cache manager solely to connectors advertising
+`SupportsHMA`, which that connector does not — so it fails engine init
+outright on any multi-KV-group model ("Hybrid KV cache manager is disabled
+but failed to convert the KV cache specs to one unified type") — and on
+vLLM ≥ 0.26 its fused KV layout is corrupted (LMCache #4463 / #4467, both
+of which state the MP connector is unaffected). Certifying two paths only
+diluted every verdict.
+
+T3 (`isolated_cases.py mp_connector`) survives that removal as what it now
+is: the T0+T1 core replayed against a **freshly started** server whose L1
+has seen nothing else, on an engine of its own built at the isolated GPU
+fraction. It reruns T0.1/T0.3/T0.5/T0.8, T1.1–T1.3, T2.1/T2.2, store
+conservation against `/status`, and its own detector negative control.
+T0.4 phases and T0.2 pressure run once, in the session suite: they are
+keyspace properties of `apply_mm_hashes_to_token_ids` and do not change
+with cache state.
 
 Planned: CPU offload round-trip, remote backend cross-instance, TP>1.
 
-**Multi-KV-group models are MP-only, and there are two kinds of them.** vLLM offers its hybrid KV cache manager
-solely to connectors that advertise support for it, which the in-process
-`LMCacheConnectorV1` does not: engine init fails outright with "Hybrid KV
-cache manager is disabled but failed to convert the KV cache specs to one
-unified type". For a model with `hybrid_block_tokens` set, the whole suite
-therefore runs on the MP path (the `harness` fixture starts the server) and
-the certificate claims the MP path only.
+**Multi-KV-group models come in two kinds**, which is why `hybrid_family`
+exists alongside `hybrid_block_tokens`.
 
 Which isolated scenarios a model runs is decided in one place,
 `isolated_routing.isolated_scenarios`, which both the parametrization and
@@ -237,13 +243,13 @@ they drifted apart once when only one of them was updated. `mp_connector`
 and `capacity_eviction` apply to every model; eviction's cap becomes
 per-model wherever one cache object is too big for the shared default
 (`ModelSpec.eviction_capacity_gb`, needed by the 27B recurrent-state
-hybrids whose state page is ~154 MB). `chunked_prefill` stays in-process.
+hybrids whose state page is ~154 MB). `chunked_prefill` is excluded for
+models whose scheduling forbids a sub-prompt token budget.
 `preemption` needs a measured `ModelSpec.preemption_gpu_blocks` on a
 hybrid, and is unavailable to the `RECURRENT_STATE` family at any pool
 size — `certify._PREEMPTION_NOT_COVERED` carries the measurements.
 
-The two kinds differ in what else the engine needs, which is why
-`hybrid_family` exists alongside `hybrid_block_tokens`:
+The two kinds differ in what else the engine needs:
 
 - `RECURRENT_STATE` (Mamba/Gated-DeltaNet: Qwen3.5/3.6/3.8) keeps
   per-sequence state pages instead of per-token KV, so `align` mode and its
@@ -296,22 +302,33 @@ certificate excludes degraded-mode recovery on hybrids explicitly.
 Declared per model via `ModelSpec.extra_suites`; add-on tests carry
 `@pytest.mark.requires_extra_suite("<name>")` and are deselected — not
 skipped — for models without the flag (same policy as `requires_modality`).
+A declared suite the repo cannot currently run stays declared: `certify`
+turns it into an exclusion, so the gap is stated on every certificate
+rather than quietly disappearing with the test file.
 
-- **DeepStack** (`"deepstack"`, `test_deepstack.py`, TD.1–TD.4 — Qwen3-VL
-  family): the vision tower's multiscale features are injected into the
-  first LLM layers through a per-step side buffer OUTSIDE the paged KV.
-  The risky path is a hit boundary INSIDE an image span: vLLM resumes
-  prefill mid-span and must scatter the payload at the right offsets. The
-  suite produces such boundaries surgically (evict a stored request's tail
-  chunks, replay) and compares the KV the resume re-stores against the KV
-  the full prefill stored. The oracle is KV-level because outputs are
-  provably blind here: fully disabling the injection on Qwen3-VL-2B
-  changes no output bytes on the synthetic probes, while per-chunk KV
-  divergence separates cleanly (recompute noise rel-Frobenius 0.02–0.04 vs
-  0.55–0.70 with the payload zeroed; measured 2026-08-21). TD.4 is the
-  negative control that keeps the oracle honest. Verdict backed by this
-  suite: the payload's effect is baked into stored KV, so skipped prefixes
-  need no side buffer; only the resumed span needs (and gets) reinjection.
+- **DeepStack** (`"deepstack"` — Qwen3-VL family): **declared but NOT
+  RUNNABLE; every certificate for such a model carries it as an
+  exclusion** (`certify.DEEPSTACK_NOT_COVERED`). The vision tower's
+  multiscale features are injected into the first LLM layers through a
+  per-step side buffer OUTSIDE the paged KV, and the risky path is a hit
+  boundary INSIDE an image span, where vLLM resumes prefill mid-span and
+  must scatter the payload at the right offsets. TD.1–TD.4 produced such
+  boundaries surgically (evict a stored request's tail chunks, replay) and
+  compared the KV the resume re-stored against the KV the full prefill
+  stored. That oracle had to be KV-level, because outputs are MEASURED
+  blind here: fully disabling the injection on Qwen3-VL-2B changes no
+  output byte on the synthetic probes, while per-chunk KV divergence
+  separates cleanly (recompute noise rel-Frobenius 0.02–0.04 vs 0.55–0.70
+  with the payload zeroed; measured 2026-08-21). Reading stored KV back
+  required the in-process `LocalCPUBackend`; the MP cache server has no
+  equivalent (its object listing covers L2 only, and its checksum API
+  hashes GPU blocks, which a recompute never reproduces bit-exactly), so
+  the suite was removed with the in-process path rather than replaced by a
+  check known to be blind. Restoring it needs a server-side read-back or
+  KV-distance API first. The earlier green result stands as a measurement,
+  not as ongoing coverage: the payload's effect is baked into stored KV,
+  so skipped prefixes need no side buffer; only the resumed span needs
+  (and gets) reinjection.
 - **Gemma 3/4**: bidirectional image attention vs chunk-boundary phases
   (strengthened T0.4); vLLM issue #40106 makes this a live concern.
 - **Phi-4-multimodal**: different LoRA on identical tokens must not share
@@ -349,12 +366,13 @@ than no certificate, and each began as a real defect in a published one:
   declare `audio`. It used to be unconditional, which made Qwen3-Omni's
   certificate list audio in `scope.modalities` and disclaim it in
   `known_not_covered`, in the same document.
-- **`gate.pass2_hit_coverage`** — `null`, never `0.0`, when the run has no
-  denominator for it. Per-request lookup lengths come from the MP
-  counters, so an in-process run cannot form one; a literal `0.0` there
-  read as "the cache achieved nothing" for runs whose raw hit ratio was
-  1.0. The in-process gate keys on `raw_hit_ratio`, so no verdict ever
-  depended on the bad number — only its readers did.
+- **`gate.pass2_hit_coverage`** — `null`, never `0.0`, when the report has
+  no denominator for it (one recorded before the coverage fields existed,
+  or one from the removed in-process path, which had no per-request lookup
+  lengths); a literal `0.0` there read as "the cache achieved nothing" for
+  runs whose raw hit ratio was 1.0. Fine-granularity runs gate on
+  `raw_hit_ratio`, so no verdict ever depended on the bad number — only
+  its readers did.
 
 The scenario-shaped entries in `known_not_covered` are derived from
 `isolated_scenarios(spec)`, the same predicate the pytest parametrization
@@ -416,8 +434,8 @@ into the tests:
 
 - `hybrid_block_tokens` — vLLM's unified block size for a Mamba/GDN hybrid
   (Qwen3.5-2B: 544; vLLM prints it at startup), 0 for every other model.
-  Setting it switches the model onto the MP-only path described in T3 and
-  becomes the granularity every
+  Setting it chunks the cache server at that block size, gives each KV
+  cache group its own cache objects, and becomes the granularity every
   hit-count tolerance is derived from (`harness.chunk`). The harness
   validates it against the live engine (a multiple of every paged group's
   block size), so a stale value fails loudly instead of making assertions

@@ -38,20 +38,18 @@ ALL_SCENARIOS = (CHUNKED_PREFILL, CAPACITY_EVICTION, PREEMPTION, MP_CONNECTOR)
 def isolated_scenarios(spec: ModelSpec) -> tuple[str, ...]:
     """The isolated scenarios that apply to ``spec``.
 
-    ``mp_connector`` and ``capacity_eviction`` apply to every model: both
-    build their harness through ``isolated_cases._deployment_harness``,
-    which routes a hybrid to a real MP cache server (vLLM offers its hybrid
-    KV cache manager only to connectors advertising ``SupportsHMA``, and of
-    ours only ``LMCacheMPConnector`` does -- on the in-process path a hybrid
-    fails engine init rather than running slower). Eviction additionally
-    needs a cap that can hold one whole cache object, which the deepest
-    hybrids supply via ``ModelSpec.eviction_capacity_gb``; a model that
-    needs one and has not measured it fails the scenario loudly instead of
-    being skipped, which is the safe direction for a certificate.
+    ``mp_connector`` and ``capacity_eviction`` apply to every model: every
+    scenario builds its harness through
+    ``isolated_cases._scenario_harness``, which brings up a real MP cache
+    server. Eviction additionally needs a cap that can hold one whole cache
+    object, which the deepest hybrids supply via
+    ``ModelSpec.eviction_capacity_gb``; a model that needs one and has not
+    measured it fails the scenario loudly instead of being skipped, which is
+    the safe direction for a certificate.
 
-    ``chunked_prefill`` is in-process only, and for a reason that is not
-    plumbing: it pins the batched-token budget far below one prompt so that
-    scheduler steps land inside an image span. A ``RECURRENT_STATE`` hybrid
+    ``chunked_prefill`` is excluded for reasons that are not plumbing: it
+    pins the batched-token budget far below one prompt so that scheduler
+    steps land inside an image span. A ``RECURRENT_STATE`` hybrid
     needs the opposite -- a step wide enough for one whole 544-784 token
     block, so its state snapshot lands on a block boundary -- which is
     contradictory by construction. A ``SLIDING_WINDOW`` hybrid's smaller

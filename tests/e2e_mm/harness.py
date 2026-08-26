@@ -1,9 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine harness for the multimodal acceptance suite.
 
-Runs one in-process vLLM engine with the LMCache connector (single-process
-mode so the LMCache stats singleton is directly readable) and compares
-outputs against a baseline computed by a plain vLLM engine in a subprocess.
+Runs one vLLM engine against an external LMCache MP cache server (through
+``LMCacheMPConnector``) and compares outputs against a baseline computed by
+a plain vLLM engine in a subprocess.
+
+The multi-process deployment is the ONLY one this suite drives. The
+in-process ``LMCacheConnectorV1`` path was removed (it survives in git
+history, branch ``archive/e2e_mm-inprocess-and-mp``): vLLM offers its
+hybrid KV cache manager only to connectors advertising ``SupportsHMA``, so
+that path cannot serve a multi-KV-group model at all, and on vLLM >= 0.26
+its fused KV layout is corrupted outright (LMCache #4463 / #4467, which
+both state the MP connector is unaffected). Certifying two paths only
+diluted every verdict, so the suite states one.
+
+vLLM itself still runs single-process (``VLLM_ENABLE_V1_MULTIPROCESSING=0``):
+the connector adapters this module wraps for its counters, and the
+placeholder-substitution recorder, must live in this process.
 """
 
 # Standard
@@ -11,7 +24,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 import contextlib
-import enum
 import json
 import os
 import pathlib
@@ -27,60 +39,6 @@ from specs import HybridFamily, ModelSpec
 
 LMCACHE_TEST_CHUNK_SIZE = 16
 
-# Deployment path selection. Multi-process is the mode this project supports
-# first, so the suite must be able to certify ANY model on it -- not only the
-# Mamba/GDN hybrids that have no choice (vLLM offers its hybrid KV cache
-# manager only to connectors advertising ``SupportsHMA``, which the
-# in-process ``LMCacheConnectorV1`` does not, so a hybrid fails engine init
-# on that path). Default routing keeps the historical split.
-DEPLOYMENT_PATH_ENV_VAR = "LMCACHE_MM_E2E_PATH"
-
-
-class DeploymentPath(enum.Enum):
-    """Which LMCache deployment the harness drives for one model."""
-
-    IN_PROCESS = "in_process"
-    MP = "mp"
-
-
-def selected_deployment_path(spec: ModelSpec) -> DeploymentPath:
-    """Resolve the deployment path for one model from the environment.
-
-    ``LMCACHE_MM_E2E_PATH`` selects it: ``auto`` (the default) sends
-    hybrids to the multi-process path and every other model in-process;
-    ``mp`` sends every model to the multi-process path; ``in_process``
-    forces the in-process path, which a hybrid model cannot use.
-
-    Args:
-        spec: The model under certification.
-
-    Returns:
-        The deployment path this model's harness must use.
-
-    Raises:
-        ValueError: If the variable holds an unknown value, or asks for
-            the in-process path for a hybrid model.
-    """
-    requested = os.environ.get(DEPLOYMENT_PATH_ENV_VAR, "auto").strip().lower()
-    known = {"auto"} | {member.value for member in DeploymentPath}
-    if requested not in known:
-        raise ValueError(
-            f"{DEPLOYMENT_PATH_ENV_VAR}={requested!r} is not one of {sorted(known)}"
-        )
-    if spec.hybrid_block_tokens:
-        if requested == DeploymentPath.IN_PROCESS.value:
-            raise ValueError(
-                f"{spec.key} is a hybrid model: vLLM's hybrid KV cache "
-                "manager is offered only to connectors advertising "
-                "SupportsHMA, so the in-process path fails engine init. "
-                f"Drop {DEPLOYMENT_PATH_ENV_VAR} or set it to 'mp'."
-            )
-        return DeploymentPath.MP
-    if requested == DeploymentPath.MP.value:
-        return DeploymentPath.MP
-    return DeploymentPath.IN_PROCESS
-
-
 # Salt for the startup probe that checks media/text ordering. Deliberately
 # not a real case salt: it must never collide with one, and it must be a
 # literal that survives tokenizer round-tripping unchanged.
@@ -89,11 +47,11 @@ _SHAPE_PROBE_SALT = "shapeprobe"
 
 @dataclass(frozen=True)
 class StorageSnapshot:
-    """Point-in-time contents of the LMCache local CPU backend.
+    """Point-in-time contents of the MP cache server's L1 pool.
 
     Attributes:
-        num_keys: Number of chunk keys currently resident in the hot cache.
-        total_bytes: Sum of the logical sizes of all resident memory objects.
+        num_keys: Number of cache objects currently resident in L1.
+        total_bytes: Bytes those objects occupy in the L1 pool.
     """
 
     num_keys: int
@@ -137,23 +95,21 @@ class StepResult:
     identifiers: tuple[str, ...] = ()
 
 
-def configure_environment(max_local_cpu_gb: float = 40.0) -> None:
+def configure_environment() -> None:
     """Set the env vars the engine runs require. Idempotent.
 
     Must be called before importing vllm or lmcache, and before launching
     the baseline subprocess (which inherits this environment).
 
-    Args:
-        max_local_cpu_gb: LMCache local CPU backend capacity in GB. The
-            default is far above what any test stores, so eviction never
-            interferes; the capacity-eviction scenario passes a tiny value
-            to force it.
+    Carries no LMCache engine configuration: on the MP path the cache lives
+    in the server process, which takes its chunk size and L1 capacity from
+    the command line (see ``start_mp_cache_server``) and reads none of the
+    ``LMCACHE_*`` engine variables the removed in-process path used.
     """
-    # Keep scheduler+worker in this process so LMCStatsMonitor is shared.
+    # Keep vLLM's scheduler and worker in THIS process: the counters and the
+    # identifier recorder are installed by wrapping connector-adapter and
+    # vLLM methods here, and would observe nothing in a spawned worker.
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
-    os.environ["LMCACHE_CHUNK_SIZE"] = str(LMCACHE_TEST_CHUNK_SIZE)
-    os.environ["LMCACHE_LOCAL_CPU"] = "True"
-    os.environ["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(max_local_cpu_gb)
     os.environ.setdefault("PYTHONHASHSEED", "0")
     # Triton JIT compiles small C launchers against Python.h using the
     # sysconfig include dir; when the interpreter's dev headers live in the
@@ -508,7 +464,7 @@ class VllmPrefillCounters:
 def mp_kv_transfer_config(zmq_port: int):
     """vLLM KV-transfer config selecting THIS repo's MP connector.
 
-    Shared by every MP-path caller (``MPHarness``, the MME parity run) so
+    Shared by every caller (``MMHarness``, the MME parity run) so
     the connector module path, the server address keys and the heartbeat
     window cannot drift apart between them. The window is widened from the
     10s default for the reason given at ``MP_HEARTBEAT_INTERVAL_S``; the
@@ -538,7 +494,7 @@ def mp_kv_transfer_config(zmq_port: int):
 class MPTransportCounters:
     """Lookup and store counters for the MP deployment path.
 
-    The MP connector reports no in-process LMCache stats, so the counters
+    The MP connector reports no process-local LMCache stats, so the counters
     come from wrapping the adapter methods. The wrappers are installed on
     the CLASSES, which bounds this to at most one live instance per
     process (the suite forces single-process vLLM, so the worker adapter
@@ -662,170 +618,6 @@ def vllm_preemption_total() -> int:
     return totals["vllm:num_preemptions"]
 
 
-def cumulative_lookup_stats(monitor) -> tuple[int, int]:
-    """Cumulative (lookup_tokens, lookup_hits) since engine start.
-
-    LMCache's stats-logger thread periodically moves the monitor's interval
-    counters into Prometheus counters. The sum of the Prometheus counter and
-    the monitor's current (un-cleared) interval is invariant under that move,
-    so deltas of this sum are immune to the logger's clearing. Callers must
-    never clear the monitor themselves.
-
-    Args:
-        monitor: The process-local ``LMCStatsMonitor`` instance.
-
-    Returns:
-        Tuple of cumulative (lookup_tokens, lookup_hits).
-    """
-    totals = _prometheus_counter_totals(
-        ("lmcache:num_lookup_tokens", "lmcache:num_lookup_hits")
-    )
-    return (
-        totals["lmcache:num_lookup_tokens"] + monitor.interval_lookup_tokens,
-        totals["lmcache:num_lookup_hits"] + monitor.interval_lookup_hits,
-    )
-
-
-def cumulative_stored_tokens(monitor) -> int:
-    """Cumulative tokens LMCache was ASKED to store since engine start.
-
-    Counted at store-request time (``on_store_request``), i.e. this is the
-    engine's store-side intent, not proof of residency; compare against
-    ``storage_snapshot`` for the resident truth. Theft-proof the same way as
-    ``cumulative_lookup_stats``.
-
-    Args:
-        monitor: The process-local ``LMCStatsMonitor`` instance.
-
-    Returns:
-        Cumulative store-requested token count.
-    """
-    totals = _prometheus_counter_totals(("lmcache:num_stored_tokens",))
-    return totals["lmcache:num_stored_tokens"] + monitor.interval_stored_tokens
-
-
-def _local_cpu_backend():
-    """The in-process engine's ``LocalCPUBackend`` instance.
-
-    Returns:
-        The active backend.
-
-    Raises:
-        RuntimeError: If the LMCache engine or its local CPU backend is not
-            available in this process.
-    """
-    # First Party
-    from lmcache.integration.vllm.utils import ENGINE_NAME
-    from lmcache.v1.cache_engine import LMCacheEngineBuilder
-
-    engine = LMCacheEngineBuilder.get(ENGINE_NAME)
-    if engine is None or engine.storage_manager is None:
-        raise RuntimeError("LMCache engine/storage manager not initialized")
-    backend = engine.storage_manager.storage_backends.get("LocalCPUBackend")
-    if backend is None:
-        raise RuntimeError("LocalCPUBackend not active; snapshot unavailable")
-    return backend
-
-
-def storage_snapshot() -> StorageSnapshot:
-    """Snapshot what is ACTUALLY resident in the local CPU backend.
-
-    This is the ground truth for storage-conservation checks: chunk keys and
-    bytes physically held by the hot cache, independent of what any counter
-    claims was stored. Requires the in-process engine (single-process mode).
-
-    Returns:
-        The current ``StorageSnapshot``.
-
-    Raises:
-        RuntimeError: If the LMCache engine or its local CPU backend is not
-            available in this process.
-    """
-    backend = _local_cpu_backend()
-    with backend.cpu_lock:
-        num_keys = len(backend.hot_cache)
-        total_bytes = sum(obj.get_size() for obj in backend.hot_cache.values())
-    return StorageSnapshot(num_keys=num_keys, total_bytes=total_bytes)
-
-
-def resident_chunk_keys() -> list:
-    """All chunk keys resident in the local CPU backend, in STORE order.
-
-    The hot cache is an insertion-ordered mapping and LMCache stores a
-    request's chunks sequentially, so the difference between two snapshots
-    of this list — taken around a single request run on an otherwise idle
-    engine — is that request's chunk-key chain in prompt order. The
-    surgical-eviction oracles (deepstack add-on suite) rely on this to cut
-    a stored request at a chosen prompt depth.
-
-    Returns:
-        Resident ``CacheEngineKey`` objects, oldest first.
-    """
-    backend = _local_cpu_backend()
-    return backend.get_keys()
-
-
-def clone_resident_kv(keys: list) -> dict:
-    """Clone the resident KV tensor of each given chunk key.
-
-    Args:
-        keys: ``CacheEngineKey`` objects to clone; each must currently be
-            resident in the local CPU backend.
-
-    Returns:
-        Mapping of key to a detached deep copy of its KV tensor.
-
-    Raises:
-        RuntimeError: If a key is not resident or holds no tensor.
-    """
-    backend = _local_cpu_backend()
-    clones: dict = {}
-    with backend.cpu_lock:
-        for key in keys:
-            obj = backend.hot_cache.get(key)
-            if obj is None or obj.tensor is None:
-                raise RuntimeError(f"chunk {key} not resident; cannot clone")
-            clones[key] = obj.tensor.detach().clone()
-    return clones
-
-
-def evict_resident_keys(keys: list) -> None:
-    """Force-remove the given chunk keys from the local CPU backend.
-
-    Test-only surgical eviction: replays of the owning request then hit
-    only the surviving prefix and must RECOMPUTE (and re-store) the evicted
-    tail — the mid-prompt resume path that natural LRU eviction only
-    produces by accident.
-
-    Args:
-        keys: ``CacheEngineKey`` objects to remove (missing keys are an
-            error: a cut that silently did not happen would turn the resume
-            test into a trivial full-hit replay).
-
-    Raises:
-        RuntimeError: If a key was not resident.
-    """
-    backend = _local_cpu_backend()
-    for key in keys:
-        if not backend.remove(key):
-            raise RuntimeError(f"chunk {key} was not resident; cut incomplete")
-
-
-def resident_kv_tensor(key):
-    """The resident KV tensor of one chunk key, or None if not resident.
-
-    Args:
-        key: The ``CacheEngineKey`` to look up.
-
-    Returns:
-        The live (not copied) KV tensor, or None when the key is absent.
-    """
-    backend = _local_cpu_backend()
-    with backend.cpu_lock:
-        obj = backend.hot_cache.get(key)
-    return obj.tensor if obj is not None else None
-
-
 _NO_EXTRA_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
@@ -847,24 +639,35 @@ def effective_max_tokens(spec: ModelSpec, request: MMRequest) -> int:
 class MMHarness:
     """Drives one model's acceptance run: baselines + LMCache engine + stats.
 
+    The engine talks to an already-running external LMCache MP cache server
+    over ZMQ through ``LMCacheMPConnector`` (this repo's tip version,
+    selected via ``kv_connector_module_path``). Lookup tokens/hits and store
+    intent come from ``MPTransportCounters``, whose wrappers are installed
+    on the adapter CLASSES -- so at most one harness may be live per
+    process; residency comes from the server's HTTP ``/status`` endpoint.
+
     Args:
         spec: The model under certification.
         baselines: Mapping of request key to the plain-vLLM output text.
+        zmq_port: The MP cache server's ZMQ port.
+        http_port: The MP cache server's HTTP observability port.
         extra_engine_kwargs: Additional/overriding vLLM ``LLM(...)`` kwargs;
             used by isolated scenarios (chunked prefill, capacity eviction)
             to reshape the engine while reusing all harness plumbing.
-        max_local_cpu_gb: LMCache local CPU capacity (see
-            ``configure_environment``).
     """
 
     def __init__(
         self,
         spec: ModelSpec,
         baselines: dict[str, str],
+        zmq_port: int,
+        http_port: int,
         extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
-        max_local_cpu_gb: float = 40.0,
     ):
-        configure_environment(max_local_cpu_gb)
+        configure_environment()
+        self._zmq_port = zmq_port
+        self._http_port = http_port
+        self._counters = MPTransportCounters()
         self.spec = spec
         self.baselines = baselines
         # Diagnostic recorder: capture the multimodal identifiers the
@@ -878,14 +681,15 @@ class MMHarness:
         self._prefill = VllmPrefillCounters()
         self._prefill.install()
         self._unloaded_hits_allowed = False
-        self._install_transport_hooks()
+        # Counter wrappers must be in place before vLLM imports the adapter.
+        self._counters.install()
 
         # Third Party
         from vllm import LLM
 
         engine_kwargs: dict[str, object] = dict(
             model=spec.hf_id,
-            kv_transfer_config=self._kv_transfer_config(),
+            kv_transfer_config=mp_kv_transfer_config(zmq_port),
             max_model_len=spec.max_model_len,
             gpu_memory_utilization=spec.gpu_memory_utilization,
             enforce_eager=True,
@@ -897,7 +701,20 @@ class MMHarness:
         self.llm = LLM(**engine_kwargs)
         self._validate_block_size()
         self._validate_prompt_shape()
-        self._setup_stats()
+
+    # Store settling: a store is asynchronous twice over --
+    # the worker submits it around the time the engine answers, and the
+    # server holds each key write-locked between reserve_write and
+    # finish_write (50-300ms observed under load). Without a barrier, a
+    # back-to-back request's lookup beats the previous request's store
+    # (KEY_NOT_EXIST) or lands inside the write-lock window
+    # (KEY_NOT_READABLE), and the prefix fold turns one such chunk into a
+    # whole-prompt miss. The suite certifies cache correctness, not request
+    # pacing, so each run waits for its own stores to become readable.
+    _SETTLE_SUBMIT_TIMEOUT_S = 10.0
+    _SETTLE_SERVER_TIMEOUT_S = 30.0
+    _SETTLE_POLL_INTERVAL_S = 0.1
+    _SETTLE_QUIET_POLLS = 4
 
     @property
     def chunk(self) -> int:
@@ -1119,27 +936,6 @@ class MMHarness:
             sizes[name] = spec.block_size
         return sizes
 
-    def _kv_transfer_config(self):
-        """Build the KV transfer config selecting the deployment path."""
-        # Third Party
-        from vllm.config import KVTransferConfig
-
-        return KVTransferConfig(kv_connector="LMCacheConnectorV1", kv_role="kv_both")
-
-    def _install_transport_hooks(self) -> None:
-        """Install path-specific counter hooks BEFORE the engine imports.
-
-        The in-process path needs none (stats come from the LMCache
-        singleton); the MP path wraps its adapter methods here.
-        """
-
-    def _setup_stats(self) -> None:
-        """Bind the stats source once the engine is up."""
-        # First Party
-        from lmcache.observability import LMCStatsMonitor
-
-        self.monitor = LMCStatsMonitor.GetOrCreate()
-
     def _install_identifier_recorder(self) -> None:
         """Wrap the connector's placeholder substitution to log identifiers.
 
@@ -1182,27 +978,22 @@ class MMHarness:
             self._identity_blind = False
 
     def close(self) -> None:
-        """Tear down the engine and the LMCache engine instance."""
-        # First Party
-        from lmcache.integration.vllm.utils import ENGINE_NAME
-        from lmcache.v1.cache_engine import LMCacheEngineBuilder
-
+        """Tear down the engine (the MP server is managed by the caller)."""
         del self.llm
-        LMCacheEngineBuilder.destroy(ENGINE_NAME)
 
     def run(self, request: MMRequest) -> StepResult:
         """Send one request through the LMCache engine and read its stats.
 
-        Per-request stats are computed as deltas of THEFT-PROOF cumulative
-        counters (see ``_cumulative_lookup_stats``); LMCache's built-in
-        stats-logger thread clears the monitor's interval counters every 10
-        seconds, so reading the interval directly would randomly lose the
-        window for ~2% of requests.
+        Per-request stats are deltas of the cumulative transport counters
+        (see ``_cumulative_lookup_stats``), and the returned stats are
+        unaffected by the store barrier below: they are read before it
+        starts.
         """
         # Third Party
         from vllm import SamplingParams
 
         self._reset_local_prefix_cache()
+        stored_before = self.stored_tokens_total()
         tokens_before, hits_before = self._cumulative_lookup_stats()
         log_before = len(self._identifier_log)
         provenance_before = self._prefill_provenance()
@@ -1222,12 +1013,17 @@ class MMHarness:
         self._check_hit_provenance(
             hits_after - hits_before, provenance_before, request.key
         )
-        return StepResult(
+        result = StepResult(
             text=outputs[0].outputs[0].text,
             lookup_tokens=tokens_after - tokens_before,
             lookup_hits=hits_after - hits_before,
             identifiers=tuple(dict.fromkeys(seen)),
         )
+        # Everything the lookup missed must be store-submitted, except the
+        # trailing partial chunk, which LMCache never stores.
+        expected_new = result.lookup_tokens - result.lookup_hits - self.chunk
+        self._settle_stores(stored_before + max(0, expected_new))
+        return result
 
     def run_batch(self, requests: list[MMRequest]) -> BatchResult:
         """Submit all requests in ONE ``llm.chat`` call (concurrent batch).
@@ -1236,6 +1032,11 @@ class MMHarness:
         so LMCache sees concurrent lookup/store traffic — including a store
         for one request racing the lookup of an identical one. Counters are
         aggregate only (per-request attribution is impossible in a batch).
+
+        Identical prefixes inside one batch are stored once but missed by
+        every request, so the aggregate miss count overstates what will be
+        submitted; the trailing store barrier therefore uses no submission
+        target and relies on quiescence alone.
         """
         # Third Party
         from vllm import SamplingParams
@@ -1268,11 +1069,13 @@ class MMHarness:
             num_requests=len(requests),
             local_budget=tokens_after - tokens_before,
         )
-        return BatchResult(
+        result = BatchResult(
             texts=tuple(o.outputs[0].text for o in outputs),
             lookup_tokens=tokens_after - tokens_before,
             lookup_hits=hits_after - hits_before,
         )
+        self._settle_stores(self.stored_tokens_total())
+        return result
 
     def _prefill_provenance(self) -> tuple[int, int]:
         """Snapshot vLLM's cumulative (local, external) cached tokens."""
@@ -1367,15 +1170,77 @@ class MMHarness:
             reset_vllm_prefix_cache(self.llm)
 
     def _cumulative_lookup_stats(self) -> tuple[int, int]:
-        return cumulative_lookup_stats(self.monitor)
+        """Cumulative (lookup_tokens, lookup_hits) since engine start."""
+        return (self._counters.lookup_tokens, self._counters.lookup_hits)
 
     def stored_tokens_total(self) -> int:
-        """Cumulative store-requested tokens (see ``cumulative_stored_tokens``)."""
-        return cumulative_stored_tokens(self.monitor)
+        """Cumulative tokens submitted to the MP server for storage."""
+        return self._counters.stored_tokens
 
     def storage(self) -> StorageSnapshot:
-        """Resident local-CPU-backend snapshot (see ``storage_snapshot``)."""
-        return storage_snapshot()
+        """Resident object count/bytes from the MP server's /status API."""
+        l1 = self._fetch_l1_status()
+        return StorageSnapshot(
+            num_keys=l1["total_object_count"],
+            total_bytes=l1["memory_used_bytes"],
+        )
+
+    def _fetch_l1_status(self) -> dict:
+        """Fetch the server L1 manager's status dict over HTTP.
+
+        Returns:
+            The ``storage_manager.l1_manager`` section of the ``/status``
+            response; the keys used here are ``total_object_count``,
+            ``write_locked_count``, and ``memory_used_bytes``.
+        """
+        # Standard
+        import urllib.request
+
+        url = f"http://localhost:{self._http_port}/status"
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            status = json.loads(resp.read())
+        return status["storage_manager"]["l1_manager"]
+
+    def _settle_stores(self, min_stored_tokens: int) -> None:
+        """Block until in-flight stores are submitted and readable.
+
+        Two phases, both bounded and non-fatal (on timeout the caller's own
+        assertions report whatever is actually wrong):
+
+        1. Submission: wait until the engine-side store counter reaches
+           ``min_stored_tokens``, so quiescence below cannot be observed in
+           the gap before the worker has even submitted the store.
+        2. Quiescence: wait until the server holds no write-locked objects
+           and (store counter, object count, lock count) is unchanged for
+           ``_SETTLE_QUIET_POLLS`` consecutive polls, i.e. the submitted
+           stores have arrived and finished writing.
+
+        Args:
+            min_stored_tokens: Cumulative ``stored_tokens_total`` value to
+                wait for in phase 1.
+        """
+        deadline = time.monotonic() + self._SETTLE_SUBMIT_TIMEOUT_S
+        while (
+            self.stored_tokens_total() < min_stored_tokens
+            and time.monotonic() < deadline
+        ):
+            time.sleep(self._SETTLE_POLL_INTERVAL_S)
+
+        deadline = time.monotonic() + self._SETTLE_SERVER_TIMEOUT_S
+        quiet = 0
+        previous: tuple[int, int, int] = (-1, -1, -1)
+        while time.monotonic() < deadline:
+            l1 = self._fetch_l1_status()
+            current = (
+                self.stored_tokens_total(),
+                l1["total_object_count"],
+                l1["write_locked_count"],
+            )
+            quiet = quiet + 1 if current == previous and current[2] == 0 else 0
+            previous = current
+            if quiet >= self._SETTLE_QUIET_POLLS:
+                return
+            time.sleep(self._SETTLE_POLL_INTERVAL_S)
 
     def check_output(self, request: MMRequest, result: StepResult, where: str) -> None:
         """Verify a step's output; see ``check_text`` for the policy."""
@@ -1510,168 +1375,6 @@ class MMHarness:
                 return False
             position = found + len(word)
         return True
-
-
-class MPHarness(MMHarness):
-    """Harness variant driving the multi-process deployment path (T3).
-
-    The engine talks to an external LMCache MP cache server over ZMQ via
-    ``LMCacheMPConnector`` (this repo's tip version, selected through
-    ``kv_connector_module_path``); the server process must already be
-    running. Stats plumbing differs from the in-process path:
-
-    - lookup tokens/hits and store intent come from
-      ``MPTransportCounters`` (class-level adapter wrappers, hence at most
-      one MPHarness per process);
-    - residency comes from the server's HTTP ``/status`` endpoint.
-
-    Args:
-        spec: The model under certification.
-        baselines: Mapping of request key to the plain-vLLM output text.
-        zmq_port: The MP cache server's ZMQ port.
-        http_port: The MP cache server's HTTP observability port.
-        extra_engine_kwargs: Additional/overriding vLLM ``LLM(...)`` kwargs.
-    """
-
-    def __init__(
-        self,
-        spec: ModelSpec,
-        baselines: dict[str, str],
-        zmq_port: int,
-        http_port: int,
-        extra_engine_kwargs: Mapping[str, object] = _NO_EXTRA_KWARGS,
-    ):
-        self._zmq_port = zmq_port
-        self._http_port = http_port
-        self._counters = MPTransportCounters()
-        super().__init__(spec, baselines, extra_engine_kwargs=extra_engine_kwargs)
-
-    def _kv_transfer_config(self):
-        """Select THIS repo's MP connector via the module-path override."""
-        return mp_kv_transfer_config(self._zmq_port)
-
-    def _install_transport_hooks(self) -> None:
-        """Wrap the MP adapters to expose lookup/store counters."""
-        self._counters.install()
-
-    def _setup_stats(self) -> None:
-        self.monitor = None
-
-    def _cumulative_lookup_stats(self) -> tuple[int, int]:
-        return (self._counters.lookup_tokens, self._counters.lookup_hits)
-
-    # Store settling: on the MP path a store is asynchronous twice over --
-    # the worker submits it around the time the engine answers, and the
-    # server holds each key write-locked between reserve_write and
-    # finish_write (50-300ms observed under load). Without a barrier, a
-    # back-to-back request's lookup beats the previous request's store
-    # (KEY_NOT_EXIST) or lands inside the write-lock window
-    # (KEY_NOT_READABLE), and the prefix fold turns one such chunk into a
-    # whole-prompt miss. The suite certifies cache correctness, not request
-    # pacing, so each run waits for its own stores to become readable.
-    _SETTLE_SUBMIT_TIMEOUT_S = 10.0
-    _SETTLE_SERVER_TIMEOUT_S = 30.0
-    _SETTLE_POLL_INTERVAL_S = 0.1
-    _SETTLE_QUIET_POLLS = 4
-
-    def run(self, request: MMRequest) -> StepResult:
-        """Run one request, then wait for its stores to become readable.
-
-        The returned stats are unaffected by the wait: they are read by the
-        base implementation before the barrier starts.
-        """
-        stored_before = self.stored_tokens_total()
-        result = super().run(request)
-        # Everything the lookup missed must be store-submitted, except the
-        # trailing partial chunk, which LMCache never stores.
-        expected_new = result.lookup_tokens - result.lookup_hits - self.chunk
-        self._settle_stores(stored_before + max(0, expected_new))
-        return result
-
-    def run_batch(self, requests: list[MMRequest]) -> BatchResult:
-        """Run one batch, then wait for its stores to become readable.
-
-        Identical prefixes inside one batch are stored once but missed by
-        every request, so the aggregate miss count overstates what will be
-        submitted; the barrier therefore uses no submission target and
-        relies on quiescence alone.
-        """
-        result = super().run_batch(requests)
-        self._settle_stores(self.stored_tokens_total())
-        return result
-
-    def stored_tokens_total(self) -> int:
-        """Cumulative tokens submitted to the MP server for storage."""
-        return self._counters.stored_tokens
-
-    def storage(self) -> StorageSnapshot:
-        """Resident object count/bytes from the MP server's /status API."""
-        l1 = self._fetch_l1_status()
-        return StorageSnapshot(
-            num_keys=l1["total_object_count"],
-            total_bytes=l1["memory_used_bytes"],
-        )
-
-    def _fetch_l1_status(self) -> dict:
-        """Fetch the server L1 manager's status dict over HTTP.
-
-        Returns:
-            The ``storage_manager.l1_manager`` section of the ``/status``
-            response; the keys used here are ``total_object_count``,
-            ``write_locked_count``, and ``memory_used_bytes``.
-        """
-        # Standard
-        import urllib.request
-
-        url = f"http://localhost:{self._http_port}/status"
-        with urllib.request.urlopen(url, timeout=30) as resp:
-            status = json.loads(resp.read())
-        return status["storage_manager"]["l1_manager"]
-
-    def _settle_stores(self, min_stored_tokens: int) -> None:
-        """Block until in-flight stores are submitted and readable.
-
-        Two phases, both bounded and non-fatal (on timeout the caller's own
-        assertions report whatever is actually wrong):
-
-        1. Submission: wait until the engine-side store counter reaches
-           ``min_stored_tokens``, so quiescence below cannot be observed in
-           the gap before the worker has even submitted the store.
-        2. Quiescence: wait until the server holds no write-locked objects
-           and (store counter, object count, lock count) is unchanged for
-           ``_SETTLE_QUIET_POLLS`` consecutive polls, i.e. the submitted
-           stores have arrived and finished writing.
-
-        Args:
-            min_stored_tokens: Cumulative ``stored_tokens_total`` value to
-                wait for in phase 1.
-        """
-        deadline = time.monotonic() + self._SETTLE_SUBMIT_TIMEOUT_S
-        while (
-            self.stored_tokens_total() < min_stored_tokens
-            and time.monotonic() < deadline
-        ):
-            time.sleep(self._SETTLE_POLL_INTERVAL_S)
-
-        deadline = time.monotonic() + self._SETTLE_SERVER_TIMEOUT_S
-        quiet = 0
-        previous: tuple[int, int, int] = (-1, -1, -1)
-        while time.monotonic() < deadline:
-            l1 = self._fetch_l1_status()
-            current = (
-                self.stored_tokens_total(),
-                l1["total_object_count"],
-                l1["write_locked_count"],
-            )
-            quiet = quiet + 1 if current == previous and current[2] == 0 else 0
-            previous = current
-            if quiet >= self._SETTLE_QUIET_POLLS:
-                return
-            time.sleep(self._SETTLE_POLL_INTERVAL_S)
-
-    def close(self) -> None:
-        """Tear down the engine (the MP server is managed by the caller)."""
-        del self.llm
 
 
 def compute_baselines(

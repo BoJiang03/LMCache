@@ -38,10 +38,11 @@ Usage (from tests/e2e_mm):
 ``--limit 0`` (default) runs the full benchmark. Requires GPU, model
 weights, and the benchmark's dataset (downloaded via HF).
 
-Passing ``--hybrid-block-tokens N`` (a Mamba/GDN model's vLLM unified block
-size) moves passes 2 and 3 onto the MP deployment path with a cache server
-started here: vLLM offers its hybrid KV cache manager only to connectors
-that advertise support for it, which the in-process connector does not.
+The LMCache passes run on the multi-process deployment -- the only one this
+suite drives -- against a cache server started here. Passing
+``--hybrid-block-tokens N`` (a Mamba/GDN model's vLLM unified block size)
+additionally chunks that server at the unified block size and gives each KV
+cache group its own cache objects.
 
 Exit code 0 = parity holds (see THRESHOLDS below), 1 = parity violated.
 """
@@ -602,10 +603,10 @@ def parity_gate(
     Returns:
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
         the hit criterion that applied, and the thresholds used.
-        ``pass2_hit_coverage`` is None when the run provides no denominator
-        for it (an in-process run has no per-request lookup lengths); that
-        is "not measured", not a coverage of zero, and it fails a coverage
-        gate rather than satisfying one.
+        ``pass2_hit_coverage`` is None when the report provides no
+        denominator for it (one recorded before the coverage fields
+        existed); that is "not measured", not a coverage of zero, and it
+        fails a coverage gate rather than satisfying one.
     """
     # First Party (test-local)
     from harness import LMCACHE_TEST_CHUNK_SIZE
@@ -635,12 +636,12 @@ def parity_gate(
     # hybrids) a replay served out of GPU memory still reports a full
     # LMCache hit, so only this number proves the retrieve path ran.
     loaded = report.get("pass2_external_cached_tokens", 0)
-    # None, not 0.0, when the denominator is missing: the per-request token
-    # list comes from MPTransportCounters, which is installed only on the MP
-    # path, so an in-process run has no denominator at all. Publishing 0.0
-    # there reads as "the cache achieved nothing" for a run whose raw hit
-    # ratio was 1.0 -- an unmeasured quantity must not look like a measured
-    # zero.
+    # None, not 0.0, when the denominator is missing -- a report recorded
+    # before the coverage fields existed, or one from the removed
+    # in-process path, which had no per-request lookup lengths. Publishing
+    # 0.0 there reads as "the cache achieved nothing" for a run whose raw
+    # hit ratio was 1.0 -- an unmeasured quantity must not look like a
+    # measured zero.
     coverage = round(loaded / achievable, 4) if achievable else None
     if granularity > LMCACHE_TEST_CHUNK_SIZE:
         hit_criterion = "coverage"
@@ -860,7 +861,7 @@ def main() -> int:
         "--max-local-cpu-gb",
         type=float,
         default=0.0,
-        help="LMCache local-CPU capacity override "
+        help="MP cache server L1 capacity override "
         "(ModelSpec.mme_max_local_cpu_gb); 0 = the 40 GB default. Must "
         "hold the full benchmark's KV or the pass-2 LRU scan evicts every "
         "entry before its revisit and the hit-ratio gate fails at ~0",
@@ -929,14 +930,12 @@ def main() -> int:
         LMCACHE_TEST_CHUNK_SIZE,
         configure_environment,
         VllmPrefillCounters,
-        cumulative_lookup_stats,
-        cumulative_stored_tokens,
         reset_vllm_prefix_cache,
     )
 
     hf_overrides: dict = json.loads(args.hf_overrides) if args.hf_overrides else {}
 
-    configure_environment(args.max_local_cpu_gb or 40.0)
+    configure_environment()
 
     if args.role == "baseline":
         run_baseline(
@@ -1000,40 +999,32 @@ def main() -> int:
 
     # Third Party
     from vllm import LLM
-    from vllm.config import KVTransferConfig
 
-    # A hybrid model can only be served over the MP transport, so the
-    # LMCache pass needs its own cache server (chunked at the unified block
-    # size, one object group per KV cache group) and reads its lookup
-    # counters off the MP adapters instead of the in-process monitor.
-    server = None
-    counters = None
-    monitor = None
+    # First Party (test-local)
+    from harness import (
+        MPTransportCounters,
+        mp_kv_transfer_config,
+        start_mp_cache_server,
+    )
+
+    # The LMCache pass runs on the multi-process deployment, the only one
+    # this suite drives (see the harness module docstring), so it needs its
+    # own cache server and reads its lookup counters off the MP adapters. A
+    # hybrid additionally chunks at the unified block size and gives each
+    # KV cache group its own objects.
     prefill = VllmPrefillCounters()
     prefill.install()
-    if args.hybrid_block_tokens:
-        # First Party (test-local)
-        from harness import (
-            MPTransportCounters,
-            mp_kv_transfer_config,
-            start_mp_cache_server,
-        )
-
-        server = start_mp_cache_server(
-            zmq_port=26000 + (os.getpid() % 1000),
-            http_port=27000 + (os.getpid() % 1000),
-            chunk_size=args.hybrid_block_tokens,
-            log_path=pathlib.Path(args.out).with_suffix(".mp_server.log"),
-            l1_size_gb=args.max_local_cpu_gb or 40.0,
-            separate_object_groups=True,
-        )
-        kv_transfer_config = mp_kv_transfer_config(server.zmq_port)
-        counters = MPTransportCounters()
-        counters.install()
-    else:
-        kv_transfer_config = KVTransferConfig(
-            kv_connector="LMCacheConnectorV1", kv_role="kv_both"
-        )
+    server = start_mp_cache_server(
+        zmq_port=26000 + (os.getpid() % 1000),
+        http_port=27000 + (os.getpid() % 1000),
+        chunk_size=args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+        log_path=pathlib.Path(args.out).with_suffix(".mp_server.log"),
+        l1_size_gb=args.max_local_cpu_gb or 40.0,
+        separate_object_groups=bool(args.hybrid_block_tokens),
+    )
+    kv_transfer_config = mp_kv_transfer_config(server.zmq_port)
+    counters = MPTransportCounters()
+    counters.install()
 
     llm = LLM(
         kv_transfer_config=kv_transfer_config,
@@ -1048,23 +1039,14 @@ def main() -> int:
             args.trust_remote_code,
         ),
     )
-    if counters is None:
-        # First Party
-        from lmcache.observability import LMCStatsMonitor
-
-        monitor = LMCStatsMonitor.GetOrCreate()
 
     def lookup_stats() -> tuple[int, int]:
-        """Cumulative (lookup_tokens, lookup_hits) on whichever transport."""
-        if counters is not None:
-            return (counters.lookup_tokens, counters.lookup_hits)
-        return cumulative_lookup_stats(monitor)
+        """Cumulative (lookup_tokens, lookup_hits) since engine start."""
+        return (counters.lookup_tokens, counters.lookup_hits)
 
     def stored_tokens() -> int:
-        """Cumulative store-requested tokens on whichever transport."""
-        if counters is not None:
-            return counters.stored_tokens
-        return cumulative_stored_tokens(monitor)
+        """Cumulative tokens submitted to the MP server for storage."""
+        return counters.stored_tokens
 
     def reset_local_prefix_cache() -> None:
         """Drop vLLM's own prefix cache so LMCache is the only hit source.
@@ -1087,28 +1069,20 @@ def main() -> int:
         reset_local_prefix_cache()
         t0, h0 = lookup_stats()
         local0, external0 = prefill.local_cached, prefill.external_cached
-        lookups0 = len(counters.lookup_request_tokens) if counters else 0
+        lookups0 = len(counters.lookup_request_tokens)
         answers_p2 = run_batch(
             llm, benchmark, items, chat_template_kwargs, args.max_tokens
         )
         t1, h1 = lookup_stats()
         local_p2 = prefill.local_cached - local0
         external_p2 = prefill.external_cached - external0
-        # Only the MP counters expose per-request lookup lengths, so an
-        # in-process run cannot form the coverage denominator. Report that
-        # as absent rather than as a zero it could be mistaken for.
-        achievable_p2 = (
-            achievable_hit_tokens(
-                counters.lookup_request_tokens[lookups0:],
-                args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
-            )
-            if counters
-            else None
+        achievable_p2 = achievable_hit_tokens(
+            counters.lookup_request_tokens[lookups0:],
+            args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
         )
         hit_ratio = (h1 - h0) / max(1, t1 - t0)
     finally:
-        if server is not None:
-            server.process.terminate()
+        server.process.terminate()
 
     scores = {
         "baseline": benchmark.scores(items, answers_base),
@@ -1126,7 +1100,7 @@ def main() -> int:
     report = {
         "model": args.model,
         "benchmark": benchmark.key,
-        "deployment_path": "mp" if args.hybrid_block_tokens else "in_process",
+        "deployment_path": "mp",
         "num_questions": len(items),
         "scores": scores,
         "flips_pass1_vs_baseline": flips_p1_base,
@@ -1169,7 +1143,7 @@ def main() -> int:
         json.dump({"pass1": answers_p1, "pass2": answers_p2}, f)
 
     coverage_text = (
-        "n/a (in-process: no per-request denominator)"
+        "n/a (report carries no per-request denominator)"
         if gate["pass2_hit_coverage"] is None
         else f"{gate['pass2_hit_coverage']:.3f}"
     )
