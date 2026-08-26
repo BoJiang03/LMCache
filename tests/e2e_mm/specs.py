@@ -374,6 +374,22 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             hf_id="Qwen/Qwen2-VL-2B-Instruct",
             modalities=frozenset({"image", "video"}),
             mme_mm_processor_kwargs={"max_pixels": _MME_PIXEL_BUDGET},
+            # Measured on vLLM 0.27.1 (2026-08-26): three full MME parity
+            # runs flip 19/19/18 answers pass2-vs-pass1 (0.80%), a
+            # deterministic 18-question core (pairwise jaccard >= 0.90),
+            # with pass1 byte-identical to the no-LMCache baseline and the
+            # retrieved KV bit-identical to the computed KV. The flips are
+            # NOT a cache defect: a plain-vLLM control (prefix caching on,
+            # no LMCache anywhere) reproduces the same 18 flips, same
+            # directions, when pass 2 is submitted one request at a time --
+            # first-token logits shift by one bf16 quantum (+-0.125)
+            # between batched and small-step execution, and ~1% of MME
+            # questions sit within one quantum of the yes/no boundary. The
+            # hit path enters the small-step regime through retrieve-
+            # completion staggering admission. Same phenomenon class as
+            # glm-4.6v-flash's documented numeric-regime divergence; see
+            # records/2026/08/26/10_.
+            mme_max_flip_fraction=0.01,
         ),
         ModelSpec(
             key="internvl3.5-2b",
