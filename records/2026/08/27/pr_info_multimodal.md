@@ -69,7 +69,7 @@ is what an unbiased perturbation looks like rather than a systematic
 corruption.
 
 The harness that produced this table is about 9500 lines and is deliberately
-kept out of this PR. It is on the `multi_modal_repro` branch. This PR carries
+kept out of this PR. It is on the [`multi_modal_repro`](https://github.com/BoJiang03/LMCache/tree/multi_modal_repro) branch. This PR carries
 only the unit tests for the key derivation and the connector keying.
 
 ### Unrelated bugs found while validating
@@ -78,7 +78,7 @@ None of these are caused by this change and none of their code is in this PR.
 Each is one commit on its own branch.
 
 **Torch-fallback `lmcache_memcpy_async` is not stream-ordered.** Branch
-`fix_memcpy_stream_order`. Silent data corruption. The pointer-mode fallback
+[`fix_memcpy_stream_order`](https://github.com/BoJiang03/LMCache/tree/fix_memcpy_stream_order). Silent data corruption. The pointer-mode fallback
 issued a synchronous `cudaMemcpy`, which runs on the legacy default stream and
 is unordered against PyTorch's non-blocking streams. The MP server queues the
 paged-KV gather kernel on the cache context's stream and then copies the
@@ -90,7 +90,7 @@ mirroring the native path: `cudaMemcpyAsync` on the current torch stream, split
 at `cudaHostRegister` boundaries.
 
 **An expired read lock is reported as a write collision.** Branch
-`fix_l1_read_lock_reason`. Diagnostics only, no data effect.
+[`fix_l1_read_lock_reason`](https://github.com/BoJiang03/LMCache/tree/fix_l1_read_lock_reason). Diagnostics only, no data effect.
 `read_prefetched_results` labelled `unsafe_read`'s `KEY_NOT_READABLE` as
 `reason="write_locked"`, but `unsafe_read` never consults the write lock. The
 real condition is an expired read lock: `reserve_read` stamps expiry at lookup
@@ -101,7 +101,7 @@ cost real debugging time on a 7699-failure incident. Renamed to
 `read_lock_expired` on the l1_retrieve path, plus one aggregate log line naming
 the count and the configured TTL.
 
-**Failed MP retrieves reported as successes.** Branch `fix_mp_load_error`. The
+**Failed MP retrieves reported as successes.** Branch [`fix_mp_load_error`](https://github.com/BoJiang03/LMCache/tree/fix_mp_load_error). The
 data-loss part of this was fixed independently on dev by #4709 while this work
 was in progress, so what is left on the branch is the deduplication of the two
 drain loops that #4709 left duplicated, plus a warning at registration when the
