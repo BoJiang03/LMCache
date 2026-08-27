@@ -1,0 +1,57 @@
+#!/bin/bash
+# Post-run smoke assertions. usage: check.sh <config> [server_log_offset]
+set -u
+. /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/7445f449-aa3b-46be-b351-5a22de3af76a/scratchpad/smoke/env.sh
+CFG=${1:-lazy}
+OFF=${2:-1}
+SL="$LOGDIR/${CFG}_server.log"
+VL="$LOGDIR/${CFG}_vllm.log"
+
+echo "===== fallback warning (must be 0 in both) ====="
+for f in "$SL" "$VL"; do
+  printf '  %-28s %s\n' "$(basename "$f")" "$(grep -c 'compiled extension not found' "$f")"
+done
+
+echo "===== errors since offset $OFF (server) ====="
+for pat in 'cudaMemcpy failed' 'AcceleratorError' 'cudaErrorInvalidValue' 'Traceback' 'index_select'; do
+  printf '  %-24s %s\n' "$pat" "$(tail -n +$OFF "$SL" | grep -c "$pat")"
+done
+echo "===== errors (vllm) ====="
+for pat in 'AcceleratorError' 'cudaErrorInvalidValue' 'Traceback' 'ERROR'; do
+  printf '  %-24s %s\n' "$pat" "$(grep -c "$pat" "$VL")"
+done
+
+echo "===== store traffic (server) ====="
+printf '  %-24s %s\n' 'Stored .* tokens' "$(grep -c 'Stored [0-9]* tokens' "$SL")"
+curl -s "http://127.0.0.1:$HTTP_PORT/status" 2>/dev/null | head -c 600; echo
+
+echo "===== lazy ledger (last line) ====="
+LED=$(grep -o 'Lazy offload \(final \)\?counters: .*' "$VL" | tail -1)
+echo "  $LED"
+echo "  ledgers logged: $(grep -c 'Lazy offload counters:' "$VL")"
+python3 - "$LED" <<'LEDGER'
+import re, sys
+line = sys.argv[1] if len(sys.argv) > 1 else ""
+kv = {k: int(v) for k, v in re.findall(r"(\w+)=(-?\d+)", line)}
+if not kv:
+    print("  no ledger yet"); raise SystemExit
+# eviction_aware.py increments `admitted` only on the ADMITTED path, so the
+# ledger closes over the dropped_* counters alone: rejected_* and
+# deduplicated return before `admitted += 1`, so they are admission-time
+# refusals, not outcomes of an op that was ever buffered.
+adm, pend, held, emit = (kv.get(k, 0) for k in ("admitted", "pending", "held", "emitted"))
+drops = {k: v for k, v in kv.items() if k.startswith("dropped_")}
+refused = {k: v for k, v in kv.items() if k.startswith("rejected_") or k == "deduplicated"}
+lhs, rhs = adm, pend + held + emit + sum(drops.values())
+print(f"  admitted={adm} = pending {pend} + held {held} + emitted {emit} + dropped {sum(drops.values())}")
+print(f"  equation: {lhs} == {rhs}  ->  {'CLOSES' if lhs == rhs else 'MISMATCH'}")
+print("  dropped:  " + (" ".join(f"{k[8:]}={v}" for k, v in drops.items() if v) or "none"))
+print("  refused:  " + (" ".join(f"{k}={v}" for k, v in refused.items() if v) or "none"))
+if adm:
+    print(f"  drop rate (gate-1 sensor): {sum(drops.values())/adm*100:.1f}% of admitted")
+drains = kv.get("drain_steps", 0)
+print(f"  drain_steps={drains} throttled_drains={kv.get('throttled_drains', 0)}")
+if drains:
+    for k in ("free_queue_blocks_read", "requests_validated", "blocks_validated"):
+        print(f"  {k}/step = {kv.get(k, 0)/drains:.2f}")
+LEDGER

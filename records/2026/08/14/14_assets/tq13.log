@@ -1,0 +1,16 @@
+=== off 9 17:07:41
+[ld] === L_off_h3c11_9: hot 8.2 GiB + cold 30.2 GiB through a 20.0 GiB pool and 40 GiB of L1
+[ld] warmup: 14 req in 11s  ttft hot 946ms cold 1341ms  ext nan apc 0.000 cov 0.000  obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ld] query: 120 req in 39s  ttft hot 103ms cold 736ms  ext nan apc 0.725 cov 0.725  obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ld] L_off_h3c11_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ld_L_off_h3c11_9.json  ledger {}
+=== eager 9 17:10:13
+[ld] === L_eager_h3c11_9: hot 8.2 GiB + cold 30.2 GiB through a 20.0 GiB pool and 40 GiB of L1
+[ld] warmup: 14 req in 12s  ttft hot 1018ms cold 1440ms  ext 0.000 apc 0.000 cov 0.000  obj 0->905 l1 0.823 peak / 0.795 end, 1 evictions
+[ld] query: 120 req in 43s  ttft hot 135ms cold 830ms  ext 0.000 apc 0.725 cov 0.725  obj 905->895 l1 0.907 peak / 0.787 end, 14 evictions
+[ld] L_eager_h3c11_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ld_L_eager_h3c11_9.json  ledger {}
+=== lazy 9 17:12:52
+[ld] === L_lazy_h3c11_9: hot 8.2 GiB + cold 30.2 GiB through a 20.0 GiB pool and 40 GiB of L1
+[ld] warmup: 14 req in 12s  ttft hot 979ms cold 1345ms  ext 0.000 apc 0.000 cov 0.000  obj 0->843 l1 0.741 peak / 0.741 end, 1 evictions
+[ld] query: 120 req in 31s  ttft hot 165ms cold 341ms  ext 0.615 apc 0.725 cov 0.894  obj 843->843 l1 0.878 peak / 0.741 end, 5 evictions
+[ld] L_lazy_h3c11_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ld_L_lazy_h3c11_9.json  ledger {'admitted': 80, 'emitted': 71, 'dropped_evicted': 0, 'rejected_short_prefix': 0, 'rejected_unhashed': 0, 'rejected_prefix_broken': 0, 'dropped_on_request_drop': 0, 'dropped_failed_store': 0, 'dropped_id_reuse': 0, 'deduplicated': 56, 'throttled_drains': 0, 'pending': 9}
+=== queue done 17:15:16

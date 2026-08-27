@@ -1,0 +1,64 @@
+"""Concurrent long-prompt load, to put the KV store path under real pressure.
+
+The sequential probe establishes only that a store batch can succeed. The
+transfer bug showed up at a per-batch rate, so what matters is batch count and
+whether concurrent prefills -- which is when the pending queue actually backs
+up and the eviction-aware policy has to drain under pressure -- change it.
+
+usage: probe_conc.py <port> <n_requests> <prompt_tokens> <concurrency>
+
+The prompt size is given in *tokens*, not words: every word in WORDS is
+``tok`` + a zero-padded 5-digit number, which the Qwen3 tokenizer splits
+into exactly 6 tokens (measured, stable across lengths), so a word count
+passed as a token count overshoots the context window by 6x and every
+request comes back 400.
+"""
+import json, sys, time, random, threading, urllib.request
+
+PORT, N, TOK, CONC = (int(a) for a in sys.argv[1:5])
+random.seed(11)
+TOKENS_PER_WORD = 6
+WORDS = [f"tok{i:05d}" for i in range(4000)]
+n_words = max(1, (TOK - 3) // TOKENS_PER_WORD)
+PROMPTS = [f"session-{i} " + " ".join(random.choice(WORDS) for _ in range(n_words))
+           for i in range(N)]
+print(f"prompt target {TOK} tok = {n_words} words x {TOKENS_PER_WORD} tok/word", flush=True)
+
+lock = threading.Lock()
+ok = fail = 0
+lat: list[float] = []
+
+
+def worker(idx_iter) -> None:
+    global ok, fail
+    for i in idx_iter:
+        body = json.dumps({"model": "agentx", "prompt": PROMPTS[i],
+                           "max_tokens": 8, "temperature": 0.0}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/completions",
+                                     data=body,
+                                     headers={"Content-Type": "application/json"})
+        t = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                json.loads(r.read())
+            dt = time.time() - t
+            with lock:
+                ok += 1; lat.append(dt)
+                print(f"  req {i:3d} ok {dt:6.1f}s ({ok+fail}/{N})", flush=True)
+        except Exception as exc:
+            with lock:
+                fail += 1
+                print(f"  req {i:3d} FAILED {exc}", flush=True)
+
+
+t0 = time.time()
+lanes = [list(range(k, N, CONC)) for k in range(CONC)]
+threads = [threading.Thread(target=worker, args=(l,)) for l in lanes]
+for t in threads: t.start()
+for t in threads: t.join()
+wall = time.time() - t0
+lat.sort()
+print(f"{ok}/{N} completed, {fail} failed, wall {wall:.1f}s, conc {CONC}")
+if lat:
+    print(f"latency p50={lat[len(lat)//2]:.1f}s p99={lat[int(len(lat)*0.99)-1]:.1f}s "
+          f"max={lat[-1]:.1f}s")

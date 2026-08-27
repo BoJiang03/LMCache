@@ -1,0 +1,80 @@
+"""Compare the two trace-driven arms on the metrics the policy can move.
+
+TTFT is the metric of record: a KV-offload policy pays off by finding a longer
+reusable prefix, which shortens prefill and therefore time to first token.
+Decode-side numbers (ITL, output throughput) are not expected to move and are
+printed only so a change there shows up rather than hiding.
+"""
+import json, sys
+
+BASE = "/tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/a18268cd-a7cd-49f2-a90c-9dea44535fa0/scratchpad/smoke2"
+
+def load(cfg):
+    with open(f"{BASE}/abt_{cfg}/artifacts/profile_export_aiperf.json") as f:
+        return json.load(f)
+
+def snap(cfg):
+    out = {}
+    for line in open(f"{BASE}/abt_{cfg}/snapshot.txt"):
+        if "=" in line:
+            k, _, v = line.strip().partition("=")
+            out[k] = v
+    return out
+
+e, l = load("eager"), load("lazy")
+se, sl = snap("eager"), snap("lazy")
+
+def g(d, k, stat):
+    v = d.get(k)
+    return v.get(stat) if isinstance(v, dict) else None
+
+print(f"{'metric':38s} {'eager':>14s} {'lazy':>14s} {'delta':>12s}")
+print("-" * 82)
+
+def row(label, ev, lv, fmt="{:.1f}", better=None):
+    if ev is None or lv is None:
+        print(f"{label:38s} {'n/a':>14s} {'n/a':>14s}"); return
+    d = ""
+    if ev:
+        pct = (lv - ev) / ev * 100
+        d = f"{pct:+.1f}%"
+        if better == "lower" and pct < 0: d += " ✓"
+        if better == "higher" and pct > 0: d += " ✓"
+    print(f"{label:38s} {fmt.format(ev):>14s} {fmt.format(lv):>14s} {d:>12s}")
+
+print("== load actually offered (must match for the pair to be comparable) ==")
+row("request_count", g(e,"request_count","avg"), g(l,"request_count","avg"), "{:.0f}")
+row("benchmark_duration s", g(e,"benchmark_duration","avg"), g(l,"benchmark_duration","avg"))
+row("total_isl tokens", g(e,"total_isl","avg"), g(l,"total_isl","avg"), "{:.0f}")
+row("input_sequence_length p50", g(e,"input_sequence_length","p50"), g(l,"input_sequence_length","p50"), "{:.0f}")
+row("theoretical_prefix_cache_hit %", g(e,"theoretical_prefix_cache_hit","avg"), g(l,"theoretical_prefix_cache_hit","avg"))
+
+print("\n== TTFT: the metric of record ==")
+for stat in ("avg", "p50", "p99"):
+    row(f"time_to_first_token {stat} ms", g(e,"time_to_first_token",stat), g(l,"time_to_first_token",stat), better="lower")
+
+print("\n== end-to-end ==")
+for stat in ("avg", "p50", "p99"):
+    row(f"request_latency {stat} ms", g(e,"request_latency",stat), g(l,"request_latency",stat), better="lower")
+row("request_throughput req/s", g(e,"request_throughput","avg"), g(l,"request_throughput","avg"), "{:.4f}", better="higher")
+row("effective_concurrency", g(e,"effective_concurrency","avg"), g(l,"effective_concurrency","avg"), "{:.2f}")
+
+print("\n== decode side (not expected to move) ==")
+row("inter_token_latency avg ms", g(e,"inter_token_latency","avg"), g(l,"inter_token_latency","avg"))
+row("output_token_throughput", g(e,"output_token_throughput","avg"), g(l,"output_token_throughput","avg"))
+
+print("\n== offload work and yield (server side) ==")
+for k, better in (("stores", "lower"), ("tokens_stored", "lower"),
+                  ("retrieves", "higher"), ("tokens_retrieved", "higher"),
+                  ("l1_watermark_events", "lower"), ("l1_gib", None), ("l1_objects", None)):
+    ev, lv = se.get(k), sl.get(k)
+    if ev is None or lv is None: continue
+    row(k, float(ev), float(lv), "{:.2f}" if "." in str(ev) or "." in str(lv) else "{:.0f}", better=better)
+
+es, ls_ = float(se.get("tokens_stored", 0)), float(sl.get("tokens_stored", 0))
+er, lr = float(se.get("tokens_retrieved", 0)), float(sl.get("tokens_retrieved", 0))
+print("\n== yield per token written (retrieved / stored) ==")
+if es and ls_:
+    print(f"{'eager':38s} {er/es:>14.3f}")
+    print(f"{'lazy':38s} {lr/ls_:>14.3f}")
+print("\nlazy ledger:", sl.get("ledger", "n/a")[:300])

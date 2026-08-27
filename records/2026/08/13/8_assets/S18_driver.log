@@ -1,0 +1,57 @@
+[driver] mp-server ready after 10s
+[driver] vllm ready after 46s
+[S18] kernel group windows: [512, 512, 512, 512, 512, -1]
+[check] PASS: the engine built interleaved attention groups (distinct windows=[-1, 512])
+[check] PASS: both a sliding-window and a full-attention group exist (windows=[-1, 512])
+[check] PASS: the prompt is several windows long, so most of it falls out of the attention window (tokens=2166, window=512)
+[check] PASS: a counter ledger was logged (2 lines)
+[S18] ledger lines: periodic=2 final=0
+[S18] ledger: admitted=4 emitted=0 dropped_evicted=0 rejected_short_prefix=0 rejected_unhashed=0 rejected_prefix_broken=0 dropped_on_request_drop=0 dropped_failed_store=0 dropped_id_reuse=0 deduplicated=0 throttled_drains=0 pending=4
+[check] PASS: the ledger carries exactly the expected keys (missing=[], unexpected=[])
+[check] PASS: the periodic ledger line -- the one every check here reads -- was logged (2 lines)
+[check] PASS: ledger closes as an equation (admitted=4, pending=4, outcomes=0)
+[check] PASS: aggregate eviction-drop INFO lines sum to the ledger (sum=0, dropped_evicted=0)
+[check] PASS: aggregate gate-3 drop INFO lines sum to the ledger (sum=0, rejected_short_prefix=0)
+[check] PASS: eviction drops stay within this scenario's bound (dropped_evicted=0, max=0)
+[check] PASS: the fresh prefill admitted its operations (admitted=4)
+[check] PASS: and none of them was rejected (rejected_unhashed=0, rejected_prefix_broken=0)
+[check] PASS: a counter ledger was logged (5 lines)
+[S18] ledger lines: periodic=5 final=0
+[S18] ledger: admitted=4 emitted=0 dropped_evicted=0 rejected_short_prefix=0 rejected_unhashed=1 rejected_prefix_broken=2 dropped_on_request_drop=0 dropped_failed_store=0 dropped_id_reuse=0 deduplicated=0 throttled_drains=0 pending=4
+[check] PASS: the ledger carries exactly the expected keys (missing=[], unexpected=[])
+[check] PASS: the periodic ledger line -- the one every check here reads -- was logged (5 lines)
+[check] PASS: ledger closes as an equation (admitted=4, pending=4, outcomes=0)
+[check] PASS: aggregate eviction-drop INFO lines sum to the ledger (sum=0, dropped_evicted=0)
+[check] PASS: aggregate gate-3 drop INFO lines sum to the ledger (sum=0, rejected_short_prefix=0)
+[check] PASS: eviction drops stay within this scenario's bound (dropped_evicted=0, max=0)
+[check] PASS: the replay's covering operation was rejected exactly once (rejected_unhashed=1)
+[check] PASS: and the operations its continued generation produced were rejected as prefix-broken (rejected_prefix_broken=2)
+[check] PASS: the replay admitted nothing at all (admitted=4, before=4)
+[S18] skips: [('cmpl-swa-replay-0-92f6d0ff', 0, 2048)]
+[check] PASS: exactly one hash-less-block skip was reported (skips=1)
+[check] PASS: the skip names the replay, not the first pass (request=cmpl-swa-replay-0-92f6d0ff)
+[check] PASS: and covers the whole cached prefix (span=[0, 2048), expected=[0, 2048))
+[check] PASS: nothing was retrieved from LMCache (retrieved=[])
+[check] PASS: the lazy run stored nothing (objects=0)
+[driver] teardown done, exit codes: [0]
+[check] PASS: lazy vllm shut down within the SIGINT grace window (rc=0)
+[driver] vllm ready after 48s
+[check] PASS: the eager run stored the first pass (objects=8)
+[check] PASS: cache cleared between passes
+[check] PASS: greedy outputs identical across the lazy and eager replays
+[S18] eager replay: shared keys=8 differing bytes=7
+[check] PASS: the eager replay rewrote content-addressed keys the first pass had written (shared=8)
+[check] PASS: and wrote different bytes under them -- this is what the lazy guard refuses (differing=7 of 8)
+[S18] ObjectKey(chunk_hash=b' \x149\xc0\xb1\x03\xbe\x7f\xed\xc4\x84\xbb\xb3\xa7\xb4\xb1\xfa\xc7\xe9g\x05\t\x11\x96\xbc\x8f\xdc}\xbd&\x0b\x98', model_name='google/gemma-3-270m-it', kv_rank=16777472, object_group_id=0, cache_salt=''): 8a4956b1bc69ba57b498f8513e952936 -> 0fcc3c34e6748aa933b0ff6e2c552066
+[S18] ObjectKey(chunk_hash=b'*\x07\x9c\x9br\xa7)\xdf\xb9A\xaa\xc4*\x7f\x9b\xfc\xe6g@\xc5A\xe3\xdd\xd7\x98\xe4\xee\x1c\x17\x97<\xe8', model_name='google/gemma-3-270m-it', kv_rank=16777472, object_group_id=0, cache_salt=''): 20b62e47a74c482e3f7d5fe5515764a2 -> a0d9ff7bb5d942a77c49e93141afb913
+[S18] ObjectKey(chunk_hash=b'\x1b\\\xc4>\r\xf81\xa1\x06m\xad\xf9*6aD\x03\x81\x93\xe1Q\x98U]\xaa\xc4\x05\xaf\x02Yo\xcb', model_name='google/gemma-3-270m-it', kv_rank=16777472, object_group_id=0, cache_salt=''): bde9d8e9398871a227c3fdfc8c15194f -> e5b7af7ae0c92479116732d1d6c8e540
+[check] PASS: the eager path reported no skip (skips=0)
+[driver] teardown done, exit codes: [0]
+[check] PASS: eager vllm shut down within the SIGINT grace window (rc=0)
+[driver] teardown done, exit codes: [-2]
+[check] PASS: mp-server shut down within the SIGINT grace window (rc=-2)
+[check] PASS: only this scenario's sub-chunk requests ended a session the server never created (warnings=2, sub-chunk requests=2)
+    S18_server.log:78: [33;20m[2026-08-13 19:21:13,762] LMCache WARNING:[0m Session cmpl-9a75dc348f7e1cd8-0-a77e54c4 not found, skipping touch [3m(lookup.py:524:lmcache.v1.multipro
+    S18_server.log:79: [33;20m[2026-08-13 19:22:45,609] LMCache WARNING:[0m Session cmpl-89cd881437c9c85a-0-a460a430 not found, skipping touch [3m(lookup.py:524:lmcache.v1.multipro
+[driver] S18: 37 assertions executed (min 37)
+[driver] S18: ALL PASS

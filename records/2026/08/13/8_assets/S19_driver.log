@@ -1,0 +1,35 @@
+[driver] mp-server ready after 8s
+[driver] vllm ready after 54s
+[driver] teardown done, exit codes: [0]
+[check] PASS: lazy vllm shut down within the SIGINT grace window (rc=0)
+[S19] lazy stored 14 of 32 chunks
+[check] PASS: the lazy run stored a substantial share of the chunks (n=14, floor=10, total=32)
+[check] PASS: no stored object is an empty buffer (empty=0)
+[check] PASS: every stored chunk has distinct bytes (unique=14, objects=14)
+[check] PASS: a counter ledger was logged (2 lines)
+[S19] ledger lines: periodic=2 final=0
+[S19] ledger: admitted=16 emitted=7 dropped_evicted=6 rejected_short_prefix=0 rejected_unhashed=0 rejected_prefix_broken=0 dropped_on_request_drop=0 dropped_failed_store=0 dropped_id_reuse=0 deduplicated=0 throttled_drains=0 pending=3
+[check] PASS: the ledger carries exactly the expected keys (missing=[], unexpected=[])
+[check] PASS: the periodic ledger line -- the one every check here reads -- was logged (2 lines)
+[check] PASS: ledger closes as an equation (admitted=16, pending=3, outcomes=13)
+[check] PASS: aggregate eviction-drop INFO lines sum to the ledger (sum=6, dropped_evicted=6)
+[check] PASS: aggregate gate-3 drop INFO lines sum to the ledger (sum=0, rejected_short_prefix=0)
+[check] PASS: eviction drops stay within this scenario's bound (dropped_evicted=6, max=16)
+[check] PASS: no request was preempted (dropped_on_request_drop=0)
+[check] PASS: fresh prefills on this model admit normally (rejected_unhashed=0, rejected_prefix_broken=0)
+[check] PASS: cache cleared between runs
+[driver] vllm ready after 46s
+[driver] teardown done, exit codes: [0]
+[check] PASS: eager vllm shut down within the SIGINT grace window (rc=0)
+[S19] eager stored 32 of 32 chunks
+[check] PASS: greedy outputs identical across lazy/eager runs
+[check] PASS: the lazy run reported no hash-less-block skip
+[check] PASS: [S19] every lazy key exists in the eager run (lazy-only=[])
+[check] PASS: [S19] every lazy chunk is under comparison (common=14, lazy=14)
+[check] PASS: [S19] stored KV bytes identical on all 14 common chunks (mismatched=0)
+[driver] teardown done, exit codes: [-2]
+[check] PASS: mp-server shut down within the SIGINT grace window (rc=-2)
+[check] PASS: only this scenario's sub-chunk requests ended a session the server never created (warnings=1, sub-chunk requests=1)
+    S19_server.log:104: [33;20m[2026-08-13 19:31:24,238] LMCache WARNING:[0m Session cmpl-987576d8caa15e70-0-bead48e6 not found, skipping touch [3m(lookup.py:524:lmcache.v1.multipro
+[driver] S19: 22 assertions executed (min 20)
+[driver] S19: ALL PASS

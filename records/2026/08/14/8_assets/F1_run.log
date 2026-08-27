@@ -1,0 +1,34 @@
+[driver] mp-server ready after 8s
+[driver] vllm ready after 36s
+[check] PASS: the engine logged the lowered heartbeat interval, so the stall is noticed inside a wave (interval=2.0s)
+[check] PASS: every healthy-wave request returned text (n=3)
+[check] PASS: the healthy wave stored something, and no more than its chunks (objects=9, chunks=27)
+[fault] SIGSTOP -> mp-server
+[fault] engine saw the server stall after 4.0s
+[check] PASS: the frozen server was detected as unhealthy
+[check] PASS: every stalled-wave request still returned text, i.e. degraded mode cost the cache and not the completion (n=3)
+[fault] SIGCONT -> mp-server
+[fault] engine saw the server return after 1.0s
+[check] PASS: the resumed server was detected as healthy
+[check] PASS: the stalled wave stored nothing (objects=9, before=9)
+[check] PASS: every resumed-wave request returned text (n=3)
+[check] PASS: stores resumed after recovery (objects=13, during stall=9)
+[check] PASS: the connector logged the failure path (lines=1)
+[check] PASS: at least one failure dropped a held-back op, which is what the counter counts (per-line drops=[2])
+[check] PASS: the worker adapter logged dropping a store while unhealthy
+[driver] teardown done, exit codes: [0]
+[check] PASS: vllm shut down within the SIGINT grace window (rc=0)
+[check] PASS: a counter ledger was logged (9 lines)
+[F1] ledger lines: periodic=9 final=0
+[F1] ledger: admitted=30 emitted=3 dropped_evicted=16 rejected_short_prefix=0 rejected_unhashed=0 rejected_prefix_broken=0 dropped_on_request_drop=3 dropped_failed_store=2 dropped_id_reuse=0 deduplicated=0 throttled_drains=3 pending=6
+[check] PASS: the ledger carries exactly the expected keys (missing=[], unexpected=[])
+[check] PASS: the periodic ledger line -- the one every check here reads -- was logged (9 lines)
+[check] PASS: ledger closes as an equation (admitted=30, pending=6, outcomes=24)
+[check] PASS: aggregate eviction-drop INFO lines sum to the ledger (sum=16, dropped_evicted=16)
+[check] PASS: aggregate gate-3 drop INFO lines sum to the ledger (sum=0, rejected_short_prefix=0)
+[check] PASS: eviction drops stay within this scenario's bound (dropped_evicted=16, max=1000000)
+[check] PASS: the ledger recorded the last uncovered counter (dropped_failed_store=2)
+[driver] teardown done, exit codes: [-2]
+[check] PASS: mp-server shut down within the SIGINT grace window (rc=-2)
+[fault] F1: 22 assertions executed (min 16)
+[fault] F1: ALL PASS

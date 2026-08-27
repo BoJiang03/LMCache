@@ -1,0 +1,662 @@
+[2026-08-25 12:19:59,947] LMCache INFO: torch_dev=<module 'torch.cuda' from '/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda (_device_detect.py:312:lmcache.v1.platform._device_detect)
+[2026-08-25 12:19:59,948] LMCache INFO: Auto-selected backend [cuda] for accelerator 'cuda' from candidate backends [cuda, rocm]. (__init__.py:148:lmcache.v1.platform)
+[2026-08-25 12:19:59,950] LMCache WARNING: lmcache.cuda_ops compiled extension not found; CudaDeviceOps stays on the torch baseline for all ops. (device_ops.py:34:lmcache.v1.platform.cuda.device_ops)
+[2026-08-25 12:20:00,684] LMCache INFO: multi_layer_block_kv_transfer mode: tensor (base.py:95:lmcache.v1.multiprocess.transfer_context.base)
+[2026-08-25 12:20:00,736] LMCache INFO: Discovered API module: cache_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,737] LMCache INFO: Discovered API module: env_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,739] LMCache INFO: Discovered API module: loglevel_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,739] LMCache INFO: Discovered API module: metrics_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,742] LMCache INFO: Discovered API module: periodic_thread_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,743] LMCache INFO: Discovered API module: run_script_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,744] LMCache INFO: Discovered API module: thread_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,747] LMCache INFO: Discovered API module: common_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,749] LMCache INFO: Discovered API module: config_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,751] LMCache INFO: Discovered API module: info_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,754] LMCache INFO: Discovered API module: quota_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:00,758] LMCache INFO: Discovered API module: reconfigure_api (router_discovery.py:53:lmcache.v1.utils.router_discovery)
+[2026-08-25 12:20:03,077] LMCache INFO: CudaPinMemoryBackend: using torch cudart (pin_memory.py:89:lmcache.v1.platform.cuda.pin_memory)
+[2026-08-25 12:20:03,078] LMCache INFO: Starting LMCache HTTP server on http://127.0.0.1:28185 (http_server.py:259:__main__)
+INFO:     Started server process [1846194]
+INFO:     Waiting for application startup.
+[2026-08-25 12:20:03,091] LMCache INFO: Starting LMCache HTTP server... (accelerator available: True) (http_server.py:77:__main__)
+[2026-08-25 12:20:03,106] LMCache INFO: OTel MeterProvider initialised with Prometheus fallback (standalone metrics HTTP server disabled; /metrics must be exposed by the caller), resource={'telemetry.sdk.language': 'python', 'telemetry.sdk.name': 'opentelemetry', 'telemetry.sdk.version': '1.40.0', 'service.instance.id': '395743b0-f129-412b-b097-25cfb6876f17', 'service.name': 'unknown_service'} (otel_init.py:114:lmcache.v1.mp_observability.otel_init)
+[2026-08-25 12:20:09,072] LMCache INFO: Starting L1EvictionController... (eviction_controller.py:53:lmcache.v1.distributed.storage_controllers.eviction_controller)
+[2026-08-25 12:20:09,094] LMCache INFO: Starting L2EvictionController... (eviction_controller.py:250:lmcache.v1.distributed.storage_controllers.eviction_controller)
+[2026-08-25 12:20:09,095] LMCache INFO: Starting StoreController... (store_controller.py:305:lmcache.v1.distributed.storage_controllers.store_controller)
+[2026-08-25 12:20:09,096] LMCache INFO: Starting PrefetchController... (prefetch_controller.py:596:lmcache.v1.distributed.storage_controllers.prefetch_controller)
+[2026-08-25 12:20:09,096] LMCache INFO: Using blake3 hash function (token_hasher.py:79:lmcache.v1.multiprocess.token_hasher)
+[2026-08-25 12:20:09,098] LMCache INFO: Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function (token_hasher.py:180:lmcache.v1.multiprocess.token_hasher)
+[2026-08-25 12:20:09,098] LMCache INFO: TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 (token_hasher.py:67:lmcache.v1.multiprocess.token_hasher)
+[2026-08-25 12:20:09,099] LMCache INFO: PeriodicThread SessionManager-cleanup-thread-7fe3f967a5a0 entering main loop (interval=60.0s) (periodic_thread.py:304:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,099] LMCache INFO: Started PeriodicThread: SessionManager-cleanup-thread-7fe3f967a5a0 (level=medium, interval=60.0s, init_wait=0.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,100] LMCache INFO: PeriodicThread DeviceHostFuncDispatcher entering main loop (interval=0.0s) (periodic_thread.py:304:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,101] LMCache INFO: Started PeriodicThread: DeviceHostFuncDispatcher (level=high, interval=0.0s, init_wait=0.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,101] LMCache INFO: Supported transfer mode: lmcache_driven (server.py:219:lmcache.v1.multiprocess.server)
+[2026-08-25 12:20:09,102] LMCache INFO: PeriodicThread lmcache-mp-worker-reaper entering main loop (interval=30.0s) (periodic_thread.py:304:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,102] LMCache INFO: Started PeriodicThread: lmcache-mp-worker-reaper (level=medium, interval=30.0s, init_wait=0.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,102] LMCache INFO: Initializing MP usage context. (mp.py:93:lmcache.usage_telemetry.mp)
+[2026-08-25 12:20:09,103] LMCache INFO: Initializing MP continuous usage reporting. (mp_continuous.py:217:lmcache.usage_telemetry.mp_continuous)
+[2026-08-25 12:20:09,104] LMCache INFO: Started PeriodicThread: lmcache-usage-continuous (level=low, interval=600.0s, init_wait=600.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,104] LMCache INFO: Initializing L2 connector usage reporting. (l2_usage.py:243:lmcache.usage_telemetry.l2_usage)
+[2026-08-25 12:20:09,105] LMCache INFO: Started PeriodicThread: lmcache-usage-l2 (level=low, interval=600.0s, init_wait=600.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,105] LMCache INFO: Initializing L1 usage reporting. (l1_usage.py:154:lmcache.usage_telemetry.l1_usage)
+[2026-08-25 12:20:09,106] LMCache INFO: Started PeriodicThread: lmcache-usage-l1 (level=low, interval=600.0s, init_wait=600.0s) (periodic_thread.py:248:lmcache.v1.periodic_thread)
+[2026-08-25 12:20:09,116] LMCache INFO: Created AffinityThreadPool 'affinity-pool-0' with 4 worker slots: up to 4 distinct affinity keys each bind to their own thread before slots are shared. Compare this against the number of clients expected to connect to confirm routing. (affinity_pool.py:60:lmcache.v1.multiprocess.affinity_pool)
+[2026-08-25 12:20:09,116] LMCache INFO: LMCache ZMQ cache server is running on tcp://127.0.0.1:26575 (server.py:453:lmcache.v1.multiprocess.server)
+[2026-08-25 12:20:09,117] LMCache INFO: LMCache cache server is running... (server.py:468:lmcache.v1.multiprocess.server)
+[2026-08-25 12:20:09,117] LMCache INFO: LMCache HTTP server initialized (http_server.py:164:__main__)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:28185 (Press CTRL+C to quit)
+INFO:     127.0.0.1:45258 - "GET /healthcheck HTTP/1.1" 200 OK
+[2026-08-25 12:20:12,252] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 30720 MB / 204800 MB (15.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:15,003] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 40960 MB / 204800 MB (20.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:17,441] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 51200 MB / 204800 MB (25.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:20,027] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 61440 MB / 204800 MB (30.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:22,599] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 71680 MB / 204800 MB (35.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:25,703] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 81920 MB / 204800 MB (40.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:28,400] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 92160 MB / 204800 MB (45.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:30,898] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 102400 MB / 204800 MB (50.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:34,034] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 112640 MB / 204800 MB (55.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:36,834] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 122880 MB / 204800 MB (60.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:40,432] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 133120 MB / 204800 MB (65.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:43,498] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 143360 MB / 204800 MB (70.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:46,558] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 153600 MB / 204800 MB (75.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:49,043] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 163840 MB / 204800 MB (80.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:51,672] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 174080 MB / 204800 MB (85.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:55,446] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 184320 MB / 204800 MB (90.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:20:58,605] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 194560 MB / 204800 MB (95.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:21:01,426] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 204800 MB / 204800 MB (100.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-25 12:21:01,468] LMCache INFO: Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] (detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)
+[2026-08-25 12:21:01,470] LMCache INFO: Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] (detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)
+[2026-08-25 12:21:01,471] LMCache INFO: Group 0 first-layer tensor: layer_idx=0 shape=(16384, 2, 16, 4, 128) stride=(16384, 8192, 512, 128, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:0 storage_offset=0 numel=268435456 storage_nbytes=536870912 padding_per_block=0 (utils.py:601:lmcache.v1.gpu_connector.utils)
+[2026-08-25 12:21:01,471] LMCache INFO: KV layer groups: ---
+KernelGroupInfo(layers=48, indices=0-47, shape_desc=(kv=2, nl=48, nb=16384, bs=16, nh=4, hs=128, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=16, slots_per_block=16, engine_group_idx=0, sw_size_tokens=-1)
+--- (kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)
+[2026-08-25 12:21:01,643] LMCache INFO: Registered KV cache for GPU ID 3904969185615807318 with 48 layers (lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:01,643] LMCache INFO: Initialized cuda stream on device cuda:0 (cache_context.py:430:lmcache.v1.platform.cuda.cache_context)
+[2026-08-25 12:21:36,035] LMCache INFO: AffinityThreadPool: affinity_key=-6614265700300798971 assigned to worker slot 0 of 4 (thread affinity-pool-0-0); 1 distinct key(s) now bound (affinity_pool.py:108:lmcache.v1.multiprocess.affinity_pool)
+[2026-08-25 12:21:36,429] LMCache INFO: Stored 8192 tokens in 0.393 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:36,701] LMCache INFO: Stored 8192 tokens in 0.272 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:37,120] LMCache INFO: Stored 8192 tokens in 0.418 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:37,635] LMCache INFO: Stored 8192 tokens in 0.515 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:38,234] LMCache INFO: Stored 8192 tokens in 0.598 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:38,820] LMCache INFO: Stored 6912 tokens in 0.585 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:39,312] LMCache INFO: Stored 8192 tokens in 0.291 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:39,645] LMCache INFO: Stored 8192 tokens in 0.333 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:40,019] LMCache INFO: Stored 8192 tokens in 0.373 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:40,572] LMCache INFO: Stored 8192 tokens in 0.553 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:41,174] LMCache INFO: Stored 8192 tokens in 0.601 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:41,746] LMCache INFO: Stored 6912 tokens in 0.572 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:42,171] LMCache INFO: Stored 8192 tokens in 0.294 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:42,499] LMCache INFO: Stored 8192 tokens in 0.328 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:42,917] LMCache INFO: Stored 8192 tokens in 0.417 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:43,433] LMCache INFO: Stored 8192 tokens in 0.516 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:44,033] LMCache INFO: Stored 8192 tokens in 0.599 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:44,569] LMCache INFO: Stored 6912 tokens in 0.536 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:44,990] LMCache INFO: Stored 8192 tokens in 0.242 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:45,320] LMCache INFO: Stored 8192 tokens in 0.330 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:45,737] LMCache INFO: Stored 8192 tokens in 0.416 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:46,240] LMCache INFO: Stored 8192 tokens in 0.504 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:46,826] LMCache INFO: Stored 8192 tokens in 0.586 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:47,407] LMCache INFO: Stored 6912 tokens in 0.580 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:47,891] LMCache INFO: Stored 8192 tokens in 0.307 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:48,165] LMCache INFO: Stored 8192 tokens in 0.275 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:48,583] LMCache INFO: Stored 8192 tokens in 0.418 seconds (lmcache_driven_transfer.py:1273:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+[2026-08-25 12:21:48,969] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:49,471] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:50,018] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:50,370] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:50,650] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:50,981] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:51,447] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:51,961] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:52,526] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:52,863] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:53,123] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:53,470] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:53,913] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:54,441] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:54,986] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:55,342] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:55,601] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:55,949] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:56,391] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:56,921] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:57,468] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:57,828] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:58,100] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:58,439] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:58,893] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:21:59,413] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:21:59,970] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:22:00,319] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:22:00,606] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:22:00,930] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:22:01,387] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1
+[2026-08-25 12:22:01,905] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 600, in transfer_kv_per_object_group
+    device_ops.multi_layer_block_kv_transfer(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 175, in multi_layer_block_kv_transfer
+    return torch_ops.multi_layer_block_kv_transfer(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1233, in multi_layer_block_kv_transfer
+    _transfer_per_layer_nhd(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 1797, in _transfer_per_layer_nhd
+    selected = layer.index_select(0, eff_idx)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+[2026-08-25 12:22:02,458] LMCache ERROR: Cannot store keys due to exception (lmcache_driven_transfer.py:1240:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 1228, in store
+    transfer_kv_per_object_group(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py", line 615, in transfer_kv_per_object_group
+    lmcache_memcpy_async_d2h(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/gpu_connector/gpu_ops.py", line 86, in lmcache_memcpy_async_d2h
+    device_ops.lmcache_memcpy_async(
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/base/device_ops.py", line 244, in lmcache_memcpy_async
+    return torch_ops.lmcache_memcpy_async(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/dev_baseline/lmcache/v1/platform/torch_ops.py", line 2210, in lmcache_memcpy_async
+    raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
+RuntimeError: cudaMemcpy failed with error code 1

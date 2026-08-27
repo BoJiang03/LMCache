@@ -1,0 +1,19 @@
+=== off 9 120 4 68 17:16:15
+[ac] === A_off_n120_l68_9
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[ac] cold: 120 q in 28s strict 0.925 lenient 0.925 ttft p50 119ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] cached: 120 q in 28s strict 0.925 lenient 0.925 ttft p50 120ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] A_off_n120_l68_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ac_A_off_n120_l68_9.json
+=== eager 9 120 4 68 17:18:44
+[ac] === A_eager_n120_l68_9
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[ac] cold: 120 q in 29s strict 0.925 lenient 0.925 ttft p50 128ms ext 0.000 apc 0.000 obj 0->1448 l1 0.749 peak / 0.749 end, 0 evictions
+[ac] cached: 120 q in 22s strict 0.908 lenient 0.908 ttft p50 112ms ext 0.961 apc 0.000 obj 1448->1452 l1 0.751 peak / 0.751 end, 0 evictions
+[ac] A_eager_n120_l68_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ac_A_eager_n120_l68_9.json
+=== lazy 9 120 4 68 17:21:04
+[ac] === A_lazy_n120_l68_9
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[ac] cold: 120 q in 29s strict 0.917 lenient 0.917 ttft p50 126ms ext 0.000 apc 0.000 obj 0->1360 l1 0.703 peak / 0.703 end, 0 evictions
+[ac] cached: 120 q in 21s strict 0.917 lenient 0.917 ttft p50 86ms ext 0.944 apc 0.000 obj 1360->1438 l1 0.743 peak / 0.743 end, 0 evictions
+[ac] A_lazy_n120_l68_9: wrote /home/bo/.claude/jobs/3ed6b93a/tmp/smoke/logs/ac_A_lazy_n120_l68_9.json
+=== queue done 17:23:26

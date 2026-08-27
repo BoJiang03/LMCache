@@ -1,0 +1,77 @@
+#!/bin/bash
+# One arm of the trace-driven eager/lazy A/B, run as the scenario defines it.
+# usage: ab_trace.sh <eager|lazy> [entries] [duration_s] [conc]
+#
+# Everything here is a retraction of the previous harness. That one fired at
+# fixed concurrency with no arrival process, then replayed the same prompts in
+# the same order with a ~0 s store->reuse gap, and reached that shape only by
+# passing --unsafe-override to suppress the scenario's own invariants. The
+# scenario is the definition of real serving timing for this workload, so the
+# fix is to stop overriding it:
+#
+#   * no --unsafe-override, so a violation fails the run instead of warning
+#   * no --use-think-time-only: that is what stretched the first-request spread
+#     to 109,319 s, so a 180 s window fired almost nothing
+#   * duration >= 900 s, which the scenario requires "to reach steady state and
+#     trigger KV offloading" -- the thing being measured
+#
+# The scenario then sets timing_mode=agentic_replay, --system-idle-gap-cap-
+# seconds=10 (collapses cross-session dead air, keeps per-trace timing),
+# --cache-bust=first_turn_prefix (so reuse comes from within-session prefix
+# growth, not duplicate prompts) and ignore_eos=true.
+#
+# --max-context-length stays: the dataset's peak context reaches 996,579
+# tokens and the model window is 131,072, so unfiltered traces would 400.
+set -u
+CFG=$1; ENTRIES=${2:-64}; DUR=${3:-900}; CONC=${4:-8}
+SD=/tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/7445f449-aa3b-46be-b351-5a22de3af76a/scratchpad/smoke
+S=/tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/a18268cd-a7cd-49f2-a90c-9dea44535fa0/scratchpad
+. $SD/env.sh
+OUT=$S/smoke2/abt_${CFG}
+rm -rf "$OUT"; mkdir -p "$OUT"
+
+echo "=== arm $CFG: bringing up ==="
+$SD/up.sh "$CFG" || exit 1
+mark=$(( $(wc -l < $SD/logs/${CFG}_server.log) + 1 ))
+
+$AIPERF profile \
+  --model agentx \
+  --url "http://127.0.0.1:$VLLM_PORT" \
+  --endpoint-type chat \
+  --streaming \
+  --tokenizer "$MODEL" \
+  --scenario inferencex-agentx-mvp \
+  --public-dataset semianalysis-cc-traces-weka-062126 \
+  --max-context-length 100000 \
+  --num-dataset-entries "$ENTRIES" \
+  --concurrency "$CONC" \
+  --benchmark-duration "$DUR" \
+  --benchmark-grace-period 120 \
+  --random-seed 1234 \
+  --output-artifact-dir "$OUT/artifacts" \
+  > "$OUT/aiperf.log" 2>&1
+echo "aiperf exit=$?"
+
+{
+  echo "## $CFG (server log from line $mark)"
+  echo "stores=$(grep -c 'Stored [0-9]* tokens' $SD/logs/${CFG}_server.log)"
+  echo "retrieves=$(grep -c 'Retrieved [0-9]* tokens' $SD/logs/${CFG}_server.log)"
+  echo "tokens_stored=$(grep -oE 'Stored [0-9]+ tokens' $SD/logs/${CFG}_server.log | awk '{s+=$2} END{print s+0}')"
+  echo "tokens_retrieved=$(grep -oE 'Retrieved [0-9]+ tokens' $SD/logs/${CFG}_server.log | awk '{s+=$2} END{print s+0}')"
+  echo "l1_watermark_events=$(sed 's/\x1b\[[0-9;]*m//g' $SD/logs/${CFG}_server.log | grep -c 'above watermark')"
+  curl -s "http://127.0.0.1:$HTTP_PORT/status" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin)["storage_manager"]["l1_manager"]; print("l1_objects=%d\nl1_gib=%.2f" % (d["total_object_count"], d["memory_used_bytes"]/2**30))' 2>/dev/null
+  led=$(grep -o 'Lazy offload counters: .*' $SD/logs/${CFG}_vllm.log 2>/dev/null | tail -1 | sed 's/ \x1b.*//')
+  echo "ledger=${led:-n/a}"
+} > "$OUT/snapshot.txt"
+cat "$OUT/snapshot.txt"
+
+echo "=== errors ==="
+for pat in 'cudaMemcpy failed' 'AcceleratorError' 'cudaErrorInvalidValue' 'Traceback' 'compiled extension not found'; do
+  printf '  %-32s server=%s vllm=%s\n' "$pat" \
+    "$(grep -c "$pat" $SD/logs/${CFG}_server.log)" \
+    "$(grep -c "$pat" $SD/logs/${CFG}_vllm.log)"
+done | tee "$OUT/errors.txt"
+
+$S/smoke2/down_safe.sh
+echo "=== arm $CFG done: $OUT ==="

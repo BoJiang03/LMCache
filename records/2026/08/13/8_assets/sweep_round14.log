@@ -1,0 +1,59 @@
+=== S1 19:34:01
+rc=0
+[driver] S1: 6 assertions executed (min 6)
+[driver] S1: ALL PASS
+=== S2 19:35:07
+rc=0
+[driver] S2: 15 assertions executed (min 15)
+[driver] S2: ALL PASS
+=== S3 19:36:21
+rc=0
+[driver] S3: 15 assertions executed (min 15)
+[driver] S3: ALL PASS
+=== S4 19:37:26
+rc=0
+[driver] S4: 4 assertions executed (min 4)
+[driver] S4: ALL PASS
+=== S6 19:38:39
+rc=1
+=== S9 19:39:39
+rc=1
+[driver] S9: 19 assertions executed (min 20)
+[driver] S9: FAILURES: only 19 of at least 20 assertions executed
+=== S11 19:41:38
+rc=0
+[driver] S11: 36 assertions executed (min 36)
+[driver] S11: ALL PASS
+=== S12 19:43:49
+rc=0
+[driver] S12: 21 assertions executed (min 21)
+[driver] S12: ALL PASS
+=== S13 19:45:06
+rc=0
+[driver] S13: 27 assertions executed (min 27)
+[driver] S13: ALL PASS
+=== S14 19:47:15
+rc=0
+[driver] S14: 44 assertions executed (min 44)
+[driver] S14: ALL PASS
+=== S15 19:49:34
+rc=0
+[driver] S15: 22 assertions executed (min 22)
+[driver] S15: ALL PASS
+=== S16 19:51:07
+rc=0
+[driver] S16: 20 assertions executed (min 20)
+[driver] S16: ALL PASS
+=== S17 19:52:40
+rc=0
+[driver] S17: 24 assertions executed (min 24)
+[driver] S17: ALL PASS
+=== S18 19:54:22
+rc=0
+[driver] S18: 37 assertions executed (min 37)
+[driver] S18: ALL PASS
+=== S19 19:58:19
+rc=0
+[driver] S19: 22 assertions executed (min 22)
+[driver] S19: ALL PASS
+=== sweep done 20:00:37
