@@ -1071,6 +1071,51 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # lands a 1540x1540 photo at 1052 tokens, inside the parity
             # engine's context without a pixel cap.
         ),
+        ModelSpec(
+            key="phi4-mm",
+            hf_id="microsoft/Phi-4-multimodal-instruct",
+            # Image only, deliberately: the checkpoint ships a speech tower
+            # and vLLM advertises {"audio": None, "image": None}, but no
+            # audio case was run for it and a certificate may only claim
+            # what the suite exercised.
+            modalities=frozenset({"image"}),
+            # The repo ships configuration_phi4mm.py and processing_phi4mm.py
+            # behind auto_map; transformers refuses the config without it
+            # even though vLLM implements Phi4MMForCausalLM natively.
+            trust_remote_code=True,
+            # Measured 2026-08-27 on a live 0.27.1 engine: ONE KV cache group
+            # whose spec is SlidingWindowSpec over ALL 32 layers (block 16,
+            # 64 KiB per page) -> 128 KB/token, the widest KV in the suite.
+            # That structure is new here: Gemma 3 and Gemma 4 are
+            # HybridFamily.SLIDING_WINDOW with TWO groups (full attention
+            # plus sliding window), so hybrid_family stays NONE for this
+            # model while its single group is nonetheless windowed.
+            #
+            # Photos are capped through the processor's own crop budget
+            # rather than a pixel cap. Measured input_ids for one image and
+            # a short question:
+            #
+            #   dynamic_hd    640x480   1540x1540   full-MME KV
+            #   36 (default)     1072        4440   over the context
+            #   4                1072        1336   ~342 GB
+            #   2                 484         552   ~200 GB
+            #
+            # 2 is the choice: at 128 KB/token, 342 GB of host cache is not
+            # affordable beside the other certifications on this box, and
+            # 484 tokens sits in the same band the other specs cap photos to
+            # (446 for Mistral, 770 for Molmo 2).
+            mme_mm_processor_kwargs={"dynamic_hd": 2},
+            # 2374 questions at 484 prompt tokens is ~150 GB of KV, ~172 GB
+            # if every photo were a 552-token one. 200 GB holds the run; the
+            # 40 GB default would evict every entry before its pass-2
+            # revisit and fail the hit gate at ~0.
+            mme_max_local_cpu_gb=200.0,
+            # No chat_template: measured, the repo's own template renders
+            # `<|system|>...<|end|><|user|><|image_1|>...<|end|><|assistant|>`
+            # from STRING content, which is what vLLM's chat path passes. It
+            # raises TypeError on LIST content, so a probe that hands it
+            # `[{"type": "image"}, ...]` sees a failure vLLM never hits.
+        ),
     ]
 }
 
