@@ -91,6 +91,7 @@ Environment knobs:
 | `LMCACHE_MM_E2E` | unset | Must be `1` for any test to run (opt-in guard). |
 | `LMCACHE_MM_E2E_MODELS` | `qwen2.5-vl-3b` | Comma-separated model keys from `specs.py`. |
 | `LMCACHE_MM_E2E_PRESSURE_N` | `64` | Number of distinct images in the collision pressure test (T0.2). Nightly runs should raise this to `1000`. |
+| `LMCACHE_MM_E2E_DIVERGENCE_LOG` | unset | File the suite appends one JSON line to for every exact-match failure the semantic probe rescued. `certify.py` sets it and reports the count as the certificate's `byte_divergences`. |
 | `LMCACHE_MM_E2E_IMAGE_CACHE` | `~/.cache/lmcache_mm_e2e` | Directory where `benchmark_parity.py` caches each benchmark image's PNG encoding. That encode is 95% of a dataset load (4-13 minutes) and every parity run pays it twice, once per process. Delete the directory to force a re-encode. |
 
 Run from inside `tests/e2e_mm` so its local `pytest.ini` anchors the rootdir
