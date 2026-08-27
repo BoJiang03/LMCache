@@ -36,6 +36,11 @@ and a design doc.
 second reads it back. The table counts answers that changed between the two
 passes.
 
+Measured with this change based on dev at `09bc14c0`, on vLLM 0.27.1, torch
+2.13.0 and transformers 5.15.1. The counts move from run to run: repeating
+Phi-4-multimodal on the same build gave 12 changed answers instead of 10, with
+the wrong/right split reversed. Read them as magnitudes, not as exact figures.
+
 | Model | Benchmark | Hit rate | pass 1 vs plain vLLM | pass 2 vs pass 1 | became wrong / right | yes->no / no->yes |
 |---|---|---|---|---|---|---|
 | Qwen/Qwen2.5-VL-3B-Instruct | MME 2374 | 0.984 | 0 | 24 | 13 / 11 | 11 / 13 |
@@ -101,9 +106,15 @@ cost real debugging time on a 7699-failure incident. Renamed to
 `read_lock_expired` on the l1_retrieve path, plus one aggregate log line naming
 the count and the configured TTL.
 
-**Failed MP retrieves reported as successes.** Branch [`fix_mp_load_error`](https://github.com/BoJiang03/LMCache/tree/fix_mp_load_error). The
-data-loss part of this was fixed independently on dev by #4709 while this work
-was in progress, so what is left on the branch is the deduplication of the two
-drain loops that #4709 left duplicated, plus a warning at registration when the
-model has more than one KV cache group, where vLLM cannot recompute a trimmed
-prefix and aborts the engine on a load error instead.
+**Failed MP retrieves reported as successes.** The MP worker adapter dropped
+the block ids of a failed retrieve, so vLLM saw a clean completed load, kept
+the tokens it had already counted as computed, and the model read whatever
+those blocks happened to hold. We hit this during the parity runs and fixed it
+on [`fix_mp_load_error`](https://github.com/BoJiang03/LMCache/tree/fix_mp_load_error).
+It was independently fixed on dev by #4709 while this work was in progress; the
+vLLM-adapter change there is line-for-line what ours does, and #4709 goes
+further by fixing the SGLang and TensorRT adapters and the server side as well,
+so nothing more is needed for the defect itself. What is left on our branch is
+two smaller things: the two drain loops are still duplicated, and there is no
+warning when the model has more than one KV cache group, where vLLM cannot
+recompute a trimmed prefix and aborts the engine on a load error instead.
