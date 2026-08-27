@@ -588,6 +588,8 @@ def parity_command(model_key: str, limit: int, out: pathlib.Path) -> list[str]:
         cmd += ["--benchmark", spec.parity_benchmark]
     if spec.mm_encoder_attn_backend:
         cmd += ["--mm-encoder-attn-backend", spec.mm_encoder_attn_backend]
+    if spec.chat_template:
+        cmd += ["--chat-template", spec.chat_template]
     if spec.chat_template_kwargs:
         cmd += ["--chat-template-kwargs", json.dumps(spec.chat_template_kwargs)]
     if spec.mme_mm_processor_kwargs:

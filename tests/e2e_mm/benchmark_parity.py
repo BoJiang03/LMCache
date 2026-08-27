@@ -947,6 +947,7 @@ def run_batch(
     llm,
     benchmark: Benchmark,
     items: list[dict],
+    chat_template: str,
     chat_template_kwargs: dict,
     max_tokens: int,
 ) -> list[str]:
@@ -956,6 +957,8 @@ def run_batch(
         llm: The vLLM engine.
         benchmark: The benchmark, which renders the conversations.
         items: Question dicts (see ``Benchmark.load_items``).
+        chat_template: Chat template from the model spec, for a model whose
+            repo ships none; empty string uses the model's own.
         chat_template_kwargs: Extra chat-template kwargs from the model spec
             (e.g. ``{"enable_thinking": False}``); empty dict for none.
         max_tokens: Decode budget per question; must be large enough for the
@@ -968,6 +971,7 @@ def run_batch(
     outputs = llm.chat(
         benchmark.conversations(items),
         sampling_params=SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=0),
+        chat_template=chat_template or None,
         chat_template_kwargs=dict(chat_template_kwargs) or None,
         use_tqdm=True,
     )
@@ -1053,6 +1057,7 @@ def run_baseline(
     benchmark: Benchmark,
     limit: int,
     out_path: str,
+    chat_template: str,
     chat_template_kwargs: dict,
     mm_processor_kwargs: dict,
     max_tokens: int,
@@ -1094,7 +1099,9 @@ def run_baseline(
             trust_remote_code,
         )
     )
-    answers = run_batch(llm, benchmark, items, chat_template_kwargs, max_tokens)
+    answers = run_batch(
+        llm, benchmark, items, chat_template, chat_template_kwargs, max_tokens
+    )
     with open(out_path, "w") as f:
         json.dump(answers, f)
 
@@ -1112,6 +1119,12 @@ def main() -> int:
     parser.add_argument("--out", default="mme_parity_report.json")
     parser.add_argument("--role", choices=["main", "baseline"], default="main")
     parser.add_argument("--baseline-out", default="")
+    parser.add_argument(
+        "--chat-template",
+        default="",
+        help="Jinja chat template from the model spec, for a model whose "
+        "repo ships none; empty = use the model's own",
+    )
     parser.add_argument(
         "--chat-template-kwargs",
         default="",
@@ -1224,6 +1237,7 @@ def main() -> int:
             benchmark,
             args.limit,
             args.baseline_out,
+            args.chat_template,
             chat_template_kwargs,
             mm_processor_kwargs,
             args.max_tokens,
@@ -1271,6 +1285,8 @@ def main() -> int:
             str(args.limit),
             "--baseline-out",
             str(baseline_path),
+            "--chat-template",
+            args.chat_template,
             "--chat-template-kwargs",
             args.chat_template_kwargs,
             "--mm-processor-kwargs",
@@ -1363,7 +1379,12 @@ def main() -> int:
         reset_local_prefix_cache()
         stored_before = stored_tokens()
         answers_p1 = run_batch(
-            llm, benchmark, items, chat_template_kwargs, args.max_tokens
+            llm,
+            benchmark,
+            items,
+            args.chat_template,
+            chat_template_kwargs,
+            args.max_tokens,
         )
         stored_p1 = stored_tokens() - stored_before
         # See STORE_COMMIT_GRACE_S: without this, a --limit run's pass 2
@@ -1374,7 +1395,12 @@ def main() -> int:
         local0, external0 = prefill.local_cached, prefill.external_cached
         lookups0 = len(counters.lookup_request_tokens)
         answers_p2 = run_batch(
-            llm, benchmark, items, chat_template_kwargs, args.max_tokens
+            llm,
+            benchmark,
+            items,
+            args.chat_template,
+            chat_template_kwargs,
+            args.max_tokens,
         )
         t1, h1 = lookup_stats()
         local_p2 = prefill.local_cached - local0

@@ -55,6 +55,18 @@ class ModelSpec:
             from the spec: it is a property of the model, and ``certify``
             turns it into an exclusion so the gap is stated rather than
             forgotten (see ``certify.DEEPSTACK_NOT_COVERED``).
+        chat_template: Chat template to render every request with, for a
+            model whose repo ships none. vLLM raises on ``llm.chat`` when
+            neither the processor nor the tokenizer carries one, and a
+            model that documents its prompt format in Python rather than
+            Jinja (DeepSeek-OCR ships ``conversation.py``) is exactly that
+            case. Empty means "use whatever the model ships", which is the
+            right answer for every model that ships one: a hand-written
+            template that merely reproduces the shipped one is a second
+            copy that can drift. Applies to the same set of engines as
+            ``hf_overrides`` and for the same reason -- it decides the
+            prompt bytes, so a baseline rendered with a different template
+            is not comparable.
         chat_template_kwargs: Extra kwargs passed to every ``llm.chat`` call
             (test engine, baseline runner, and MME parity runs alike), e.g.
             ``{"enable_thinking": False}`` for hybrid-thinking models whose
@@ -308,6 +320,7 @@ class ModelSpec:
     max_model_len: int = 8192
     gpu_memory_utilization: float = 0.6
     extra_suites: frozenset = field(default_factory=frozenset)
+    chat_template: str = ""
     chat_template_kwargs: dict[str, object] = field(default_factory=dict)
     mme_mm_processor_kwargs: dict[str, object] = field(default_factory=dict)
     min_decode_tokens: int = 0
@@ -362,6 +375,37 @@ class ModelSpec:
 # patch merge, same 602112-pixel budget) so a question fits the parity
 # engine's 8192-token context.
 _MME_PIXEL_BUDGET = 768 * 28 * 28
+
+# DeepSeek-OCR ships no chat template: neither its processor nor its
+# tokenizer carries one (measured), and its prompt format lives in the
+# repo's `conversation.py` as Python. That file registers an sft_format
+# named "deepseek" -- roles `<|User|>`/`<|Assistant|>`, separator "\n\n" --
+# but rendering a question through those role markers makes the model
+# DESCRIBE the image ("The image is a vibrant blue color,") instead of
+# answering it, which MME cannot parse. Its documented OCR form, image
+# marker then question and nothing else, answers the same question "Yes"
+# (measured both ways, 2026-08-27).
+#
+# So this template renders exactly that form, and deliberately emits no
+# role markers and no generation prompt. Measured: the prompt it produces
+# through `llm.chat` is token-IDENTICAL to the raw `<image>\n{question}`
+# string, so the suite keeps its one prompting path instead of growing a
+# raw-prompt branch. The image marker is emitted as an expression rather
+# than as literal text because the trailing newline is load-bearing --
+# Jinja's whitespace control eats it otherwise, and without it the model
+# echoes the question back before answering.
+_DEEPSEEK_OCR_CHAT_TEMPLATE = (
+    "{%- for m in messages -%}"
+    "{%- if m['content'] is string -%}{{ m['content'] + '\\n' }}"
+    "{%- else -%}"
+    "{%- for c in m['content'] -%}"
+    "{%- if c['type'] in ('image', 'image_url') -%}{{ '<image>\\n' }}"
+    "{%- elif c['type'] == 'text' -%}{{ c['text'] }}"
+    "{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- endif -%}"
+    "{%- endfor -%}"
+)
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     spec.key: spec
@@ -837,6 +881,41 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # the default flip budget is untouched. Prompts average ~234
             # tokens, moving ~28 GB through the cache, well inside the
             # runner's 40 GB default -- no capacity override needed.
+        ),
+        ModelSpec(
+            key="deepseek-ocr",
+            hf_id="deepseek-ai/DeepSeek-OCR",
+            # Image only: the model is an OCR/vision reader with no audio or
+            # video path, and neither was exercised here.
+            modalities=frozenset({"image"}),
+            # transformers 5.15 refuses this repo's config without it
+            # (custom code in `modeling_deepseekocr.py`).
+            trust_remote_code=True,
+            # See _DEEPSEEK_OCR_CHAT_TEMPLATE: the repo ships no template at
+            # all, and its own role-marked SFT framing costs the yes/no
+            # answers MME scores.
+            chat_template=_DEEPSEEK_OCR_CHAT_TEMPLATE,
+            # Measured 2026-08-27 on a live 0.27.1 engine, NOT inferred from
+            # the architecture name: ONE KV cache group (FullAttentionSpec,
+            # block 16, 12 layers, 80 KiB per page) -> 60 KB/token, and
+            # `use_mla` is False on both the ModelConfig and the KV spec.
+            # records/2026/08/22/10_ called this model "MLA + MoE" and
+            # planned it as the suite's first MLA coverage; that is wrong for
+            # this checkpoint, whose config sets use_mla False with
+            # kv_lora_rank, qk_nope_head_dim and v_head_dim all unset. What
+            # it does bring is the suite's first MoE (64 routed + 2 shared
+            # experts) and first MHA (10 query heads, 10 KV heads -- every
+            # other certified model is GQA). MLA stays uncovered.
+            #
+            # Full MME is 2374 questions at 283 prompt tokens for a 640x480
+            # photo and 703 for a 1540x1540 one (both measured), so between
+            # 40 and 100 GB of KV. 120 GB holds the run either way; the
+            # 40 GB default would evict entries before their pass-2 revisit
+            # and fail the hit gate at ~0.
+            mme_max_local_cpu_gb=120.0,
+            # No mme_mm_processor_kwargs: this model's own tiling already
+            # lands a 1540x1540 photo at 703 tokens, inside the parity
+            # engine's context without a pixel cap.
         ),
         ModelSpec(
             key="molmo2-4b",

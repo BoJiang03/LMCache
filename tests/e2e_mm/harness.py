@@ -851,11 +851,16 @@ class MMHarness:
             for message in with_media
         ]
         tokenizer = self.llm.get_tokenizer()
+        # The spec's template wins when it has one: that is what the run
+        # renders with, and this check exists to verify the shape of the
+        # prompts the run actually sends.
+        template = self.spec.chat_template
+        if not template:
+            template = getattr(tokenizer, "chat_template", None)
         # Qwen3-Omni keeps its chat template on the PROCESSOR, not the
         # tokenizer, so a tokenizer-only render raises for it. Fall back
         # rather than fail: this check must not be able to break a model it
         # has nothing to say about.
-        template = getattr(tokenizer, "chat_template", None)
         if not template:
             template = self._processor_chat_template()
         try:
@@ -1004,6 +1009,7 @@ class MMHarness:
                 seed=0,
                 ignore_eos=request.ignore_eos,
             ),
+            chat_template=self.spec.chat_template or None,
             chat_template_kwargs=dict(self.spec.chat_template_kwargs) or None,
             use_tqdm=False,
         )
@@ -1054,6 +1060,7 @@ class MMHarness:
                 )
                 for r in requests
             ],
+            chat_template=self.spec.chat_template or None,
             chat_template_kwargs=dict(self.spec.chat_template_kwargs) or None,
             use_tqdm=False,
         )
@@ -1412,6 +1419,7 @@ def compute_baselines(
         "max_model_len": spec.max_model_len,
         "gpu_memory_utilization": spec.gpu_memory_utilization,
         "limit_mm_per_prompt": mm_limits(spec),
+        "chat_template": spec.chat_template,
         "chat_template_kwargs": dict(spec.chat_template_kwargs),
         "extra_engine_kwargs": dict(extra_engine_kwargs),
         "requests": [
