@@ -371,6 +371,18 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             hf_id="Qwen/Qwen2.5-VL-3B-Instruct",
             modalities=frozenset({"image", "video"}),
             mme_mm_processor_kwargs={"max_pixels": _MME_PIXEL_BUDGET},
+            # Measured on vLLM 0.27.1 (2026-08-26): a full MME parity run
+            # flips 24 answers pass2-vs-pass1 (1.01%), split 13 regressions
+            # to 11 improvements, with zero parse flips, pass2 parse ratio
+            # 1.0, and pass1 byte-identical to the no-LMCache baseline. Same
+            # bf16-quantum mechanism as qwen2-vl-2b above, which shares this
+            # architecture family and processor budget and flips 0.76% -- the
+            # two rates differ by well under their Poisson spread, so this is
+            # one phenomenon, not two. The budget sits above the observed
+            # rate rather than on it; the direction gate is what bounds the
+            # cover it buys, since at 36 flips a defect would have to keep 26
+            # of them one-sided to stay under it. See records/2026/08/26/15_.
+            mme_max_flip_fraction=0.015,
         ),
         ModelSpec(
             key="qwen2-vl-2b",
