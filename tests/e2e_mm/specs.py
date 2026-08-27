@@ -394,6 +394,42 @@ _MME_PIXEL_BUDGET = 768 * 28 * 28
 # than as literal text because the trailing newline is load-bearing --
 # Jinja's whitespace control eats it otherwise, and without it the model
 # echoes the question back before answering.
+# Phi-4-multimodal's own template concatenates ``message['content']``
+# straight into a string, so it renders STRING content correctly and raises
+# ``TypeError: can only concatenate str (not "list") to str`` on the LIST
+# content the suite's shape probe hands a tokenizer directly. That took out
+# 24 acceptance tests and 2 isolated scenarios with a harness failure that
+# said nothing about LMCache (records/2026/08/27/6_).
+#
+# This reproduces the shipped template byte for byte on string content
+# (verified) and, on list content, emits the same `<|image_N|>` /
+# `<|audio_N|>` placeholders vLLM substitutes (`phi4mm.py:1044`
+# ``get_placeholder_str``), so both render paths agree. The shipped
+# template's system-message ``tools`` branch is dropped: the suite never
+# sends one, and carrying a branch nothing exercises would be untested code.
+_PHI4_MM_CHAT_TEMPLATE = (
+    "{%- set ns = namespace(image=0, audio=0) -%}"
+    "{%- for m in messages -%}"
+    "{{ '<|' + m['role'] + '|>' }}"
+    "{%- if m['content'] is string -%}{{ m['content'] }}"
+    "{%- else -%}"
+    "{%- for c in m['content'] -%}"
+    "{%- if c['type'] in ('image', 'image_url') -%}"
+    "{%- set ns.image = ns.image + 1 -%}"
+    "{{ '<|image_' + ns.image|string + '|>' }}"
+    "{%- elif c['type'] in ('audio', 'audio_url', 'input_audio') -%}"
+    "{%- set ns.audio = ns.audio + 1 -%}"
+    "{{ '<|audio_' + ns.audio|string + '|>' }}"
+    "{%- elif c['type'] == 'text' -%}{{ c['text'] }}"
+    "{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- endif -%}"
+    "{{ '<|end|>' }}"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}{{ '<|assistant|>' }}"
+    "{%- else -%}{{ eos_token }}{%- endif -%}"
+)
+
 _DEEPSEEK_OCR_CHAT_TEMPLATE = (
     "{%- for m in messages -%}"
     "{%- if m['content'] is string -%}{{ m['content'] + '\\n' }}"
@@ -1129,11 +1165,19 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 40 GB default would evict every entry before its pass-2
             # revisit and fail the hit gate at ~0.
             mme_max_local_cpu_gb=200.0,
-            # No chat_template: measured, the repo's own template renders
+            # See _PHI4_MM_CHAT_TEMPLATE: the repo's own template renders
             # `<|system|>...<|end|><|user|><|image_1|>...<|end|><|assistant|>`
-            # from STRING content, which is what vLLM's chat path passes. It
-            # raises TypeError on LIST content, so a probe that hands it
-            # `[{"type": "image"}, ...]` sees a failure vLLM never hits.
+            # from STRING content, which is what vLLM's chat path passes,
+            # but raises TypeError on the LIST content the suite's shape
+            # probe renders. The replacement handles both.
+            chat_template=_PHI4_MM_CHAT_TEMPLATE,
+            # 128 KB/token against the default pool of 128 16-token blocks
+            # is 0.25 GiB, and vLLM measured that as 2032 usable tokens
+            # against a 2048-token context -- one block short, so the
+            # preemption scenario never started. This is the widest KV in
+            # the suite; 160 blocks give 2544 tokens of pool for the same
+            # 2048-token context.
+            preemption_gpu_blocks=160,
         ),
     ]
 }
