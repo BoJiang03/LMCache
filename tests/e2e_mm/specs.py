@@ -1070,6 +1070,25 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # No mme_mm_processor_kwargs: the model's own packing already
             # lands a 1540x1540 photo at 1052 tokens, inside the parity
             # engine's context without a pixel cap.
+            #
+            # Measured on vLLM 0.27.1 (2026-08-27): the full MME parity run
+            # flips 13 answers pass2-vs-pass1 (0.55%), split 8 regressions
+            # to 5 improvements (p = 0.29), with zero parse flips, pass2
+            # parse ratio equal to pass1's (0.9987), and pass1 byte-
+            # identical to the no-LMCache baseline. A plain-vLLM control --
+            # no LMCache anywhere, only max_num_seqs 256 vs 32 -- flips 11
+            # answers on the same questions, also symmetric (4 regressions
+            # to 7 improvements, p = 0.27) and also with zero parse flips.
+            # 13 against 11 is well inside the Poisson spread of one
+            # phenomenon, so the hit path adds nothing to what a batch-shape
+            # change already does: the same bf16-quantum boundary effect
+            # documented on qwen2-vl-2b and qwen2.5-vl-3b above. Unlike the
+            # models the suite calls out for a real hit-path defect, no MME
+            # image loses BOTH of its questions -- all 13 are singletons,
+            # which is what a per-question numeric boundary looks like and
+            # not what corrupted KV looks like. The budget matches
+            # qwen2-vl-2b's; the direction gate is what bounds the cover.
+            mme_max_flip_fraction=0.01,
         ),
         ModelSpec(
             key="phi4-mm",
