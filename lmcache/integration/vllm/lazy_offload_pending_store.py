@@ -429,6 +429,32 @@ class LazyOffloadPendingStore:
                 allocated_block_ids,
             )
 
+    def announce_allocation(self, request_id: str, num_blocks: int) -> None:
+        """Forward an announced allocation burst to the eviction policy.
+
+        No-op in FIFO mode: the FIFO policy has no danger window to widen.
+
+        Args:
+            request_id: Request whose imminent admission is announced.
+            num_blocks: Blocks that admission is expected to consume.
+
+        Raises:
+            ValueError: If ``num_blocks`` is not positive.
+        """
+        if self._eviction_queue is not None:
+            self._eviction_queue.announce_allocation(request_id, num_blocks)
+
+    def retract_allocation(self, request_id: str) -> None:
+        """Withdraw a request's announced allocation, if any.
+
+        No-op in FIFO mode or for a request that was never announced.
+
+        Args:
+            request_id: Request whose announcement is withdrawn.
+        """
+        if self._eviction_queue is not None:
+            self._eviction_queue.retract_allocation(request_id)
+
     def wants_l1_pressure(self) -> bool:
         """Whether the caller should feed L1 pressure snapshots.
 

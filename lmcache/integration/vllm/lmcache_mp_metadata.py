@@ -65,6 +65,11 @@ class LMCacheMPRequestTracker:
     num_vllm_hit_tokens: int = 0
     num_lmcache_hit_tokens: int = 0
 
+    # Whether this request's external-hit allocation burst has been
+    # announced to the lazy offload manager (announce-then-admit; see
+    # LMCacheMPConnector.get_num_new_matched_tokens).
+    hit_load_announced: bool = False
+
     # Main state
     state: LMCacheMPRequestState = LMCacheMPRequestState.PREFETCHING
 
@@ -80,6 +85,7 @@ class LMCacheMPRequestTracker:
         self.num_stored_tokens = 0
         self.num_vllm_hit_tokens = 0
         self.num_lmcache_hit_tokens = 0
+        self.hit_load_announced = False
         self.state = LMCacheMPRequestState.PREFETCHING
         self.mm_adjusted_prompt_ids = []
         mm_hashes, mm_positions = extract_mm_features(request)

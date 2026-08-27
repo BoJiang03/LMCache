@@ -2337,3 +2337,77 @@ class TestAdaptiveDegradation:
 
         assert result.to_store == []
         assert queue.stats().rejected_short_prefix >= 1
+
+
+class TestAnnouncedBursts:
+    """announce_allocation / retract_allocation: while an announcement is
+    outstanding, the danger depth floors at the sum of announced widths."""
+
+    @staticmethod
+    def _quiet_queue_with_deep_op() -> tuple[FakePoolView, EvictionAwareStoreQueue]:
+        """A queue whose rate model reads zero and one op at ranks 2-3."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [3, 4], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        return pool, queue
+
+    def test_quiet_step_leaves_the_op_deferred(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        assert queue.collect_due().to_store == []
+        assert queue.num_pending_ops() == 1
+
+    def test_announcement_widens_the_window(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.announce_allocation("hit", num_blocks=4)
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [256]
+        assert queue.stats().announced_bursts == 1
+
+    def test_announcement_smaller_than_rate_depth_does_not_shrink_it(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2, 3, 4], free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.admit(make_op("req", [3, 4], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=4)
+        queue.announce_allocation("hit", num_blocks=1)
+        assert len(queue.collect_due().to_store) == 1
+
+    def test_retraction_restores_the_rate_model(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.announce_allocation("hit", num_blocks=4)
+        queue.retract_allocation("hit")
+        assert queue.collect_due().to_store == []
+        assert queue.num_pending_ops() == 1
+
+    def test_retracting_unknown_request_is_a_no_op(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.retract_allocation("never-announced")
+        assert queue.collect_due().to_store == []
+
+    def test_finished_request_clears_its_announcement(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.announce_allocation("hit", num_blocks=4)
+        result = queue.collect_due(finished_request_ids={"hit"})
+        assert result.to_store == []
+        assert queue.collect_due().to_store == []
+
+    def test_reannouncement_replaces_the_width(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.announce_allocation("hit", num_blocks=1)
+        queue.announce_allocation("hit", num_blocks=4)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.stats().announced_bursts == 1
+
+    def test_concurrent_announcements_sum(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        queue.announce_allocation("hit-a", num_blocks=2)
+        queue.announce_allocation("hit-b", num_blocks=2)
+        assert len(queue.collect_due().to_store) == 1
+        assert queue.stats().announced_bursts == 2
+
+    def test_rejects_non_positive_width(self) -> None:
+        _, queue = self._quiet_queue_with_deep_op()
+        with pytest.raises(ValueError):
+            queue.announce_allocation("hit", num_blocks=0)

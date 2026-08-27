@@ -250,6 +250,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
       heartbeat pings.
     - lmcache.mp.eager_prefetch: submit the LMCache lookup when a request
       enters vLLM's waiting queue. Disabled by default.
+    - lmcache.mp.lazy_offload_announce_hits: in lazy offload mode, hold a
+      ready lookup result with external hit tokens back for one scheduler
+      step and announce the admission's block consumption to the drain
+      policy, so pending stores in the burst's path are emitted before the
+      admission recycles their blocks. Enabled by default; only consulted
+      when lazy offload is on.
     """
 
     def __init__(
@@ -269,6 +275,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         self._eager_prefetch: bool = bool(
             vllm_config.kv_transfer_config.get_from_extra_config(
                 "lmcache.mp.eager_prefetch", False
+            )
+        )
+
+        self._lazy_announce_hit_loads: bool = bool(
+            vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.lazy_offload_announce_hits", True
             )
         )
 
@@ -778,6 +790,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             call. If the cache cannot be loaded for some tokens (e.g., due to
             connectivity issues or eviction), those tokens must not be taken
             into account.
+
+            In lazy offload mode (with lmcache.mp.lazy_offload_announce_hits
+            on), the first query at which the lookup result is ready with
+            external hit tokens returns ``(None, True)`` once more: the
+            admission's block consumption is announced to the lazy offload
+            manager so this step's drain can emit the pending stores in the
+            burst's path, and the next query admits the request.
         """
         tracker = self._get_or_create_request_tracker(request)
         # TODO: support loading KV for preempted requests in the future
@@ -813,6 +832,23 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         if ret == 0:
             return 0, False
+
+        if (
+            self.lazy_offload
+            and self._lazy_announce_hit_loads
+            and not tracker.hit_load_announced
+        ):
+            hit_load_tokens = max(0, ret - num_computed_tokens)
+            if hit_load_tokens > 0:
+                # Announce-then-admit: hold the ready result for one step so
+                # this step's drain can emit the pending stores the admission
+                # burst would recycle. check_lookup_result is idempotent once
+                # finished, so the next query sees the same result.
+                tracker.hit_load_announced = True
+                self._lazy_offload_manager.announce_hit_load(
+                    request.request_id, hit_load_tokens
+                )
+                return None, True
 
         assert ret % self.scheduler_adapter.lmcache_tokens_per_chunk == 0
 

@@ -582,6 +582,16 @@ class LazyOffloadCounters:
     backlog means the workload never presents an idle step, or the
     threshold sits below its decode-only allocation rate.
 
+    ``announced_bursts`` counts allocation bursts announced from outside
+    the per-step forecast (:meth:`EvictionAwareStoreQueue.announce_allocation`),
+    one per announced request. The forecast cannot see a single admission
+    that consumes thousands of blocks at once, so an external caller that
+    knows such an admission is imminent announces it and the danger depth
+    floors at the announced width until the announcement is retracted.
+    Zero alongside a rising ``dropped_evicted`` under a high external hit
+    rate is the signature of the announcement wiring being disconnected,
+    not of the policy choosing to wait.
+
     ``degraded_emitted``, ``degraded_drain_steps``,
     ``degrade_transitions``, ``degrade_trials``, ``degrade_commits``,
     ``degrade_reverts``, ``degrade_probes`` and
@@ -628,6 +638,7 @@ class LazyOffloadCounters:
     backlog_emitted: int = 0
     idle_emitted: int = 0
     idle_drain_steps: int = 0
+    announced_bursts: int = 0
     degraded_emitted: int = 0
     degraded_drain_steps: int = 0
     degrade_transitions: int = 0
@@ -1003,6 +1014,9 @@ class EvictionAwareStoreQueue:
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
+        # Announced imminent allocations, request id -> expected blocks.
+        # While non-empty, the danger depth floors at their sum.
+        self._announced_blocks: dict[str, int] = {}
         # Adaptive-degradation controller state (observe_l1_pressure). The
         # controller runs on the pressure-sample heartbeat: each accepted
         # snapshot appends (time, cumulative evicted bytes, cumulative
@@ -1245,6 +1259,46 @@ class EvictionAwareStoreQueue:
             self._blocks_per_step_ema = float(new_blocks_allocated)
             self._ema_initialized = True
         self._next_step_estimate = est_next_step_blocks
+
+    def announce_allocation(self, request_id: str, num_blocks: int) -> None:
+        """Widen the danger window ahead of an announced allocation burst.
+
+        The per-step forecast is blind to a single admission that consumes
+        thousands of blocks at once: the allocation that pays for the
+        forecast and the eviction that destroys a waiting operation are
+        the same event (see
+        :attr:`LazyOffloadPolicyConfig.max_pending_ops`). An announcement
+        closes that gap from the outside: while any announcement is
+        outstanding, the danger depth is at least the sum of announced
+        block counts, so the drain running ahead of the burst emits the
+        operations the burst would otherwise destroy. Re-announcing a
+        request replaces its previous width.
+
+        Args:
+            request_id: Request whose imminent admission is announced.
+            num_blocks: Blocks that admission is expected to consume.
+
+        Raises:
+            ValueError: If ``num_blocks`` is not positive.
+        """
+        if num_blocks <= 0:
+            raise ValueError(f"num_blocks must be positive, got {num_blocks}")
+        if request_id not in self._announced_blocks:
+            self._counters.announced_bursts += 1
+        self._announced_blocks[request_id] = num_blocks
+
+    def retract_allocation(self, request_id: str) -> None:
+        """Withdraw a request's announced allocation, if any.
+
+        Called when the announced allocation has landed (the request was
+        scheduled) or the request left the system before being scheduled.
+        Unknown request ids are a no-op on purpose: retraction is wired
+        into paths that see every request, announced or not.
+
+        Args:
+            request_id: Request whose announcement is withdrawn.
+        """
+        self._announced_blocks.pop(request_id, None)
 
     def observe_l1_pressure(
         self,
@@ -1631,6 +1685,8 @@ class EvictionAwareStoreQueue:
         """
         result = DrainResult()
         for request_id in sorted(finished_request_ids or ()):
+            # A finished request's announced admission can no longer land.
+            self._announced_blocks.pop(request_id, None)
             held = self._held_short.pop(request_id, None)
             if held is None:
                 continue
@@ -2055,13 +2111,18 @@ class EvictionAwareStoreQueue:
 
         Expected consumption below half a block over the whole horizon is
         treated as idle (depth 0): the EMA decays asymptotically after a
-        burst and would otherwise keep a ceil'd depth of 1 forever.
+        burst and would otherwise keep a ceil'd depth of 1 forever. An
+        outstanding announcement (:meth:`announce_allocation`) floors the
+        depth at the announced block sum regardless of the rate model:
+        the announced blocks are about to be consumed no matter what the
+        recent per-step rate says.
         """
         per_step = max(self._blocks_per_step_ema, float(self._next_step_estimate))
         horizon_blocks = per_step * self._config.horizon_steps
-        if horizon_blocks < 0.5:
-            return 0
-        return math.ceil(horizon_blocks)
+        rate_depth = 0 if horizon_blocks < 0.5 else math.ceil(horizon_blocks)
+        if not self._announced_blocks:
+            return rate_depth
+        return max(rate_depth, sum(self._announced_blocks.values()))
 
     def _drop_evicted_suffix(
         self,

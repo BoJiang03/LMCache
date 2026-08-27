@@ -65,9 +65,13 @@ class _RecordingManager:
     covered_prefix_answer: int = 0
     wants_pressure: bool = False
     pressure_samples: list[tuple[float, int, int]] = field(default_factory=list)
+    hit_announcements: list[tuple[str, int]] = field(default_factory=list)
 
     def wants_l1_pressure(self) -> bool:
         return self.wants_pressure
+
+    def announce_hit_load(self, request_id: str, num_tokens: int) -> None:
+        self.hit_announcements.append((request_id, num_tokens))
 
     def on_l1_pressure(
         self,
@@ -211,6 +215,7 @@ def _make_connector() -> _Harness:
     manager = _RecordingManager()
     adapter = _FakeSchedulerAdapter()
     connector.lazy_offload = True
+    connector._lazy_announce_hit_loads = True
     connector.request_trackers = {}
     connector._group_tokens_per_block = [TOKENS_PER_BLOCK]
     connector._hit_alignment_tokens = TOKENS_PER_BLOCK
@@ -844,3 +849,60 @@ def test_eager_never_consults_the_pending_queue() -> None:
 
     assert harness.manager.covered_prefix_queries == []
     assert connector_metadata.requests[0].op.start == 0
+
+
+def _waiting_request(request_id: str, num_tokens: int) -> SimpleNamespace:
+    tokens = list(range(num_tokens))
+    return SimpleNamespace(
+        request_id=request_id,
+        status=RequestStatus.WAITING,
+        cache_salt=None,
+        all_token_ids=tokens,
+        prompt_token_ids=tokens,
+    )
+
+
+def test_lazy_hit_admission_is_announced_then_admitted() -> None:
+    """The first ready query with external hit tokens holds the result for
+    one step and announces the burst; the next query admits normally and
+    does not announce again."""
+    harness = _make_connector()
+    harness.adapter.lookup_result = 2 * TOKENS_PER_BLOCK
+    request = _waiting_request("H", 4 * TOKENS_PER_BLOCK)
+
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (None, True)
+    assert harness.manager.hit_announcements == [("H", 2 * TOKENS_PER_BLOCK)]
+
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (2 * TOKENS_PER_BLOCK, True)
+    assert harness.manager.hit_announcements == [("H", 2 * TOKENS_PER_BLOCK)]
+
+
+def test_lazy_hit_covered_by_local_prefix_is_not_announced() -> None:
+    """A hit inside the locally computed prefix loads nothing, so there is
+    no burst to announce and the request admits immediately."""
+    harness = _make_connector()
+    harness.adapter.lookup_result = 2 * TOKENS_PER_BLOCK
+    request = _waiting_request("H-covered", 4 * TOKENS_PER_BLOCK)
+
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=3 * TOKENS_PER_BLOCK
+    ) == (0, False)
+    assert harness.manager.hit_announcements == []
+
+
+def test_lazy_hit_announcement_can_be_disabled() -> None:
+    """With lmcache.mp.lazy_offload_announce_hits off, the ready result
+    admits on the first query, exactly as before the feature."""
+    harness = _make_connector()
+    harness.connector._lazy_announce_hit_loads = False
+    harness.adapter.lookup_result = 2 * TOKENS_PER_BLOCK
+    request = _waiting_request("H-off", 4 * TOKENS_PER_BLOCK)
+
+    assert harness.connector.get_num_new_matched_tokens(
+        request, num_computed_tokens=0
+    ) == (2 * TOKENS_PER_BLOCK, True)
+    assert harness.manager.hit_announcements == []

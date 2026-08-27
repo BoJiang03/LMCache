@@ -236,8 +236,8 @@ def _make_scheduler_output(
             without new allocations).
     """
     new_reqs = [
-        SimpleNamespace(block_ids=block_ids)
-        for block_ids in (new_request_block_ids or [])
+        SimpleNamespace(req_id=f"new-req-{index}", block_ids=block_ids)
+        for index, block_ids in enumerate(new_request_block_ids or [])
     ]
     cached = SimpleNamespace(new_block_ids=cached_new_block_ids or [])
     return SimpleNamespace(
@@ -1472,3 +1472,55 @@ class TestL1PressurePlumbing:
             harness.manager.on_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
 
         assert len(_drain(harness).actions.stores_to_submit) == 1
+
+
+class TestAnnouncedHitLoads:
+    """announce_hit_load: feedforward for external-hit admission bursts."""
+
+    @staticmethod
+    def _deep_op_harness() -> _Harness:
+        """One buffered op whose blocks sit at free-queue ranks 5-6."""
+        harness = _make_lazy_connector()
+        _admit_op(harness, "req", [[1, 2]], 0, 32)
+        harness.pool.make_free([11, 12, 13, 14, 15])
+        harness.pool.make_free([1, 2])
+        return harness
+
+    def test_announced_hit_load_widens_the_window(self) -> None:
+        harness = self._deep_op_harness()
+        # Control: a quiet step leaves the deep op deferred.
+        assert len(_drain(harness, total_num_scheduled_tokens=8)) == 0
+
+        # Seven blocks' worth of announced hit tokens reach ranks 5-6.
+        harness.manager.announce_hit_load("hit", num_tokens=7 * TOKENS_PER_BLOCK)
+        metadata = _drain(harness, total_num_scheduled_tokens=8)
+        assert len(metadata) == 1
+        assert harness.pool.touched == [[1, 2]]
+
+    def test_partial_block_of_tokens_rounds_up(self) -> None:
+        harness = self._deep_op_harness()
+        harness.manager.announce_hit_load("hit", num_tokens=6 * TOKENS_PER_BLOCK + 1)
+        assert len(_drain(harness, total_num_scheduled_tokens=8)) == 1
+
+    def test_scheduling_the_announced_request_retracts_the_window(self) -> None:
+        harness = self._deep_op_harness()
+        # The fixture names scheduled new requests "new-req-{index}".
+        harness.manager.announce_hit_load("new-req-0", num_tokens=7 * TOKENS_PER_BLOCK)
+        metadata = _drain(
+            harness,
+            total_num_scheduled_tokens=8,
+            new_request_block_ids=[[[]]],
+        )
+        assert len(metadata) == 0
+
+    def test_finished_request_retracts_the_window(self) -> None:
+        harness = self._deep_op_harness()
+        harness.manager.announce_hit_load("hit", num_tokens=7 * TOKENS_PER_BLOCK)
+        harness.manager.on_request_arrived("hit")
+        harness.manager.on_request_finished("hit")
+        assert len(_drain(harness, total_num_scheduled_tokens=8)) == 0
+
+    def test_rejects_non_positive_hit_tokens(self) -> None:
+        harness = self._deep_op_harness()
+        with pytest.raises(ValueError):
+            harness.manager.announce_hit_load("hit", num_tokens=0)

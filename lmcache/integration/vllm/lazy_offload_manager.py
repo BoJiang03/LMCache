@@ -356,6 +356,35 @@ class LazyOffloadManager:
             return LazyOffloadActions()
         return self._drain(scheduler_output, self._require_block_pool())
 
+    def announce_hit_load(self, request_id: str, num_tokens: int) -> None:
+        """Announce an imminent external-hit admission to the drain policy.
+
+        The scheduler allocates blocks for a request's whole matched prefix
+        in the step that admits it while excluding the externally hit
+        tokens from the scheduled-token budget, so the policy's rate model
+        cannot see the burst coming. The connector calls this when a
+        lookup result with external hit tokens is ready but the admission
+        has been held back for one step; the policy widens its danger
+        window to the announced size so the drain running ahead of the
+        burst emits the operations the burst would otherwise destroy. The
+        announcement is retracted when the request is scheduled, finishes,
+        or is reset.
+
+        Args:
+            request_id: Request about to be admitted.
+            num_tokens: External hit tokens the admission will load.
+
+        Raises:
+            ValueError: If ``num_tokens`` is not positive.
+        """
+        if num_tokens <= 0:
+            raise ValueError(f"num_tokens must be positive, got {num_tokens}")
+        blocks = sum(
+            -(-num_tokens // tokens_per_block)
+            for tokens_per_block in self._group_tokens_per_block
+        )
+        self._pending_store.announce_allocation(request_id, blocks)
+
     def wants_l1_pressure(self) -> bool:
         """Whether the caller should feed L1 pressure snapshots.
 
@@ -470,6 +499,7 @@ class LazyOffloadManager:
             or in flight; otherwise an empty action.
         """
         self._requests.finish(request_id)
+        self._pending_store.retract_allocation(request_id)
         if self._pending_store.has_pending_request(request_id):
             return LazyOffloadActions()
         if self._requests.has_in_flight(request_id):
@@ -488,6 +518,7 @@ class LazyOffloadManager:
             Number of buffered operations discarded.
         """
         self._requests.reset(request_id)
+        self._pending_store.retract_allocation(request_id)
         dropped = self._pending_store.drop_request(request_id)
         if dropped:
             logger.info(
@@ -532,6 +563,10 @@ class LazyOffloadManager:
         pool: "BlockPool",
     ) -> LazyOffloadActions:
         """Apply one policy-neutral drain plan and its GPU side effects."""
+        # An announced admission has landed once its request is scheduled;
+        # the widened window was for the drain of the preceding step.
+        for new_request in scheduler_output.scheduled_new_reqs:
+            self._pending_store.retract_allocation(new_request.req_id)
         drain = self._pending_store.drain(
             new_blocks_allocated=_count_new_blocks(scheduler_output),
             est_next_step_blocks=sum(
