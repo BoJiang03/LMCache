@@ -298,3 +298,29 @@ rather than as a short round.
 
 Code state pushed to the fork for safekeeping: `BoJiang03/LMCache`, branch
 `lazy-offload-publish` at `c59448fe`, 40 commits ahead of `origin/dev`. No PR.
+
+### 9b. Fork branch scheme (settled 2026-08-27)
+
+Each line on `BoJiang03/LMCache` has three branches, and only the dev one may
+carry `records/`:
+
+| role | lazy offload | multi modal |
+|---|---|---|
+| dev (carries session records) | `lazy-offload-policy` | `multi_modal` |
+| PR / publish (code only) | `lazy-offload-publish` | `multi_modal_pr` |
+| repro (code only) | `lazy-offload-policy-repro` | `multi_modal_repro` |
+
+`.git/hooks/pre-push` enforces it: any ref whose history touches `records/` is
+blocked unless it targets one of the allowlisted dev branches on the fork.
+`records/` stays out of the publish branch through `.git/info/exclude:19`, so
+the records commit is built with a redirected `GIT_INDEX_FILE` plus
+`commit-tree` rather than by switching branches -- switching back would delete
+the whole folder from the working tree.
+
+`fork/lazy_offloading` is **not** the dev branch: it stopped on 2026-08-13 and
+diverged 51/90 from the current line. Pushing to it would need a force push
+that discards those 51 commits.
+
+State at this point: `lazy-offload-publish` = `c59448fe` (code), local
+`lazy-offload-dev` -> `fork/lazy-offload-policy` = `d2ae93a9` (code +
+60 record files). No PRs.
