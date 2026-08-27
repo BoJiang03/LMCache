@@ -745,6 +745,16 @@ def flip_asymmetry_p(regressions: int, improvements: int) -> float:
     numerics. The test is one-sided on purpose: an excess of improvements
     is not a corruption signature.
 
+    The fair coin is the right null even for an accurate model, which is
+    not obvious: one would expect a flip to break a correct answer as
+    often as the model is correct, so that a model at 85% should regress
+    on 85% of its flips with nothing wrong. Measured on vLLM 0.27.1
+    (2026-08-27) across four full MME runs, it does not -- qwen2.5-vl-3b
+    at 84.9% accuracy flips 13 to 11, qwen2-vl-2b at 83.2% flips 10 to 8,
+    and mistral-small-3.1-24b at 84.5% flips 4 to 4. Flips land on the
+    items the model is genuinely undecided about, and those are balanced
+    whatever the overall accuracy is. See records/2026/08/27/2_.
+
     Args:
         regressions: Flips where the reference pass was correct and the
             pass under test is not.

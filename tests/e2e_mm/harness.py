@@ -557,6 +557,46 @@ class MPTransportCounters:
         LMCacheMPWorkerAdapter.batched_submit_store_requests = store
 
 
+# certify.py points this at a file while it runs the suite; every rescued
+# exact-match failure appends one JSON line there. Unset -- a standalone
+# pytest run -- records nothing.
+_DIVERGENCE_LOG_ENV = "LMCACHE_MM_E2E_DIVERGENCE_LOG"
+
+
+def record_byte_divergence(kind: str, where: str, request_key: str) -> None:
+    """Append one rescued exact-match failure to the divergence log.
+
+    The suite requires byte equality against the plain-vLLM baseline, and
+    for a replay against the miss pass, but lets a step through when the
+    extracted answer or the semantic probe still agrees -- the hit and miss
+    paths are different numeric regimes and a single bf16 quantum can change
+    the phrasing without changing the answer. Recording each rescue puts the
+    count in the certificate instead of leaving it in a pytest warning that
+    nothing reads. Measured on vLLM 0.27.1 (2026-08-27), the count separates
+    models the MME parity gate later passes from ones it fails: internvl3.5-2b
+    needed the rescue 10 times and then failed parity at asymmetry p = 5.3e-05,
+    while mistral-small-3.1-24b and qwen3-vl-2b needed it zero times and
+    passed. It is recorded, not gated: one failing model is not a calibrated
+    threshold.
+
+    Writing is best-effort and never fails a test; the log is diagnostic.
+
+    Args:
+        kind: Which oracle was rescued -- "baseline" from ``check_text``,
+            "replay_extracted" or "replay_probe" from ``check_replay_text``.
+        where: The caller's context string, e.g. "T0.2 replay".
+        request_key: The request whose output diverged.
+    """
+    path = os.environ.get(_DIVERGENCE_LOG_ENV, "")
+    if not path:
+        return
+    with contextlib.suppress(OSError):
+        with open(path, "a") as handle:
+            handle.write(
+                json.dumps({"kind": kind, "where": where, "key": request_key}) + "\n"
+            )
+
+
 def mm_limits(spec: ModelSpec) -> dict[str, int]:
     """Per-prompt multimodal item limits for the engines of ``spec``.
 
@@ -1275,6 +1315,7 @@ class MMHarness:
             if text == baseline:
                 return
             if probe_ok:
+                record_byte_divergence("baseline", where, request.key)
                 warnings.warn(
                     f"[{where}] {request.key}: exact baseline mismatch but "
                     f"semantic probe passed (got {text!r}, "
@@ -1336,6 +1377,7 @@ class MMHarness:
             return
         extracted = self.extracted_answer(text)
         if extracted and extracted == self.extracted_answer(reference_text):
+            record_byte_divergence("replay_extracted", where, request.key)
             warnings.warn(
                 f"[{where}] {request.key}: hit-path text diverged from "
                 f"miss-path but extracted answers match ({extracted!r}); "
@@ -1344,6 +1386,7 @@ class MMHarness:
             )
             return
         if request.expected_probe and self.probe_ok(request, text):
+            record_byte_divergence("replay_probe", where, request.key)
             warnings.warn(
                 f"[{where}] {request.key}: hit-path text diverged from "
                 f"miss-path but semantic probe passed (got {text!r}, "

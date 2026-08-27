@@ -519,11 +519,17 @@ def run_suite(model_key: str, pressure_n: int, workdir: pathlib.Path) -> dict:
         zero errors, and zero skips (a skipped suite must never certify).
     """
     junit = workdir / f"suite_{model_key}.xml"
+    # The suite rescues a byte-divergence when the answer still agrees, and
+    # says so only in a pytest warning. Collect those rescues so the count
+    # reaches the certificate; see harness.record_byte_divergence.
+    divergences = workdir / f"divergences_{model_key}.jsonl"
+    divergences.unlink(missing_ok=True)
     env = dict(os.environ)
     env.update(
         LMCACHE_MM_E2E="1",
         LMCACHE_MM_E2E_MODELS=model_key,
         LMCACHE_MM_E2E_PRESSURE_N=str(pressure_n),
+        LMCACHE_MM_E2E_DIVERGENCE_LOG=str(divergences),
     )
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", ".", "-q", f"--junit-xml={junit}"],
@@ -547,10 +553,19 @@ def run_suite(model_key: str, pressure_n: int, workdir: pathlib.Path) -> dict:
         and counts["errors"] == 0
         and counts["skipped"] == 0
     )
+    kinds: dict[str, int] = {}
+    if divergences.exists():
+        with open(divergences) as handle:
+            for line in handle:
+                if line.strip():
+                    kind = json.loads(line)["kind"]
+                    kinds[kind] = kinds.get(kind, 0) + 1
     return {
         "green": green,
         "exit_code": proc.returncode,
         "pressure_n": pressure_n,
+        "byte_divergences": sum(kinds.values()),
+        "byte_divergence_kinds": kinds,
         **counts,
     }
 
