@@ -79,8 +79,8 @@ only the unit tests for the key derivation and the connector keying.
 
 ### Unrelated bugs found while validating
 
-None of these are caused by this change and none of their code is in this PR.
-Each is one commit on its own branch.
+Neither is caused by this change and neither one's code is in this PR. Each is
+one commit on its own branch.
 
 **Torch-fallback `lmcache_memcpy_async` is not stream-ordered.** Branch
 [`fix_memcpy_stream_order`](https://github.com/BoJiang03/LMCache/tree/fix_memcpy_stream_order). Silent data corruption. The pointer-mode fallback
@@ -105,16 +105,3 @@ separating the two causes and it pointed at a writer that did not exist, which
 cost real debugging time on a 7699-failure incident. Renamed to
 `read_lock_expired` on the l1_retrieve path, plus one aggregate log line naming
 the count and the configured TTL.
-
-**Failed MP retrieves reported as successes.** The MP worker adapter dropped
-the block ids of a failed retrieve, so vLLM saw a clean completed load, kept
-the tokens it had already counted as computed, and the model read whatever
-those blocks happened to hold. We hit this during the parity runs and fixed it
-on [`fix_mp_load_error`](https://github.com/BoJiang03/LMCache/tree/fix_mp_load_error).
-It was independently fixed on dev by #4709 while this work was in progress; the
-vLLM-adapter change there is line-for-line what ours does, and #4709 goes
-further by fixing the SGLang and TensorRT adapters and the server side as well,
-so nothing more is needed for the defect itself. What is left on our branch is
-two smaller things: the two drain loops are still duplicated, and there is no
-warning when the model has more than one KV cache group, where vLLM cannot
-recompute a trimmed prefix and aborts the engine on a load error instead.
