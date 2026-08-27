@@ -948,6 +948,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # evict every entry before its pass-2 revisit and fail the hit
             # gate at ~0.
             mme_max_local_cpu_gb=260.0,
+            # Same reason the 27B specs raise it: 24B in bf16 is ~48 GB of
+            # weights, and the isolated scenarios' 0.35 default is 50 GB on
+            # this card, so the engine dies with "No available memory for the
+            # cache blocks" before a single KV block. Measured: capacity
+            # eviction and mp_connector were the two failures of an otherwise
+            # green 45-test run at the default.
+            isolated_gpu_utilization=0.75,
         ),
         ModelSpec(
             key="molmo2-4b",
