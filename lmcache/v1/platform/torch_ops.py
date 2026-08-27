@@ -2227,16 +2227,19 @@ def lmcache_memcpy_async(
     Python fallback for lmcache_memcpy_async.
 
     - Tensor mode (non-CUDA devices like HPU): uses .to(device) + copy_()
-    - Pointer mode with libcudart: uses synchronous cudaMemcpy (cudaMemcpyDefault)
+    - Pointer mode with libcudart: uses cudaMemcpyAsync on the current torch
+      stream, split at cudaHostRegister boundaries -- mirroring the native
+      C++ implementation (``csrc/cuda/mem_kernels.cu::lmcache_memcpy_async``)
     - Pointer mode without libcudart: uses CPU tensor copy
 
-    Unlike the C++ version (which uses cudaMemcpyAsync and must split copies
-    at cudaHostRegister boundaries), this Python fallback does NOT need
-    alignment-based chunking because:
-    - cudaMemcpy (synchronous) handles cross-cudaHostRegister boundaries
-      internally via staging buffers
-    - CPU tensor copy has no alignment constraints
-    - Tensor mode bypasses raw pointers entirely
+    Pointer mode MUST be ordered on the current torch stream, not issued as
+    a stream-unaware synchronous cudaMemcpy: callers enqueue the paged-KV
+    gather/scatter kernels for the same staging buffers on the current
+    (non-blocking) stream, which the legacy default stream does not
+    synchronize with. A synchronous cudaMemcpy overtakes any gather kernel
+    still queued on the current stream and reads the staging buffer's stale
+    previous content -- silent KV corruption whenever the stream is backed
+    up (e.g. a burst of store/retrieve requests on the MP server).
 
     dest:
         - If int: raw memory pointer (used for CUDA/CPU devices where we
@@ -2288,23 +2291,51 @@ def lmcache_memcpy_async(
         )
 
     libcudart = _get_copy_lib()
-    if libcudart is not None and hasattr(libcudart, "cudaMemcpy"):
-        try:
-            # Synchronous cudaMemcpy handles cross-cudaHostRegister boundaries
-            # internally — no manual alignment splitting needed.
-            ret = libcudart.cudaMemcpy(
-                ctypes.c_void_p(dest),
-                ctypes.c_void_p(src),
-                ctypes.c_size_t(nbytes),
-                ctypes.c_int(4),  # cudaMemcpyDefault
-            )
-            if ret != 0:
-                raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
-        except AttributeError:
-            raise
-    else:
+    if libcudart is None or not hasattr(libcudart, "cudaMemcpy"):
         # Pure CPU copy — no alignment constraints.
         _copy_bytes_with_tensor(dest, src, nbytes)
+        return
+
+    if hasattr(libcudart, "cudaMemcpyAsync") and torch.cuda.is_available():
+        # Stream-ordered copy on the current torch stream, split at
+        # cudaHostRegister boundaries exactly like the native path: a
+        # single async copy must not span two separately registered host
+        # regions.
+        stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
+        mask = host_buffer_alignments - 1
+        offset = 0
+        while offset < nbytes:
+            aligned_area_end = (
+                (offset + host_buffer_offset) & ~mask
+            ) + host_buffer_alignments
+            real_end = min(host_buffer_offset + nbytes, aligned_area_end)
+            piece = real_end - offset - host_buffer_offset
+            ret = libcudart.cudaMemcpyAsync(
+                ctypes.c_void_p(dest + offset),
+                ctypes.c_void_p(src + offset),
+                ctypes.c_size_t(piece),
+                ctypes.c_int(4),  # cudaMemcpyDefault
+                stream,
+            )
+            if ret != 0:
+                raise RuntimeError(f"cudaMemcpyAsync failed with error code {ret}")
+            offset += piece
+        return
+
+    # Degraded path: cudaMemcpyAsync is unavailable. Drain the current
+    # stream first so the stream-unaware synchronous copy cannot overtake
+    # gather/scatter kernels queued on it, then let cudaMemcpy handle
+    # cross-cudaHostRegister boundaries internally via staging buffers.
+    if torch.cuda.is_available():
+        torch.cuda.current_stream().synchronize()
+    ret = libcudart.cudaMemcpy(
+        ctypes.c_void_p(dest),
+        ctypes.c_void_p(src),
+        ctypes.c_size_t(nbytes),
+        ctypes.c_int(4),  # cudaMemcpyDefault
+    )
+    if ret != 0:
+        raise RuntimeError(f"cudaMemcpy failed with error code {ret}")
 
 
 @njit(cache=True)

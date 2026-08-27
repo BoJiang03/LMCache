@@ -237,9 +237,9 @@ def scenario_lmcache_memcpy_async(ops: Any, device: str) -> dict[str, torch.Tens
     Uses pointer mode for CPU/CUDA devices and tensor mode for other devices.
 
     Exercises multiple boundary conditions to verify correct behaviour for
-    both the CUDA DeviceOps backend (which chunks at alignment boundaries via
-    cudaMemcpyAsync) and the Python fallback backend (which issues a single
-    synchronous copy):
+    both the CUDA DeviceOps backend and the Python fallback backend (both
+    chunk at alignment boundaries via cudaMemcpyAsync on the current
+    stream):
       - copy spanning exactly one aligned block
       - copy entirely within one aligned block (no boundary crossing)
       - copy crossing a single alignment boundary
@@ -3050,6 +3050,48 @@ def test_alloc_pinned_ptr_is_page_aligned(size: int) -> None:
             assert buf[i] == ((i & 0xFF) ^ 0xA5)
     finally:
         _py_ops.free_pinned_ptr(ptr)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_lmcache_memcpy_async_orders_with_current_stream() -> None:
+    """Pointer-mode D2H must not overtake work queued on the current stream.
+
+    Regression test for the MP-server staging race: the store path enqueues
+    the gather kernel (paged KV -> staging slot) on the cache context's
+    non-blocking stream and immediately hands the slot to
+    ``lmcache_memcpy_async`` for the D2H copy into the pinned host object.
+    A stream-unaware synchronous cudaMemcpy runs on the legacy default
+    stream and reads the slot's stale previous content whenever the gather
+    is still queued behind other stream work, silently committing another
+    chunk's bytes. The copy must be ordered on the current torch stream.
+    """
+    nbytes = 1 << 20
+    stream = torch.cuda.Stream()
+    slot = torch.full((nbytes,), 0xBB, dtype=torch.uint8, device="cuda")
+    fresh = torch.full((nbytes,), 0xAA, dtype=torch.uint8, device="cuda")
+    host = torch.zeros(nbytes, dtype=torch.uint8, pin_memory=True)
+    torch.cuda.synchronize()
+
+    with torch.cuda.stream(stream):
+        # Backlog ahead of the "gather": the D2H below must wait for both.
+        torch.cuda._sleep(80_000_000)
+        slot.copy_(fresh)
+        _py_ops.lmcache_memcpy_async(
+            host.data_ptr(),
+            slot.data_ptr(),
+            nbytes,
+            lmcache_native.TransferDirection.D2H,
+            0,
+            1 << 30,
+        )
+    stream.synchronize()
+
+    stale = int((host == 0xBB).sum().item())
+    assert stale == 0, (
+        f"D2H overtook the queued gather kernel: {stale}/{nbytes} bytes are "
+        "the staging slot's stale previous content"
+    )
+    assert torch.equal(host, torch.full((nbytes,), 0xAA, dtype=torch.uint8))
 
 
 def test_tensor_from_ptr_routes_musa_pointer(
