@@ -16,7 +16,10 @@ Usage (from tests/e2e_mm, on a GPU machine):
     python certify.py qwen2.5-vl-3b --parity-report mme_full.json  # reuse run
 
 Exit codes: 0 = SUPPORTED, 2 = PROVISIONAL (suite green, parity not
-provided), 1 = NOT_SUPPORTED.
+provided), 1 = NOT_SUPPORTED. A parity report that its own precondition
+invalidated -- vLLM preempted during it, so its hit-path numbers measure an
+upstream block-table defect rather than the model -- raises instead of
+certifying: see ``require_valid_parity_run``.
 """
 
 # Standard
@@ -110,10 +113,11 @@ MEDIA_PREFIX_NOT_COVERED = (
 # reader who knows LMCache also ships an in-process connector would
 # otherwise have to guess whether it was covered.
 IN_PROCESS_NOT_COVERED = (
-    "the in-process LMCacheConnectorV1 path: the suite drives the "
-    "multi-process deployment only and no longer contains an in-process "
-    "harness (removed 2026-08-26; git history and branch "
-    "archive/e2e_mm-inprocess-and-mp carry it)"
+    "the in-process LMCacheConnectorV1 path: multimodal support is scoped "
+    "to the multi-process deployment by decision, not merely unmeasured -- "
+    "the in-process harness was removed on 2026-08-26 (git history and "
+    "branch archive/e2e_mm-inprocess-and-mp carry it) and nothing here "
+    "claims, or intends to claim, that path for multimodal models"
 )
 
 # Exclusion for a model whose spec declares the deepstack add-on suite.
@@ -132,6 +136,29 @@ DEEPSTACK_NOT_COVERED = (
     "back -- the MP cache server has no such API, so the add-on suite was "
     "removed with the in-process path rather than replaced by a check "
     "measured to be blind"
+)
+
+# Exclusion for a model whose parity run shapes the engine so vLLM cannot
+# preempt. The trigger being avoided is an UPSTREAM contract the connector
+# does not implement, identical on dev and in every connector variant, so
+# certifying through it would report an upstream defect as a multimodal one;
+# the branch's decision is to avoid it and say so. See
+# records/2026/08/27/7_ for the localisation and the evidence chain.
+PREEMPTION_AVOIDED_NOT_COVERED = (
+    "the hit path under enough block-pool pressure to preempt: this "
+    "model's MME parity run deliberately shapes the engine (see the "
+    "report's `engine` block) so the running batch cannot exhaust the "
+    "pool, and the run asserts zero preemptions as a precondition. The "
+    "reason is upstream: on a preemption vLLM REPLACES the resumed "
+    "request's block ids (`CachedRequestData` replaces for ids in "
+    "`resumed_req_ids`, appends for all others) while the connector only "
+    "appends, so a resumed request keeps a freed block table and its next "
+    "store writes another request's KV under its own key -- read back on "
+    "the hit pass as fluent but wrong output. Note that the synthetic "
+    "suite's preemption scenario (T0.11) still runs and still proves a "
+    "preemption happened, but its oracle is the preempted batch's own "
+    "text; nothing reads back what those requests STORED, so it is blind "
+    "to this fault class and its green does not cover it"
 )
 
 # Additional exclusions for ANY multi-KV-group model.
@@ -495,6 +522,8 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
         base += chunked_prefill_not_covered(spec)
     if not spec.media_prefix_stable:
         base.append(MEDIA_PREFIX_NOT_COVERED)
+    if spec.mme_max_num_seqs or spec.mme_gpu_memory_utilization:
+        base.append(PREEMPTION_AVOIDED_NOT_COVERED)
     if not spec.hybrid_block_tokens:
         return base
     extra = list(HYBRID_NOT_COVERED)
@@ -618,6 +647,13 @@ def parity_command(model_key: str, limit: int, out: pathlib.Path) -> list[str]:
         cmd += ["--min-parse-ratio", str(spec.mme_min_parse_ratio)]
     if spec.mme_max_local_cpu_gb:
         cmd += ["--max-local-cpu-gb", str(spec.mme_max_local_cpu_gb)]
+    if spec.mme_max_num_seqs:
+        cmd += ["--max-num-seqs", str(spec.mme_max_num_seqs)]
+    if spec.mme_gpu_memory_utilization:
+        cmd += [
+            "--gpu-memory-utilization",
+            str(spec.mme_gpu_memory_utilization),
+        ]
     if spec.hybrid_block_tokens:
         cmd += ["--hybrid-block-tokens", str(spec.hybrid_block_tokens)]
     if spec.hf_overrides:
@@ -650,7 +686,76 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
     )
     if not out.exists():
         raise RuntimeError("parity run produced no report")
-    return json.loads(out.read_text())
+    report = json.loads(out.read_text())
+    require_valid_parity_run(report, out)
+    return report
+
+
+def preemption_check(report: dict) -> str:
+    """State, on the certificate, what the parity run proved about preemption.
+
+    Written next to the report rather than into ``known_not_covered``
+    because it is a property of THAT RUN, not of the model: the same spec
+    can produce a measured-zero report today and an unmeasured one from an
+    archive. A reader must be able to tell the two apart -- "no preemptions
+    happened" and "nobody looked" support very different conclusions about
+    a SUPPORTED verdict.
+
+    Args:
+        report: A parity report from ``benchmark_parity.py``.
+
+    Returns:
+        One sentence naming what was measured.
+    """
+    preemption = report.get("preemption", {})
+    if not preemption.get("measured", False):
+        return (
+            "not measured: this report predates the check, so whether vLLM "
+            "preempted during it -- and with it whether the hit-path "
+            "numbers are attributable to the connector at all -- is unknown"
+        )
+    total = preemption.get("total", 0)
+    if total:
+        return f"{total} preemptions: the run is INVALID, see the report"
+    return (
+        "zero preemptions measured across both passes, so the hit-path "
+        "numbers are not contaminated by the upstream block-table defect "
+        "(see PREEMPTION_AVOIDED_NOT_COVERED)"
+    )
+
+
+def require_valid_parity_run(report: dict, path: pathlib.Path) -> None:
+    """Refuse a parity report that its own precondition invalidated.
+
+    A preempting run is not evidence about the model: the corruption it
+    shows comes from an upstream block-table contract the connector does
+    not implement. Certifying from it would stamp NOT_SUPPORTED for a
+    defect that is neither in this branch nor in the model, so the
+    certificate is refused instead -- the same treatment as a report from
+    the wrong model or the wrong deployment path.
+
+    Reports that predate the measurement are accepted: they are older
+    evidence, not invalid evidence, and ``preemption_check`` records on the
+    certificate that nobody looked.
+
+    Args:
+        report: A parity report from ``benchmark_parity.py``.
+        path: The report's path, for the error message.
+
+    Raises:
+        ValueError: If the report measured a non-zero preemption count.
+    """
+    preemption = report.get("preemption", {})
+    if not preemption.get("measured", False) or preemption.get("pass", True):
+        return
+    raise ValueError(
+        f"parity report {path} is INVALID, not failing: vLLM preempted "
+        f"{preemption['total']} times "
+        f"({preemption.get('pass1_preemptions', 0)} in the store pass, "
+        f"{preemption.get('pass2_preemptions', 0)} in the hit pass), so its "
+        f"hit-path numbers measure an upstream defect rather than this "
+        f"model. {preemption.get('why', '')}"
+    )
 
 
 def load_parity_report(
@@ -677,8 +782,10 @@ def load_parity_report(
 
     Raises:
         ValueError: If the report is for a different model, was produced on
-            a deployment path this model is not certified on, or predates
-            the flip-direction counters the gate needs.
+            a deployment path this model is not certified on, predates the
+            flip-direction counters the gate needs, or was invalidated by
+            its own preemption precondition (see
+            ``require_valid_parity_run``).
     """
     report = json.loads(path.read_text())
     if report.get("model") != spec.hf_id:
@@ -715,6 +822,7 @@ def load_parity_report(
             f"{CERTIFICATE_SCHEMA_VERSION} gates flip direction, so this "
             f"report has to be rerun"
         )
+    require_valid_parity_run(report, path)
     report["gate"] = parity_gate(report, max_flip_fraction, min_parse_ratio)
     return report
 
@@ -754,12 +862,20 @@ def main() -> int:
             spec.mme_max_flip_fraction,
             spec.mme_min_parse_ratio,
         )
-        parity = {"source": f"recorded:{args.parity_report}", "report": report}
+        parity = {
+            "source": f"recorded:{args.parity_report}",
+            "report": report,
+            "preemption_check": preemption_check(report),
+        }
     elif args.run_parity:
         report = run_parity(
             args.model_key, args.parity_limit, out_path.parent.resolve()
         )
-        parity = {"source": "fresh_run", "report": report}
+        parity = {
+            "source": "fresh_run",
+            "report": report,
+            "preemption_check": preemption_check(report),
+        }
 
     parity_ok = parity.get("report", {}).get("gate", {}).get("pass", False)
     if not suite["green"]:

@@ -1077,6 +1077,57 @@ def run_batch(
     return [out.outputs[0].text for out in outputs]
 
 
+PREEMPTION_UPSTREAM_DEFECT = (
+    "vLLM preempted at least one request. On a preemption vLLM REPLACES the "
+    "resumed request's block ids (CachedRequestData: ids in "
+    "`resumed_req_ids` replace, all others append), while the connector only "
+    "ever appends -- so a resumed request keeps a freed block table and its "
+    "next store gathers another request's KV under its own key. The poisoned "
+    "entry is then served on the hit path, which is why pass 1 stays byte-"
+    "identical to the baseline and only pass 2 corrupts. The defect is "
+    "upstream of this branch (identical on dev and in every connector "
+    "variant); the suite's decision is to avoid the trigger, so a "
+    "preempting run measures nothing about the model. Re-run with a lower "
+    "`mme_max_num_seqs` or a higher `mme_gpu_memory_utilization`. Evidence: "
+    "records/2026/08/27/7_."
+)
+
+
+def preemption_precondition(pass1_preemptions: int, pass2_preemptions: int) -> dict:
+    """Judge whether a parity run's numbers are attributable to the model.
+
+    The parity run is only a measurement of the connector while vLLM does
+    not preempt; see ``PREEMPTION_UPSTREAM_DEFECT`` for why. A run that
+    preempted is INVALID rather than failing -- the distinction matters
+    because the two lead to opposite actions: a failing run is a defect to
+    fix in this branch, an invalid one is a run to repeat with more block-
+    pool headroom.
+
+    Args:
+        pass1_preemptions: Preemptions during the store (miss) pass.
+        pass2_preemptions: Preemptions during the hit pass.
+
+    Returns:
+        Precondition dict: the two per-pass counts, their ``total``, a
+        ``pass`` flag that is true only at zero, and (when it is false) the
+        ``why`` text a reader needs to act on it. The split is kept because
+        it localises the damage: a store-pass preemption poisons cache
+        entries that pass 2 then reads, so pass-1 counts explain pass-2
+        corruption.
+    """
+    total = pass1_preemptions + pass2_preemptions
+    precondition = {
+        "measured": True,
+        "pass1_preemptions": pass1_preemptions,
+        "pass2_preemptions": pass2_preemptions,
+        "total": total,
+        "pass": total == 0,
+    }
+    if total:
+        precondition["why"] = PREEMPTION_UPSTREAM_DEFECT
+    return precondition
+
+
 def engine_kwargs(
     model: str,
     benchmark: Benchmark,
@@ -1086,6 +1137,8 @@ def engine_kwargs(
     hybrid_family: str,
     mm_encoder_attn_backend: str,
     trust_remote_code: bool,
+    max_num_seqs: int,
+    gpu_memory_utilization: float,
 ) -> dict:
     """Engine kwargs for both parity engines.
 
@@ -1122,18 +1175,34 @@ def engine_kwargs(
             (Molmo 2). Applied to BOTH engines: without it the engine that
             has it would be the only one that starts, leaving nothing to
             compare against.
+        max_num_seqs: Running-batch cap from ``ModelSpec.mme_max_num_seqs``;
+            0 keeps vLLM's own default. Applied to BOTH engines, so the
+            comparison stays config-matched -- vLLM's kernels are not
+            batch-invariant and a cap on one side only would show up as
+            flips (measured on Kimi-VL: 256 vs 32 flips 11 of 2374 with no
+            LMCache anywhere).
+        gpu_memory_utilization: Memory fraction for BOTH engines; 0 keeps
+            the 0.6 this runner has always used. Raised only for a model
+            whose block pool has to be provably deeper than its batch.
     """
     kwargs = dict(
         model=model,
         max_model_len=8192,
-        gpu_memory_utilization=0.6,
+        gpu_memory_utilization=gpu_memory_utilization or 0.6,
         enforce_eager=True,
         enable_prefix_caching=False,
         limit_mm_per_prompt={benchmark.modality: 1},
         mm_processor_kwargs=(
             dict(mm_processor_kwargs) or benchmark.default_mm_processor_kwargs()
         ),
+        # The offline LLM API disables stat logging, and with it vLLM's
+        # `num_preemptions` counter. The parity run READS that counter --
+        # a preempting run is not a verdict on the model (see
+        # `preemption_precondition`) -- so stats stay on for both engines.
+        disable_log_stats=False,
     )
+    if max_num_seqs:
+        kwargs["max_num_seqs"] = max_num_seqs
     if mm_encoder_attn_backend:
         kwargs["mm_encoder_attn_backend"] = mm_encoder_attn_backend
     if trust_remote_code:
@@ -1165,8 +1234,14 @@ def run_baseline(
     hybrid_family: str,
     mm_encoder_attn_backend: str,
     trust_remote_code: bool,
+    max_num_seqs: int,
+    gpu_memory_utilization: float,
 ) -> None:
-    """Subprocess role: plain vLLM answers for every question."""
+    """Subprocess role: plain vLLM answers for every question.
+
+    Every argument is forwarded to ``engine_kwargs`` unchanged, so this
+    engine and the LMCache one differ in exactly one thing: the connector.
+    """
     # Third Party
     from vllm import LLM
 
@@ -1196,6 +1271,8 @@ def run_baseline(
             hybrid_family,
             mm_encoder_attn_backend,
             trust_remote_code,
+            max_num_seqs,
+            gpu_memory_utilization,
         )
     )
     answers = run_batch(
@@ -1258,6 +1335,26 @@ def main() -> int:
         "(ModelSpec.mme_max_local_cpu_gb); 0 = the 40 GB default. Must "
         "hold the full benchmark's KV or the pass-2 LRU scan evicts every "
         "entry before its revisit and the hit-ratio gate fails at ~0",
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=0,
+        help="running-batch cap for BOTH parity engines "
+        "(ModelSpec.mme_max_num_seqs); 0 = vLLM's own default. Set it to "
+        "make preemption arithmetically impossible: a preempted request is "
+        "served by an upstream path this connector does not implement, so "
+        "a preempting run is reported as INVALID rather than as a verdict "
+        "on the model (see preemption_precondition)",
+    )
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=0.0,
+        help="GPU memory fraction for BOTH parity engines "
+        "(ModelSpec.mme_gpu_memory_utilization); 0 = the 0.6 this runner "
+        "has always used. Raise it with --max-num-seqs when the batch cap "
+        "alone leaves too little block-pool headroom",
     )
     parser.add_argument(
         "--hybrid-block-tokens",
@@ -1324,6 +1421,7 @@ def main() -> int:
         configure_environment,
         VllmPrefillCounters,
         reset_vllm_prefix_cache,
+        vllm_preemption_total,
     )
 
     hf_overrides: dict = json.loads(args.hf_overrides) if args.hf_overrides else {}
@@ -1345,6 +1443,8 @@ def main() -> int:
             args.hybrid_family,
             args.mm_encoder_attn_backend,
             args.trust_remote_code,
+            args.max_num_seqs,
+            args.gpu_memory_utilization,
         )
         return 0
 
@@ -1400,6 +1500,14 @@ def main() -> int:
             args.hybrid_family,
             "--mm-encoder-attn-backend",
             args.mm_encoder_attn_backend,
+            # Both engines must see the same batch cap and pool: vLLM's
+            # kernels are not batch-invariant, so a cap applied to the
+            # LMCache side only would surface as flips the gate would then
+            # charge to the connector.
+            "--max-num-seqs",
+            str(args.max_num_seqs),
+            "--gpu-memory-utilization",
+            str(args.gpu_memory_utilization),
         ]
         + trust_flag,
         timeout=7200,
@@ -1452,6 +1560,8 @@ def main() -> int:
             args.hybrid_family,
             args.mm_encoder_attn_backend,
             args.trust_remote_code,
+            args.max_num_seqs,
+            args.gpu_memory_utilization,
         ),
     )
 
@@ -1477,6 +1587,11 @@ def main() -> int:
     try:
         reset_local_prefix_cache()
         stored_before = stored_tokens()
+        # Counted only on THIS engine: the baseline runs in its own
+        # subprocess and plain vLLM recomputes a preempted request
+        # correctly, so its preemptions are harmless. It is the connector's
+        # block-table handling that the counter stands in for.
+        preempt_before = vllm_preemption_total()
         answers_p1 = run_batch(
             llm,
             benchmark,
@@ -1486,6 +1601,7 @@ def main() -> int:
             args.max_tokens,
         )
         stored_p1 = stored_tokens() - stored_before
+        preempt_after_p1 = vllm_preemption_total()
         # See STORE_COMMIT_GRACE_S: without this, a --limit run's pass 2
         # laps pass 1's in-flight stores and under-reports the hit ratio.
         time.sleep(STORE_COMMIT_GRACE_S)
@@ -1502,6 +1618,7 @@ def main() -> int:
             args.max_tokens,
         )
         t1, h1 = lookup_stats()
+        preempt_after_p2 = vllm_preemption_total()
         local_p2 = prefill.local_cached - local0
         external_p2 = prefill.external_cached - external0
         achievable_p2 = achievable_hit_tokens(
@@ -1558,6 +1675,14 @@ def main() -> int:
         ),
         "pass1_answer_parse_ratio": answer_parse_ratio(benchmark, items, answers_p1),
         "pass2_answer_parse_ratio": answer_parse_ratio(benchmark, items, answers_p2),
+        "engine": {
+            "max_num_seqs": args.max_num_seqs,
+            "gpu_memory_utilization": args.gpu_memory_utilization or 0.6,
+        },
+        "preemption": preemption_precondition(
+            preempt_after_p1 - preempt_before,
+            preempt_after_p2 - preempt_after_p1,
+        ),
     }
     gate = parity_gate(report, args.max_flip_fraction, args.min_parse_ratio)
     report["gate"] = gate
@@ -1597,6 +1722,18 @@ def main() -> int:
         f"+{flips_p1_base.parse_flips} parse) "
         f"=> {'PASS' if gate['pass'] else 'FAIL'}"
     )
+    preemption = report["preemption"]
+    if not preemption["pass"]:
+        # Exit 3, not 1: this run says nothing about the model, and a caller
+        # that treats it as a failure records a red for the wrong reason.
+        print(
+            f"[parity] INVALID: {preemption['total']} preemptions "
+            f"({preemption['pass1_preemptions']} in the store pass, "
+            f"{preemption['pass2_preemptions']} in the hit pass). "
+            f"{PREEMPTION_UPSTREAM_DEFECT}",
+            file=sys.stderr,
+        )
+        return 3
     return 0 if gate["pass"] else 1
 
 
