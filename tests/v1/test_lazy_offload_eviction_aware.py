@@ -115,6 +115,7 @@ def make_queue(
     max_drain_blocks_per_step: int = 0,
     idle_drain_max_ops: int = 0,
     idle_threshold_blocks: float = 1.0,
+    degrade_l1_residence_secs: float = 0.0,
 ) -> EvictionAwareStoreQueue:
     config = LazyOffloadPolicyConfig(
         horizon_steps=horizon_steps,
@@ -124,6 +125,7 @@ def make_queue(
         max_drain_blocks_per_step=max_drain_blocks_per_step,
         idle_drain_max_ops=idle_drain_max_ops,
         idle_threshold_blocks=idle_threshold_blocks,
+        degrade_l1_residence_secs=degrade_l1_residence_secs,
     )
     return EvictionAwareStoreQueue(config, pool)
 
@@ -168,6 +170,13 @@ class TestConfigValidation:
     def test_rejects_non_positive_idle_threshold(self) -> None:
         with pytest.raises(ValueError):
             LazyOffloadPolicyConfig(idle_threshold_blocks=0)
+
+    def test_degradation_is_disabled_by_default(self) -> None:
+        assert LazyOffloadPolicyConfig().degrade_l1_residence_secs == 0.0
+
+    def test_rejects_negative_degrade_residence(self) -> None:
+        with pytest.raises(ValueError):
+            LazyOffloadPolicyConfig(degrade_l1_residence_secs=-1.0)
 
 
 class TestAdmission:
@@ -1826,3 +1835,260 @@ class TestBlockVolumeCap:
         assert [op.prefix_end_tokens for op in result.to_store] == [256, 512]
         assert queue.stats().idle_emitted == 2
         assert queue.num_pending_ops() == 1
+
+
+CAPACITY = 1_000_000
+"""L1 capacity used by the degradation tests, in bytes."""
+
+
+class TestAdaptiveDegradation:
+    """``degrade_l1_residence_secs``: stop deferring when L1 churns.
+
+    The signal is fed through ``observe_l1_pressure`` as (monotonic time,
+    capacity, cumulative evicted bytes) snapshots; residence below the
+    threshold flips the queue to immediate emission, residence above twice
+    the threshold flips it back. With a threshold of 60 and a capacity of
+    ``CAPACITY``, a 10-second sample deleting 200_000 bytes implies a
+    residence of 50 seconds (degrade), and zero-delta samples then decay
+    the rate EMA so residence recovers through the (60, 120) hysteresis
+    band in two samples and past it on the third.
+    """
+
+    def _degrade(self, queue: EvictionAwareStoreQueue) -> None:
+        """Feed a baseline plus one churn sample: residence 50 < 60."""
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        queue.observe_l1_pressure(10.0, CAPACITY, 200_000)
+
+    def _degraded_backlog(
+        self,
+        ops_per_request: dict[str, int],
+        **queue_kwargs: float,
+    ) -> tuple[FakePoolView, EvictionAwareStoreQueue]:
+        """A pinned backlog on a queue already degraded to immediate emission.
+
+        No block enters the free queue, so eviction pressure never fires and
+        only the degraded drain can emit.
+        """
+        pool = FakePoolView()
+        queue = make_queue(
+            pool,
+            degrade_l1_residence_secs=60.0,
+            **queue_kwargs,  # type: ignore[arg-type]
+        )
+        self._degrade(queue)
+        next_block = 1
+        for request_id, count in ops_per_request.items():
+            for index in range(count):
+                seed_blocks(pool, [next_block], free=False)
+                queue.admit(
+                    make_op(
+                        request_id,
+                        [next_block],
+                        pool,
+                        prefix_end_tokens=256 * (index + 1),
+                    )
+                )
+                next_block += 1
+        return pool, queue
+
+    # ------------------------------------------------------------------
+    # Regime state machine
+    # ------------------------------------------------------------------
+
+    def test_short_residence_flips_to_degraded(self) -> None:
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+
+        self._degrade(queue)
+
+        assert queue.degraded
+        assert queue.stats().degrade_transitions == 1
+
+    def test_recovery_requires_twice_the_threshold(self) -> None:
+        """Zero-delta samples decay the rate EMA (alpha 0.3): residence
+        walks 50 -> 71 -> 102 -> 146; the flips happen at <60 and >120."""
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+        self._degrade(queue)
+
+        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
+        assert queue.degraded  # residence ~71: inside the hysteresis band
+        queue.observe_l1_pressure(30.0, CAPACITY, 200_000)
+        assert queue.degraded  # residence ~102: still inside
+        queue.observe_l1_pressure(40.0, CAPACITY, 200_000)
+
+        assert not queue.degraded  # residence ~146: past 2x the threshold
+        assert queue.stats().degrade_transitions == 2
+
+    def test_disabled_threshold_ignores_pressure(self) -> None:
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=0.0)
+
+        self._degrade(queue)
+
+        assert not queue.degraded
+        assert queue.stats().degrade_transitions == 0
+
+    def test_repeated_snapshot_does_not_advance_the_estimator(self) -> None:
+        """The caller repeats the latest sample every step; only a strictly
+        newer timestamp may move the EMA (else the repeats would read as
+        zero-delta intervals and recover the regime by themselves)."""
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+        self._degrade(queue)
+
+        for _ in range(10):
+            queue.observe_l1_pressure(10.0, CAPACITY, 200_000)
+
+        assert queue.degraded
+        assert queue.stats().degrade_transitions == 1
+
+    def test_counter_regression_rebaselines(self) -> None:
+        """A cumulative counter that moved backwards (server restart) is a
+        new baseline, not a negative rate."""
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+        queue.observe_l1_pressure(0.0, CAPACITY, 1_000_000)
+        queue.observe_l1_pressure(10.0, CAPACITY, 0)  # regression
+        assert not queue.degraded
+
+        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
+
+        assert queue.degraded
+        assert queue.stats().degrade_transitions == 1
+
+    def test_zero_capacity_sample_is_ignored(self) -> None:
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+
+        queue.observe_l1_pressure(0.0, 0, 0)
+        queue.observe_l1_pressure(10.0, 0, 200_000)
+
+        assert not queue.degraded
+
+    # ------------------------------------------------------------------
+    # Degraded drain semantics
+    # ------------------------------------------------------------------
+
+    def test_degraded_drain_flushes_the_whole_backlog(self) -> None:
+        _, queue = self._degraded_backlog({"a": 2, "b": 1})
+
+        result = queue.collect_due()
+
+        assert [(op.request_id, op.prefix_end_tokens) for op in result.to_store] == [
+            ("a", 256),
+            ("a", 512),
+            ("b", 256),
+        ]
+        assert queue.num_pending_ops() == 0
+        stats = queue.stats()
+        assert stats.degraded_emitted == 3
+        assert stats.degraded_drain_steps == 1
+        assert stats.emitted == 3
+
+    def test_admission_while_degraded_emits_on_the_next_drain(self) -> None:
+        pool, queue = self._degraded_backlog({})
+        seed_blocks(pool, [1], free=False)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+
+        result = queue.collect_due()
+
+        assert [op.request_id for op in result.to_store] == ["req"]
+
+    def test_blocked_request_waits(self) -> None:
+        _, queue = self._degraded_backlog({"a": 1, "b": 1})
+
+        result = queue.collect_due(blocked_request_ids={"a"})
+
+        assert [op.request_id for op in result.to_store] == ["b"]
+        assert queue.num_pending_ops() == 1
+
+    def test_dedup_hole_cuts_the_batch(self) -> None:
+        pool, queue = self._degraded_backlog({})
+        seed_blocks(pool, [1, 2], free=False)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(
+            make_op(
+                "req",
+                [2],
+                pool,
+                prefix_end_tokens=1024,
+                prefix_start_tokens=768,
+            )
+        )
+
+        result = queue.collect_due()
+
+        assert [op.prefix_end_tokens for op in result.to_store] == [256]
+        assert queue.num_pending_ops() == 1
+
+    def test_stale_snapshot_is_dropped_not_stored(self) -> None:
+        pool, queue = self._degraded_backlog({})
+        seed_blocks(pool, [1], free=True)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        pool.evict(1)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1},
+        )
+
+        result = queue.collect_due()
+
+        assert result.to_store == []
+        assert queue.stats().dropped_evicted == 1
+
+    def test_budget_is_shared_with_the_step_cap(self) -> None:
+        _, queue = self._degraded_backlog({"a": 1, "b": 1}, max_drain_per_step=1)
+
+        first = queue.collect_due()
+        second = queue.collect_due()
+
+        assert [op.request_id for op in first.to_store] == ["a"]
+        assert [op.request_id for op in second.to_store] == ["b"]
+
+    def test_pressure_emission_is_not_doubled_by_the_degraded_path(self) -> None:
+        """A request the pressure pass emitted has a batch in flight; the
+        degraded pass must leave its remaining ops pending."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, degrade_l1_residence_secs=60.0)
+        self._degrade(queue)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
+
+        result = queue.collect_due()
+
+        assert [op.prefix_end_tokens for op in result.to_store] == [256]
+        assert queue.num_pending_ops() == 1
+        stats = queue.stats()
+        assert stats.emitted == 1
+        assert stats.degraded_emitted == 0
+
+    def test_recovered_queue_defers_again(self) -> None:
+        pool, queue = self._degraded_backlog({})
+        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
+        queue.observe_l1_pressure(30.0, CAPACITY, 200_000)
+        queue.observe_l1_pressure(40.0, CAPACITY, 200_000)
+        assert not queue.degraded
+        seed_blocks(pool, [1], free=False)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+
+        result = queue.collect_due()
+
+        assert result.to_store == []
+        assert queue.num_pending_ops() == 1
+
+    def test_truncated_chain_below_break_even_is_dropped(self) -> None:
+        """The economy backstop holds in the degraded drain: a chain that
+        eviction truncated back below break-even is dropped, not stored."""
+        pool, queue = self._degraded_backlog({}, min_prefix_tokens=512)
+        seed_blocks(pool, [1, 2], free=True)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
+        pool.evict(2)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={2},
+        )
+
+        result = queue.collect_due()
+
+        assert result.to_store == []
+        assert queue.stats().rejected_short_prefix >= 1

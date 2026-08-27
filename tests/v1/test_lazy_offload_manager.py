@@ -1447,3 +1447,27 @@ def test_fifo_duplicate_receipt_is_ignored() -> None:
 
     assert harness.adapter.ended_sessions == ["req"]
     assert len(harness.pool.freed) == 1
+
+
+class TestL1PressurePlumbing:
+    """The manager forwards L1 pressure snapshots to the drain policy."""
+
+    def test_wants_l1_pressure_follows_the_config(self) -> None:
+        assert not _make_lazy_connector().manager.wants_l1_pressure()
+        assert _make_lazy_connector(
+            extra_config={"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
+        ).manager.wants_l1_pressure()
+
+    def test_pressure_snapshots_degrade_the_drain(self) -> None:
+        """With churn snapshots under the residence threshold, a buffered op
+        drains with no eviction pressure at all; without them it waits."""
+        harness = _make_lazy_connector(
+            extra_config={"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
+        )
+        _admit_op(harness, "req", [[1]], start=0, end=TOKENS_PER_BLOCK)
+        assert _drain(harness).actions.stores_to_submit == []
+
+        harness.manager.on_l1_pressure(0.0, 1_000_000, 0)
+        harness.manager.on_l1_pressure(10.0, 1_000_000, 200_000)
+
+        assert len(_drain(harness).actions.stores_to_submit) == 1

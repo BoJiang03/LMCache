@@ -414,6 +414,43 @@ vLLM hit instead of 0 on a lookup miss.
   not stepping runs no drains at all; the idle drain above runs *within* a
   low-allocation step, so it never changes this.
 
+## Adaptive degradation
+
+Deferral only pays when the coverage it buys survives in L1 long enough
+to be re-used. Measured on an agent-shaped workload, lazy and eager
+store the same byte volume and win the same retrieval value whenever
+L1 residence (capacity over eviction byte rate) exceeds the workload's
+reuse distance; when residence falls below it, the deferred-store
+dividend collapses to zero and only the deferral machinery's cost
+remains. No emission-side shaping recovers that cost -- placement,
+cadence, idle timing, and block caps were each measured and none moved
+it -- so the policy instead stops deferring when the dividend is gone.
+
+- **Signal**: the caller feeds `observe_l1_pressure()` snapshots of the
+  server's cumulative evicted-bytes counter and L1 capacity (see
+  `docs/design/v1/multiprocess/l1_pressure_stats.md`). The policy turns
+  successive snapshots into an eviction byte rate and keeps an EMA of
+  the implied residence time `capacity / rate` (infinite while nothing
+  evicts). The signal stays measurable while degraded -- immediate
+  emissions keep flowing through the server -- so recovery needs no
+  probe traffic.
+- **Regime switch**: residence below `degrade_l1_residence_secs` flips
+  the queue to DEGRADED; residence above twice that value flips it
+  back. The 2x hysteresis plus the EMA keep the switch from chattering
+  around the threshold. `0` (the default) disables degradation
+  entirely.
+- **DEGRADED semantics**: every drain call emits all pending
+  operations in admission order -- the backlog-drain walk with an
+  unbounded allowance -- subject to the same validation, prefix
+  closure, dedup-hole cut, one-in-flight batch per request, and the
+  shared per-step budget. Admission gates are unchanged. The effect is
+  emission on the first step after admission: the store happens while
+  the request is still running, so its blocks are not yet in the free
+  queue and the pins that protect the copy are inert bookkeeping.
+- **Counters**: `degraded_drain_steps` (drains in which the degraded
+  path emitted), `degrade_transitions` (regime flips, both directions),
+  and `degraded_emitted` (subset of `emitted`, like `backlog_emitted`).
+
 ## Scheduler-path complexity
 
 A dedicated pending-operation owner maintains the primary per-request lists

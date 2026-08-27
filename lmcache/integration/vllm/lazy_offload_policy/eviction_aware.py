@@ -392,6 +392,22 @@ class LazyOffloadPolicyConfig:
             default of 1.0 at typical concurrency, while a prefill step
             allocates tens to hundreds. Consulted only when
             ``idle_drain_max_ops`` > 0.
+        degrade_l1_residence_secs: L1 residence time, in seconds, below
+            which the policy degrades to immediate emission. Deferral only
+            pays when the coverage it buys survives in L1 long enough to be
+            re-used; when the server's L1 churns faster than that, waiting
+            filters nothing (everything is stored eventually) and only the
+            deferral machinery's cost remains. The caller feeds
+            :meth:`EvictionAwareStoreQueue.observe_l1_pressure` snapshots
+            of the server's cumulative deletion counter; the policy keeps
+            an EMA of the implied eviction byte rate and compares
+            ``capacity / rate`` against this threshold. Degradation lifts
+            once residence exceeds twice the threshold (hysteresis), and
+            the signal stays measurable while degraded because immediate
+            emissions keep flowing through the server. 0 (the default)
+            disables degradation. Effectiveness sensors:
+            ``LazyOffloadCounters.degraded_emitted``,
+            ``degraded_drain_steps`` and ``degrade_transitions``.
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
@@ -401,6 +417,7 @@ class LazyOffloadPolicyConfig:
     max_drain_blocks_per_step: int = 0
     idle_drain_max_ops: int = 0
     idle_threshold_blocks: float = 1.0
+    degrade_l1_residence_secs: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate field ranges.
@@ -434,6 +451,11 @@ class LazyOffloadPolicyConfig:
         if self.idle_threshold_blocks <= 0:
             raise ValueError(
                 f"idle_threshold_blocks must be > 0, got {self.idle_threshold_blocks}"
+            )
+        if self.degrade_l1_residence_secs < 0:
+            raise ValueError(
+                "degrade_l1_residence_secs must be >= 0, got "
+                f"{self.degrade_l1_residence_secs}"
             )
 
 
@@ -485,6 +507,16 @@ class LazyOffloadCounters:
     backlog means the workload never presents an idle step, or the
     threshold sits below its decode-only allocation rate.
 
+    ``degraded_emitted``, ``degraded_drain_steps`` and
+    ``degrade_transitions`` are the sensors for
+    :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`: operations
+    emitted because the policy had degraded to immediate emission rather
+    than because of eviction pressure (a subset of ``emitted``, like
+    ``backlog_emitted``), the drains in which at least one such emission
+    happened, and how often the regime flipped in either direction. A
+    transition count far above 2 means the residence signal is sitting on
+    the threshold and the hysteresis band is too narrow for the workload.
+
     ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated``,
     ``blocks_validated`` and ``covered_blocks_probed`` are the cost sensors
     for the per-step decision
@@ -512,6 +544,9 @@ class LazyOffloadCounters:
     backlog_emitted: int = 0
     idle_emitted: int = 0
     idle_drain_steps: int = 0
+    degraded_emitted: int = 0
+    degraded_drain_steps: int = 0
+    degrade_transitions: int = 0
     throttled_drains: int = 0
     drain_steps: int = 0
     free_queue_blocks_read: int = 0
@@ -547,6 +582,9 @@ class LazyOffloadCounters:
             self.backlog_emitted,
             self.idle_emitted,
             self.idle_drain_steps,
+            self.degraded_emitted,
+            self.degraded_drain_steps,
+            self.degrade_transitions,
             self.throttled_drains,
         )
 
@@ -871,6 +909,15 @@ class EvictionAwareStoreQueue:
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
+        # L1 pressure regime state (observe_l1_pressure): the last accepted
+        # snapshot, the smoothed eviction byte rate, and whether the policy
+        # is currently degraded to immediate emission.
+        self._l1_last_sample_time: float = 0.0
+        self._l1_last_evicted_total = 0
+        self._l1_baseline_recorded = False
+        self._l1_rate_ema_initialized = False
+        self._l1_evicted_rate_ema: float = 0.0
+        self._degraded = False
         self._counters = LazyOffloadCounters()
 
     def covered_prefix_tokens(
@@ -1095,6 +1142,80 @@ class EvictionAwareStoreQueue:
             self._blocks_per_step_ema = float(new_blocks_allocated)
             self._ema_initialized = True
         self._next_step_estimate = est_next_step_blocks
+
+    def observe_l1_pressure(
+        self,
+        monotonic_time: float,
+        capacity_bytes: int,
+        evicted_bytes_total: int,
+    ) -> None:
+        """Record one L1 pressure snapshot and update the emission regime.
+
+        Successive snapshots yield an eviction byte rate, smoothed with the
+        same EMA weight as the block-consumption signals; ``capacity_bytes``
+        over that rate is the L1 residence time compared against
+        :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`. Residence
+        below the threshold degrades the queue to immediate emission;
+        residence above twice the threshold restores deferral. Callers may
+        repeat the latest snapshot every step: only a strictly newer
+        ``monotonic_time`` advances the estimator. A cumulative counter
+        that moved backwards (server restart) re-baselines instead of
+        producing a negative rate.
+
+        No-op besides baseline tracking when the threshold is 0 (degradation
+        disabled).
+
+        Args:
+            monotonic_time: When the snapshot was taken, on the caller's
+                monotonic clock.
+            capacity_bytes: The server's L1 capacity. Zero marks the
+                snapshot invalid and it is ignored.
+            evicted_bytes_total: The server's cumulative deleted-bytes
+                counter at that time.
+        """
+        if capacity_bytes <= 0:
+            return
+        if not self._l1_baseline_recorded:
+            self._l1_last_sample_time = monotonic_time
+            self._l1_last_evicted_total = evicted_bytes_total
+            self._l1_baseline_recorded = True
+            return
+        elapsed = monotonic_time - self._l1_last_sample_time
+        if elapsed <= 0:
+            return
+        delta = evicted_bytes_total - self._l1_last_evicted_total
+        self._l1_last_sample_time = monotonic_time
+        self._l1_last_evicted_total = evicted_bytes_total
+        if delta < 0:
+            # The cumulative counter moved backwards: the server restarted.
+            # This sample is a new baseline, not a rate observation.
+            return
+        rate = delta / elapsed
+        if self._l1_rate_ema_initialized:
+            self._l1_evicted_rate_ema = (
+                _EMA_ALPHA * rate + (1 - _EMA_ALPHA) * self._l1_evicted_rate_ema
+            )
+        else:
+            self._l1_evicted_rate_ema = rate
+            self._l1_rate_ema_initialized = True
+        threshold = self._config.degrade_l1_residence_secs
+        if threshold <= 0:
+            return
+        if self._l1_evicted_rate_ema > 0:
+            residence = capacity_bytes / self._l1_evicted_rate_ema
+        else:
+            residence = math.inf
+        if not self._degraded and residence < threshold:
+            self._degraded = True
+            self._counters.degrade_transitions += 1
+        elif self._degraded and residence > 2 * threshold:
+            self._degraded = False
+            self._counters.degrade_transitions += 1
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the queue currently emits immediately instead of deferring."""
+        return self._degraded
 
     def has_pending_request(self, request_id: str) -> bool:
         """Whether this request currently owns buffered or held operations."""
@@ -1382,14 +1503,24 @@ class EvictionAwareStoreQueue:
             emitted_request_ids.add(request_id)
         self._counters.free_queue_blocks_read += window.depth()
         skip_request_ids = blocked_request_ids | emitted_request_ids
-        if not budget.exhausted() and self._config.max_pending_ops > 0:
-            self._drain_backlog(budget, skip_request_ids, surviving_by_request, result)
-        if (
-            not budget.exhausted()
-            and self._config.idle_drain_max_ops > 0
-            and self._step_is_idle()
-        ):
-            self._drain_idle(budget, skip_request_ids, surviving_by_request, result)
+        if self._degraded:
+            # Immediate-emission regime: flush everything pending instead of
+            # working the backlog and idle policies -- both are subsumed.
+            if not budget.exhausted():
+                self._drain_degraded(
+                    budget, skip_request_ids, surviving_by_request, result
+                )
+        else:
+            if not budget.exhausted() and self._config.max_pending_ops > 0:
+                self._drain_backlog(
+                    budget, skip_request_ids, surviving_by_request, result
+                )
+            if (
+                not budget.exhausted()
+                and self._config.idle_drain_max_ops > 0
+                and self._step_is_idle()
+            ):
+                self._drain_idle(budget, skip_request_ids, surviving_by_request, result)
         if result.ops_held_back:
             self._counters.throttled_drains += 1
         return result
@@ -1548,6 +1679,74 @@ class EvictionAwareStoreQueue:
             emitted_any = True
         if emitted_any:
             self._counters.idle_drain_steps += 1
+
+    def _drain_degraded(
+        self,
+        budget: "_DrainBudget",
+        skip_request_ids: set[str],
+        surviving_by_request: dict[str, list[PendingStoreOp]],
+        result: DrainResult,
+    ) -> None:
+        """Emit every waiting operation: the immediate-emission regime.
+
+        Runs instead of the backlog and idle drains while the L1 residence
+        signal says deferral has no dividend (see
+        :meth:`observe_l1_pressure`). Requests are taken in admission order
+        and each contributes the contiguous front run of its surviving
+        operations under the shared per-step budget -- validation, prefix
+        closure, the dedup-hole cut, the economy backstop, and one batch
+        per request all hold exactly as in the other drain paths. An
+        operation admitted while degraded is therefore emitted on the first
+        drain after its admission, while its request is still running and
+        its blocks are not yet in the free queue, which is what makes the
+        regime cost-equivalent to not deferring at all.
+
+        Args:
+            budget: The drain's shared emission budget, not yet exhausted.
+            skip_request_ids: Requests that must not emit -- ones with a
+                batch already in flight, and ones this drain already
+                emitted for. Requests this method emits for are added.
+            surviving_by_request: Loss-check results this drain already
+                computed, extended in place for requests it reaches first.
+            result: The drain result to extend with emissions and drops.
+        """
+        emitted_any = False
+        for request_id in self._pending_ops.requests_in_admission_order():
+            if budget.exhausted():
+                break
+            if request_id in skip_request_ids:
+                continue
+            surviving = surviving_by_request.get(request_id)
+            if surviving is None:
+                ops = self._pending_ops.get(request_id)
+                if not ops:
+                    continue
+                surviving = self._drop_evicted_suffix(request_id, ops, result)
+                self._pending_ops.validation_complete(request_id)
+                surviving_by_request[request_id] = surviving
+            if not surviving:
+                continue
+            if self._fails_economy_gate(surviving):
+                result.dropped_short_prefix.extend(surviving)
+                self._counters.rejected_short_prefix += len(surviving)
+                self._broken_prefixes.add(request_id)
+                self._replace_pending(request_id, surviving, [], result)
+                continue
+            due_ops = _contiguous_front_run(surviving)
+            emitted = budget.take(due_ops)
+            result.ops_held_back += len(due_ops) - len(emitted)
+            if not emitted:
+                continue
+            result.to_store.extend(emitted)
+            self._counters.emitted += len(emitted)
+            self._counters.degraded_emitted += len(emitted)
+            self._replace_pending(
+                request_id, emitted, surviving[len(emitted) :], result
+            )
+            skip_request_ids.add(request_id)
+            emitted_any = True
+        if emitted_any:
+            self._counters.degraded_drain_steps += 1
 
     def _step_is_idle(self) -> bool:
         """Whether the last observed step ran at an idle allocation rate.
