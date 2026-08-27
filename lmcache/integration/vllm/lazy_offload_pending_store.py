@@ -458,14 +458,12 @@ class LazyOffloadPendingStore:
     def wants_l1_pressure(self) -> bool:
         """Whether the caller should feed L1 pressure snapshots.
 
-        True only when the eviction-aware policy runs with adaptive
-        degradation enabled, so callers can skip polling entirely when the
-        signal would be ignored.
+        True for the eviction-aware policy, whose degradation controller
+        runs on this heartbeat: its loss trigger guards volume neutrality
+        unconditionally, so the samples are never ignored. False in FIFO
+        mode, which has no controller.
         """
-        return (
-            self._mode is LazyOffloadMode.EVICTION_AWARE
-            and self._eviction_config.degrade_l1_residence_secs > 0
-        )
+        return self._mode is LazyOffloadMode.EVICTION_AWARE
 
     def observe_l1_pressure(
         self,

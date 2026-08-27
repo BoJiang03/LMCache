@@ -387,9 +387,12 @@ class TestEvictionAwareMode:
         assert store.stats().degrade_transitions == 1
         assert store.stats().degrade_commits == 1
 
-    def test_degradation_is_off_by_default(self) -> None:
+    def test_residence_degradation_is_off_by_default(self) -> None:
+        """Churn alone degrades nothing without the residence threshold:
+        the heartbeat is still wanted (the loss trigger reads it), but
+        with no intake lost there is nothing for it to act on."""
         store, _ = self._setup()
-        assert not store.wants_l1_pressure()
+        assert store.wants_l1_pressure()
         store.observe_l1_pressure(0.0, 1_000_000, 0)
         for tick in range(1, 12):
             store.observe_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)

@@ -445,12 +445,22 @@ it measures both sides by briefly running them:
   eviction arrives in watermark bursts tens of seconds apart, and
   per-sample smoothing decays between bursts and flaps across any
   threshold. Residence is `capacity / windowed rate`, infinite while
-  nothing evicts. Emission volume is the policy's own emitted-block
-  ledger, snapshotted on the same heartbeat, so trials and probes need
-  no server-side counterfactual.
+  nothing evicts. Volume is the policy's own ledger of blocks that left
+  the backlog -- emitted **plus** lost to eviction -- snapshotted on the
+  same heartbeat, so trials and probes need no server-side
+  counterfactual. Charging the losses is what makes the ledger a volume
+  measure rather than an emission measure: deferral that stores less
+  because a later operation superseded an earlier one is filtering
+  volume, deferral that stores less because its backlog was evicted is
+  destroying it, and the two are indistinguishable in the emission
+  count alone.
 - **Churn gate**: residence below `degrade_l1_residence_secs` says the
   re-timing cost is being paid and opens a *trial*; it never degrades
-  by itself. `0` (the default) disables the controller entirely.
+  by itself. Whether short residence *should* degrade is
+  workload-dependent -- on agentic multi-turn replay the polarity runs
+  the other way, deferral earning its keep at short residence and
+  costing at long -- so `0` (the default) leaves this gate off and
+  measurement decides per workload.
 - **Loss gate**: the windowed residence estimate needs a couple of burst
   cycles to cross, and at churn onset that latency is paid by the
   pending backlog -- the first eviction wave harvests exactly the
@@ -461,19 +471,26 @@ it measures both sides by briefly running them:
   trial. Incidental drops stay silent: on workloads where the losses
   are the tail-release economy's expected cost (a few percent of
   intake), the share never reaches the material line. The trigger may
-  be eager because a trial bounds the cost of a false alarm.
+  be eager because a trial bounds the cost of a false alarm. This gate
+  needs no configuration and is always live: losing intake is the one
+  way deferral can be strictly worse than storing eagerly, so it is
+  guarded by default.
 - **Trial**: a bounded window of immediate emission. At its end the
-  trial's emitted-block rate is compared against the deferred baseline
+  trial's ledger rate is compared against the deferred baseline
   (the trailing window before the trial): within the neutrality factor
   it commits to DEGRADED -- deferral was only re-timing -- and beyond
   it the trial reverts and enters a cooldown, because the volume jump
   means deferral was filtering stores out.
 - **Recovery**: only through a *probe* -- a bounded deferred window,
-  after which the controller returns to NORMAL when the probe's
-  emission rate drops below the degraded baseline by the neutrality
-  factor. Probes run periodically, and residence recovering past the
+  after which the controller returns to NORMAL when the probe's ledger
+  rate drops below the degraded baseline by the neutrality factor.
+  Probes run periodically, and residence recovering past the
   hysteresis factor arms one early (subject to a minimum retry
-  spacing, so a failed probe is respected as evidence). The residence
+  spacing, so a failed probe is respected as evidence). Every probe
+  re-defers, so each consecutive failure backs the spacing off
+  geometrically to a cap: a workload that is permanently unfavourable
+  pays a bounded total for asking, and one that changes can still
+  recover. The residence
   estimate alone never lifts a committed degradation: bursts spacing
   out past the rate window read as infinite residence -- a lull is
   indistinguishable from genuine recovery -- and lifting on that

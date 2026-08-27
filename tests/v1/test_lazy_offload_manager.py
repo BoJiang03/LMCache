@@ -1452,10 +1452,16 @@ def test_fifo_duplicate_receipt_is_ignored() -> None:
 class TestL1PressurePlumbing:
     """The manager forwards L1 pressure snapshots to the drain policy."""
 
-    def test_wants_l1_pressure_follows_the_config(self) -> None:
-        assert not _make_lazy_connector().manager.wants_l1_pressure()
+    def test_wants_l1_pressure_follows_the_policy(self) -> None:
+        """The controller's loss trigger guards volume neutrality with no
+        configuration, so the eviction-aware policy always wants the
+        heartbeat; FIFO has no controller to feed."""
+        assert _make_lazy_connector().manager.wants_l1_pressure()
         assert _make_lazy_connector(
             extra_config={"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
+        ).manager.wants_l1_pressure()
+        assert not _make_lazy_connector(
+            extra_config={"lmcache.mp.lazy_offload_policy": "FIFO"}
         ).manager.wants_l1_pressure()
 
     def test_pressure_snapshots_degrade_the_drain(self) -> None:

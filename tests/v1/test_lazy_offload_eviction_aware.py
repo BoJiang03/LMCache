@@ -2164,13 +2164,122 @@ class TestAdaptiveDegradation:
         assert queue.degraded
         assert queue.stats().degrade_probe_recoveries == 0
 
-    def test_disabled_threshold_ignores_pressure(self) -> None:
+    def test_zero_threshold_leaves_the_residence_trigger_inert(self) -> None:
+        """Churn under the default configuration degrades nothing: the
+        residence trigger is opt-in. The loss trigger still runs, but
+        this window lost no intake for it to act on."""
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=0.0)
 
         self._degrade(queue)
 
         assert not queue.degraded
         assert queue.stats().degrade_transitions == 0
+
+    def test_loss_guard_runs_without_the_residence_threshold(self) -> None:
+        """Losing intake to eviction is the one way deferral can be
+        strictly worse than storing eagerly, so its trigger needs no
+        configuration and is live under the default threshold of 0."""
+        pool = FakePoolView()
+        queue = make_queue(pool)  # no residence threshold
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+
+        for index in range(4):
+            seed_blocks(pool, [index + 1], free=index < 3)
+            queue.admit(make_op(f"r{index}", [index + 1], pool, prefix_end_tokens=256))
+        for block in (1, 2, 3):
+            pool.evict(block)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1, 2, 3},
+        )
+        queue.collect_due()
+        assert queue.stats().dropped_evicted == 3
+
+        queue.observe_l1_pressure(10.0, CAPACITY, 0)
+
+        assert queue.degraded  # a trial, opened by the loss ledger alone
+        assert queue.stats().degrade_trials == 1
+
+    def test_lost_volume_counts_against_the_deferred_baseline(self) -> None:
+        """The mirror of ``test_volume_increasing_trial_reverts_and_cools_down``:
+        the same backlog flushed by the same trial, except this deferred
+        window destroyed blocks before it. Charged with what it lost, the
+        deferred baseline is no longer idle, so the trial's emission reads
+        as recovering volume rather than adding it, and the trial commits.
+        Measured on emissions alone the two windows are indistinguishable,
+        and the degradation that stops the bleed could never commit."""
+        pool = FakePoolView()
+        queue = make_queue(pool)  # no residence threshold
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+
+        # Three four-block chains admitted and then evicted under the
+        # deferral: twelve blocks of intake destroyed, none emitted.
+        for index in range(3):
+            blocks = [4 * index + 1, 4 * index + 2, 4 * index + 3, 4 * index + 4]
+            seed_blocks(pool, blocks, free=True)
+            queue.admit(make_op(f"lost{index}", blocks, pool, prefix_end_tokens=256))
+        for block in range(1, 13):
+            pool.evict(block)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids=set(range(1, 13)),
+        )
+        queue.collect_due()
+        assert queue.stats().dropped_evicted == 3
+
+        # One pinned survivor for the trial's immediate emission to flush.
+        seed_blocks(pool, [20], free=False)
+        queue.admit(make_op("kept", [20], pool, prefix_end_tokens=256))
+
+        queue.observe_l1_pressure(10.0, CAPACITY, 0)  # the trial opens
+        assert queue.degraded
+        queue.collect_due()  # the trial flushes the survivor
+        for tick in range(2, 7):  # t=20..60: the trial concludes
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, 0)
+
+        assert queue.degraded
+        stats = queue.stats()
+        assert stats.degrade_commits == 1
+        assert stats.degrade_reverts == 0
+
+    def test_failed_probes_back_off(self) -> None:
+        """Every probe re-defers for a trial length, so a workload that
+        keeps failing them would pay that exposure forever at a fixed duty
+        cycle. Each consecutive failure doubles the spacing instead."""
+        pool = FakePoolView()
+        queue = make_queue(pool, horizon_steps=1.0, degrade_l1_residence_secs=60.0)
+        self._degrade(queue)  # committed at t=110
+        evicted = self._churn(queue, 12, 59, 11 * 200_000)  # t=590: probe 1
+        assert not queue.degraded
+        assert queue.stats().degrade_probes == 1
+
+        # Eviction pressure forces emission during the probe: deferral
+        # buys nothing here, so the probe fails.
+        next_block = 1
+        for tick in range(60, 65):  # t=600..640: the probe concludes
+            seed_blocks(pool, [next_block], free=True)
+            queue.admit(
+                make_op(f"r{next_block}", [next_block], pool, prefix_end_tokens=256)
+            )
+            queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
+            queue.collect_due()
+            next_block += 1
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        assert queue.degraded
+        assert queue.stats().degrade_probe_recoveries == 0
+
+        # One probe interval after the failure (t=1120) is no longer
+        # enough: nothing re-defers for the whole stretch.
+        evicted = self._churn(queue, 65, 159, evicted)  # t=650..1590
+        assert queue.degraded
+        assert queue.stats().degrade_probes == 1
+
+        # Two of them are.
+        self._churn(queue, 160, 160, evicted)  # t=1600
+        assert queue.stats().degrade_probes == 2
 
     def test_repeated_snapshot_does_not_advance_the_controller(self) -> None:
         """The caller repeats the latest sample every step; only a strictly

@@ -394,7 +394,7 @@ lmcache.mp.lazy_offload_max_pending_ops = 0     # 0: backlog unbounded
 lmcache.mp.lazy_offload_max_drain_blocks_per_step = 0  # 0: volume unbounded
 lmcache.mp.lazy_offload_idle_drain_max_ops = 0  # 0: idle drain disabled
 lmcache.mp.lazy_offload_idle_threshold_blocks = 1.0
-lmcache.mp.lazy_offload_degrade_l1_residence_secs = 0  # 0: degradation off
+lmcache.mp.lazy_offload_degrade_l1_residence_secs = 0  # 0: residence gate off
 lmcache.mp.lazy_offload_store_release = lru_tail  # or: eviction_head
 
 # Explicit legacy FIFO mode only
@@ -414,20 +414,27 @@ placement evicts exactly the prefix the next turn asks for; it pays only when
 the working set exceeds the pool by enough that stored prefixes would be
 evicted before reuse either way.
 
-`lazy_offload_degrade_l1_residence_secs` enables adaptive degradation:
-when the server-side L1 churns so fast that a stored object's residence
-falls under this threshold -- or, faster, when the policy's own loss
-ledger shows eviction destroying a material share of the deferred
-backlog -- the policy runs a bounded trial of immediate emission,
-committing to it only if the trial's emitted volume stays neutral
-against the deferred baseline (degradation may change the timing of
-stores, never their volume), reverting with a cooldown when deferral
-turns out to be filtering stores out. A committed degradation recovers
-only through a deferred probe (periodic, or armed early when residence
-recovers) showing filtering value has returned. The connector polls the servers'
-`GET_L1_PRESSURE` endpoint (see
-`docs/design/v1/multiprocess/l1_pressure_stats.md`) only while this
-knob is set. Signal, controller, and drain semantics are specified in
+Adaptive degradation is always on in eviction-aware mode. Its standing
+trigger is the policy's own loss ledger: when eviction destroys a
+material share of the deferred backlog, deferral is no longer re-timing
+stores but losing them, which is the one way it can be strictly worse
+than storing eagerly. `lazy_offload_degrade_l1_residence_secs` adds an
+opt-in second trigger on server-side L1 churn -- residence under the
+threshold -- for workloads where short residence is itself the cost;
+`0` (the default) leaves it off.
+
+Either trigger runs a bounded trial of immediate emission, committing
+to it only if the trial's volume stays neutral against the deferred
+baseline (degradation may change the timing of stores, never their
+volume), reverting with a cooldown when deferral turns out to be
+filtering stores out. Volume here counts blocks emitted plus blocks
+lost to eviction, so a bleeding backlog cannot pass as a thrifty one. A
+committed degradation recovers only through a deferred probe (periodic
+with geometric backoff per failure, or armed early when residence
+recovers) showing filtering value has returned. The connector polls the
+servers' `GET_L1_PRESSURE` endpoint (see
+`docs/design/v1/multiprocess/l1_pressure_stats.md`) on a heartbeat to
+feed it. Signal, controller, and drain semantics are specified in
 the policy contract
 ([eviction_aware.md](lazy_offload_policy/eviction_aware.md), "Adaptive
 degradation").

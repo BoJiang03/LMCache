@@ -254,8 +254,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
       ready lookup result with external hit tokens back for one scheduler
       step and announce the admission's block consumption to the drain
       policy, so pending stores in the burst's path are emitted before the
-      admission recycles their blocks. Enabled by default; only consulted
-      when lazy offload is on.
+      admission recycles their blocks. Disabled by default: measured on
+      agentic multi-turn replay it cut the drop rate by ~30% and gave up
+      ~90% of lazy offload's TTFT win, because holding the window open at
+      burst depth reorders GPU eviction away from still-warm local prefix
+      cache. Only consulted when lazy offload is on.
     """
 
     def __init__(
@@ -280,7 +283,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         self._lazy_announce_hit_loads: bool = bool(
             vllm_config.kv_transfer_config.get_from_extra_config(
-                "lmcache.mp.lazy_offload_announce_hits", True
+                "lmcache.mp.lazy_offload_announce_hits", False
             )
         )
 
