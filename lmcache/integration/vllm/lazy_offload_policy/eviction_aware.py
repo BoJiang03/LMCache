@@ -22,6 +22,7 @@ submitting them to the worker.
 """
 
 # Standard
+from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Iterable, Iterator, Protocol
 import enum
@@ -45,6 +46,58 @@ logger = init_logger(__name__)
 # Smoothing factor for the per-step block-consumption EMA. Not a config knob:
 # the horizon (in steps) is the tunable quantity; the EMA only smooths noise.
 _EMA_ALPHA = 0.3
+
+# Adaptive-degradation controller constants. None of these encodes a
+# workload: each is a property of the measurement itself, documented with
+# the physical quantity that sets it.
+
+# Sliding window for the eviction byte rate. Eviction arrives in watermark
+# bursts tens of seconds apart, so the window must span at least two burst
+# cycles or the rate reads zero between bursts and the residence estimate
+# flaps across any threshold.
+_PRESSURE_WINDOW_SECS = 120.0
+
+# Minimum history span before the eviction rate -- and hence residence --
+# counts as known at all. Half the window: one burst cycle.
+_PRESSURE_MIN_SPAN_SECS = 60.0
+
+# Length of one trial (immediate emission measured against the deferred
+# baseline) and one probe (the reverse). Long enough to span several store
+# cycles, short enough that a wrong regime during the measurement is cheap.
+_TRIAL_SECS = 45.0
+
+# Emission-rate ratio treated as "volume unchanged". Covers the sampling
+# noise of comparing two short windows of a bursty emission process; a
+# genuine volume effect (deferral filtering stores out) shows up as a
+# multiple, not a percentage.
+_NEUTRALITY_FACTOR = 1.25
+
+# While degraded, how often to re-measure the deferred counterfactual.
+# With _TRIAL_SECS this sets the probe duty cycle (~9%): the price of
+# noticing that deferral has become worthwhile again.
+_PROBE_INTERVAL_SECS = 480.0
+
+# After a reverted trial or a probe recovery, how long before churn may
+# start another trial. Bounds the degraded-blip duty cycle on a workload
+# whose deferral filters volume (~7%).
+_REVERT_COOLDOWN_SECS = 600.0
+
+# Residence must recover to this multiple of the threshold before a
+# committed degradation lifts on its own (hysteresis).
+_RESIDENCE_RECOVERY_FACTOR = 2.0
+
+
+class _DegradeRegime(enum.Enum):
+    """Where the adaptive-degradation controller currently stands."""
+
+    #: Defer stores; watch the churn gate for a reason to run a trial.
+    NORMAL = "normal"
+    #: Emit immediately for a bounded window, measuring the volume effect.
+    TRIAL = "trial"
+    #: Committed immediate emission; probe periodically, lift on recovery.
+    DEGRADED = "degraded"
+    #: Defer for a bounded window, measuring whether filtering returned.
+    PROBE = "probe"
 
 
 class BlockPoolReader(Protocol):
@@ -393,21 +446,26 @@ class LazyOffloadPolicyConfig:
             allocates tens to hundreds. Consulted only when
             ``idle_drain_max_ops`` > 0.
         degrade_l1_residence_secs: L1 residence time, in seconds, below
-            which the policy degrades to immediate emission. Deferral only
-            pays when the coverage it buys survives in L1 long enough to be
-            re-used; when the server's L1 churns faster than that, waiting
-            filters nothing (everything is stored eventually) and only the
-            deferral machinery's cost remains. The caller feeds
-            :meth:`EvictionAwareStoreQueue.observe_l1_pressure` snapshots
-            of the server's cumulative deletion counter; the policy keeps
-            an EMA of the implied eviction byte rate and compares
-            ``capacity / rate`` against this threshold. Degradation lifts
-            once residence exceeds twice the threshold (hysteresis), and
-            the signal stays measurable while degraded because immediate
-            emissions keep flowing through the server. 0 (the default)
-            disables degradation. Effectiveness sensors:
-            ``LazyOffloadCounters.degraded_emitted``,
-            ``degraded_drain_steps`` and ``degrade_transitions``.
+            which the policy considers degrading to immediate emission.
+            Deferral re-times stores toward eviction danger, and under L1
+            churn that timing coincides with allocation pressure -- the
+            deferred pins collide with the allocator exactly when it can
+            least afford them. Residence (capacity over the windowed
+            eviction byte rate, fed by
+            :meth:`EvictionAwareStoreQueue.observe_l1_pressure`) below this
+            threshold says that cost is being paid. Crossing the threshold
+            does not degrade by itself: it starts a bounded trial of
+            immediate emission, committed only if the trial's emitted
+            volume stays neutral against the deferred baseline --
+            degradation may change the timing of stores, never their
+            volume. A trial that increases volume (deferral was filtering
+            stores out, not merely re-timing them) reverts and enters a
+            cooldown; a committed degradation is re-checked with periodic
+            deferred probes and lifts when filtering value returns or
+            residence recovers past the hysteresis factor. 0 (the default)
+            disables the controller. Effectiveness sensors: the
+            ``degraded_*`` and ``degrade_*`` counters on
+            :class:`LazyOffloadCounters`.
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
@@ -507,15 +565,24 @@ class LazyOffloadCounters:
     backlog means the workload never presents an idle step, or the
     threshold sits below its decode-only allocation rate.
 
-    ``degraded_emitted``, ``degraded_drain_steps`` and
-    ``degrade_transitions`` are the sensors for
+    ``degraded_emitted``, ``degraded_drain_steps``,
+    ``degrade_transitions``, ``degrade_trials``, ``degrade_commits``,
+    ``degrade_reverts``, ``degrade_probes`` and
+    ``degrade_probe_recoveries`` are the sensors for
     :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`: operations
-    emitted because the policy had degraded to immediate emission rather
-    than because of eviction pressure (a subset of ``emitted``, like
+    emitted because the policy was in an immediate-emission regime rather
+    than under eviction pressure (a subset of ``emitted``, like
     ``backlog_emitted``), the drains in which at least one such emission
-    happened, and how often the regime flipped in either direction. A
-    transition count far above 2 means the residence signal is sitting on
-    the threshold and the hysteresis band is too narrow for the workload.
+    happened, how often the emission behavior flipped between deferred
+    and immediate, and the controller's decision ledger -- trials
+    started, trials committed because emitted volume stayed neutral,
+    trials reverted because it did not, deferred probes run while
+    degraded, and probes that restored deferral because filtering value
+    had returned. ``degrade_reverts`` ticking once per cooldown is the
+    signature of a workload whose deferral filters volume (the
+    controller keeps asking and keeps being told no); a commit with no
+    subsequent probe recoveries is the signature of one whose deferral
+    only re-times stores.
 
     ``drain_steps``, ``free_queue_blocks_read``, ``requests_validated``,
     ``blocks_validated`` and ``covered_blocks_probed`` are the cost sensors
@@ -547,6 +614,11 @@ class LazyOffloadCounters:
     degraded_emitted: int = 0
     degraded_drain_steps: int = 0
     degrade_transitions: int = 0
+    degrade_trials: int = 0
+    degrade_commits: int = 0
+    degrade_reverts: int = 0
+    degrade_probes: int = 0
+    degrade_probe_recoveries: int = 0
     throttled_drains: int = 0
     drain_steps: int = 0
     free_queue_blocks_read: int = 0
@@ -585,6 +657,11 @@ class LazyOffloadCounters:
             self.degraded_emitted,
             self.degraded_drain_steps,
             self.degrade_transitions,
+            self.degrade_trials,
+            self.degrade_commits,
+            self.degrade_reverts,
+            self.degrade_probes,
+            self.degrade_probe_recoveries,
             self.throttled_drains,
         )
 
@@ -909,15 +986,23 @@ class EvictionAwareStoreQueue:
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
-        # L1 pressure regime state (observe_l1_pressure): the last accepted
-        # snapshot, the smoothed eviction byte rate, and whether the policy
-        # is currently degraded to immediate emission.
-        self._l1_last_sample_time: float = 0.0
-        self._l1_last_evicted_total = 0
-        self._l1_baseline_recorded = False
-        self._l1_rate_ema_initialized = False
-        self._l1_evicted_rate_ema: float = 0.0
-        self._degraded = False
+        # Adaptive-degradation controller state (observe_l1_pressure). The
+        # controller runs on the pressure-sample heartbeat: each accepted
+        # snapshot appends (time, cumulative evicted bytes, cumulative
+        # emitted blocks) to a sliding history, and the windowed rates that
+        # drive the regime machine are read off that history. Eviction
+        # totals are normalized against server restarts as they arrive.
+        self._pressure_history: deque[tuple[float, int, int]] = deque()
+        self._evicted_norm_total = 0
+        self._evicted_last_raw = 0
+        self._evicted_baseline_recorded = False
+        self._emitted_blocks_total = 0
+        self._regime = _DegradeRegime.NORMAL
+        self._regime_entered_at = 0.0
+        self._regime_entered_emitted = 0
+        self._trial_baseline_rate = 0.0
+        self._last_probe_at = 0.0
+        self._cooldown_until = 0.0
         self._counters = LazyOffloadCounters()
 
     def covered_prefix_tokens(
@@ -1149,21 +1234,37 @@ class EvictionAwareStoreQueue:
         capacity_bytes: int,
         evicted_bytes_total: int,
     ) -> None:
-        """Record one L1 pressure snapshot and update the emission regime.
+        """Record one L1 pressure snapshot and run the degradation controller.
 
-        Successive snapshots yield an eviction byte rate, smoothed with the
-        same EMA weight as the block-consumption signals; ``capacity_bytes``
-        over that rate is the L1 residence time compared against
-        :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`. Residence
-        below the threshold degrades the queue to immediate emission;
-        residence above twice the threshold restores deferral. Callers may
-        repeat the latest snapshot every step: only a strictly newer
-        ``monotonic_time`` advances the estimator. A cumulative counter
-        that moved backwards (server restart) re-baselines instead of
-        producing a negative rate.
+        The controller runs on this sample heartbeat. Each strictly newer
+        snapshot appends (time, cumulative evicted bytes, cumulative emitted
+        blocks) to a sliding history; the eviction byte rate over that
+        window -- a windowed rate, never a per-sample EMA, because eviction
+        arrives in bursts and per-sample smoothing flaps across any
+        threshold -- gives the residence estimate ``capacity / rate``
+        compared against
+        :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`.
 
-        No-op besides baseline tracking when the threshold is 0 (degradation
-        disabled).
+        The regime machine enforces the controller's invariant -- degrading
+        may change the timing of stores, never their volume. NORMAL defers,
+        and residence sitting under the threshold (outside any cooldown)
+        starts a TRIAL rather than degrading outright. TRIAL emits
+        immediately for a bounded window and commits to DEGRADED only if
+        its emitted-block rate stayed within the neutrality factor of the
+        deferred baseline; a volume increase means deferral was filtering
+        stores out, so the trial reverts and enters a cooldown. DEGRADED
+        emits immediately, lifts on its own when residence recovers past
+        the hysteresis factor, and periodically runs a PROBE -- a bounded
+        deferred window -- returning to NORMAL when the probe's emission
+        rate drops enough to show deferral is filtering volume again. The
+        volume rates compare what this policy emits, so a trial or probe
+        needs no server-side counterfactual.
+
+        Callers may repeat the latest snapshot every step: only a strictly
+        newer ``monotonic_time`` advances the controller. A cumulative
+        counter that moved backwards (server restart) contributes a zero
+        delta instead of a negative rate. No-op besides history upkeep when
+        the threshold is 0 (controller disabled).
 
         Args:
             monotonic_time: When the snapshot was taken, on the caller's
@@ -1175,47 +1276,163 @@ class EvictionAwareStoreQueue:
         """
         if capacity_bytes <= 0:
             return
-        if not self._l1_baseline_recorded:
-            self._l1_last_sample_time = monotonic_time
-            self._l1_last_evicted_total = evicted_bytes_total
-            self._l1_baseline_recorded = True
+        if not self._evicted_baseline_recorded:
+            self._evicted_last_raw = evicted_bytes_total
+            self._evicted_baseline_recorded = True
+            self._pressure_history.append(
+                (monotonic_time, 0, self._emitted_blocks_total)
+            )
             return
-        elapsed = monotonic_time - self._l1_last_sample_time
-        if elapsed <= 0:
+        if monotonic_time <= self._pressure_history[-1][0]:
             return
-        delta = evicted_bytes_total - self._l1_last_evicted_total
-        self._l1_last_sample_time = monotonic_time
-        self._l1_last_evicted_total = evicted_bytes_total
+        delta = evicted_bytes_total - self._evicted_last_raw
+        self._evicted_last_raw = evicted_bytes_total
         if delta < 0:
             # The cumulative counter moved backwards: the server restarted.
-            # This sample is a new baseline, not a rate observation.
-            return
-        rate = delta / elapsed
-        if self._l1_rate_ema_initialized:
-            self._l1_evicted_rate_ema = (
-                _EMA_ALPHA * rate + (1 - _EMA_ALPHA) * self._l1_evicted_rate_ema
-            )
-        else:
-            self._l1_evicted_rate_ema = rate
-            self._l1_rate_ema_initialized = True
+            # This sample re-baselines and contributes no evictions.
+            delta = 0
+        self._evicted_norm_total += delta
+        self._pressure_history.append(
+            (monotonic_time, self._evicted_norm_total, self._emitted_blocks_total)
+        )
+        while (
+            len(self._pressure_history) > 2
+            and monotonic_time - self._pressure_history[1][0] >= _PRESSURE_WINDOW_SECS
+        ):
+            self._pressure_history.popleft()
         threshold = self._config.degrade_l1_residence_secs
         if threshold <= 0:
             return
-        if self._l1_evicted_rate_ema > 0:
-            residence = capacity_bytes / self._l1_evicted_rate_ema
+        residence = self._residence_estimate(capacity_bytes)
+        if self._regime is _DegradeRegime.NORMAL:
+            baseline = self._trailing_emitted_rate(monotonic_time)
+            if (
+                residence < threshold
+                and monotonic_time >= self._cooldown_until
+                and baseline is not None
+            ):
+                self._trial_baseline_rate = baseline
+                self._enter_regime(_DegradeRegime.TRIAL, monotonic_time)
+                self._counters.degrade_trials += 1
+                self._counters.degrade_transitions += 1
+        elif self._regime is _DegradeRegime.TRIAL:
+            if monotonic_time - self._regime_entered_at >= _TRIAL_SECS:
+                trial_rate = self._regime_emitted_rate(monotonic_time)
+                if trial_rate <= _NEUTRALITY_FACTOR * self._trial_baseline_rate:
+                    self._enter_regime(_DegradeRegime.DEGRADED, monotonic_time)
+                    self._last_probe_at = monotonic_time
+                    self._counters.degrade_commits += 1
+                else:
+                    self._enter_regime(_DegradeRegime.NORMAL, monotonic_time)
+                    self._cooldown_until = monotonic_time + _REVERT_COOLDOWN_SECS
+                    self._counters.degrade_reverts += 1
+                    self._counters.degrade_transitions += 1
+        elif self._regime is _DegradeRegime.DEGRADED:
+            if residence >= _RESIDENCE_RECOVERY_FACTOR * threshold:
+                self._enter_regime(_DegradeRegime.NORMAL, monotonic_time)
+                self._counters.degrade_transitions += 1
+            elif monotonic_time - self._last_probe_at >= _PROBE_INTERVAL_SECS:
+                baseline = self._trailing_emitted_rate(monotonic_time)
+                self._trial_baseline_rate = baseline if baseline is not None else 0.0
+                self._enter_regime(_DegradeRegime.PROBE, monotonic_time)
+                self._counters.degrade_probes += 1
+                self._counters.degrade_transitions += 1
         else:
-            residence = math.inf
-        if not self._degraded and residence < threshold:
-            self._degraded = True
-            self._counters.degrade_transitions += 1
-        elif self._degraded and residence > 2 * threshold:
-            self._degraded = False
-            self._counters.degrade_transitions += 1
+            if monotonic_time - self._regime_entered_at >= _TRIAL_SECS:
+                probe_rate = self._regime_emitted_rate(monotonic_time)
+                if probe_rate * _NEUTRALITY_FACTOR <= self._trial_baseline_rate:
+                    self._enter_regime(_DegradeRegime.NORMAL, monotonic_time)
+                    self._cooldown_until = monotonic_time + _REVERT_COOLDOWN_SECS
+                    self._counters.degrade_probe_recoveries += 1
+                else:
+                    self._enter_regime(_DegradeRegime.DEGRADED, monotonic_time)
+                    self._last_probe_at = monotonic_time
+                    self._counters.degrade_transitions += 1
+
+    def _residence_estimate(self, capacity_bytes: int) -> float:
+        """L1 residence implied by the windowed eviction rate.
+
+        Args:
+            capacity_bytes: The server's L1 capacity.
+
+        Returns:
+            ``capacity / rate`` over the pressure-history window, or
+            infinity while the history spans less than the minimum or shows
+            no eviction at all.
+        """
+        first = self._pressure_history[0]
+        last = self._pressure_history[-1]
+        span = last[0] - first[0]
+        if span < _PRESSURE_MIN_SPAN_SECS:
+            return math.inf
+        rate = (last[1] - first[1]) / span
+        if rate <= 0:
+            return math.inf
+        return capacity_bytes / rate
+
+    def _trailing_emitted_rate(self, now: float) -> float | None:
+        """Emitted-block rate over the trailing trial-length window.
+
+        The deferred (or degraded) baseline a trial (or probe) is judged
+        against, read off the pressure history.
+
+        Args:
+            now: The current sample's monotonic time.
+
+        Returns:
+            Blocks per second over the last ``_TRIAL_SECS`` (or the whole
+            history if shorter), or None while the history spans no time.
+        """
+        cutoff = now - _TRIAL_SECS
+        start_time = now
+        start_emitted = self._emitted_blocks_total
+        for time, _, emitted in reversed(self._pressure_history):
+            start_time = time
+            start_emitted = emitted
+            if time <= cutoff:
+                break
+        span = now - start_time
+        if span <= 0:
+            return None
+        return (self._emitted_blocks_total - start_emitted) / span
+
+    def _regime_emitted_rate(self, now: float) -> float:
+        """Emitted-block rate since the current regime was entered.
+
+        Args:
+            now: The current sample's monotonic time, after the regime has
+                lasted at least one sample interval.
+
+        Returns:
+            Blocks per second across the regime's lifetime so far.
+        """
+        span = now - self._regime_entered_at
+        emitted = self._emitted_blocks_total - self._regime_entered_emitted
+        return emitted / span
+
+    def _enter_regime(self, regime: "_DegradeRegime", now: float) -> None:
+        """Switch regimes, snapshotting the emission ledger.
+
+        Args:
+            regime: The regime to enter.
+            now: The current sample's monotonic time.
+        """
+        self._regime = regime
+        self._regime_entered_at = now
+        self._regime_entered_emitted = self._emitted_blocks_total
+
+    def _note_emitted(self, ops: list[PendingStoreOp]) -> None:
+        """Advance the emitted-volume ledger the degradation controller reads.
+
+        Args:
+            ops: Operations just emitted by any drain path.
+        """
+        self._emitted_blocks_total += sum(len(op.block_hashes) for op in ops)
 
     @property
     def degraded(self) -> bool:
         """Whether the queue currently emits immediately instead of deferring."""
-        return self._degraded
+        return self._regime in (_DegradeRegime.TRIAL, _DegradeRegime.DEGRADED)
 
     def has_pending_request(self, request_id: str) -> bool:
         """Whether this request currently owns buffered or held operations."""
@@ -1490,6 +1707,7 @@ class EvictionAwareStoreQueue:
             result.ops_held_back += len(due_ops) - len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
+            self._note_emitted(emitted)
             newly_pinned = {
                 block_id
                 for op in emitted
@@ -1503,7 +1721,7 @@ class EvictionAwareStoreQueue:
             emitted_request_ids.add(request_id)
         self._counters.free_queue_blocks_read += window.depth()
         skip_request_ids = blocked_request_ids | emitted_request_ids
-        if self._degraded:
+        if self.degraded:
             # Immediate-emission regime: flush everything pending instead of
             # working the backlog and idle policies -- both are subsumed.
             if not budget.exhausted():
@@ -1597,6 +1815,7 @@ class EvictionAwareStoreQueue:
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
             self._counters.backlog_emitted += len(emitted)
+            self._note_emitted(emitted)
             self._replace_pending(
                 request_id, emitted, surviving[len(emitted) :], result
             )
@@ -1672,6 +1891,7 @@ class EvictionAwareStoreQueue:
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
             self._counters.idle_emitted += len(emitted)
+            self._note_emitted(emitted)
             self._replace_pending(
                 request_id, emitted, surviving[len(emitted) :], result
             )
@@ -1740,6 +1960,7 @@ class EvictionAwareStoreQueue:
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
             self._counters.degraded_emitted += len(emitted)
+            self._note_emitted(emitted)
             self._replace_pending(
                 request_id, emitted, surviving[len(emitted) :], result
             )

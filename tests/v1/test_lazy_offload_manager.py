@@ -1468,6 +1468,7 @@ class TestL1PressurePlumbing:
         assert _drain(harness).actions.stores_to_submit == []
 
         harness.manager.on_l1_pressure(0.0, 1_000_000, 0)
-        harness.manager.on_l1_pressure(10.0, 1_000_000, 200_000)
+        for tick in range(1, 12):  # trial opens at t=60, commits at t=110
+            harness.manager.on_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
 
         assert len(_drain(harness).actions.stores_to_submit) == 1

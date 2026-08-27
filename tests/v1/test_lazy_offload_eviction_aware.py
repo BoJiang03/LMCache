@@ -1842,29 +1842,65 @@ CAPACITY = 1_000_000
 
 
 class TestAdaptiveDegradation:
-    """``degrade_l1_residence_secs``: stop deferring when L1 churns.
+    """``degrade_l1_residence_secs``: the volume-neutrality controller.
 
     The signal is fed through ``observe_l1_pressure`` as (monotonic time,
-    capacity, cumulative evicted bytes) snapshots; residence below the
-    threshold flips the queue to immediate emission, residence above twice
-    the threshold flips it back. With a threshold of 60 and a capacity of
-    ``CAPACITY``, a 10-second sample deleting 200_000 bytes implies a
-    residence of 50 seconds (degrade), and zero-delta samples then decay
-    the rate EMA so residence recovers through the (60, 120) hysteresis
-    band in two samples and past it on the third.
+    capacity, cumulative evicted bytes) snapshots. Residence -- capacity
+    over the windowed eviction rate -- below the threshold opens a bounded
+    trial of immediate emission; the trial commits only when its
+    emitted-block rate stays neutral against the deferred baseline, and
+    reverts with a cooldown when degrading would have increased volume. A
+    committed degradation lifts when residence recovers past the
+    hysteresis factor, or when a periodic deferred probe shows filtering
+    value has returned.
+
+    Timeline used by the helpers, with a threshold of 60 seconds and a
+    capacity of ``CAPACITY``: churn samples every 10 seconds deleting
+    200_000 bytes give a 20_000 B/s windowed rate once the history spans
+    the 60-second minimum, hence residence 50 < 60 -- the trial opens at
+    t=60 and, with nothing emitted during it, commits at t=110.
     """
 
+    def _churn(
+        self,
+        queue: EvictionAwareStoreQueue,
+        start_tick: int,
+        end_tick: int,
+        evicted_start: int,
+    ) -> int:
+        """Feed churn samples at 10-second ticks, 200_000 bytes each.
+
+        Args:
+            queue: The queue under test.
+            start_tick: First tick to feed, inclusive.
+            end_tick: Last tick to feed, inclusive.
+            evicted_start: Cumulative evicted bytes before the first tick.
+
+        Returns:
+            The cumulative evicted total after the last tick.
+        """
+        evicted = evicted_start
+        for tick in range(start_tick, end_tick + 1):
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        return evicted
+
     def _degrade(self, queue: EvictionAwareStoreQueue) -> None:
-        """Feed a baseline plus one churn sample: residence 50 < 60."""
+        """Walk the controller into a committed degradation.
+
+        Baseline at t=0, churn through t=110: the trial opens at t=60
+        (residence 50 < 60) and, with nothing emitted during it, commits
+        at t=110 as neutral against an idle deferred baseline.
+        """
         queue.observe_l1_pressure(0.0, CAPACITY, 0)
-        queue.observe_l1_pressure(10.0, CAPACITY, 200_000)
+        self._churn(queue, 1, 11, 0)
 
     def _degraded_backlog(
         self,
         ops_per_request: dict[str, int],
         **queue_kwargs: float,
     ) -> tuple[FakePoolView, EvictionAwareStoreQueue]:
-        """A pinned backlog on a queue already degraded to immediate emission.
+        """A pinned backlog on a queue committed to immediate emission.
 
         No block enters the free queue, so eviction pressure never fires and
         only the degraded drain can emit.
@@ -1895,28 +1931,156 @@ class TestAdaptiveDegradation:
     # Regime state machine
     # ------------------------------------------------------------------
 
-    def test_short_residence_flips_to_degraded(self) -> None:
+    def test_churn_opens_a_trial_not_a_commitment(self) -> None:
+        queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+
+        self._churn(queue, 1, 6, 0)  # t=60: the gate opens
+
+        assert queue.degraded  # a trial behaves degraded
+        stats = queue.stats()
+        assert stats.degrade_trials == 1
+        assert stats.degrade_commits == 0
+        assert stats.degrade_transitions == 1
+
+    def test_volume_neutral_trial_commits(self) -> None:
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
 
         self._degrade(queue)
 
         assert queue.degraded
-        assert queue.stats().degrade_transitions == 1
+        stats = queue.stats()
+        assert stats.degrade_commits == 1
+        assert stats.degrade_reverts == 0
 
-    def test_recovery_requires_twice_the_threshold(self) -> None:
-        """Zero-delta samples decay the rate EMA (alpha 0.3): residence
-        walks 50 -> 71 -> 102 -> 146; the flips happen at <60 and >120."""
+    def test_volume_increasing_trial_reverts_and_cools_down(self) -> None:
+        """A backlog only the trial's immediate emission would flush: the
+        deferred baseline emitted nothing, the trial emits, so the trial
+        reads as a volume increase and reverts."""
+        pool = FakePoolView()
+        queue = make_queue(pool, degrade_l1_residence_secs=60.0)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        for index in range(3):
+            seed_blocks(pool, [index + 1], free=False)
+            queue.admit(
+                make_op(
+                    "req",
+                    [index + 1],
+                    pool,
+                    prefix_end_tokens=256 * (index + 1),
+                )
+            )
+        evicted = self._churn(queue, 1, 6, 0)  # t=60: the trial opens
+        assert queue.degraded
+        queue.collect_due()  # the trial flushes the backlog
+        evicted = self._churn(queue, 7, 11, evicted)  # t=110: decision
+
+        assert not queue.degraded
+        stats = queue.stats()
+        assert stats.degrade_reverts == 1
+        assert stats.degrade_commits == 0
+
+        # The revert cooldown holds even though the churn continues.
+        self._churn(queue, 12, 70, evicted)  # t=120..700 < 110 + cooldown
+        assert queue.stats().degrade_trials == 1
+
+    def test_degraded_lifts_when_residence_recovers(self) -> None:
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
         self._degrade(queue)
+        assert queue.degraded
 
-        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
-        assert queue.degraded  # residence ~71: inside the hysteresis band
-        queue.observe_l1_pressure(30.0, CAPACITY, 200_000)
-        assert queue.degraded  # residence ~102: still inside
-        queue.observe_l1_pressure(40.0, CAPACITY, 200_000)
+        # Eviction stops; the window slides off the churn and residence
+        # returns to infinity.
+        evicted = 11 * 200_000
+        for tick in range(12, 25):
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
 
-        assert not queue.degraded  # residence ~146: past 2x the threshold
-        assert queue.stats().degrade_transitions == 2
+        assert not queue.degraded
+
+    def test_probe_recovers_when_filtering_returns(self) -> None:
+        """While degraded, a periodic probe defers again; emission drying
+        up during the probe (relative to the degraded baseline) shows
+        deferral is filtering volume once more, and the regime lifts."""
+        pool = FakePoolView()
+        queue = make_queue(pool, degrade_l1_residence_secs=60.0)
+        self._degrade(queue)  # committed at t=110
+        evicted = 11 * 200_000
+        next_block = 1
+        # Sustained churn holds residence at 50; steady admissions flush
+        # through the degraded drain, giving the probe a non-zero baseline.
+        for tick in range(12, 59):  # t=120..580
+            seed_blocks(pool, [next_block], free=False)
+            queue.admit(
+                make_op(f"r{next_block}", [next_block], pool, prefix_end_tokens=256)
+            )
+            queue.collect_due()
+            next_block += 1
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        assert queue.degraded
+
+        # t=590: the probe interval since the commit elapses.
+        evicted += 200_000
+        queue.observe_l1_pressure(590.0, CAPACITY, evicted)
+        assert not queue.degraded  # probing: deferred
+        assert queue.stats().degrade_probes == 1
+
+        # During the probe nothing forces emission (pinned blocks, no
+        # eviction pressure): deferral is filtering again.
+        for tick in range(60, 65):  # t=600..640: the probe concludes
+            seed_blocks(pool, [next_block], free=False)
+            queue.admit(
+                make_op(f"r{next_block}", [next_block], pool, prefix_end_tokens=256)
+            )
+            queue.collect_due()
+            next_block += 1
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+
+        assert not queue.degraded
+        assert queue.stats().degrade_probe_recoveries == 1
+
+    def test_probe_without_filtering_returns_to_degraded(self) -> None:
+        """A probe during which emission continues at the degraded pace
+        (eviction pressure forces the stores out anyway) shows deferral
+        buys nothing, and the regime resumes."""
+        pool = FakePoolView()
+        queue = make_queue(pool, horizon_steps=1.0, degrade_l1_residence_secs=60.0)
+        self._degrade(queue)  # committed at t=110
+        evicted = 11 * 200_000
+        next_block = 1
+        for tick in range(12, 59):  # t=120..580: degraded, steady emission
+            seed_blocks(pool, [next_block], free=False)
+            queue.admit(
+                make_op(f"r{next_block}", [next_block], pool, prefix_end_tokens=256)
+            )
+            queue.collect_due()
+            next_block += 1
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        assert queue.degraded
+
+        evicted += 200_000
+        queue.observe_l1_pressure(590.0, CAPACITY, evicted)
+        assert not queue.degraded  # probing: deferred
+        assert queue.stats().degrade_probes == 1
+
+        # Free blocks under a one-step horizon, with an allocation rate
+        # whose due window spans the whole free queue: the pressure path
+        # emits during the probe at the same pace the degraded drain did.
+        for tick in range(60, 65):  # t=600..640: the probe concludes
+            seed_blocks(pool, [next_block], free=True)
+            queue.admit(
+                make_op(f"r{next_block}", [next_block], pool, prefix_end_tokens=256)
+            )
+            queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
+            queue.collect_due()
+            next_block += 1
+            evicted += 200_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+
+        assert queue.degraded
+        assert queue.stats().degrade_probe_recoveries == 0
 
     def test_disabled_threshold_ignores_pressure(self) -> None:
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=0.0)
@@ -1926,31 +2090,29 @@ class TestAdaptiveDegradation:
         assert not queue.degraded
         assert queue.stats().degrade_transitions == 0
 
-    def test_repeated_snapshot_does_not_advance_the_estimator(self) -> None:
+    def test_repeated_snapshot_does_not_advance_the_controller(self) -> None:
         """The caller repeats the latest sample every step; only a strictly
-        newer timestamp may move the EMA (else the repeats would read as
-        zero-delta intervals and recover the regime by themselves)."""
+        newer timestamp may advance the history and the regime machine."""
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
         self._degrade(queue)
 
         for _ in range(10):
-            queue.observe_l1_pressure(10.0, CAPACITY, 200_000)
+            queue.observe_l1_pressure(110.0, CAPACITY, 11 * 200_000)
 
         assert queue.degraded
         assert queue.stats().degrade_transitions == 1
 
     def test_counter_regression_rebaselines(self) -> None:
-        """A cumulative counter that moved backwards (server restart) is a
-        new baseline, not a negative rate."""
+        """A cumulative counter that moved backwards (server restart)
+        contributes a zero delta, not a negative rate."""
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
         queue.observe_l1_pressure(0.0, CAPACITY, 1_000_000)
         queue.observe_l1_pressure(10.0, CAPACITY, 0)  # regression
-        assert not queue.degraded
 
-        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
+        self._churn(queue, 2, 7, 0)  # t=20..70: post-restart churn
 
         assert queue.degraded
-        assert queue.stats().degrade_transitions == 1
+        assert queue.stats().degrade_trials == 1
 
     def test_zero_capacity_sample_is_ignored(self) -> None:
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
@@ -2062,9 +2224,9 @@ class TestAdaptiveDegradation:
 
     def test_recovered_queue_defers_again(self) -> None:
         pool, queue = self._degraded_backlog({})
-        queue.observe_l1_pressure(20.0, CAPACITY, 200_000)
-        queue.observe_l1_pressure(30.0, CAPACITY, 200_000)
-        queue.observe_l1_pressure(40.0, CAPACITY, 200_000)
+        evicted = 11 * 200_000
+        for tick in range(12, 25):  # eviction stops: residence recovers
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
         assert not queue.degraded
         seed_blocks(pool, [1], free=False)
         queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))

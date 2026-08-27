@@ -376,7 +376,8 @@ class TestEvictionAwareMode:
         )
         assert store.wants_l1_pressure()
         store.observe_l1_pressure(0.0, 1_000_000, 0)
-        store.observe_l1_pressure(10.0, 1_000_000, 200_000)
+        for tick in range(1, 12):  # trial opens at t=60, commits at t=110
+            store.observe_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
         store.add(_make_meta("req-0", num_blocks=1, end=256))
 
         result = _drain_store(store, 0, 0)
@@ -384,12 +385,14 @@ class TestEvictionAwareMode:
         assert len(result.items) == 1
         assert store.stats().degraded_emitted == 1
         assert store.stats().degrade_transitions == 1
+        assert store.stats().degrade_commits == 1
 
     def test_degradation_is_off_by_default(self) -> None:
         store, _ = self._setup()
         assert not store.wants_l1_pressure()
         store.observe_l1_pressure(0.0, 1_000_000, 0)
-        store.observe_l1_pressure(10.0, 1_000_000, 200_000)
+        for tick in range(1, 12):
+            store.observe_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
         store.add(_make_meta("req-0", num_blocks=1, end=256))
 
         assert _drain_store(store, 0, 0).items == []
