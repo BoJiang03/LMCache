@@ -1032,6 +1032,45 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # ~768 image tokens, and Molmo 2's own processor already lands
             # there (770 total for a 1540x1540 input) without a cap.
         ),
+        ModelSpec(
+            key="kimi-vl-a3b",
+            hf_id="moonshotai/Kimi-VL-A3B-Instruct",
+            # Image only: vLLM's KimiVLProcessingInfo advertises
+            # {"image": None} and registers no video path, so the
+            # certificate must not claim video even though the model card
+            # mentions it.
+            modalities=frozenset({"image"}),
+            # config.json, preprocessor_config.json and tokenizer_config.json
+            # all carry auto_map entries (KimiVLConfig, KimiVLProcessor,
+            # TikTokenTokenizer), so transformers refuses the repo without
+            # it even though vLLM implements the model natively in
+            # `kimi_vl.py`.
+            trust_remote_code=True,
+            # Measured 2026-08-27 on a live 0.27.1 engine: the suite's FIRST
+            # MLA model. ONE KV cache group whose spec is MLAAttentionSpec
+            # (block 16, 27 layers, 18 KiB per page) -> 30.4 KB/token, and
+            # ModelConfig.use_mla is True. The language tower is DeepSeek-V2
+            # shaped (kv_lora_rank 512, qk_nope_head_dim 128, v_head_dim
+            # 128), which is why the KV is a third the width of the GQA-8
+            # models despite 27 layers. records/2026/08/22/10_ planned
+            # DeepSeek-OCR as this coverage; that checkpoint turned out not
+            # to be MLA (see its spec), so this entry is the first.
+            #
+            # Full MME is 2374 questions at 442 prompt tokens for a 640x480
+            # photo and 1052 for a 1540x1540 one (both measured), so between
+            # 33 and 78 GB of KV. 100 GB holds the run either way; the 40 GB
+            # default would evict the larger photos before their pass-2
+            # revisit.
+            mme_max_local_cpu_gb=100.0,
+            # 16B parameters (64 routed experts, 6 active per token) is
+            # ~33 GB of weights in bf16, and the isolated scenarios' 0.35
+            # default is 28 GB on this card -- less than the weights alone.
+            # Same reason Mistral Small 3.1 raises it.
+            isolated_gpu_utilization=0.75,
+            # No mme_mm_processor_kwargs: the model's own packing already
+            # lands a 1540x1540 photo at 1052 tokens, inside the parity
+            # engine's context without a pixel cap.
+        ),
     ]
 }
 
