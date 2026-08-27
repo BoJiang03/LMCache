@@ -1847,12 +1847,13 @@ class TestAdaptiveDegradation:
     The signal is fed through ``observe_l1_pressure`` as (monotonic time,
     capacity, cumulative evicted bytes) snapshots. Residence -- capacity
     over the windowed eviction rate -- below the threshold opens a bounded
-    trial of immediate emission; the trial commits only when its
-    emitted-block rate stays neutral against the deferred baseline, and
-    reverts with a cooldown when degrading would have increased volume. A
-    committed degradation lifts when residence recovers past the
-    hysteresis factor, or when a periodic deferred probe shows filtering
-    value has returned.
+    trial of immediate emission, and so does the policy's own loss ledger
+    showing deferral destroying a material share of its intake; the trial
+    commits only when its emitted-block rate stays neutral against the
+    deferred baseline, and reverts with a cooldown when degrading would
+    have increased volume. A committed degradation recovers only through
+    a deferred probe -- periodic, or armed early once residence recovers
+    past the hysteresis factor -- never on the residence estimate alone.
 
     Timeline used by the helpers, with a threshold of 60 seconds and a
     capacity of ``CAPACITY``: churn samples every 10 seconds deleting
@@ -1943,6 +1944,75 @@ class TestAdaptiveDegradation:
         assert stats.degrade_commits == 0
         assert stats.degrade_transitions == 1
 
+    def test_material_loss_opens_a_trial_before_residence_crosses(self) -> None:
+        """Deferral losing a material share of its intake to eviction
+        opens a trial on the loss ledger alone: churn far too slow for
+        the residence gate still destroys the pending backlog, and the
+        controller must not wait for the windowed average to notice."""
+        pool = FakePoolView()
+        queue = make_queue(pool, degrade_l1_residence_secs=60.0)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        evicted = 0
+        for tick in range(1, 7):  # t=10..60: residence 5000s >> threshold
+            evicted += 2_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        assert not queue.degraded
+
+        # Four admissions; eviction destroys three of them: 3/4 clears
+        # the material-loss share.
+        for index in range(4):
+            seed_blocks(pool, [index + 1], free=index < 3)
+            queue.admit(make_op(f"r{index}", [index + 1], pool, prefix_end_tokens=256))
+        for block in (1, 2, 3):
+            pool.evict(block)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1, 2, 3},
+        )
+        queue.collect_due()
+        assert queue.stats().dropped_evicted == 3
+
+        evicted += 2_000
+        queue.observe_l1_pressure(70.0, CAPACITY, evicted)
+
+        assert queue.degraded  # a trial, opened by the loss ledger
+        stats = queue.stats()
+        assert stats.degrade_trials == 1
+        assert stats.degrade_commits == 0
+
+    def test_incidental_loss_stays_deferred(self) -> None:
+        """A loss share below the material line opens nothing: a few
+        drops out of a large intake are the tail-release economy paying
+        its expected cost, not deferral destroying its backlog."""
+        pool = FakePoolView()
+        queue = make_queue(pool, degrade_l1_residence_secs=60.0)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        evicted = 0
+        for tick in range(1, 7):  # t=10..60: residence 5000s >> threshold
+            evicted += 2_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+
+        # Eight admissions; eviction destroys one: 1/8 is below the
+        # material-loss share.
+        for index in range(8):
+            seed_blocks(pool, [index + 1], free=index == 0)
+            queue.admit(make_op(f"r{index}", [index + 1], pool, prefix_end_tokens=256))
+        pool.evict(1)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1},
+        )
+        queue.collect_due()
+        assert queue.stats().dropped_evicted == 1
+
+        evicted += 2_000
+        queue.observe_l1_pressure(70.0, CAPACITY, evicted)
+
+        assert not queue.degraded
+        assert queue.stats().degrade_trials == 0
+
     def test_volume_neutral_trial_commits(self) -> None:
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
 
@@ -1984,18 +2054,30 @@ class TestAdaptiveDegradation:
         self._churn(queue, 12, 70, evicted)  # t=120..700 < 110 + cooldown
         assert queue.stats().degrade_trials == 1
 
-    def test_degraded_lifts_when_residence_recovers(self) -> None:
+    def test_residence_recovery_arms_probe_not_lift(self) -> None:
+        """Eviction stopping makes the windowed residence estimate read
+        infinity -- which is exactly what a lull between bursts looks
+        like, so the estimate alone must not lift the regime. It arms an
+        early probe instead, and only the probe's volume verdict lifts."""
         queue = make_queue(FakePoolView(), degrade_l1_residence_secs=60.0)
-        self._degrade(queue)
+        self._degrade(queue)  # committed at t=110
         assert queue.degraded
 
-        # Eviction stops; the window slides off the churn and residence
-        # returns to infinity.
         evicted = 11 * 200_000
-        for tick in range(12, 25):
+        for tick in range(12, 29):  # t=120..280: recovered, still degraded
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+            assert queue.degraded
+
+        # t=290: the early-probe spacing since the commit elapses.
+        queue.observe_l1_pressure(290.0, CAPACITY, evicted)
+        assert not queue.degraded  # probing: deferred
+        assert queue.stats().degrade_probes == 1
+
+        for tick in range(30, 35):  # t=300..340: idle probe concludes
             queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
 
         assert not queue.degraded
+        assert queue.stats().degrade_probe_recoveries == 1
 
     def test_probe_recovers_when_filtering_returns(self) -> None:
         """While degraded, a periodic probe defers again; emission drying
@@ -2225,9 +2307,10 @@ class TestAdaptiveDegradation:
     def test_recovered_queue_defers_again(self) -> None:
         pool, queue = self._degraded_backlog({})
         evicted = 11 * 200_000
-        for tick in range(12, 25):  # eviction stops: residence recovers
+        for tick in range(12, 35):  # eviction stops; t=290 arms the early
             queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
-        assert not queue.degraded
+        assert not queue.degraded  # probe, which concludes idle: recovered
+        assert queue.stats().degrade_probe_recoveries == 1
         seed_blocks(pool, [1], free=False)
         queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
 

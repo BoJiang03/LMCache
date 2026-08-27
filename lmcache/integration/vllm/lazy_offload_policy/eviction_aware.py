@@ -72,18 +72,33 @@ _TRIAL_SECS = 45.0
 # multiple, not a percentage.
 _NEUTRALITY_FACTOR = 1.25
 
+# Fraction of the windowed admissions that deferral may lose to eviction
+# before the loss counts as material and opens a trial on its own. The same
+# tolerance the neutrality check uses: losing a quarter of the intake is a
+# volume effect, not sampling noise. Measured over the trailing trial-length
+# window -- the controller attacks on the timescale it verifies at.
+_MATERIAL_LOSS_SHARE = _NEUTRALITY_FACTOR - 1.0
+
 # While degraded, how often to re-measure the deferred counterfactual.
 # With _TRIAL_SECS this sets the probe duty cycle (~9%): the price of
 # noticing that deferral has become worthwhile again.
 _PROBE_INTERVAL_SECS = 480.0
+
+# Minimum spacing between probes when recovered residence arms one early.
+# A failed probe is evidence about the current regime; asking again faster
+# than a few trial lengths would re-measure the same conditions.
+_PROBE_RETRY_MIN_SECS = 4 * _TRIAL_SECS
 
 # After a reverted trial or a probe recovery, how long before churn may
 # start another trial. Bounds the degraded-blip duty cycle on a workload
 # whose deferral filters volume (~7%).
 _REVERT_COOLDOWN_SECS = 600.0
 
-# Residence must recover to this multiple of the threshold before a
-# committed degradation lifts on its own (hysteresis).
+# Residence must recover to this multiple of the threshold (hysteresis)
+# before an early recovery probe is armed. Recovery itself still goes
+# through the probe's volume verdict: the windowed estimate reads infinite
+# residence whenever bursts space out past the window, so acting on it
+# directly would expose the deferred backlog to the next burst.
 _RESIDENCE_RECOVERY_FACTOR = 2.0
 
 
@@ -94,7 +109,7 @@ class _DegradeRegime(enum.Enum):
     NORMAL = "normal"
     #: Emit immediately for a bounded window, measuring the volume effect.
     TRIAL = "trial"
-    #: Committed immediate emission; probe periodically, lift on recovery.
+    #: Committed immediate emission; recovery only through a probe.
     DEGRADED = "degraded"
     #: Defer for a bounded window, measuring whether filtering returned.
     PROBE = "probe"
@@ -453,16 +468,18 @@ class LazyOffloadPolicyConfig:
             least afford them. Residence (capacity over the windowed
             eviction byte rate, fed by
             :meth:`EvictionAwareStoreQueue.observe_l1_pressure`) below this
-            threshold says that cost is being paid. Crossing the threshold
-            does not degrade by itself: it starts a bounded trial of
-            immediate emission, committed only if the trial's emitted
-            volume stays neutral against the deferred baseline --
-            degradation may change the timing of stores, never their
-            volume. A trial that increases volume (deferral was filtering
-            stores out, not merely re-timing them) reverts and enters a
-            cooldown; a committed degradation is re-checked with periodic
-            deferred probes and lifts when filtering value returns or
-            residence recovers past the hysteresis factor. 0 (the default)
+            threshold says that cost is being paid; deferral losing a
+            material share of its own intake to eviction says the same
+            thing sooner. Neither signal degrades by itself: each starts a
+            bounded trial of immediate emission, committed only if the
+            trial's emitted volume stays neutral against the deferred
+            baseline -- degradation may change the timing of stores, never
+            their volume. A trial that increases volume (deferral was
+            filtering stores out, not merely re-timing them) reverts and
+            enters a cooldown; a committed degradation is re-checked with
+            deferred probes (periodic, or early once residence recovers
+            past the hysteresis factor) and lifts only when a probe shows
+            filtering value has returned. 0 (the default)
             disables the controller. Effectiveness sensors: the
             ``degraded_*`` and ``degrade_*`` counters on
             :class:`LazyOffloadCounters`.
@@ -989,10 +1006,11 @@ class EvictionAwareStoreQueue:
         # Adaptive-degradation controller state (observe_l1_pressure). The
         # controller runs on the pressure-sample heartbeat: each accepted
         # snapshot appends (time, cumulative evicted bytes, cumulative
-        # emitted blocks) to a sliding history, and the windowed rates that
-        # drive the regime machine are read off that history. Eviction
-        # totals are normalized against server restarts as they arrive.
-        self._pressure_history: deque[tuple[float, int, int]] = deque()
+        # emitted blocks, cumulative admitted ops, cumulative dropped ops)
+        # to a sliding history, and the windowed rates that drive the
+        # regime machine are read off that history. Eviction totals are
+        # normalized against server restarts as they arrive.
+        self._pressure_history: deque[tuple[float, int, int, int, int]] = deque()
         self._evicted_norm_total = 0
         self._evicted_last_raw = 0
         self._evicted_baseline_recorded = False
@@ -1246,19 +1264,27 @@ class EvictionAwareStoreQueue:
         :attr:`LazyOffloadPolicyConfig.degrade_l1_residence_secs`.
 
         The regime machine enforces the controller's invariant -- degrading
-        may change the timing of stores, never their volume. NORMAL defers,
-        and residence sitting under the threshold (outside any cooldown)
-        starts a TRIAL rather than degrading outright. TRIAL emits
-        immediately for a bounded window and commits to DEGRADED only if
-        its emitted-block rate stayed within the neutrality factor of the
-        deferred baseline; a volume increase means deferral was filtering
-        stores out, so the trial reverts and enters a cooldown. DEGRADED
-        emits immediately, lifts on its own when residence recovers past
-        the hysteresis factor, and periodically runs a PROBE -- a bounded
-        deferred window -- returning to NORMAL when the probe's emission
-        rate drops enough to show deferral is filtering volume again. The
-        volume rates compare what this policy emits, so a trial or probe
-        needs no server-side counterfactual.
+        may change the timing of stores, never their volume. NORMAL defers;
+        a TRIAL opens (outside any cooldown) when residence sits under the
+        threshold, or, faster, when the policy's own loss ledger shows
+        deferral destroying a material share of its intake -- windowed
+        dropped operations reaching ``_MATERIAL_LOSS_SHARE`` of windowed
+        admissions. The trigger may be eager because the trial bounds the
+        cost of a false alarm. TRIAL emits immediately for a bounded window
+        and commits to DEGRADED only if its emitted-block rate stayed
+        within the neutrality factor of the deferred baseline; a volume
+        increase means deferral was filtering stores out, so the trial
+        reverts and enters a cooldown. DEGRADED emits immediately and
+        recovers only through a PROBE -- a bounded deferred window, run
+        every probe interval and armed early (at a shorter retry spacing)
+        when residence recovers past the hysteresis factor -- returning to
+        NORMAL when the probe's emission rate drops enough to show deferral
+        is filtering volume again. The estimate alone never lifts a
+        committed degradation: bursts spacing out past the window read as
+        infinite residence, and acting on that would hand the deferred
+        backlog to the next burst. The volume rates compare what this
+        policy emits, so a trial or probe needs no server-side
+        counterfactual.
 
         Callers may repeat the latest snapshot every step: only a strictly
         newer ``monotonic_time`` advances the controller. A cumulative
@@ -1280,7 +1306,13 @@ class EvictionAwareStoreQueue:
             self._evicted_last_raw = evicted_bytes_total
             self._evicted_baseline_recorded = True
             self._pressure_history.append(
-                (monotonic_time, 0, self._emitted_blocks_total)
+                (
+                    monotonic_time,
+                    0,
+                    self._emitted_blocks_total,
+                    self._counters.admitted,
+                    self._counters.dropped_evicted,
+                )
             )
             return
         if monotonic_time <= self._pressure_history[-1][0]:
@@ -1293,7 +1325,13 @@ class EvictionAwareStoreQueue:
             delta = 0
         self._evicted_norm_total += delta
         self._pressure_history.append(
-            (monotonic_time, self._evicted_norm_total, self._emitted_blocks_total)
+            (
+                monotonic_time,
+                self._evicted_norm_total,
+                self._emitted_blocks_total,
+                self._counters.admitted,
+                self._counters.dropped_evicted,
+            )
         )
         while (
             len(self._pressure_history) > 2
@@ -1307,7 +1345,7 @@ class EvictionAwareStoreQueue:
         if self._regime is _DegradeRegime.NORMAL:
             baseline = self._trailing_emitted_rate(monotonic_time)
             if (
-                residence < threshold
+                (residence < threshold or self._loss_is_material(monotonic_time))
                 and monotonic_time >= self._cooldown_until
                 and baseline is not None
             ):
@@ -1328,10 +1366,11 @@ class EvictionAwareStoreQueue:
                     self._counters.degrade_reverts += 1
                     self._counters.degrade_transitions += 1
         elif self._regime is _DegradeRegime.DEGRADED:
-            if residence >= _RESIDENCE_RECOVERY_FACTOR * threshold:
-                self._enter_regime(_DegradeRegime.NORMAL, monotonic_time)
-                self._counters.degrade_transitions += 1
-            elif monotonic_time - self._last_probe_at >= _PROBE_INTERVAL_SECS:
+            since_probe = monotonic_time - self._last_probe_at
+            recovered = residence >= _RESIDENCE_RECOVERY_FACTOR * threshold
+            if since_probe >= _PROBE_INTERVAL_SECS or (
+                recovered and since_probe >= _PROBE_RETRY_MIN_SECS
+            ):
                 baseline = self._trailing_emitted_rate(monotonic_time)
                 self._trial_baseline_rate = baseline if baseline is not None else 0.0
                 self._enter_regime(_DegradeRegime.PROBE, monotonic_time)
@@ -1386,7 +1425,7 @@ class EvictionAwareStoreQueue:
         cutoff = now - _TRIAL_SECS
         start_time = now
         start_emitted = self._emitted_blocks_total
-        for time, _, emitted in reversed(self._pressure_history):
+        for time, _, emitted, _, _ in reversed(self._pressure_history):
             start_time = time
             start_emitted = emitted
             if time <= cutoff:
@@ -1395,6 +1434,37 @@ class EvictionAwareStoreQueue:
         if span <= 0:
             return None
         return (self._emitted_blocks_total - start_emitted) / span
+
+    def _loss_is_material(self, now: float) -> bool:
+        """Whether deferral's own eviction losses justify a trial.
+
+        Admitted and dropped operation counts over the trailing
+        trial-length window, read off the pressure history against the
+        live counters. Losing at least ``_MATERIAL_LOSS_SHARE`` of the
+        windowed intake -- with at least one loss -- is direct evidence
+        that deferral is destroying its backlog rather than re-timing it,
+        available well before the windowed residence estimate can cross
+        the threshold.
+
+        Args:
+            now: The current sample's monotonic time.
+
+        Returns:
+            True when the windowed loss share is material.
+        """
+        cutoff = now - _TRIAL_SECS
+        start_admitted = self._counters.admitted
+        start_dropped = self._counters.dropped_evicted
+        for time, _, _, admitted, dropped in reversed(self._pressure_history):
+            start_admitted = admitted
+            start_dropped = dropped
+            if time <= cutoff:
+                break
+        dropped = self._counters.dropped_evicted - start_dropped
+        if dropped <= 0:
+            return False
+        admitted = self._counters.admitted - start_admitted
+        return dropped >= _MATERIAL_LOSS_SHARE * admitted
 
     def _regime_emitted_rate(self, now: float) -> float:
         """Emitted-block rate since the current regime was entered.

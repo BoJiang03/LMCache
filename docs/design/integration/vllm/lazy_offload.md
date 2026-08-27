@@ -416,14 +416,15 @@ evicted before reuse either way.
 
 `lazy_offload_degrade_l1_residence_secs` enables adaptive degradation:
 when the server-side L1 churns so fast that a stored object's residence
-falls under this threshold, deferring stores toward eviction danger is
-paying a timing cost, and the policy runs a bounded trial of immediate
-emission -- committing to it only if the trial's emitted volume stays
-neutral against the deferred baseline (degradation may change the
-timing of stores, never their volume), reverting with a cooldown when
-deferral turns out to be filtering stores out. A committed degradation
-lifts when residence recovers or a periodic deferred probe shows
-filtering value has returned. The connector polls the servers'
+falls under this threshold -- or, faster, when the policy's own loss
+ledger shows eviction destroying a material share of the deferred
+backlog -- the policy runs a bounded trial of immediate emission,
+committing to it only if the trial's emitted volume stays neutral
+against the deferred baseline (degradation may change the timing of
+stores, never their volume), reverting with a cooldown when deferral
+turns out to be filtering stores out. A committed degradation recovers
+only through a deferred probe (periodic, or armed early when residence
+recovers) showing filtering value has returned. The connector polls the servers'
 `GET_L1_PRESSURE` endpoint (see
 `docs/design/v1/multiprocess/l1_pressure_stats.md`) only while this
 knob is set. Signal, controller, and drain semantics are specified in
