@@ -1,0 +1,60 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "benchmark": "mme",
+  "deployment_path": "mp",
+  "num_questions": 24,
+  "scores": {
+    "baseline": {
+      "perception": 0.0,
+      "cognition": 150.0,
+      "total": 150.0,
+      "per_category": {
+        "code_reasoning": 150.0
+      }
+    },
+    "pass1_miss": {
+      "perception": 0.0,
+      "cognition": 150.0,
+      "total": 150.0,
+      "per_category": {
+        "code_reasoning": 150.0
+      }
+    },
+    "pass2_hit": {
+      "perception": 0.0,
+      "cognition": 150.0,
+      "total": 150.0,
+      "per_category": {
+        "code_reasoning": 150.0
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 0,
+  "flips_pass2_vs_pass1": 0,
+  "pass2_lookup_hit_ratio": 0.9422,
+  "cache_granularity_tokens": 32,
+  "pass1_stored_tokens": 6688,
+  "pass2_lookup_hit_tokens": 6656,
+  "pass2_lookup_tokens": 7064,
+  "pass2_achievable_hit_tokens": 6656,
+  "pass2_external_cached_tokens": 6656,
+  "pass2_local_cached_tokens": 0,
+  "baseline_answer_parse_ratio": 0.9583,
+  "gate": {
+    "pass": true,
+    "max_flips": 0.12,
+    "score_delta_pass2_vs_pass1": 0.0,
+    "score_delta_pass1_vs_baseline": 0.0,
+    "baseline_answer_parse_ratio": 0.9583,
+    "hit_criterion": "coverage",
+    "cache_granularity_tokens": 32,
+    "pass2_hit_coverage": 1.0,
+    "thresholds": {
+      "max_flip_fraction": 0.005,
+      "max_score_delta": 10.0,
+      "min_hit_ratio": 0.8,
+      "min_hit_coverage": 0.95,
+      "min_parse_ratio": 0.85
+    }
+  }
+}

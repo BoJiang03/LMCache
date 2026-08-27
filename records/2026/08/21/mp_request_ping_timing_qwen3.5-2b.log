@@ -1,0 +1,26 @@
+[DIAG] run t02-0 32.21s hits=0 tokens=3518
+[DIAG] run t02-1 3.96s hits=1088 tokens=3518
+[DIAG] run t02-2 0.99s hits=1088 tokens=3518
+[DIAG] run t02-3 0.46s hits=1088 tokens=3518
+[DIAG] run t02-4 1.74s hits=1088 tokens=3518
+[DIAG] run t02-5 2.27s hits=1088 tokens=3518
+[DIAG] ping healthy=True in 3.15s
+[DIAG] run t02-6 3.68s hits=1088 tokens=3518
+[DIAG] run t02-7 3.58s hits=1088 tokens=3518
+[DIAG] run t02-8 3.96s hits=1088 tokens=3518
+[DIAG] ping healthy=True in 3.55s
+[DIAG] run t02-9 6.52s hits=1088 tokens=3518
+[DIAG] run t02-10 4.69s hits=1088 tokens=3518
+[DIAG] run t02-11 3.63s hits=1088 tokens=3518
+[DIAG] run t02-12 1.20s hits=1088 tokens=3518
+[DIAG] ping healthy=True in 1.28s
+[DIAG] run t02-13 2.29s hits=1088 tokens=3518
+[DIAG] run t02-14 0.43s hits=1088 tokens=3518
+[DIAG] run t02-15 1.82s hits=1088 tokens=3518
+[DIAG] run t02-16 8.27s hits=1088 tokens=3518
+[DIAG] run t02-17 3.84s hits=1088 tokens=3518
+[DIAG] run t02-18 4.32s hits=1088 tokens=3518
+[DIAG] ping healthy=True in 5.87s
+[DIAG] run t02-19 8.11s hits=1088 tokens=3518
+[DIAG] run t02-20 7.58s hits=1088 tokens=3518
+[DIAG] ping healthy=False in 10.02s

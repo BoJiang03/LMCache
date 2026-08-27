@@ -1,0 +1,63 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______________ test_isolated_scenario[mp_connector-qwen2-vl-2b] _______________
+
+scenario = 'mp_connector', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/pytest-of-bo/pytest-152/test_isolated_scenario_mp_conn0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: mp_connector[qwen2-vl-2b] failed:
+E         repeat A hit only 0/297
+E         image B hit 0 tokens, too close to A's full hit 0 -- cross-image false hit
+E         [T3 t05 repeat] t05-text: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got=' is the dominant color of in this' reference='Paris' expected_probe=('paris',)
+E         [T3 t05 B] t05-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Orange' expected_probe=('orange',)
+E         prefix reuse too shallow: 0 of ~297
+E         swapped order hit 0 vs full 0
+E         shared image prefix not reused: 0
+E         batched store not hittable: 0/297
+E         negative control did not trip on the MP path: blind B hit only 0 of 297 tokens
+E         metrics: {
+E           "t01": {
+E             "prompt_tokens": 297,
+E             "full_hit": 0,
+E             "b_hit": 0
+E           },
+E           "conservation": {
+E             "missed": 4651,
+E             "stored": 4560,
+E             "resident_keys": 195,
+E             "resident_bytes": 89456640
+E           },
+E           "server_log_tail": "36 storage_nbytes=1613135872 padding_per_block=0 \u001b[3m(utils.py:596:lmcache.v1.gpu_connector.utils)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:13,978] LMCache INFO:\u001b[0m KV layer groups: ---\nKernelGroupInfo(layers=28, indices=0-27, shape_desc=(kv=2, nl=28, nb=98458, bs=16, nh=2, hs=128, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=16, slots_per_block=16, engine_group_idx=0, sw_size_tokens=-1)\n--- \u001b[3m(kv_layer_groups.py:437:lmcache.v1.kv_layer_groups)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:14,149] LMCache INFO:\u001b[0m Registered KV cache for GPU ID 1196772386947037512 with 28 layers \u001b[3m(lmcache_driven_transfer.py:964:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:14,150] LMCache INFO:\u001b[0m Initialized cuda stream on device cuda:0 \u001b[3m(cache_context.py:430:lmcache.v1.platform.cuda.cache_context)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,277] LMCache INFO:\u001b[0m AffinityThreadPool: affinity_key=-7489921690173773951 assigned to worker slot 0 of 1 (thread affinity-pool-0-0); 1 distinct key(s) now bound \u001b[3m(affinity_pool.py:108:lmcache.v1.multiprocess.affinity_pool)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,467] LMCache INFO:\u001b[0m Stored 288 tokens in 0.190 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,529] LMCache INFO:\u001b[0m Stored 288 tokens in 0.061 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,538] LMCache INFO:\u001b[0m Stored 32 tokens in 0.008 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,589] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 2/2 retained keys (2 L1, 0 L2) in 1.1 ms (external_request_id=5-b7884259, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:34,600] LMCache INFO:\u001b[0m Stored 288 tokens in 0.052 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:35,300] LMCache INFO:\u001b[0m Retrieved 32 tokens in 0.032 seconds \u001b[3m(lmcache_driven_transfer.py:1427:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:37,053] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 1/18 retained keys (1 L1, 0 L2) in 0.7 ms (external_request_id=6-9b34504a, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:40,714] LMCache INFO:\u001b[0m Retrieved 16 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1427:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,410] LMCache INFO:\u001b[0m Stored 272 tokens in 0.103 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,595] LMCache INFO:\u001b[0m Stored 288 tokens in 0.093 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,602] LMCache INFO:\u001b[0m Stored 288 tokens in 0.007 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,808] LMCache INFO:\u001b[0m Stored 560 tokens in 0.155 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,917] LMCache INFO:\u001b[0m Stored 560 tokens in 0.109 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,968] LMCache INFO:\u001b[0m Stored 288 tokens in 0.048 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,994] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,994] LMCache INFO:\u001b[0m  - Total active allocations: 195 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,995] LMCache INFO:\u001b[0m  - Total allocated size: 85.312500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:42,995] LMCache INFO:\u001b[0m  - Total free size: 4010.687500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:44000 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 13:44:43,033] LMCache INFO:\u001b[0m Stored 560 tokens in 0.065 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,116] LMCache INFO:\u001b[0m Stored 288 tokens in 0.056 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,168] LMCache INFO:\u001b[0m Stored 288 tokens in 0.051 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,172] LMCache INFO:\u001b[0m Stored 32 tokens in 0.003 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,231] LMCache INFO:\u001b[0m Stored 288 tokens in 0.052 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-25 13:44:43,400] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,400] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,401] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,801] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,801] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,802] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:43,803] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,250] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,250] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,251] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,251] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,259] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7fb30b341d30 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,259] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7fb30b341d30 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,457] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-25 13:44:44,458] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [2015736]\n"
+E         }
+E       assert ['repeat A hi... full 0', ...] == []
+E         
+E         Left contains 9 more items, first extra item: 'repeat A hit only 0/297'
+E         Use -v to get more diff
+
+test_isolated_paths.py:64: AssertionError
+=========================== short test summary info ============================
+FAILED test_isolated_paths.py::test_isolated_scenario[mp_connector-qwen2-vl-2b]
+1 failed, 3 deselected in 214.31s (0:03:34)

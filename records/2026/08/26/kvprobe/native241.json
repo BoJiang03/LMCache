@@ -1,0 +1,92 @@
+{
+ "rows": [
+  240,
+  241
+ ],
+ "passes": {
+  "pass1_cold": [
+   {
+    "row": 240,
+    "text": "Yes",
+    "num_cached_tokens": 0,
+    "prompt_len": 426,
+    "first_token_logprobs": {
+     "'Yes'": -0.822384,
+     "'No'": -0.947384,
+     "'yes'": -2.322384,
+     "'no'": -2.697384,
+     "'NO'": -7.197384
+    }
+   },
+   {
+    "row": 241,
+    "text": "Yes",
+    "num_cached_tokens": 400,
+    "prompt_len": 422,
+    "first_token_logprobs": {
+     "'Yes'": -0.791092,
+     "'No'": -0.916092,
+     "'yes'": -2.541092,
+     "'no'": -2.791092,
+     "'NO'": -7.291092
+    }
+   }
+  ],
+  "pass2_warm": [
+   {
+    "row": 240,
+    "text": "Yes",
+    "num_cached_tokens": 416,
+    "prompt_len": 426,
+    "first_token_logprobs": {
+     "'Yes'": -0.835651,
+     "'No'": -0.960651,
+     "'yes'": -2.210651,
+     "'no'": -2.710651,
+     "'NO'": -7.210651
+    }
+   },
+   {
+    "row": 241,
+    "text": "Yes",
+    "num_cached_tokens": 416,
+    "prompt_len": 422,
+    "first_token_logprobs": {
+     "'Yes'": -0.78379,
+     "'No'": -0.90879,
+     "'yes'": -2.53379,
+     "'no'": -2.90879,
+     "'NO'": -7.28379
+    }
+   }
+  ],
+  "pass3_warm": [
+   {
+    "row": 240,
+    "text": "Yes",
+    "num_cached_tokens": 416,
+    "prompt_len": 426,
+    "first_token_logprobs": {
+     "'Yes'": -0.835651,
+     "'No'": -0.960651,
+     "'yes'": -2.210651,
+     "'no'": -2.710651,
+     "'NO'": -7.210651
+    }
+   },
+   {
+    "row": 241,
+    "text": "Yes",
+    "num_cached_tokens": 416,
+    "prompt_len": 422,
+    "first_token_logprobs": {
+     "'Yes'": -0.78379,
+     "'No'": -0.90879,
+     "'yes'": -2.53379,
+     "'no'": -2.90879,
+     "'NO'": -7.28379
+    }
+   }
+  ]
+ }
+}

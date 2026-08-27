@@ -1,0 +1,44 @@
+{
+ "phase_a": {
+  "block_size_n": 544,
+  "probe_texts": {
+   "pad400-img0": " red",
+   "pad400-img2": "blue"
+  }
+ },
+ "phase_b": {
+  "chunk": 544,
+  "a1": {
+   "hits": 0,
+   "tokens": 639,
+   "text": "red",
+   "identifiers": [
+    "bcfbd5550cbc3a0e1b3d2d7aacee8a262e80061973504553976eb16954a18d6f"
+   ]
+  },
+  "b1": {
+   "hits": 0,
+   "tokens": 639,
+   "text": "blue",
+   "identifiers": [
+    "31f48037a36c6a9ee1d23929b5a4f6c4def06d566b88f85fbe364c8800789a95"
+   ]
+  },
+  "a2": {
+   "hits": 544,
+   "tokens": 639,
+   "text": "red"
+  },
+  "storage": {
+   "num_keys": 4,
+   "total_bytes": 53477376
+  },
+  "verdict": {
+   "a1_clean_miss": true,
+   "b_false_hit": false,
+   "a_replay_hit": true,
+   "a_replay_probe_ok": true,
+   "b_probe_ok": true
+  }
+ }
+}

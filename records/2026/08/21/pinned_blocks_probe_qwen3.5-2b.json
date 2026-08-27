@@ -1,0 +1,39 @@
+{
+ "config": "mp_hybrid",
+ "model": "Qwen/Qwen3.5-2B",
+ "samples": [
+  {
+   "t": 154.9,
+   "used": 5
+  },
+  {
+   "t": 156.9,
+   "used": 5
+  },
+  {
+   "t": 158.9,
+   "used": 5
+  },
+  {
+   "t": 160.9,
+   "used": 5
+  },
+  {
+   "t": 162.9,
+   "used": 5
+  },
+  {
+   "t": 164.9,
+   "used": 5
+  }
+ ],
+ "num_gpu_blocks": 12405,
+ "used_before_any_request": 1,
+ "reset_before_any_request": true,
+ "used_after_first": 5,
+ "reset_after_first": false,
+ "used_after_reset_attempt": 5,
+ "used_after_second": 5,
+ "reset_after_second": false,
+ "used_final": 5
+}

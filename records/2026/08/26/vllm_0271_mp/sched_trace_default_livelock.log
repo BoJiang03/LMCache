@@ -1,0 +1,1321 @@
+1787756394.066 scheduler instrumented
+1787756394.356 connector instrumented
+1787756508.347 scheduler init defer_block_free=True requires_kv_delivery=True max_concurrent_batches=2 async_scheduling=True watermark_blocks=0 is_kv_consumer=True
+1787756533.106   match step=0 0-8672a16c status=WAITING vllm_computed=0 -> (0, False)
+1787756533.106   alloc step=0 0-8672a16c ext=0
+1787756533.108   match step=0 1-9e607a5c status=WAITING vllm_computed=0 -> (0, False)
+1787756533.108   alloc step=0 1-9e607a5c ext=0
+1787756533.110   match step=0 2-8963aad4 status=WAITING vllm_computed=0 -> (0, False)
+1787756533.110   alloc step=0 2-8963aad4 ext=0
+1787756533.112   match step=0 3-9a7e3289 status=WAITING vllm_computed=0 -> (0, False)
+1787756533.112   alloc step=0 3-9a7e3289 ext=0
+1787756533.113   match step=0 4-b7448c81 status=WAITING vllm_computed=0 -> (0, False)
+1787756533.113   alloc step=0 4-b7448c81 ext=0
+1787756533.115   match step=0 5-9d41da2f status=WAITING vllm_computed=0 -> (0, False)
+1787756533.115   alloc step=0 5-9d41da2f ext=0
+1787756533.116 step=0 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=1/proc_seq=0 sched_tok=1782 new=6 preempted=[] finished=[] | 0-8672a16c:RUNNING:c297/297:p0:b19 1-9e607a5c:RUNNING:c297/297:p0:b19 2-8963aad4:RUNNING:c297/297:p0:b19 3-9a7e3289:RUNNING:c297/297:p0:b19 4-b7448c81:RUNNING:c297/297:p0:b19 5-9d41da2f:RUNNING:c297/297:p0:b19
+1787756533.217 step=1 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=2/proc_seq=0 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c298/297:p0:b19 1-9e607a5c:RUNNING:c298/297:p0:b19 2-8963aad4:RUNNING:c298/297:p0:b19 3-9a7e3289:RUNNING:c298/297:p0:b19 4-b7448c81:RUNNING:c298/297:p0:b19 5-9d41da2f:RUNNING:c298/297:p0:b19
+1787756533.241 step=2 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=3/proc_seq=1 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c299/298:p0:b19 1-9e607a5c:RUNNING:c299/298:p0:b19 2-8963aad4:RUNNING:c299/298:p0:b19 3-9a7e3289:RUNNING:c299/298:p0:b19 4-b7448c81:RUNNING:c299/298:p0:b19 5-9d41da2f:RUNNING:c299/298:p0:b19
+1787756533.262 step=3 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=4/proc_seq=2 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c300/299:p0:b19 1-9e607a5c:RUNNING:c300/299:p0:b19 2-8963aad4:RUNNING:c300/299:p0:b19 3-9a7e3289:RUNNING:c300/299:p0:b19 4-b7448c81:RUNNING:c300/299:p0:b19 5-9d41da2f:RUNNING:c300/299:p0:b19
+1787756533.283 step=4 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=5/proc_seq=3 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c301/300:p0:b19 1-9e607a5c:RUNNING:c301/300:p0:b19 2-8963aad4:RUNNING:c301/300:p0:b19 3-9a7e3289:RUNNING:c301/300:p0:b19 4-b7448c81:RUNNING:c301/300:p0:b19 5-9d41da2f:RUNNING:c301/300:p0:b19
+1787756533.304 step=5 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=6/proc_seq=4 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c302/301:p0:b19 1-9e607a5c:RUNNING:c302/301:p0:b19 2-8963aad4:RUNNING:c302/301:p0:b19 3-9a7e3289:RUNNING:c302/301:p0:b19 4-b7448c81:RUNNING:c302/301:p0:b19 5-9d41da2f:RUNNING:c302/301:p0:b19
+1787756533.325 step=6 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=7/proc_seq=5 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c303/302:p0:b19 1-9e607a5c:RUNNING:c303/302:p0:b19 2-8963aad4:RUNNING:c303/302:p0:b19 3-9a7e3289:RUNNING:c303/302:p0:b19 4-b7448c81:RUNNING:c303/302:p0:b19 5-9d41da2f:RUNNING:c303/302:p0:b19
+1787756533.346 step=7 run=6 wait=0 skip=0 free=13 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=8/proc_seq=6 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c304/303:p0:b19 1-9e607a5c:RUNNING:c304/303:p0:b19 2-8963aad4:RUNNING:c304/303:p0:b19 3-9a7e3289:RUNNING:c304/303:p0:b19 4-b7448c81:RUNNING:c304/303:p0:b19 5-9d41da2f:RUNNING:c304/303:p0:b19
+1787756533.368 step=8 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=9/proc_seq=7 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c305/304:p0:b20 1-9e607a5c:RUNNING:c305/304:p0:b20 2-8963aad4:RUNNING:c305/304:p0:b20 3-9a7e3289:RUNNING:c305/304:p0:b20 4-b7448c81:RUNNING:c305/304:p0:b20 5-9d41da2f:RUNNING:c305/304:p0:b20
+1787756533.391 step=9 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=10/proc_seq=8 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c306/305:p0:b20 1-9e607a5c:RUNNING:c306/305:p0:b20 2-8963aad4:RUNNING:c306/305:p0:b20 3-9a7e3289:RUNNING:c306/305:p0:b20 4-b7448c81:RUNNING:c306/305:p0:b20 5-9d41da2f:RUNNING:c306/305:p0:b20
+1787756533.412 step=10 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=11/proc_seq=9 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c307/306:p0:b20 1-9e607a5c:RUNNING:c307/306:p0:b20 2-8963aad4:RUNNING:c307/306:p0:b20 3-9a7e3289:RUNNING:c307/306:p0:b20 4-b7448c81:RUNNING:c307/306:p0:b20 5-9d41da2f:RUNNING:c307/306:p0:b20
+1787756533.433 step=11 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=12/proc_seq=10 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c308/307:p0:b20 1-9e607a5c:RUNNING:c308/307:p0:b20 2-8963aad4:RUNNING:c308/307:p0:b20 3-9a7e3289:RUNNING:c308/307:p0:b20 4-b7448c81:RUNNING:c308/307:p0:b20 5-9d41da2f:RUNNING:c308/307:p0:b20
+1787756533.454 step=12 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=13/proc_seq=11 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c309/308:p0:b20 1-9e607a5c:RUNNING:c309/308:p0:b20 2-8963aad4:RUNNING:c309/308:p0:b20 3-9a7e3289:RUNNING:c309/308:p0:b20 4-b7448c81:RUNNING:c309/308:p0:b20 5-9d41da2f:RUNNING:c309/308:p0:b20
+1787756533.475 step=13 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=14/proc_seq=12 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c310/309:p0:b20 1-9e607a5c:RUNNING:c310/309:p0:b20 2-8963aad4:RUNNING:c310/309:p0:b20 3-9a7e3289:RUNNING:c310/309:p0:b20 4-b7448c81:RUNNING:c310/309:p0:b20 5-9d41da2f:RUNNING:c310/309:p0:b20
+1787756533.496 step=14 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=15/proc_seq=13 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c311/310:p0:b20 1-9e607a5c:RUNNING:c311/310:p0:b20 2-8963aad4:RUNNING:c311/310:p0:b20 3-9a7e3289:RUNNING:c311/310:p0:b20 4-b7448c81:RUNNING:c311/310:p0:b20 5-9d41da2f:RUNNING:c311/310:p0:b20
+1787756533.517 step=15 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=16/proc_seq=14 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c312/311:p0:b20 1-9e607a5c:RUNNING:c312/311:p0:b20 2-8963aad4:RUNNING:c312/311:p0:b20 3-9a7e3289:RUNNING:c312/311:p0:b20 4-b7448c81:RUNNING:c312/311:p0:b20 5-9d41da2f:RUNNING:c312/311:p0:b20
+1787756533.538 step=16 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=17/proc_seq=15 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c313/312:p0:b20 1-9e607a5c:RUNNING:c313/312:p0:b20 2-8963aad4:RUNNING:c313/312:p0:b20 3-9a7e3289:RUNNING:c313/312:p0:b20 4-b7448c81:RUNNING:c313/312:p0:b20 5-9d41da2f:RUNNING:c313/312:p0:b20
+1787756533.559 step=17 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=18/proc_seq=16 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c314/313:p0:b20 1-9e607a5c:RUNNING:c314/313:p0:b20 2-8963aad4:RUNNING:c314/313:p0:b20 3-9a7e3289:RUNNING:c314/313:p0:b20 4-b7448c81:RUNNING:c314/313:p0:b20 5-9d41da2f:RUNNING:c314/313:p0:b20
+1787756533.581 step=18 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=19/proc_seq=17 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c315/314:p0:b20 1-9e607a5c:RUNNING:c315/314:p0:b20 2-8963aad4:RUNNING:c315/314:p0:b20 3-9a7e3289:RUNNING:c315/314:p0:b20 4-b7448c81:RUNNING:c315/314:p0:b20 5-9d41da2f:RUNNING:c315/314:p0:b20
+1787756533.602 step=19 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=20/proc_seq=18 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c316/315:p0:b20 1-9e607a5c:RUNNING:c316/315:p0:b20 2-8963aad4:RUNNING:c316/315:p0:b20 3-9a7e3289:RUNNING:c316/315:p0:b20 4-b7448c81:RUNNING:c316/315:p0:b20 5-9d41da2f:RUNNING:c316/315:p0:b20
+1787756533.623 step=20 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=21/proc_seq=19 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c317/316:p0:b20 1-9e607a5c:RUNNING:c317/316:p0:b20 2-8963aad4:RUNNING:c317/316:p0:b20 3-9a7e3289:RUNNING:c317/316:p0:b20 4-b7448c81:RUNNING:c317/316:p0:b20 5-9d41da2f:RUNNING:c317/316:p0:b20
+1787756533.643 step=21 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=22/proc_seq=20 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c318/317:p0:b20 1-9e607a5c:RUNNING:c318/317:p0:b20 2-8963aad4:RUNNING:c318/317:p0:b20 3-9a7e3289:RUNNING:c318/317:p0:b20 4-b7448c81:RUNNING:c318/317:p0:b20 5-9d41da2f:RUNNING:c318/317:p0:b20
+1787756533.664 step=22 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=23/proc_seq=21 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c319/318:p0:b20 1-9e607a5c:RUNNING:c319/318:p0:b20 2-8963aad4:RUNNING:c319/318:p0:b20 3-9a7e3289:RUNNING:c319/318:p0:b20 4-b7448c81:RUNNING:c319/318:p0:b20 5-9d41da2f:RUNNING:c319/318:p0:b20
+1787756533.685 step=23 run=6 wait=0 skip=0 free=7 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=24/proc_seq=22 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c320/319:p0:b20 1-9e607a5c:RUNNING:c320/319:p0:b20 2-8963aad4:RUNNING:c320/319:p0:b20 3-9a7e3289:RUNNING:c320/319:p0:b20 4-b7448c81:RUNNING:c320/319:p0:b20 5-9d41da2f:RUNNING:c320/319:p0:b20
+1787756533.705 step=24 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=25/proc_seq=23 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c321/320:p0:b21 1-9e607a5c:RUNNING:c321/320:p0:b21 2-8963aad4:RUNNING:c321/320:p0:b21 3-9a7e3289:RUNNING:c321/320:p0:b21 4-b7448c81:RUNNING:c321/320:p0:b21 5-9d41da2f:RUNNING:c321/320:p0:b21
+1787756533.728 step=25 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=26/proc_seq=24 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c322/321:p0:b21 1-9e607a5c:RUNNING:c322/321:p0:b21 2-8963aad4:RUNNING:c322/321:p0:b21 3-9a7e3289:RUNNING:c322/321:p0:b21 4-b7448c81:RUNNING:c322/321:p0:b21 5-9d41da2f:RUNNING:c322/321:p0:b21
+1787756533.750 step=26 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=27/proc_seq=25 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c323/322:p0:b21 1-9e607a5c:RUNNING:c323/322:p0:b21 2-8963aad4:RUNNING:c323/322:p0:b21 3-9a7e3289:RUNNING:c323/322:p0:b21 4-b7448c81:RUNNING:c323/322:p0:b21 5-9d41da2f:RUNNING:c323/322:p0:b21
+1787756533.772 step=27 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=28/proc_seq=26 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c324/323:p0:b21 1-9e607a5c:RUNNING:c324/323:p0:b21 2-8963aad4:RUNNING:c324/323:p0:b21 3-9a7e3289:RUNNING:c324/323:p0:b21 4-b7448c81:RUNNING:c324/323:p0:b21 5-9d41da2f:RUNNING:c324/323:p0:b21
+1787756533.793 step=28 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=29/proc_seq=27 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c325/324:p0:b21 1-9e607a5c:RUNNING:c325/324:p0:b21 2-8963aad4:RUNNING:c325/324:p0:b21 3-9a7e3289:RUNNING:c325/324:p0:b21 4-b7448c81:RUNNING:c325/324:p0:b21 5-9d41da2f:RUNNING:c325/324:p0:b21
+1787756533.813 step=29 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=30/proc_seq=28 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c326/325:p0:b21 1-9e607a5c:RUNNING:c326/325:p0:b21 2-8963aad4:RUNNING:c326/325:p0:b21 3-9a7e3289:RUNNING:c326/325:p0:b21 4-b7448c81:RUNNING:c326/325:p0:b21 5-9d41da2f:RUNNING:c326/325:p0:b21
+1787756533.833 step=30 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=31/proc_seq=29 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c327/326:p0:b21 1-9e607a5c:RUNNING:c327/326:p0:b21 2-8963aad4:RUNNING:c327/326:p0:b21 3-9a7e3289:RUNNING:c327/326:p0:b21 4-b7448c81:RUNNING:c327/326:p0:b21 5-9d41da2f:RUNNING:c327/326:p0:b21
+1787756533.854 step=31 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=32/proc_seq=30 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c328/327:p0:b21 1-9e607a5c:RUNNING:c328/327:p0:b21 2-8963aad4:RUNNING:c328/327:p0:b21 3-9a7e3289:RUNNING:c328/327:p0:b21 4-b7448c81:RUNNING:c328/327:p0:b21 5-9d41da2f:RUNNING:c328/327:p0:b21
+1787756533.874 step=32 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=33/proc_seq=31 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c329/328:p0:b21 1-9e607a5c:RUNNING:c329/328:p0:b21 2-8963aad4:RUNNING:c329/328:p0:b21 3-9a7e3289:RUNNING:c329/328:p0:b21 4-b7448c81:RUNNING:c329/328:p0:b21 5-9d41da2f:RUNNING:c329/328:p0:b21
+1787756533.895 step=33 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=34/proc_seq=32 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c330/329:p0:b21 1-9e607a5c:RUNNING:c330/329:p0:b21 2-8963aad4:RUNNING:c330/329:p0:b21 3-9a7e3289:RUNNING:c330/329:p0:b21 4-b7448c81:RUNNING:c330/329:p0:b21 5-9d41da2f:RUNNING:c330/329:p0:b21
+1787756533.916 step=34 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=35/proc_seq=33 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c331/330:p0:b21 1-9e607a5c:RUNNING:c331/330:p0:b21 2-8963aad4:RUNNING:c331/330:p0:b21 3-9a7e3289:RUNNING:c331/330:p0:b21 4-b7448c81:RUNNING:c331/330:p0:b21 5-9d41da2f:RUNNING:c331/330:p0:b21
+1787756533.936 step=35 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=36/proc_seq=34 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c332/331:p0:b21 1-9e607a5c:RUNNING:c332/331:p0:b21 2-8963aad4:RUNNING:c332/331:p0:b21 3-9a7e3289:RUNNING:c332/331:p0:b21 4-b7448c81:RUNNING:c332/331:p0:b21 5-9d41da2f:RUNNING:c332/331:p0:b21
+1787756533.957 step=36 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=37/proc_seq=35 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c333/332:p0:b21 1-9e607a5c:RUNNING:c333/332:p0:b21 2-8963aad4:RUNNING:c333/332:p0:b21 3-9a7e3289:RUNNING:c333/332:p0:b21 4-b7448c81:RUNNING:c333/332:p0:b21 5-9d41da2f:RUNNING:c333/332:p0:b21
+1787756534.160 step=37 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=38/proc_seq=36 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c334/333:p0:b21 1-9e607a5c:RUNNING:c334/333:p0:b21 2-8963aad4:RUNNING:c334/333:p0:b21 3-9a7e3289:RUNNING:c334/333:p0:b21 4-b7448c81:RUNNING:c334/333:p0:b21 5-9d41da2f:RUNNING:c334/333:p0:b21
+1787756534.181 step=38 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=39/proc_seq=37 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c335/334:p0:b21 1-9e607a5c:RUNNING:c335/334:p0:b21 2-8963aad4:RUNNING:c335/334:p0:b21 3-9a7e3289:RUNNING:c335/334:p0:b21 4-b7448c81:RUNNING:c335/334:p0:b21 5-9d41da2f:RUNNING:c335/334:p0:b21
+1787756534.201 step=39 run=6 wait=0 skip=0 free=1 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=40/proc_seq=38 sched_tok=6 new=0 preempted=[] finished=[] | 0-8672a16c:RUNNING:c336/335:p0:b21 1-9e607a5c:RUNNING:c336/335:p0:b21 2-8963aad4:RUNNING:c336/335:p0:b21 3-9a7e3289:RUNNING:c336/335:p0:b21 4-b7448c81:RUNNING:c336/335:p0:b21 5-9d41da2f:RUNNING:c336/335:p0:b21
+1787756534.220 PREEMPT step=40 5-9d41da2f status=RUNNING computed=336 npreempt=0 inflight=False
+1787756534.220 PREEMPT step=40 4-b7448c81 status=RUNNING computed=336 npreempt=0 inflight=False
+1787756534.220 PREEMPT step=40 3-9a7e3289 status=RUNNING computed=336 npreempt=0 inflight=False
+1787756534.220 PREEMPT step=40 2-8963aad4 status=RUNNING computed=336 npreempt=0 inflight=False
+1787756534.220 PREEMPT step=40 1-9e607a5c status=RUNNING computed=336 npreempt=0 inflight=False
+1787756534.221 step=40 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[40] sched_seq=41/proc_seq=39 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c337/336:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p1:b0 2-8963aad4:PREEMPTED:c0/336:p1:b0 3-9a7e3289:PREEMPTED:c0/336:p1:b0 4-b7448c81:PREEMPTED:c0/336:p1:b0 5-9d41da2f:PREEMPTED:c0/336:p1:b0
+1787756534.235   match step=41 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.236   alloc step=41 1-9e607a5c ext=0
+1787756534.236   match step=41 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.236   alloc step=41 2-8963aad4 ext=0
+1787756534.236   match step=41 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.236   alloc step=41 3-9a7e3289 ext=0
+1787756534.236   match step=41 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.236   alloc step=41 4-b7448c81 ext=0
+1787756534.236   match step=41 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.236   alloc step=41 5-9d41da2f ext=0
+1787756534.236 step=41 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=42/proc_seq=40 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c338/337:p0:b22 1-9e607a5c:RUNNING:c336/336:p1:b21 2-8963aad4:RUNNING:c336/336:p1:b21 3-9a7e3289:RUNNING:c336/336:p1:b21 4-b7448c81:RUNNING:c336/336:p1:b21 5-9d41da2f:RUNNING:c336/336:p1:b21
+1787756534.261 PREEMPT step=42 5-9d41da2f status=RUNNING computed=336 npreempt=1 inflight=False
+1787756534.261 PREEMPT step=42 4-b7448c81 status=RUNNING computed=336 npreempt=1 inflight=False
+1787756534.261 PREEMPT step=42 3-9a7e3289 status=RUNNING computed=336 npreempt=1 inflight=False
+1787756534.261 PREEMPT step=42 2-8963aad4 status=RUNNING computed=336 npreempt=1 inflight=False
+1787756534.261 PREEMPT step=42 1-9e607a5c status=RUNNING computed=336 npreempt=1 inflight=False
+1787756534.262 step=42 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[42] sched_seq=43/proc_seq=41 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c339/338:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p2:b0 2-8963aad4:PREEMPTED:c0/336:p2:b0 3-9a7e3289:PREEMPTED:c0/336:p2:b0 4-b7448c81:PREEMPTED:c0/336:p2:b0 5-9d41da2f:PREEMPTED:c0/336:p2:b0
+1787756534.275   match step=43 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.276   alloc step=43 1-9e607a5c ext=0
+1787756534.276   match step=43 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.276   alloc step=43 2-8963aad4 ext=0
+1787756534.276   match step=43 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.276   alloc step=43 3-9a7e3289 ext=0
+1787756534.276   match step=43 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.276   alloc step=43 4-b7448c81 ext=0
+1787756534.276   match step=43 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.276   alloc step=43 5-9d41da2f ext=0
+1787756534.276 step=43 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=44/proc_seq=42 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c340/339:p0:b22 1-9e607a5c:RUNNING:c336/336:p2:b21 2-8963aad4:RUNNING:c336/336:p2:b21 3-9a7e3289:RUNNING:c336/336:p2:b21 4-b7448c81:RUNNING:c336/336:p2:b21 5-9d41da2f:RUNNING:c336/336:p2:b21
+1787756534.302 PREEMPT step=44 5-9d41da2f status=RUNNING computed=336 npreempt=2 inflight=False
+1787756534.302 PREEMPT step=44 4-b7448c81 status=RUNNING computed=336 npreempt=2 inflight=False
+1787756534.302 PREEMPT step=44 3-9a7e3289 status=RUNNING computed=336 npreempt=2 inflight=False
+1787756534.302 PREEMPT step=44 2-8963aad4 status=RUNNING computed=336 npreempt=2 inflight=False
+1787756534.302 PREEMPT step=44 1-9e607a5c status=RUNNING computed=336 npreempt=2 inflight=False
+1787756534.302 step=44 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[44] sched_seq=45/proc_seq=43 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c341/340:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p3:b0 2-8963aad4:PREEMPTED:c0/336:p3:b0 3-9a7e3289:PREEMPTED:c0/336:p3:b0 4-b7448c81:PREEMPTED:c0/336:p3:b0 5-9d41da2f:PREEMPTED:c0/336:p3:b0
+1787756534.317   match step=45 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.317   alloc step=45 1-9e607a5c ext=0
+1787756534.317   match step=45 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.317   alloc step=45 2-8963aad4 ext=0
+1787756534.317   match step=45 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.317   alloc step=45 3-9a7e3289 ext=0
+1787756534.317   match step=45 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.318   alloc step=45 4-b7448c81 ext=0
+1787756534.318   match step=45 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.318   alloc step=45 5-9d41da2f ext=0
+1787756534.318 step=45 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=46/proc_seq=44 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c342/341:p0:b22 1-9e607a5c:RUNNING:c336/336:p3:b21 2-8963aad4:RUNNING:c336/336:p3:b21 3-9a7e3289:RUNNING:c336/336:p3:b21 4-b7448c81:RUNNING:c336/336:p3:b21 5-9d41da2f:RUNNING:c336/336:p3:b21
+1787756534.334 PREEMPT step=46 5-9d41da2f status=RUNNING computed=336 npreempt=3 inflight=False
+1787756534.334 PREEMPT step=46 4-b7448c81 status=RUNNING computed=336 npreempt=3 inflight=False
+1787756534.334 PREEMPT step=46 3-9a7e3289 status=RUNNING computed=336 npreempt=3 inflight=False
+1787756534.334 PREEMPT step=46 2-8963aad4 status=RUNNING computed=336 npreempt=3 inflight=False
+1787756534.334 PREEMPT step=46 1-9e607a5c status=RUNNING computed=336 npreempt=3 inflight=False
+1787756534.335 step=46 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[46] sched_seq=47/proc_seq=45 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c343/342:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p4:b0 2-8963aad4:PREEMPTED:c0/336:p4:b0 3-9a7e3289:PREEMPTED:c0/336:p4:b0 4-b7448c81:PREEMPTED:c0/336:p4:b0 5-9d41da2f:PREEMPTED:c0/336:p4:b0
+1787756534.350   match step=47 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.350   alloc step=47 1-9e607a5c ext=0
+1787756534.350   match step=47 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.350   alloc step=47 2-8963aad4 ext=0
+1787756534.350   match step=47 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.350   alloc step=47 3-9a7e3289 ext=0
+1787756534.350   match step=47 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.350   alloc step=47 4-b7448c81 ext=0
+1787756534.350   match step=47 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.350   alloc step=47 5-9d41da2f ext=0
+1787756534.351 step=47 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=48/proc_seq=46 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c344/343:p0:b22 1-9e607a5c:RUNNING:c336/336:p4:b21 2-8963aad4:RUNNING:c336/336:p4:b21 3-9a7e3289:RUNNING:c336/336:p4:b21 4-b7448c81:RUNNING:c336/336:p4:b21 5-9d41da2f:RUNNING:c336/336:p4:b21
+1787756534.368 PREEMPT step=48 5-9d41da2f status=RUNNING computed=336 npreempt=4 inflight=False
+1787756534.368 PREEMPT step=48 4-b7448c81 status=RUNNING computed=336 npreempt=4 inflight=False
+1787756534.368 PREEMPT step=48 3-9a7e3289 status=RUNNING computed=336 npreempt=4 inflight=False
+1787756534.368 PREEMPT step=48 2-8963aad4 status=RUNNING computed=336 npreempt=4 inflight=False
+1787756534.368 PREEMPT step=48 1-9e607a5c status=RUNNING computed=336 npreempt=4 inflight=False
+1787756534.368 step=48 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[48] sched_seq=49/proc_seq=47 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c345/344:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p5:b0 2-8963aad4:PREEMPTED:c0/336:p5:b0 3-9a7e3289:PREEMPTED:c0/336:p5:b0 4-b7448c81:PREEMPTED:c0/336:p5:b0 5-9d41da2f:PREEMPTED:c0/336:p5:b0
+1787756534.382   match step=49 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.382   alloc step=49 1-9e607a5c ext=0
+1787756534.383   match step=49 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.383   alloc step=49 2-8963aad4 ext=0
+1787756534.383   match step=49 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.383   alloc step=49 3-9a7e3289 ext=0
+1787756534.383   match step=49 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.383   alloc step=49 4-b7448c81 ext=0
+1787756534.383   match step=49 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.383   alloc step=49 5-9d41da2f ext=0
+1787756534.383 step=49 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=50/proc_seq=48 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c346/345:p0:b22 1-9e607a5c:RUNNING:c336/336:p5:b21 2-8963aad4:RUNNING:c336/336:p5:b21 3-9a7e3289:RUNNING:c336/336:p5:b21 4-b7448c81:RUNNING:c336/336:p5:b21 5-9d41da2f:RUNNING:c336/336:p5:b21
+1787756534.400 PREEMPT step=50 5-9d41da2f status=RUNNING computed=336 npreempt=5 inflight=False
+1787756534.400 PREEMPT step=50 4-b7448c81 status=RUNNING computed=336 npreempt=5 inflight=False
+1787756534.400 PREEMPT step=50 3-9a7e3289 status=RUNNING computed=336 npreempt=5 inflight=False
+1787756534.400 PREEMPT step=50 2-8963aad4 status=RUNNING computed=336 npreempt=5 inflight=False
+1787756534.400 PREEMPT step=50 1-9e607a5c status=RUNNING computed=336 npreempt=5 inflight=False
+1787756534.400 step=50 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[50] sched_seq=51/proc_seq=49 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c347/346:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p6:b0 2-8963aad4:PREEMPTED:c0/336:p6:b0 3-9a7e3289:PREEMPTED:c0/336:p6:b0 4-b7448c81:PREEMPTED:c0/336:p6:b0 5-9d41da2f:PREEMPTED:c0/336:p6:b0
+1787756534.415   match step=51 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.415   alloc step=51 1-9e607a5c ext=0
+1787756534.415   match step=51 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.415   alloc step=51 2-8963aad4 ext=0
+1787756534.415   match step=51 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.416   alloc step=51 3-9a7e3289 ext=0
+1787756534.416   match step=51 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.416   alloc step=51 4-b7448c81 ext=0
+1787756534.416   match step=51 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.416   alloc step=51 5-9d41da2f ext=0
+1787756534.416 step=51 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=52/proc_seq=50 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c348/347:p0:b22 1-9e607a5c:RUNNING:c336/336:p6:b21 2-8963aad4:RUNNING:c336/336:p6:b21 3-9a7e3289:RUNNING:c336/336:p6:b21 4-b7448c81:RUNNING:c336/336:p6:b21 5-9d41da2f:RUNNING:c336/336:p6:b21
+1787756534.434 PREEMPT step=52 5-9d41da2f status=RUNNING computed=336 npreempt=6 inflight=False
+1787756534.434 PREEMPT step=52 4-b7448c81 status=RUNNING computed=336 npreempt=6 inflight=False
+1787756534.434 PREEMPT step=52 3-9a7e3289 status=RUNNING computed=336 npreempt=6 inflight=False
+1787756534.434 PREEMPT step=52 2-8963aad4 status=RUNNING computed=336 npreempt=6 inflight=False
+1787756534.434 PREEMPT step=52 1-9e607a5c status=RUNNING computed=336 npreempt=6 inflight=False
+1787756534.434 step=52 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[52] sched_seq=53/proc_seq=51 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c349/348:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p7:b0 2-8963aad4:PREEMPTED:c0/336:p7:b0 3-9a7e3289:PREEMPTED:c0/336:p7:b0 4-b7448c81:PREEMPTED:c0/336:p7:b0 5-9d41da2f:PREEMPTED:c0/336:p7:b0
+1787756534.449   match step=53 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.449   alloc step=53 1-9e607a5c ext=0
+1787756534.449   match step=53 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.449   alloc step=53 2-8963aad4 ext=0
+1787756534.449   match step=53 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.449   alloc step=53 3-9a7e3289 ext=0
+1787756534.449   match step=53 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.449   alloc step=53 4-b7448c81 ext=0
+1787756534.449   match step=53 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.449   alloc step=53 5-9d41da2f ext=0
+1787756534.450 step=53 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=54/proc_seq=52 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c350/349:p0:b22 1-9e607a5c:RUNNING:c336/336:p7:b21 2-8963aad4:RUNNING:c336/336:p7:b21 3-9a7e3289:RUNNING:c336/336:p7:b21 4-b7448c81:RUNNING:c336/336:p7:b21 5-9d41da2f:RUNNING:c336/336:p7:b21
+1787756534.467 PREEMPT step=54 5-9d41da2f status=RUNNING computed=336 npreempt=7 inflight=False
+1787756534.467 PREEMPT step=54 4-b7448c81 status=RUNNING computed=336 npreempt=7 inflight=False
+1787756534.467 PREEMPT step=54 3-9a7e3289 status=RUNNING computed=336 npreempt=7 inflight=False
+1787756534.467 PREEMPT step=54 2-8963aad4 status=RUNNING computed=336 npreempt=7 inflight=False
+1787756534.467 PREEMPT step=54 1-9e607a5c status=RUNNING computed=336 npreempt=7 inflight=False
+1787756534.467 step=54 run=1 wait=5 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=5entries/105blocks fences=[54] sched_seq=55/proc_seq=53 sched_tok=1 new=0 preempted=['1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:RUNNING:c351/350:p0:b22 1-9e607a5c:PREEMPTED:c0/336:p8:b0 2-8963aad4:PREEMPTED:c0/336:p8:b0 3-9a7e3289:PREEMPTED:c0/336:p8:b0 4-b7448c81:PREEMPTED:c0/336:p8:b0 5-9d41da2f:PREEMPTED:c0/336:p8:b0
+1787756534.481   match step=55 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.481   alloc step=55 1-9e607a5c ext=0
+1787756534.481   match step=55 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.481   alloc step=55 2-8963aad4 ext=0
+1787756534.481   match step=55 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.481   alloc step=55 3-9a7e3289 ext=0
+1787756534.481   match step=55 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.481   alloc step=55 4-b7448c81 ext=0
+1787756534.481   match step=55 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.481   alloc step=55 5-9d41da2f ext=0
+1787756534.482 step=55 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=56/proc_seq=54 sched_tok=1681 new=5 preempted=[] finished=[] | 0-8672a16c:RUNNING:c352/351:p0:b22 1-9e607a5c:RUNNING:c336/336:p8:b21 2-8963aad4:RUNNING:c336/336:p8:b21 3-9a7e3289:RUNNING:c336/336:p8:b21 4-b7448c81:RUNNING:c336/336:p8:b21 5-9d41da2f:RUNNING:c336/336:p8:b21
+1787756534.498 PREEMPT step=56 5-9d41da2f status=RUNNING computed=336 npreempt=8 inflight=False
+1787756534.498 PREEMPT step=56 4-b7448c81 status=RUNNING computed=336 npreempt=8 inflight=False
+1787756534.498 PREEMPT step=56 3-9a7e3289 status=RUNNING computed=336 npreempt=8 inflight=False
+1787756534.498 PREEMPT step=56 2-8963aad4 status=RUNNING computed=336 npreempt=8 inflight=False
+1787756534.498 PREEMPT step=56 1-9e607a5c status=RUNNING computed=336 npreempt=8 inflight=False
+1787756534.498 PREEMPT step=56 0-8672a16c status=RUNNING computed=352 npreempt=0 inflight=False
+1787756534.498 step=56 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[56] sched_seq=56/proc_seq=55 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p1:b0 1-9e607a5c:PREEMPTED:c0/336:p9:b0 2-8963aad4:PREEMPTED:c0/336:p9:b0 3-9a7e3289:PREEMPTED:c0/336:p9:b0 4-b7448c81:PREEMPTED:c0/336:p9:b0 5-9d41da2f:PREEMPTED:c0/336:p9:b0
+1787756534.499   match step=57 0-8672a16c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 0-8672a16c ext=0
+1787756534.499   match step=57 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 1-9e607a5c ext=0
+1787756534.499   match step=57 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 2-8963aad4 ext=0
+1787756534.499   match step=57 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 3-9a7e3289 ext=0
+1787756534.499   match step=57 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 4-b7448c81 ext=0
+1787756534.499   match step=57 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.499   alloc step=57 5-9d41da2f ext=0
+1787756534.500 step=57 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=57/proc_seq=56 sched_tok=2032 new=6 preempted=[] finished=[] | 0-8672a16c:RUNNING:c352/352:p1:b22 1-9e607a5c:RUNNING:c336/336:p9:b21 2-8963aad4:RUNNING:c336/336:p9:b21 3-9a7e3289:RUNNING:c336/336:p9:b21 4-b7448c81:RUNNING:c336/336:p9:b21 5-9d41da2f:RUNNING:c336/336:p9:b21
+1787756534.520 PREEMPT step=58 5-9d41da2f status=RUNNING computed=336 npreempt=9 inflight=False
+1787756534.520 PREEMPT step=58 4-b7448c81 status=RUNNING computed=336 npreempt=9 inflight=False
+1787756534.520 PREEMPT step=58 3-9a7e3289 status=RUNNING computed=336 npreempt=9 inflight=False
+1787756534.520 PREEMPT step=58 2-8963aad4 status=RUNNING computed=336 npreempt=9 inflight=False
+1787756534.520 PREEMPT step=58 1-9e607a5c status=RUNNING computed=336 npreempt=9 inflight=False
+1787756534.520 PREEMPT step=58 0-8672a16c status=RUNNING computed=352 npreempt=1 inflight=False
+1787756534.521 step=58 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[57] sched_seq=57/proc_seq=56 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p2:b0 1-9e607a5c:PREEMPTED:c0/336:p10:b0 2-8963aad4:PREEMPTED:c0/336:p10:b0 3-9a7e3289:PREEMPTED:c0/336:p10:b0 4-b7448c81:PREEMPTED:c0/336:p10:b0 5-9d41da2f:PREEMPTED:c0/336:p10:b0
+1787756534.521   match step=59 0-8672a16c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.521   alloc step=59 0-8672a16c ext=0
+1787756534.521   match step=59 1-9e607a5c status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.521   alloc step=59 1-9e607a5c ext=0
+1787756534.522   match step=59 2-8963aad4 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.522   alloc step=59 2-8963aad4 ext=0
+1787756534.522   match step=59 3-9a7e3289 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.522   alloc step=59 3-9a7e3289 ext=0
+1787756534.522   match step=59 4-b7448c81 status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.522   alloc step=59 4-b7448c81 ext=0
+1787756534.522   match step=59 5-9d41da2f status=PREEMPTED vllm_computed=0 -> (0, False)
+1787756534.522   alloc step=59 5-9d41da2f ext=0
+1787756534.522 step=59 run=6 wait=0 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=0entries/0blocks fences=[] sched_seq=58/proc_seq=57 sched_tok=2032 new=6 preempted=[] finished=[] | 0-8672a16c:RUNNING:c352/352:p2:b22 1-9e607a5c:RUNNING:c336/336:p10:b21 2-8963aad4:RUNNING:c336/336:p10:b21 3-9a7e3289:RUNNING:c336/336:p10:b21 4-b7448c81:RUNNING:c336/336:p10:b21 5-9d41da2f:RUNNING:c336/336:p10:b21
+1787756534.540 PREEMPT step=60 5-9d41da2f status=RUNNING computed=336 npreempt=10 inflight=False
+1787756534.540 PREEMPT step=60 4-b7448c81 status=RUNNING computed=336 npreempt=10 inflight=False
+1787756534.540 PREEMPT step=60 3-9a7e3289 status=RUNNING computed=336 npreempt=10 inflight=False
+1787756534.540 PREEMPT step=60 2-8963aad4 status=RUNNING computed=336 npreempt=10 inflight=False
+1787756534.540 PREEMPT step=60 1-9e607a5c status=RUNNING computed=336 npreempt=10 inflight=False
+1787756534.540 PREEMPT step=60 0-8672a16c status=RUNNING computed=352 npreempt=2 inflight=False
+1787756534.559 PREEMPT step=62 5-9d41da2f status=RUNNING computed=336 npreempt=11 inflight=False
+1787756534.559 PREEMPT step=62 4-b7448c81 status=RUNNING computed=336 npreempt=11 inflight=False
+1787756534.559 PREEMPT step=62 3-9a7e3289 status=RUNNING computed=336 npreempt=11 inflight=False
+1787756534.559 PREEMPT step=62 2-8963aad4 status=RUNNING computed=336 npreempt=11 inflight=False
+1787756534.559 PREEMPT step=62 1-9e607a5c status=RUNNING computed=336 npreempt=11 inflight=False
+1787756534.559 PREEMPT step=62 0-8672a16c status=RUNNING computed=352 npreempt=3 inflight=False
+1787756534.579 PREEMPT step=64 5-9d41da2f status=RUNNING computed=336 npreempt=12 inflight=False
+1787756534.579 PREEMPT step=64 4-b7448c81 status=RUNNING computed=336 npreempt=12 inflight=False
+1787756534.579 PREEMPT step=64 3-9a7e3289 status=RUNNING computed=336 npreempt=12 inflight=False
+1787756534.579 PREEMPT step=64 2-8963aad4 status=RUNNING computed=336 npreempt=12 inflight=False
+1787756534.579 PREEMPT step=64 1-9e607a5c status=RUNNING computed=336 npreempt=12 inflight=False
+1787756534.580 PREEMPT step=64 0-8672a16c status=RUNNING computed=352 npreempt=4 inflight=False
+1787756534.599 PREEMPT step=66 5-9d41da2f status=RUNNING computed=336 npreempt=13 inflight=False
+1787756534.599 PREEMPT step=66 4-b7448c81 status=RUNNING computed=336 npreempt=13 inflight=False
+1787756534.599 PREEMPT step=66 3-9a7e3289 status=RUNNING computed=336 npreempt=13 inflight=False
+1787756534.599 PREEMPT step=66 2-8963aad4 status=RUNNING computed=336 npreempt=13 inflight=False
+1787756534.599 PREEMPT step=66 1-9e607a5c status=RUNNING computed=336 npreempt=13 inflight=False
+1787756534.599 PREEMPT step=66 0-8672a16c status=RUNNING computed=352 npreempt=5 inflight=False
+1787756534.618 PREEMPT step=68 5-9d41da2f status=RUNNING computed=336 npreempt=14 inflight=False
+1787756534.618 PREEMPT step=68 4-b7448c81 status=RUNNING computed=336 npreempt=14 inflight=False
+1787756534.618 PREEMPT step=68 3-9a7e3289 status=RUNNING computed=336 npreempt=14 inflight=False
+1787756534.618 PREEMPT step=68 2-8963aad4 status=RUNNING computed=336 npreempt=14 inflight=False
+1787756534.618 PREEMPT step=68 1-9e607a5c status=RUNNING computed=336 npreempt=14 inflight=False
+1787756534.618 PREEMPT step=68 0-8672a16c status=RUNNING computed=352 npreempt=6 inflight=False
+1787756534.637 PREEMPT step=70 5-9d41da2f status=RUNNING computed=336 npreempt=15 inflight=False
+1787756534.637 PREEMPT step=70 4-b7448c81 status=RUNNING computed=336 npreempt=15 inflight=False
+1787756534.637 PREEMPT step=70 3-9a7e3289 status=RUNNING computed=336 npreempt=15 inflight=False
+1787756534.637 PREEMPT step=70 2-8963aad4 status=RUNNING computed=336 npreempt=15 inflight=False
+1787756534.637 PREEMPT step=70 1-9e607a5c status=RUNNING computed=336 npreempt=15 inflight=False
+1787756534.638 PREEMPT step=70 0-8672a16c status=RUNNING computed=352 npreempt=7 inflight=False
+1787756534.656 PREEMPT step=72 5-9d41da2f status=RUNNING computed=336 npreempt=16 inflight=False
+1787756534.656 PREEMPT step=72 4-b7448c81 status=RUNNING computed=336 npreempt=16 inflight=False
+1787756534.656 PREEMPT step=72 3-9a7e3289 status=RUNNING computed=336 npreempt=16 inflight=False
+1787756534.656 PREEMPT step=72 2-8963aad4 status=RUNNING computed=336 npreempt=16 inflight=False
+1787756534.656 PREEMPT step=72 1-9e607a5c status=RUNNING computed=336 npreempt=16 inflight=False
+1787756534.656 PREEMPT step=72 0-8672a16c status=RUNNING computed=352 npreempt=8 inflight=False
+1787756534.675 PREEMPT step=74 5-9d41da2f status=RUNNING computed=336 npreempt=17 inflight=False
+1787756534.675 PREEMPT step=74 4-b7448c81 status=RUNNING computed=336 npreempt=17 inflight=False
+1787756534.675 PREEMPT step=74 3-9a7e3289 status=RUNNING computed=336 npreempt=17 inflight=False
+1787756534.675 PREEMPT step=74 2-8963aad4 status=RUNNING computed=336 npreempt=17 inflight=False
+1787756534.676 PREEMPT step=74 1-9e607a5c status=RUNNING computed=336 npreempt=17 inflight=False
+1787756534.676 PREEMPT step=74 0-8672a16c status=RUNNING computed=352 npreempt=9 inflight=False
+1787756534.695 PREEMPT step=76 5-9d41da2f status=RUNNING computed=336 npreempt=18 inflight=False
+1787756534.695 PREEMPT step=76 4-b7448c81 status=RUNNING computed=336 npreempt=18 inflight=False
+1787756534.695 PREEMPT step=76 3-9a7e3289 status=RUNNING computed=336 npreempt=18 inflight=False
+1787756534.695 PREEMPT step=76 2-8963aad4 status=RUNNING computed=336 npreempt=18 inflight=False
+1787756534.695 PREEMPT step=76 1-9e607a5c status=RUNNING computed=336 npreempt=18 inflight=False
+1787756534.695 PREEMPT step=76 0-8672a16c status=RUNNING computed=352 npreempt=10 inflight=False
+1787756534.714 PREEMPT step=78 5-9d41da2f status=RUNNING computed=336 npreempt=19 inflight=False
+1787756534.714 PREEMPT step=78 4-b7448c81 status=RUNNING computed=336 npreempt=19 inflight=False
+1787756534.714 PREEMPT step=78 3-9a7e3289 status=RUNNING computed=336 npreempt=19 inflight=False
+1787756534.714 PREEMPT step=78 2-8963aad4 status=RUNNING computed=336 npreempt=19 inflight=False
+1787756534.714 PREEMPT step=78 1-9e607a5c status=RUNNING computed=336 npreempt=19 inflight=False
+1787756534.714 PREEMPT step=78 0-8672a16c status=RUNNING computed=352 npreempt=11 inflight=False
+1787756534.732 PREEMPT step=80 5-9d41da2f status=RUNNING computed=336 npreempt=20 inflight=False
+1787756534.732 PREEMPT step=80 4-b7448c81 status=RUNNING computed=336 npreempt=20 inflight=False
+1787756534.732 PREEMPT step=80 3-9a7e3289 status=RUNNING computed=336 npreempt=20 inflight=False
+1787756534.732 PREEMPT step=80 2-8963aad4 status=RUNNING computed=336 npreempt=20 inflight=False
+1787756534.732 PREEMPT step=80 1-9e607a5c status=RUNNING computed=336 npreempt=20 inflight=False
+1787756534.732 PREEMPT step=80 0-8672a16c status=RUNNING computed=352 npreempt=12 inflight=False
+1787756534.751 PREEMPT step=82 5-9d41da2f status=RUNNING computed=336 npreempt=21 inflight=False
+1787756534.751 PREEMPT step=82 4-b7448c81 status=RUNNING computed=336 npreempt=21 inflight=False
+1787756534.751 PREEMPT step=82 3-9a7e3289 status=RUNNING computed=336 npreempt=21 inflight=False
+1787756534.751 PREEMPT step=82 2-8963aad4 status=RUNNING computed=336 npreempt=21 inflight=False
+1787756534.751 PREEMPT step=82 1-9e607a5c status=RUNNING computed=336 npreempt=21 inflight=False
+1787756534.751 PREEMPT step=82 0-8672a16c status=RUNNING computed=352 npreempt=13 inflight=False
+1787756534.769 PREEMPT step=84 5-9d41da2f status=RUNNING computed=336 npreempt=22 inflight=False
+1787756534.769 PREEMPT step=84 4-b7448c81 status=RUNNING computed=336 npreempt=22 inflight=False
+1787756534.769 PREEMPT step=84 3-9a7e3289 status=RUNNING computed=336 npreempt=22 inflight=False
+1787756534.769 PREEMPT step=84 2-8963aad4 status=RUNNING computed=336 npreempt=22 inflight=False
+1787756534.769 PREEMPT step=84 1-9e607a5c status=RUNNING computed=336 npreempt=22 inflight=False
+1787756534.770 PREEMPT step=84 0-8672a16c status=RUNNING computed=352 npreempt=14 inflight=False
+1787756534.788 PREEMPT step=86 5-9d41da2f status=RUNNING computed=336 npreempt=23 inflight=False
+1787756534.788 PREEMPT step=86 4-b7448c81 status=RUNNING computed=336 npreempt=23 inflight=False
+1787756534.788 PREEMPT step=86 3-9a7e3289 status=RUNNING computed=336 npreempt=23 inflight=False
+1787756534.788 PREEMPT step=86 2-8963aad4 status=RUNNING computed=336 npreempt=23 inflight=False
+1787756534.788 PREEMPT step=86 1-9e607a5c status=RUNNING computed=336 npreempt=23 inflight=False
+1787756534.788 PREEMPT step=86 0-8672a16c status=RUNNING computed=352 npreempt=15 inflight=False
+1787756534.807 PREEMPT step=88 5-9d41da2f status=RUNNING computed=336 npreempt=24 inflight=False
+1787756534.807 PREEMPT step=88 4-b7448c81 status=RUNNING computed=336 npreempt=24 inflight=False
+1787756534.807 PREEMPT step=88 3-9a7e3289 status=RUNNING computed=336 npreempt=24 inflight=False
+1787756534.807 PREEMPT step=88 2-8963aad4 status=RUNNING computed=336 npreempt=24 inflight=False
+1787756534.807 PREEMPT step=88 1-9e607a5c status=RUNNING computed=336 npreempt=24 inflight=False
+1787756534.807 PREEMPT step=88 0-8672a16c status=RUNNING computed=352 npreempt=16 inflight=False
+1787756534.826 PREEMPT step=90 5-9d41da2f status=RUNNING computed=336 npreempt=25 inflight=False
+1787756534.826 PREEMPT step=90 4-b7448c81 status=RUNNING computed=336 npreempt=25 inflight=False
+1787756534.826 PREEMPT step=90 3-9a7e3289 status=RUNNING computed=336 npreempt=25 inflight=False
+1787756534.826 PREEMPT step=90 2-8963aad4 status=RUNNING computed=336 npreempt=25 inflight=False
+1787756534.826 PREEMPT step=90 1-9e607a5c status=RUNNING computed=336 npreempt=25 inflight=False
+1787756534.826 PREEMPT step=90 0-8672a16c status=RUNNING computed=352 npreempt=17 inflight=False
+1787756534.844 PREEMPT step=92 5-9d41da2f status=RUNNING computed=336 npreempt=26 inflight=False
+1787756534.844 PREEMPT step=92 4-b7448c81 status=RUNNING computed=336 npreempt=26 inflight=False
+1787756534.844 PREEMPT step=92 3-9a7e3289 status=RUNNING computed=336 npreempt=26 inflight=False
+1787756534.844 PREEMPT step=92 2-8963aad4 status=RUNNING computed=336 npreempt=26 inflight=False
+1787756534.844 PREEMPT step=92 1-9e607a5c status=RUNNING computed=336 npreempt=26 inflight=False
+1787756534.844 PREEMPT step=92 0-8672a16c status=RUNNING computed=352 npreempt=18 inflight=False
+1787756534.862 PREEMPT step=94 5-9d41da2f status=RUNNING computed=336 npreempt=27 inflight=False
+1787756534.862 PREEMPT step=94 4-b7448c81 status=RUNNING computed=336 npreempt=27 inflight=False
+1787756534.863 PREEMPT step=94 3-9a7e3289 status=RUNNING computed=336 npreempt=27 inflight=False
+1787756534.863 PREEMPT step=94 2-8963aad4 status=RUNNING computed=336 npreempt=27 inflight=False
+1787756534.863 PREEMPT step=94 1-9e607a5c status=RUNNING computed=336 npreempt=27 inflight=False
+1787756534.863 PREEMPT step=94 0-8672a16c status=RUNNING computed=352 npreempt=19 inflight=False
+1787756534.881 PREEMPT step=96 5-9d41da2f status=RUNNING computed=336 npreempt=28 inflight=False
+1787756534.881 PREEMPT step=96 4-b7448c81 status=RUNNING computed=336 npreempt=28 inflight=False
+1787756534.881 PREEMPT step=96 3-9a7e3289 status=RUNNING computed=336 npreempt=28 inflight=False
+1787756534.881 PREEMPT step=96 2-8963aad4 status=RUNNING computed=336 npreempt=28 inflight=False
+1787756534.881 PREEMPT step=96 1-9e607a5c status=RUNNING computed=336 npreempt=28 inflight=False
+1787756534.881 PREEMPT step=96 0-8672a16c status=RUNNING computed=352 npreempt=20 inflight=False
+1787756534.900 PREEMPT step=98 5-9d41da2f status=RUNNING computed=336 npreempt=29 inflight=False
+1787756534.900 PREEMPT step=98 4-b7448c81 status=RUNNING computed=336 npreempt=29 inflight=False
+1787756534.900 PREEMPT step=98 3-9a7e3289 status=RUNNING computed=336 npreempt=29 inflight=False
+1787756534.900 PREEMPT step=98 2-8963aad4 status=RUNNING computed=336 npreempt=29 inflight=False
+1787756534.900 PREEMPT step=98 1-9e607a5c status=RUNNING computed=336 npreempt=29 inflight=False
+1787756534.900 PREEMPT step=98 0-8672a16c status=RUNNING computed=352 npreempt=21 inflight=False
+1787756534.919 PREEMPT step=100 5-9d41da2f status=RUNNING computed=336 npreempt=30 inflight=False
+1787756534.919 PREEMPT step=100 4-b7448c81 status=RUNNING computed=336 npreempt=30 inflight=False
+1787756534.919 PREEMPT step=100 3-9a7e3289 status=RUNNING computed=336 npreempt=30 inflight=False
+1787756534.919 PREEMPT step=100 2-8963aad4 status=RUNNING computed=336 npreempt=30 inflight=False
+1787756534.919 PREEMPT step=100 1-9e607a5c status=RUNNING computed=336 npreempt=30 inflight=False
+1787756534.919 PREEMPT step=100 0-8672a16c status=RUNNING computed=352 npreempt=22 inflight=False
+1787756534.919 step=100 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[78] sched_seq=78/proc_seq=77 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p23:b0 1-9e607a5c:PREEMPTED:c0/336:p31:b0 2-8963aad4:PREEMPTED:c0/336:p31:b0 3-9a7e3289:PREEMPTED:c0/336:p31:b0 4-b7448c81:PREEMPTED:c0/336:p31:b0 5-9d41da2f:PREEMPTED:c0/336:p31:b0
+1787756534.937 PREEMPT step=102 5-9d41da2f status=RUNNING computed=336 npreempt=31 inflight=False
+1787756534.937 PREEMPT step=102 4-b7448c81 status=RUNNING computed=336 npreempt=31 inflight=False
+1787756534.937 PREEMPT step=102 3-9a7e3289 status=RUNNING computed=336 npreempt=31 inflight=False
+1787756534.937 PREEMPT step=102 2-8963aad4 status=RUNNING computed=336 npreempt=31 inflight=False
+1787756534.937 PREEMPT step=102 1-9e607a5c status=RUNNING computed=336 npreempt=31 inflight=False
+1787756534.937 PREEMPT step=102 0-8672a16c status=RUNNING computed=352 npreempt=23 inflight=False
+1787756534.956 PREEMPT step=104 5-9d41da2f status=RUNNING computed=336 npreempt=32 inflight=False
+1787756534.956 PREEMPT step=104 4-b7448c81 status=RUNNING computed=336 npreempt=32 inflight=False
+1787756534.956 PREEMPT step=104 3-9a7e3289 status=RUNNING computed=336 npreempt=32 inflight=False
+1787756534.956 PREEMPT step=104 2-8963aad4 status=RUNNING computed=336 npreempt=32 inflight=False
+1787756534.956 PREEMPT step=104 1-9e607a5c status=RUNNING computed=336 npreempt=32 inflight=False
+1787756534.956 PREEMPT step=104 0-8672a16c status=RUNNING computed=352 npreempt=24 inflight=False
+1787756534.974 PREEMPT step=106 5-9d41da2f status=RUNNING computed=336 npreempt=33 inflight=False
+1787756534.974 PREEMPT step=106 4-b7448c81 status=RUNNING computed=336 npreempt=33 inflight=False
+1787756534.974 PREEMPT step=106 3-9a7e3289 status=RUNNING computed=336 npreempt=33 inflight=False
+1787756534.974 PREEMPT step=106 2-8963aad4 status=RUNNING computed=336 npreempt=33 inflight=False
+1787756534.974 PREEMPT step=106 1-9e607a5c status=RUNNING computed=336 npreempt=33 inflight=False
+1787756534.974 PREEMPT step=106 0-8672a16c status=RUNNING computed=352 npreempt=25 inflight=False
+1787756534.993 PREEMPT step=108 5-9d41da2f status=RUNNING computed=336 npreempt=34 inflight=False
+1787756534.993 PREEMPT step=108 4-b7448c81 status=RUNNING computed=336 npreempt=34 inflight=False
+1787756534.993 PREEMPT step=108 3-9a7e3289 status=RUNNING computed=336 npreempt=34 inflight=False
+1787756534.993 PREEMPT step=108 2-8963aad4 status=RUNNING computed=336 npreempt=34 inflight=False
+1787756534.993 PREEMPT step=108 1-9e607a5c status=RUNNING computed=336 npreempt=34 inflight=False
+1787756534.993 PREEMPT step=108 0-8672a16c status=RUNNING computed=352 npreempt=26 inflight=False
+1787756535.011 PREEMPT step=110 5-9d41da2f status=RUNNING computed=336 npreempt=35 inflight=False
+1787756535.011 PREEMPT step=110 4-b7448c81 status=RUNNING computed=336 npreempt=35 inflight=False
+1787756535.011 PREEMPT step=110 3-9a7e3289 status=RUNNING computed=336 npreempt=35 inflight=False
+1787756535.011 PREEMPT step=110 2-8963aad4 status=RUNNING computed=336 npreempt=35 inflight=False
+1787756535.011 PREEMPT step=110 1-9e607a5c status=RUNNING computed=336 npreempt=35 inflight=False
+1787756535.011 PREEMPT step=110 0-8672a16c status=RUNNING computed=352 npreempt=27 inflight=False
+1787756535.030 PREEMPT step=112 5-9d41da2f status=RUNNING computed=336 npreempt=36 inflight=False
+1787756535.030 PREEMPT step=112 4-b7448c81 status=RUNNING computed=336 npreempt=36 inflight=False
+1787756535.030 PREEMPT step=112 3-9a7e3289 status=RUNNING computed=336 npreempt=36 inflight=False
+1787756535.030 PREEMPT step=112 2-8963aad4 status=RUNNING computed=336 npreempt=36 inflight=False
+1787756535.030 PREEMPT step=112 1-9e607a5c status=RUNNING computed=336 npreempt=36 inflight=False
+1787756535.030 PREEMPT step=112 0-8672a16c status=RUNNING computed=352 npreempt=28 inflight=False
+1787756535.048 PREEMPT step=114 5-9d41da2f status=RUNNING computed=336 npreempt=37 inflight=False
+1787756535.048 PREEMPT step=114 4-b7448c81 status=RUNNING computed=336 npreempt=37 inflight=False
+1787756535.048 PREEMPT step=114 3-9a7e3289 status=RUNNING computed=336 npreempt=37 inflight=False
+1787756535.048 PREEMPT step=114 2-8963aad4 status=RUNNING computed=336 npreempt=37 inflight=False
+1787756535.048 PREEMPT step=114 1-9e607a5c status=RUNNING computed=336 npreempt=37 inflight=False
+1787756535.048 PREEMPT step=114 0-8672a16c status=RUNNING computed=352 npreempt=29 inflight=False
+1787756535.066 PREEMPT step=116 5-9d41da2f status=RUNNING computed=336 npreempt=38 inflight=False
+1787756535.066 PREEMPT step=116 4-b7448c81 status=RUNNING computed=336 npreempt=38 inflight=False
+1787756535.066 PREEMPT step=116 3-9a7e3289 status=RUNNING computed=336 npreempt=38 inflight=False
+1787756535.066 PREEMPT step=116 2-8963aad4 status=RUNNING computed=336 npreempt=38 inflight=False
+1787756535.066 PREEMPT step=116 1-9e607a5c status=RUNNING computed=336 npreempt=38 inflight=False
+1787756535.066 PREEMPT step=116 0-8672a16c status=RUNNING computed=352 npreempt=30 inflight=False
+1787756535.085 PREEMPT step=118 5-9d41da2f status=RUNNING computed=336 npreempt=39 inflight=False
+1787756535.085 PREEMPT step=118 4-b7448c81 status=RUNNING computed=336 npreempt=39 inflight=False
+1787756535.085 PREEMPT step=118 3-9a7e3289 status=RUNNING computed=336 npreempt=39 inflight=False
+1787756535.085 PREEMPT step=118 2-8963aad4 status=RUNNING computed=336 npreempt=39 inflight=False
+1787756535.085 PREEMPT step=118 1-9e607a5c status=RUNNING computed=336 npreempt=39 inflight=False
+1787756535.085 PREEMPT step=118 0-8672a16c status=RUNNING computed=352 npreempt=31 inflight=False
+1787756535.103 PREEMPT step=120 5-9d41da2f status=RUNNING computed=336 npreempt=40 inflight=False
+1787756535.103 PREEMPT step=120 4-b7448c81 status=RUNNING computed=336 npreempt=40 inflight=False
+1787756535.103 PREEMPT step=120 3-9a7e3289 status=RUNNING computed=336 npreempt=40 inflight=False
+1787756535.103 PREEMPT step=120 2-8963aad4 status=RUNNING computed=336 npreempt=40 inflight=False
+1787756535.103 PREEMPT step=120 1-9e607a5c status=RUNNING computed=336 npreempt=40 inflight=False
+1787756535.103 PREEMPT step=120 0-8672a16c status=RUNNING computed=352 npreempt=32 inflight=False
+1787756535.122 PREEMPT step=122 5-9d41da2f status=RUNNING computed=336 npreempt=41 inflight=False
+1787756535.122 PREEMPT step=122 4-b7448c81 status=RUNNING computed=336 npreempt=41 inflight=False
+1787756535.122 PREEMPT step=122 3-9a7e3289 status=RUNNING computed=336 npreempt=41 inflight=False
+1787756535.122 PREEMPT step=122 2-8963aad4 status=RUNNING computed=336 npreempt=41 inflight=False
+1787756535.122 PREEMPT step=122 1-9e607a5c status=RUNNING computed=336 npreempt=41 inflight=False
+1787756535.122 PREEMPT step=122 0-8672a16c status=RUNNING computed=352 npreempt=33 inflight=False
+1787756535.140 PREEMPT step=124 5-9d41da2f status=RUNNING computed=336 npreempt=42 inflight=False
+1787756535.140 PREEMPT step=124 4-b7448c81 status=RUNNING computed=336 npreempt=42 inflight=False
+1787756535.140 PREEMPT step=124 3-9a7e3289 status=RUNNING computed=336 npreempt=42 inflight=False
+1787756535.140 PREEMPT step=124 2-8963aad4 status=RUNNING computed=336 npreempt=42 inflight=False
+1787756535.140 PREEMPT step=124 1-9e607a5c status=RUNNING computed=336 npreempt=42 inflight=False
+1787756535.140 PREEMPT step=124 0-8672a16c status=RUNNING computed=352 npreempt=34 inflight=False
+1787756535.158 PREEMPT step=126 5-9d41da2f status=RUNNING computed=336 npreempt=43 inflight=False
+1787756535.159 PREEMPT step=126 4-b7448c81 status=RUNNING computed=336 npreempt=43 inflight=False
+1787756535.159 PREEMPT step=126 3-9a7e3289 status=RUNNING computed=336 npreempt=43 inflight=False
+1787756535.159 PREEMPT step=126 2-8963aad4 status=RUNNING computed=336 npreempt=43 inflight=False
+1787756535.159 PREEMPT step=126 1-9e607a5c status=RUNNING computed=336 npreempt=43 inflight=False
+1787756535.159 PREEMPT step=126 0-8672a16c status=RUNNING computed=352 npreempt=35 inflight=False
+1787756535.177 PREEMPT step=128 5-9d41da2f status=RUNNING computed=336 npreempt=44 inflight=False
+1787756535.177 PREEMPT step=128 4-b7448c81 status=RUNNING computed=336 npreempt=44 inflight=False
+1787756535.177 PREEMPT step=128 3-9a7e3289 status=RUNNING computed=336 npreempt=44 inflight=False
+1787756535.177 PREEMPT step=128 2-8963aad4 status=RUNNING computed=336 npreempt=44 inflight=False
+1787756535.177 PREEMPT step=128 1-9e607a5c status=RUNNING computed=336 npreempt=44 inflight=False
+1787756535.177 PREEMPT step=128 0-8672a16c status=RUNNING computed=352 npreempt=36 inflight=False
+1787756535.196 PREEMPT step=130 5-9d41da2f status=RUNNING computed=336 npreempt=45 inflight=False
+1787756535.196 PREEMPT step=130 4-b7448c81 status=RUNNING computed=336 npreempt=45 inflight=False
+1787756535.196 PREEMPT step=130 3-9a7e3289 status=RUNNING computed=336 npreempt=45 inflight=False
+1787756535.196 PREEMPT step=130 2-8963aad4 status=RUNNING computed=336 npreempt=45 inflight=False
+1787756535.196 PREEMPT step=130 1-9e607a5c status=RUNNING computed=336 npreempt=45 inflight=False
+1787756535.196 PREEMPT step=130 0-8672a16c status=RUNNING computed=352 npreempt=37 inflight=False
+1787756535.216 PREEMPT step=132 5-9d41da2f status=RUNNING computed=336 npreempt=46 inflight=False
+1787756535.216 PREEMPT step=132 4-b7448c81 status=RUNNING computed=336 npreempt=46 inflight=False
+1787756535.216 PREEMPT step=132 3-9a7e3289 status=RUNNING computed=336 npreempt=46 inflight=False
+1787756535.216 PREEMPT step=132 2-8963aad4 status=RUNNING computed=336 npreempt=46 inflight=False
+1787756535.216 PREEMPT step=132 1-9e607a5c status=RUNNING computed=336 npreempt=46 inflight=False
+1787756535.216 PREEMPT step=132 0-8672a16c status=RUNNING computed=352 npreempt=38 inflight=False
+1787756535.235 PREEMPT step=134 5-9d41da2f status=RUNNING computed=336 npreempt=47 inflight=False
+1787756535.235 PREEMPT step=134 4-b7448c81 status=RUNNING computed=336 npreempt=47 inflight=False
+1787756535.235 PREEMPT step=134 3-9a7e3289 status=RUNNING computed=336 npreempt=47 inflight=False
+1787756535.235 PREEMPT step=134 2-8963aad4 status=RUNNING computed=336 npreempt=47 inflight=False
+1787756535.235 PREEMPT step=134 1-9e607a5c status=RUNNING computed=336 npreempt=47 inflight=False
+1787756535.235 PREEMPT step=134 0-8672a16c status=RUNNING computed=352 npreempt=39 inflight=False
+1787756535.254 PREEMPT step=136 5-9d41da2f status=RUNNING computed=336 npreempt=48 inflight=False
+1787756535.254 PREEMPT step=136 4-b7448c81 status=RUNNING computed=336 npreempt=48 inflight=False
+1787756535.254 PREEMPT step=136 3-9a7e3289 status=RUNNING computed=336 npreempt=48 inflight=False
+1787756535.254 PREEMPT step=136 2-8963aad4 status=RUNNING computed=336 npreempt=48 inflight=False
+1787756535.254 PREEMPT step=136 1-9e607a5c status=RUNNING computed=336 npreempt=48 inflight=False
+1787756535.254 PREEMPT step=136 0-8672a16c status=RUNNING computed=352 npreempt=40 inflight=False
+1787756535.272 PREEMPT step=138 5-9d41da2f status=RUNNING computed=336 npreempt=49 inflight=False
+1787756535.272 PREEMPT step=138 4-b7448c81 status=RUNNING computed=336 npreempt=49 inflight=False
+1787756535.272 PREEMPT step=138 3-9a7e3289 status=RUNNING computed=336 npreempt=49 inflight=False
+1787756535.272 PREEMPT step=138 2-8963aad4 status=RUNNING computed=336 npreempt=49 inflight=False
+1787756535.272 PREEMPT step=138 1-9e607a5c status=RUNNING computed=336 npreempt=49 inflight=False
+1787756535.272 PREEMPT step=138 0-8672a16c status=RUNNING computed=352 npreempt=41 inflight=False
+1787756535.291 PREEMPT step=140 5-9d41da2f status=RUNNING computed=336 npreempt=50 inflight=False
+1787756535.291 PREEMPT step=140 4-b7448c81 status=RUNNING computed=336 npreempt=50 inflight=False
+1787756535.291 PREEMPT step=140 3-9a7e3289 status=RUNNING computed=336 npreempt=50 inflight=False
+1787756535.291 PREEMPT step=140 2-8963aad4 status=RUNNING computed=336 npreempt=50 inflight=False
+1787756535.291 PREEMPT step=140 1-9e607a5c status=RUNNING computed=336 npreempt=50 inflight=False
+1787756535.291 PREEMPT step=140 0-8672a16c status=RUNNING computed=352 npreempt=42 inflight=False
+1787756535.309 PREEMPT step=142 5-9d41da2f status=RUNNING computed=336 npreempt=51 inflight=False
+1787756535.309 PREEMPT step=142 4-b7448c81 status=RUNNING computed=336 npreempt=51 inflight=False
+1787756535.309 PREEMPT step=142 3-9a7e3289 status=RUNNING computed=336 npreempt=51 inflight=False
+1787756535.309 PREEMPT step=142 2-8963aad4 status=RUNNING computed=336 npreempt=51 inflight=False
+1787756535.309 PREEMPT step=142 1-9e607a5c status=RUNNING computed=336 npreempt=51 inflight=False
+1787756535.309 PREEMPT step=142 0-8672a16c status=RUNNING computed=352 npreempt=43 inflight=False
+1787756535.328 PREEMPT step=144 5-9d41da2f status=RUNNING computed=336 npreempt=52 inflight=False
+1787756535.328 PREEMPT step=144 4-b7448c81 status=RUNNING computed=336 npreempt=52 inflight=False
+1787756535.328 PREEMPT step=144 3-9a7e3289 status=RUNNING computed=336 npreempt=52 inflight=False
+1787756535.328 PREEMPT step=144 2-8963aad4 status=RUNNING computed=336 npreempt=52 inflight=False
+1787756535.328 PREEMPT step=144 1-9e607a5c status=RUNNING computed=336 npreempt=52 inflight=False
+1787756535.328 PREEMPT step=144 0-8672a16c status=RUNNING computed=352 npreempt=44 inflight=False
+1787756535.348 PREEMPT step=146 5-9d41da2f status=RUNNING computed=336 npreempt=53 inflight=False
+1787756535.348 PREEMPT step=146 4-b7448c81 status=RUNNING computed=336 npreempt=53 inflight=False
+1787756535.348 PREEMPT step=146 3-9a7e3289 status=RUNNING computed=336 npreempt=53 inflight=False
+1787756535.348 PREEMPT step=146 2-8963aad4 status=RUNNING computed=336 npreempt=53 inflight=False
+1787756535.348 PREEMPT step=146 1-9e607a5c status=RUNNING computed=336 npreempt=53 inflight=False
+1787756535.348 PREEMPT step=146 0-8672a16c status=RUNNING computed=352 npreempt=45 inflight=False
+1787756535.367 PREEMPT step=148 5-9d41da2f status=RUNNING computed=336 npreempt=54 inflight=False
+1787756535.367 PREEMPT step=148 4-b7448c81 status=RUNNING computed=336 npreempt=54 inflight=False
+1787756535.367 PREEMPT step=148 3-9a7e3289 status=RUNNING computed=336 npreempt=54 inflight=False
+1787756535.367 PREEMPT step=148 2-8963aad4 status=RUNNING computed=336 npreempt=54 inflight=False
+1787756535.367 PREEMPT step=148 1-9e607a5c status=RUNNING computed=336 npreempt=54 inflight=False
+1787756535.367 PREEMPT step=148 0-8672a16c status=RUNNING computed=352 npreempt=46 inflight=False
+1787756535.387 PREEMPT step=150 5-9d41da2f status=RUNNING computed=336 npreempt=55 inflight=False
+1787756535.387 PREEMPT step=150 4-b7448c81 status=RUNNING computed=336 npreempt=55 inflight=False
+1787756535.387 PREEMPT step=150 3-9a7e3289 status=RUNNING computed=336 npreempt=55 inflight=False
+1787756535.387 PREEMPT step=150 2-8963aad4 status=RUNNING computed=336 npreempt=55 inflight=False
+1787756535.387 PREEMPT step=150 1-9e607a5c status=RUNNING computed=336 npreempt=55 inflight=False
+1787756535.387 PREEMPT step=150 0-8672a16c status=RUNNING computed=352 npreempt=47 inflight=False
+1787756535.387 step=150 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[103] sched_seq=103/proc_seq=102 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p48:b0 1-9e607a5c:PREEMPTED:c0/336:p56:b0 2-8963aad4:PREEMPTED:c0/336:p56:b0 3-9a7e3289:PREEMPTED:c0/336:p56:b0 4-b7448c81:PREEMPTED:c0/336:p56:b0 5-9d41da2f:PREEMPTED:c0/336:p56:b0
+1787756535.407 PREEMPT step=152 5-9d41da2f status=RUNNING computed=336 npreempt=56 inflight=False
+1787756535.407 PREEMPT step=152 4-b7448c81 status=RUNNING computed=336 npreempt=56 inflight=False
+1787756535.407 PREEMPT step=152 3-9a7e3289 status=RUNNING computed=336 npreempt=56 inflight=False
+1787756535.407 PREEMPT step=152 2-8963aad4 status=RUNNING computed=336 npreempt=56 inflight=False
+1787756535.407 PREEMPT step=152 1-9e607a5c status=RUNNING computed=336 npreempt=56 inflight=False
+1787756535.407 PREEMPT step=152 0-8672a16c status=RUNNING computed=352 npreempt=48 inflight=False
+1787756535.427 PREEMPT step=154 5-9d41da2f status=RUNNING computed=336 npreempt=57 inflight=False
+1787756535.427 PREEMPT step=154 4-b7448c81 status=RUNNING computed=336 npreempt=57 inflight=False
+1787756535.427 PREEMPT step=154 3-9a7e3289 status=RUNNING computed=336 npreempt=57 inflight=False
+1787756535.427 PREEMPT step=154 2-8963aad4 status=RUNNING computed=336 npreempt=57 inflight=False
+1787756535.427 PREEMPT step=154 1-9e607a5c status=RUNNING computed=336 npreempt=57 inflight=False
+1787756535.427 PREEMPT step=154 0-8672a16c status=RUNNING computed=352 npreempt=49 inflight=False
+1787756535.446 PREEMPT step=156 5-9d41da2f status=RUNNING computed=336 npreempt=58 inflight=False
+1787756535.446 PREEMPT step=156 4-b7448c81 status=RUNNING computed=336 npreempt=58 inflight=False
+1787756535.446 PREEMPT step=156 3-9a7e3289 status=RUNNING computed=336 npreempt=58 inflight=False
+1787756535.446 PREEMPT step=156 2-8963aad4 status=RUNNING computed=336 npreempt=58 inflight=False
+1787756535.446 PREEMPT step=156 1-9e607a5c status=RUNNING computed=336 npreempt=58 inflight=False
+1787756535.446 PREEMPT step=156 0-8672a16c status=RUNNING computed=352 npreempt=50 inflight=False
+1787756535.467 PREEMPT step=158 5-9d41da2f status=RUNNING computed=336 npreempt=59 inflight=False
+1787756535.467 PREEMPT step=158 4-b7448c81 status=RUNNING computed=336 npreempt=59 inflight=False
+1787756535.467 PREEMPT step=158 3-9a7e3289 status=RUNNING computed=336 npreempt=59 inflight=False
+1787756535.467 PREEMPT step=158 2-8963aad4 status=RUNNING computed=336 npreempt=59 inflight=False
+1787756535.467 PREEMPT step=158 1-9e607a5c status=RUNNING computed=336 npreempt=59 inflight=False
+1787756535.467 PREEMPT step=158 0-8672a16c status=RUNNING computed=352 npreempt=51 inflight=False
+1787756535.486 PREEMPT step=160 5-9d41da2f status=RUNNING computed=336 npreempt=60 inflight=False
+1787756535.486 PREEMPT step=160 4-b7448c81 status=RUNNING computed=336 npreempt=60 inflight=False
+1787756535.486 PREEMPT step=160 3-9a7e3289 status=RUNNING computed=336 npreempt=60 inflight=False
+1787756535.486 PREEMPT step=160 2-8963aad4 status=RUNNING computed=336 npreempt=60 inflight=False
+1787756535.486 PREEMPT step=160 1-9e607a5c status=RUNNING computed=336 npreempt=60 inflight=False
+1787756535.486 PREEMPT step=160 0-8672a16c status=RUNNING computed=352 npreempt=52 inflight=False
+1787756535.506 PREEMPT step=162 5-9d41da2f status=RUNNING computed=336 npreempt=61 inflight=False
+1787756535.506 PREEMPT step=162 4-b7448c81 status=RUNNING computed=336 npreempt=61 inflight=False
+1787756535.506 PREEMPT step=162 3-9a7e3289 status=RUNNING computed=336 npreempt=61 inflight=False
+1787756535.506 PREEMPT step=162 2-8963aad4 status=RUNNING computed=336 npreempt=61 inflight=False
+1787756535.506 PREEMPT step=162 1-9e607a5c status=RUNNING computed=336 npreempt=61 inflight=False
+1787756535.506 PREEMPT step=162 0-8672a16c status=RUNNING computed=352 npreempt=53 inflight=False
+1787756535.525 PREEMPT step=164 5-9d41da2f status=RUNNING computed=336 npreempt=62 inflight=False
+1787756535.526 PREEMPT step=164 4-b7448c81 status=RUNNING computed=336 npreempt=62 inflight=False
+1787756535.526 PREEMPT step=164 3-9a7e3289 status=RUNNING computed=336 npreempt=62 inflight=False
+1787756535.526 PREEMPT step=164 2-8963aad4 status=RUNNING computed=336 npreempt=62 inflight=False
+1787756535.526 PREEMPT step=164 1-9e607a5c status=RUNNING computed=336 npreempt=62 inflight=False
+1787756535.526 PREEMPT step=164 0-8672a16c status=RUNNING computed=352 npreempt=54 inflight=False
+1787756535.545 PREEMPT step=166 5-9d41da2f status=RUNNING computed=336 npreempt=63 inflight=False
+1787756535.546 PREEMPT step=166 4-b7448c81 status=RUNNING computed=336 npreempt=63 inflight=False
+1787756535.546 PREEMPT step=166 3-9a7e3289 status=RUNNING computed=336 npreempt=63 inflight=False
+1787756535.546 PREEMPT step=166 2-8963aad4 status=RUNNING computed=336 npreempt=63 inflight=False
+1787756535.546 PREEMPT step=166 1-9e607a5c status=RUNNING computed=336 npreempt=63 inflight=False
+1787756535.546 PREEMPT step=166 0-8672a16c status=RUNNING computed=352 npreempt=55 inflight=False
+1787756535.566 PREEMPT step=168 5-9d41da2f status=RUNNING computed=336 npreempt=64 inflight=False
+1787756535.566 PREEMPT step=168 4-b7448c81 status=RUNNING computed=336 npreempt=64 inflight=False
+1787756535.566 PREEMPT step=168 3-9a7e3289 status=RUNNING computed=336 npreempt=64 inflight=False
+1787756535.566 PREEMPT step=168 2-8963aad4 status=RUNNING computed=336 npreempt=64 inflight=False
+1787756535.566 PREEMPT step=168 1-9e607a5c status=RUNNING computed=336 npreempt=64 inflight=False
+1787756535.566 PREEMPT step=168 0-8672a16c status=RUNNING computed=352 npreempt=56 inflight=False
+1787756535.587 PREEMPT step=170 5-9d41da2f status=RUNNING computed=336 npreempt=65 inflight=False
+1787756535.587 PREEMPT step=170 4-b7448c81 status=RUNNING computed=336 npreempt=65 inflight=False
+1787756535.587 PREEMPT step=170 3-9a7e3289 status=RUNNING computed=336 npreempt=65 inflight=False
+1787756535.587 PREEMPT step=170 2-8963aad4 status=RUNNING computed=336 npreempt=65 inflight=False
+1787756535.587 PREEMPT step=170 1-9e607a5c status=RUNNING computed=336 npreempt=65 inflight=False
+1787756535.587 PREEMPT step=170 0-8672a16c status=RUNNING computed=352 npreempt=57 inflight=False
+1787756535.606 PREEMPT step=172 5-9d41da2f status=RUNNING computed=336 npreempt=66 inflight=False
+1787756535.607 PREEMPT step=172 4-b7448c81 status=RUNNING computed=336 npreempt=66 inflight=False
+1787756535.607 PREEMPT step=172 3-9a7e3289 status=RUNNING computed=336 npreempt=66 inflight=False
+1787756535.607 PREEMPT step=172 2-8963aad4 status=RUNNING computed=336 npreempt=66 inflight=False
+1787756535.607 PREEMPT step=172 1-9e607a5c status=RUNNING computed=336 npreempt=66 inflight=False
+1787756535.607 PREEMPT step=172 0-8672a16c status=RUNNING computed=352 npreempt=58 inflight=False
+1787756535.626 PREEMPT step=174 5-9d41da2f status=RUNNING computed=336 npreempt=67 inflight=False
+1787756535.626 PREEMPT step=174 4-b7448c81 status=RUNNING computed=336 npreempt=67 inflight=False
+1787756535.626 PREEMPT step=174 3-9a7e3289 status=RUNNING computed=336 npreempt=67 inflight=False
+1787756535.626 PREEMPT step=174 2-8963aad4 status=RUNNING computed=336 npreempt=67 inflight=False
+1787756535.626 PREEMPT step=174 1-9e607a5c status=RUNNING computed=336 npreempt=67 inflight=False
+1787756535.626 PREEMPT step=174 0-8672a16c status=RUNNING computed=352 npreempt=59 inflight=False
+1787756535.647 PREEMPT step=176 5-9d41da2f status=RUNNING computed=336 npreempt=68 inflight=False
+1787756535.647 PREEMPT step=176 4-b7448c81 status=RUNNING computed=336 npreempt=68 inflight=False
+1787756535.647 PREEMPT step=176 3-9a7e3289 status=RUNNING computed=336 npreempt=68 inflight=False
+1787756535.647 PREEMPT step=176 2-8963aad4 status=RUNNING computed=336 npreempt=68 inflight=False
+1787756535.647 PREEMPT step=176 1-9e607a5c status=RUNNING computed=336 npreempt=68 inflight=False
+1787756535.647 PREEMPT step=176 0-8672a16c status=RUNNING computed=352 npreempt=60 inflight=False
+1787756535.667 PREEMPT step=178 5-9d41da2f status=RUNNING computed=336 npreempt=69 inflight=False
+1787756535.667 PREEMPT step=178 4-b7448c81 status=RUNNING computed=336 npreempt=69 inflight=False
+1787756535.667 PREEMPT step=178 3-9a7e3289 status=RUNNING computed=336 npreempt=69 inflight=False
+1787756535.667 PREEMPT step=178 2-8963aad4 status=RUNNING computed=336 npreempt=69 inflight=False
+1787756535.667 PREEMPT step=178 1-9e607a5c status=RUNNING computed=336 npreempt=69 inflight=False
+1787756535.667 PREEMPT step=178 0-8672a16c status=RUNNING computed=352 npreempt=61 inflight=False
+1787756535.687 PREEMPT step=180 5-9d41da2f status=RUNNING computed=336 npreempt=70 inflight=False
+1787756535.687 PREEMPT step=180 4-b7448c81 status=RUNNING computed=336 npreempt=70 inflight=False
+1787756535.687 PREEMPT step=180 3-9a7e3289 status=RUNNING computed=336 npreempt=70 inflight=False
+1787756535.687 PREEMPT step=180 2-8963aad4 status=RUNNING computed=336 npreempt=70 inflight=False
+1787756535.687 PREEMPT step=180 1-9e607a5c status=RUNNING computed=336 npreempt=70 inflight=False
+1787756535.687 PREEMPT step=180 0-8672a16c status=RUNNING computed=352 npreempt=62 inflight=False
+1787756535.706 PREEMPT step=182 5-9d41da2f status=RUNNING computed=336 npreempt=71 inflight=False
+1787756535.706 PREEMPT step=182 4-b7448c81 status=RUNNING computed=336 npreempt=71 inflight=False
+1787756535.706 PREEMPT step=182 3-9a7e3289 status=RUNNING computed=336 npreempt=71 inflight=False
+1787756535.706 PREEMPT step=182 2-8963aad4 status=RUNNING computed=336 npreempt=71 inflight=False
+1787756535.706 PREEMPT step=182 1-9e607a5c status=RUNNING computed=336 npreempt=71 inflight=False
+1787756535.706 PREEMPT step=182 0-8672a16c status=RUNNING computed=352 npreempt=63 inflight=False
+1787756535.728 PREEMPT step=184 5-9d41da2f status=RUNNING computed=336 npreempt=72 inflight=False
+1787756535.728 PREEMPT step=184 4-b7448c81 status=RUNNING computed=336 npreempt=72 inflight=False
+1787756535.728 PREEMPT step=184 3-9a7e3289 status=RUNNING computed=336 npreempt=72 inflight=False
+1787756535.728 PREEMPT step=184 2-8963aad4 status=RUNNING computed=336 npreempt=72 inflight=False
+1787756535.728 PREEMPT step=184 1-9e607a5c status=RUNNING computed=336 npreempt=72 inflight=False
+1787756535.728 PREEMPT step=184 0-8672a16c status=RUNNING computed=352 npreempt=64 inflight=False
+1787756535.747 PREEMPT step=186 5-9d41da2f status=RUNNING computed=336 npreempt=73 inflight=False
+1787756535.747 PREEMPT step=186 4-b7448c81 status=RUNNING computed=336 npreempt=73 inflight=False
+1787756535.747 PREEMPT step=186 3-9a7e3289 status=RUNNING computed=336 npreempt=73 inflight=False
+1787756535.747 PREEMPT step=186 2-8963aad4 status=RUNNING computed=336 npreempt=73 inflight=False
+1787756535.747 PREEMPT step=186 1-9e607a5c status=RUNNING computed=336 npreempt=73 inflight=False
+1787756535.748 PREEMPT step=186 0-8672a16c status=RUNNING computed=352 npreempt=65 inflight=False
+1787756535.767 PREEMPT step=188 5-9d41da2f status=RUNNING computed=336 npreempt=74 inflight=False
+1787756535.767 PREEMPT step=188 4-b7448c81 status=RUNNING computed=336 npreempt=74 inflight=False
+1787756535.767 PREEMPT step=188 3-9a7e3289 status=RUNNING computed=336 npreempt=74 inflight=False
+1787756535.767 PREEMPT step=188 2-8963aad4 status=RUNNING computed=336 npreempt=74 inflight=False
+1787756535.767 PREEMPT step=188 1-9e607a5c status=RUNNING computed=336 npreempt=74 inflight=False
+1787756535.767 PREEMPT step=188 0-8672a16c status=RUNNING computed=352 npreempt=66 inflight=False
+1787756535.787 PREEMPT step=190 5-9d41da2f status=RUNNING computed=336 npreempt=75 inflight=False
+1787756535.787 PREEMPT step=190 4-b7448c81 status=RUNNING computed=336 npreempt=75 inflight=False
+1787756535.787 PREEMPT step=190 3-9a7e3289 status=RUNNING computed=336 npreempt=75 inflight=False
+1787756535.787 PREEMPT step=190 2-8963aad4 status=RUNNING computed=336 npreempt=75 inflight=False
+1787756535.787 PREEMPT step=190 1-9e607a5c status=RUNNING computed=336 npreempt=75 inflight=False
+1787756535.787 PREEMPT step=190 0-8672a16c status=RUNNING computed=352 npreempt=67 inflight=False
+1787756535.806 PREEMPT step=192 5-9d41da2f status=RUNNING computed=336 npreempt=76 inflight=False
+1787756535.806 PREEMPT step=192 4-b7448c81 status=RUNNING computed=336 npreempt=76 inflight=False
+1787756535.806 PREEMPT step=192 3-9a7e3289 status=RUNNING computed=336 npreempt=76 inflight=False
+1787756535.806 PREEMPT step=192 2-8963aad4 status=RUNNING computed=336 npreempt=76 inflight=False
+1787756535.806 PREEMPT step=192 1-9e607a5c status=RUNNING computed=336 npreempt=76 inflight=False
+1787756535.806 PREEMPT step=192 0-8672a16c status=RUNNING computed=352 npreempt=68 inflight=False
+1787756535.825 PREEMPT step=194 5-9d41da2f status=RUNNING computed=336 npreempt=77 inflight=False
+1787756535.825 PREEMPT step=194 4-b7448c81 status=RUNNING computed=336 npreempt=77 inflight=False
+1787756535.825 PREEMPT step=194 3-9a7e3289 status=RUNNING computed=336 npreempt=77 inflight=False
+1787756535.825 PREEMPT step=194 2-8963aad4 status=RUNNING computed=336 npreempt=77 inflight=False
+1787756535.825 PREEMPT step=194 1-9e607a5c status=RUNNING computed=336 npreempt=77 inflight=False
+1787756535.825 PREEMPT step=194 0-8672a16c status=RUNNING computed=352 npreempt=69 inflight=False
+1787756535.845 PREEMPT step=196 5-9d41da2f status=RUNNING computed=336 npreempt=78 inflight=False
+1787756535.845 PREEMPT step=196 4-b7448c81 status=RUNNING computed=336 npreempt=78 inflight=False
+1787756535.845 PREEMPT step=196 3-9a7e3289 status=RUNNING computed=336 npreempt=78 inflight=False
+1787756535.845 PREEMPT step=196 2-8963aad4 status=RUNNING computed=336 npreempt=78 inflight=False
+1787756535.845 PREEMPT step=196 1-9e607a5c status=RUNNING computed=336 npreempt=78 inflight=False
+1787756535.845 PREEMPT step=196 0-8672a16c status=RUNNING computed=352 npreempt=70 inflight=False
+1787756535.865 PREEMPT step=198 5-9d41da2f status=RUNNING computed=336 npreempt=79 inflight=False
+1787756535.865 PREEMPT step=198 4-b7448c81 status=RUNNING computed=336 npreempt=79 inflight=False
+1787756535.865 PREEMPT step=198 3-9a7e3289 status=RUNNING computed=336 npreempt=79 inflight=False
+1787756535.865 PREEMPT step=198 2-8963aad4 status=RUNNING computed=336 npreempt=79 inflight=False
+1787756535.865 PREEMPT step=198 1-9e607a5c status=RUNNING computed=336 npreempt=79 inflight=False
+1787756535.865 PREEMPT step=198 0-8672a16c status=RUNNING computed=352 npreempt=71 inflight=False
+1787756535.884 PREEMPT step=200 5-9d41da2f status=RUNNING computed=336 npreempt=80 inflight=False
+1787756535.884 PREEMPT step=200 4-b7448c81 status=RUNNING computed=336 npreempt=80 inflight=False
+1787756535.884 PREEMPT step=200 3-9a7e3289 status=RUNNING computed=336 npreempt=80 inflight=False
+1787756535.884 PREEMPT step=200 2-8963aad4 status=RUNNING computed=336 npreempt=80 inflight=False
+1787756535.884 PREEMPT step=200 1-9e607a5c status=RUNNING computed=336 npreempt=80 inflight=False
+1787756535.884 PREEMPT step=200 0-8672a16c status=RUNNING computed=352 npreempt=72 inflight=False
+1787756535.885 step=200 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[128] sched_seq=128/proc_seq=127 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p73:b0 1-9e607a5c:PREEMPTED:c0/336:p81:b0 2-8963aad4:PREEMPTED:c0/336:p81:b0 3-9a7e3289:PREEMPTED:c0/336:p81:b0 4-b7448c81:PREEMPTED:c0/336:p81:b0 5-9d41da2f:PREEMPTED:c0/336:p81:b0
+1787756535.907 PREEMPT step=202 5-9d41da2f status=RUNNING computed=336 npreempt=81 inflight=False
+1787756535.907 PREEMPT step=202 4-b7448c81 status=RUNNING computed=336 npreempt=81 inflight=False
+1787756535.907 PREEMPT step=202 3-9a7e3289 status=RUNNING computed=336 npreempt=81 inflight=False
+1787756535.907 PREEMPT step=202 2-8963aad4 status=RUNNING computed=336 npreempt=81 inflight=False
+1787756535.907 PREEMPT step=202 1-9e607a5c status=RUNNING computed=336 npreempt=81 inflight=False
+1787756535.907 PREEMPT step=202 0-8672a16c status=RUNNING computed=352 npreempt=73 inflight=False
+1787756535.928 PREEMPT step=204 5-9d41da2f status=RUNNING computed=336 npreempt=82 inflight=False
+1787756535.928 PREEMPT step=204 4-b7448c81 status=RUNNING computed=336 npreempt=82 inflight=False
+1787756535.928 PREEMPT step=204 3-9a7e3289 status=RUNNING computed=336 npreempt=82 inflight=False
+1787756535.928 PREEMPT step=204 2-8963aad4 status=RUNNING computed=336 npreempt=82 inflight=False
+1787756535.928 PREEMPT step=204 1-9e607a5c status=RUNNING computed=336 npreempt=82 inflight=False
+1787756535.928 PREEMPT step=204 0-8672a16c status=RUNNING computed=352 npreempt=74 inflight=False
+1787756535.949 PREEMPT step=206 5-9d41da2f status=RUNNING computed=336 npreempt=83 inflight=False
+1787756535.949 PREEMPT step=206 4-b7448c81 status=RUNNING computed=336 npreempt=83 inflight=False
+1787756535.949 PREEMPT step=206 3-9a7e3289 status=RUNNING computed=336 npreempt=83 inflight=False
+1787756535.949 PREEMPT step=206 2-8963aad4 status=RUNNING computed=336 npreempt=83 inflight=False
+1787756535.949 PREEMPT step=206 1-9e607a5c status=RUNNING computed=336 npreempt=83 inflight=False
+1787756535.949 PREEMPT step=206 0-8672a16c status=RUNNING computed=352 npreempt=75 inflight=False
+1787756535.970 PREEMPT step=208 5-9d41da2f status=RUNNING computed=336 npreempt=84 inflight=False
+1787756535.970 PREEMPT step=208 4-b7448c81 status=RUNNING computed=336 npreempt=84 inflight=False
+1787756535.970 PREEMPT step=208 3-9a7e3289 status=RUNNING computed=336 npreempt=84 inflight=False
+1787756535.970 PREEMPT step=208 2-8963aad4 status=RUNNING computed=336 npreempt=84 inflight=False
+1787756535.970 PREEMPT step=208 1-9e607a5c status=RUNNING computed=336 npreempt=84 inflight=False
+1787756535.970 PREEMPT step=208 0-8672a16c status=RUNNING computed=352 npreempt=76 inflight=False
+1787756535.991 PREEMPT step=210 5-9d41da2f status=RUNNING computed=336 npreempt=85 inflight=False
+1787756535.991 PREEMPT step=210 4-b7448c81 status=RUNNING computed=336 npreempt=85 inflight=False
+1787756535.992 PREEMPT step=210 3-9a7e3289 status=RUNNING computed=336 npreempt=85 inflight=False
+1787756535.992 PREEMPT step=210 2-8963aad4 status=RUNNING computed=336 npreempt=85 inflight=False
+1787756535.992 PREEMPT step=210 1-9e607a5c status=RUNNING computed=336 npreempt=85 inflight=False
+1787756535.992 PREEMPT step=210 0-8672a16c status=RUNNING computed=352 npreempt=77 inflight=False
+1787756536.012 PREEMPT step=212 5-9d41da2f status=RUNNING computed=336 npreempt=86 inflight=False
+1787756536.013 PREEMPT step=212 4-b7448c81 status=RUNNING computed=336 npreempt=86 inflight=False
+1787756536.013 PREEMPT step=212 3-9a7e3289 status=RUNNING computed=336 npreempt=86 inflight=False
+1787756536.013 PREEMPT step=212 2-8963aad4 status=RUNNING computed=336 npreempt=86 inflight=False
+1787756536.013 PREEMPT step=212 1-9e607a5c status=RUNNING computed=336 npreempt=86 inflight=False
+1787756536.013 PREEMPT step=212 0-8672a16c status=RUNNING computed=352 npreempt=78 inflight=False
+1787756536.034 PREEMPT step=214 5-9d41da2f status=RUNNING computed=336 npreempt=87 inflight=False
+1787756536.034 PREEMPT step=214 4-b7448c81 status=RUNNING computed=336 npreempt=87 inflight=False
+1787756536.034 PREEMPT step=214 3-9a7e3289 status=RUNNING computed=336 npreempt=87 inflight=False
+1787756536.034 PREEMPT step=214 2-8963aad4 status=RUNNING computed=336 npreempt=87 inflight=False
+1787756536.034 PREEMPT step=214 1-9e607a5c status=RUNNING computed=336 npreempt=87 inflight=False
+1787756536.034 PREEMPT step=214 0-8672a16c status=RUNNING computed=352 npreempt=79 inflight=False
+1787756536.054 PREEMPT step=216 5-9d41da2f status=RUNNING computed=336 npreempt=88 inflight=False
+1787756536.054 PREEMPT step=216 4-b7448c81 status=RUNNING computed=336 npreempt=88 inflight=False
+1787756536.054 PREEMPT step=216 3-9a7e3289 status=RUNNING computed=336 npreempt=88 inflight=False
+1787756536.054 PREEMPT step=216 2-8963aad4 status=RUNNING computed=336 npreempt=88 inflight=False
+1787756536.054 PREEMPT step=216 1-9e607a5c status=RUNNING computed=336 npreempt=88 inflight=False
+1787756536.054 PREEMPT step=216 0-8672a16c status=RUNNING computed=352 npreempt=80 inflight=False
+1787756536.074 PREEMPT step=218 5-9d41da2f status=RUNNING computed=336 npreempt=89 inflight=False
+1787756536.074 PREEMPT step=218 4-b7448c81 status=RUNNING computed=336 npreempt=89 inflight=False
+1787756536.074 PREEMPT step=218 3-9a7e3289 status=RUNNING computed=336 npreempt=89 inflight=False
+1787756536.074 PREEMPT step=218 2-8963aad4 status=RUNNING computed=336 npreempt=89 inflight=False
+1787756536.074 PREEMPT step=218 1-9e607a5c status=RUNNING computed=336 npreempt=89 inflight=False
+1787756536.074 PREEMPT step=218 0-8672a16c status=RUNNING computed=352 npreempt=81 inflight=False
+1787756536.094 PREEMPT step=220 5-9d41da2f status=RUNNING computed=336 npreempt=90 inflight=False
+1787756536.094 PREEMPT step=220 4-b7448c81 status=RUNNING computed=336 npreempt=90 inflight=False
+1787756536.094 PREEMPT step=220 3-9a7e3289 status=RUNNING computed=336 npreempt=90 inflight=False
+1787756536.094 PREEMPT step=220 2-8963aad4 status=RUNNING computed=336 npreempt=90 inflight=False
+1787756536.094 PREEMPT step=220 1-9e607a5c status=RUNNING computed=336 npreempt=90 inflight=False
+1787756536.094 PREEMPT step=220 0-8672a16c status=RUNNING computed=352 npreempt=82 inflight=False
+1787756536.114 PREEMPT step=222 5-9d41da2f status=RUNNING computed=336 npreempt=91 inflight=False
+1787756536.114 PREEMPT step=222 4-b7448c81 status=RUNNING computed=336 npreempt=91 inflight=False
+1787756536.114 PREEMPT step=222 3-9a7e3289 status=RUNNING computed=336 npreempt=91 inflight=False
+1787756536.114 PREEMPT step=222 2-8963aad4 status=RUNNING computed=336 npreempt=91 inflight=False
+1787756536.114 PREEMPT step=222 1-9e607a5c status=RUNNING computed=336 npreempt=91 inflight=False
+1787756536.114 PREEMPT step=222 0-8672a16c status=RUNNING computed=352 npreempt=83 inflight=False
+1787756536.134 PREEMPT step=224 5-9d41da2f status=RUNNING computed=336 npreempt=92 inflight=False
+1787756536.134 PREEMPT step=224 4-b7448c81 status=RUNNING computed=336 npreempt=92 inflight=False
+1787756536.134 PREEMPT step=224 3-9a7e3289 status=RUNNING computed=336 npreempt=92 inflight=False
+1787756536.134 PREEMPT step=224 2-8963aad4 status=RUNNING computed=336 npreempt=92 inflight=False
+1787756536.134 PREEMPT step=224 1-9e607a5c status=RUNNING computed=336 npreempt=92 inflight=False
+1787756536.134 PREEMPT step=224 0-8672a16c status=RUNNING computed=352 npreempt=84 inflight=False
+1787756536.153 PREEMPT step=226 5-9d41da2f status=RUNNING computed=336 npreempt=93 inflight=False
+1787756536.153 PREEMPT step=226 4-b7448c81 status=RUNNING computed=336 npreempt=93 inflight=False
+1787756536.153 PREEMPT step=226 3-9a7e3289 status=RUNNING computed=336 npreempt=93 inflight=False
+1787756536.153 PREEMPT step=226 2-8963aad4 status=RUNNING computed=336 npreempt=93 inflight=False
+1787756536.153 PREEMPT step=226 1-9e607a5c status=RUNNING computed=336 npreempt=93 inflight=False
+1787756536.153 PREEMPT step=226 0-8672a16c status=RUNNING computed=352 npreempt=85 inflight=False
+1787756536.173 PREEMPT step=228 5-9d41da2f status=RUNNING computed=336 npreempt=94 inflight=False
+1787756536.173 PREEMPT step=228 4-b7448c81 status=RUNNING computed=336 npreempt=94 inflight=False
+1787756536.173 PREEMPT step=228 3-9a7e3289 status=RUNNING computed=336 npreempt=94 inflight=False
+1787756536.173 PREEMPT step=228 2-8963aad4 status=RUNNING computed=336 npreempt=94 inflight=False
+1787756536.173 PREEMPT step=228 1-9e607a5c status=RUNNING computed=336 npreempt=94 inflight=False
+1787756536.173 PREEMPT step=228 0-8672a16c status=RUNNING computed=352 npreempt=86 inflight=False
+1787756536.193 PREEMPT step=230 5-9d41da2f status=RUNNING computed=336 npreempt=95 inflight=False
+1787756536.194 PREEMPT step=230 4-b7448c81 status=RUNNING computed=336 npreempt=95 inflight=False
+1787756536.194 PREEMPT step=230 3-9a7e3289 status=RUNNING computed=336 npreempt=95 inflight=False
+1787756536.194 PREEMPT step=230 2-8963aad4 status=RUNNING computed=336 npreempt=95 inflight=False
+1787756536.194 PREEMPT step=230 1-9e607a5c status=RUNNING computed=336 npreempt=95 inflight=False
+1787756536.194 PREEMPT step=230 0-8672a16c status=RUNNING computed=352 npreempt=87 inflight=False
+1787756536.214 PREEMPT step=232 5-9d41da2f status=RUNNING computed=336 npreempt=96 inflight=False
+1787756536.214 PREEMPT step=232 4-b7448c81 status=RUNNING computed=336 npreempt=96 inflight=False
+1787756536.214 PREEMPT step=232 3-9a7e3289 status=RUNNING computed=336 npreempt=96 inflight=False
+1787756536.214 PREEMPT step=232 2-8963aad4 status=RUNNING computed=336 npreempt=96 inflight=False
+1787756536.214 PREEMPT step=232 1-9e607a5c status=RUNNING computed=336 npreempt=96 inflight=False
+1787756536.214 PREEMPT step=232 0-8672a16c status=RUNNING computed=352 npreempt=88 inflight=False
+1787756536.233 PREEMPT step=234 5-9d41da2f status=RUNNING computed=336 npreempt=97 inflight=False
+1787756536.234 PREEMPT step=234 4-b7448c81 status=RUNNING computed=336 npreempt=97 inflight=False
+1787756536.234 PREEMPT step=234 3-9a7e3289 status=RUNNING computed=336 npreempt=97 inflight=False
+1787756536.234 PREEMPT step=234 2-8963aad4 status=RUNNING computed=336 npreempt=97 inflight=False
+1787756536.234 PREEMPT step=234 1-9e607a5c status=RUNNING computed=336 npreempt=97 inflight=False
+1787756536.234 PREEMPT step=234 0-8672a16c status=RUNNING computed=352 npreempt=89 inflight=False
+1787756536.253 PREEMPT step=236 5-9d41da2f status=RUNNING computed=336 npreempt=98 inflight=False
+1787756536.253 PREEMPT step=236 4-b7448c81 status=RUNNING computed=336 npreempt=98 inflight=False
+1787756536.253 PREEMPT step=236 3-9a7e3289 status=RUNNING computed=336 npreempt=98 inflight=False
+1787756536.253 PREEMPT step=236 2-8963aad4 status=RUNNING computed=336 npreempt=98 inflight=False
+1787756536.253 PREEMPT step=236 1-9e607a5c status=RUNNING computed=336 npreempt=98 inflight=False
+1787756536.253 PREEMPT step=236 0-8672a16c status=RUNNING computed=352 npreempt=90 inflight=False
+1787756536.272 PREEMPT step=238 5-9d41da2f status=RUNNING computed=336 npreempt=99 inflight=False
+1787756536.272 PREEMPT step=238 4-b7448c81 status=RUNNING computed=336 npreempt=99 inflight=False
+1787756536.272 PREEMPT step=238 3-9a7e3289 status=RUNNING computed=336 npreempt=99 inflight=False
+1787756536.272 PREEMPT step=238 2-8963aad4 status=RUNNING computed=336 npreempt=99 inflight=False
+1787756536.272 PREEMPT step=238 1-9e607a5c status=RUNNING computed=336 npreempt=99 inflight=False
+1787756536.272 PREEMPT step=238 0-8672a16c status=RUNNING computed=352 npreempt=91 inflight=False
+1787756536.292 PREEMPT step=240 5-9d41da2f status=RUNNING computed=336 npreempt=100 inflight=False
+1787756536.292 PREEMPT step=240 4-b7448c81 status=RUNNING computed=336 npreempt=100 inflight=False
+1787756536.292 PREEMPT step=240 3-9a7e3289 status=RUNNING computed=336 npreempt=100 inflight=False
+1787756536.292 PREEMPT step=240 2-8963aad4 status=RUNNING computed=336 npreempt=100 inflight=False
+1787756536.292 PREEMPT step=240 1-9e607a5c status=RUNNING computed=336 npreempt=100 inflight=False
+1787756536.292 PREEMPT step=240 0-8672a16c status=RUNNING computed=352 npreempt=92 inflight=False
+1787756536.312 PREEMPT step=242 5-9d41da2f status=RUNNING computed=336 npreempt=101 inflight=False
+1787756536.312 PREEMPT step=242 4-b7448c81 status=RUNNING computed=336 npreempt=101 inflight=False
+1787756536.312 PREEMPT step=242 3-9a7e3289 status=RUNNING computed=336 npreempt=101 inflight=False
+1787756536.312 PREEMPT step=242 2-8963aad4 status=RUNNING computed=336 npreempt=101 inflight=False
+1787756536.312 PREEMPT step=242 1-9e607a5c status=RUNNING computed=336 npreempt=101 inflight=False
+1787756536.312 PREEMPT step=242 0-8672a16c status=RUNNING computed=352 npreempt=93 inflight=False
+1787756536.332 PREEMPT step=244 5-9d41da2f status=RUNNING computed=336 npreempt=102 inflight=False
+1787756536.332 PREEMPT step=244 4-b7448c81 status=RUNNING computed=336 npreempt=102 inflight=False
+1787756536.332 PREEMPT step=244 3-9a7e3289 status=RUNNING computed=336 npreempt=102 inflight=False
+1787756536.332 PREEMPT step=244 2-8963aad4 status=RUNNING computed=336 npreempt=102 inflight=False
+1787756536.332 PREEMPT step=244 1-9e607a5c status=RUNNING computed=336 npreempt=102 inflight=False
+1787756536.332 PREEMPT step=244 0-8672a16c status=RUNNING computed=352 npreempt=94 inflight=False
+1787756536.352 PREEMPT step=246 5-9d41da2f status=RUNNING computed=336 npreempt=103 inflight=False
+1787756536.352 PREEMPT step=246 4-b7448c81 status=RUNNING computed=336 npreempt=103 inflight=False
+1787756536.352 PREEMPT step=246 3-9a7e3289 status=RUNNING computed=336 npreempt=103 inflight=False
+1787756536.352 PREEMPT step=246 2-8963aad4 status=RUNNING computed=336 npreempt=103 inflight=False
+1787756536.352 PREEMPT step=246 1-9e607a5c status=RUNNING computed=336 npreempt=103 inflight=False
+1787756536.352 PREEMPT step=246 0-8672a16c status=RUNNING computed=352 npreempt=95 inflight=False
+1787756536.372 PREEMPT step=248 5-9d41da2f status=RUNNING computed=336 npreempt=104 inflight=False
+1787756536.372 PREEMPT step=248 4-b7448c81 status=RUNNING computed=336 npreempt=104 inflight=False
+1787756536.372 PREEMPT step=248 3-9a7e3289 status=RUNNING computed=336 npreempt=104 inflight=False
+1787756536.372 PREEMPT step=248 2-8963aad4 status=RUNNING computed=336 npreempt=104 inflight=False
+1787756536.372 PREEMPT step=248 1-9e607a5c status=RUNNING computed=336 npreempt=104 inflight=False
+1787756536.372 PREEMPT step=248 0-8672a16c status=RUNNING computed=352 npreempt=96 inflight=False
+1787756536.392 PREEMPT step=250 5-9d41da2f status=RUNNING computed=336 npreempt=105 inflight=False
+1787756536.392 PREEMPT step=250 4-b7448c81 status=RUNNING computed=336 npreempt=105 inflight=False
+1787756536.392 PREEMPT step=250 3-9a7e3289 status=RUNNING computed=336 npreempt=105 inflight=False
+1787756536.392 PREEMPT step=250 2-8963aad4 status=RUNNING computed=336 npreempt=105 inflight=False
+1787756536.392 PREEMPT step=250 1-9e607a5c status=RUNNING computed=336 npreempt=105 inflight=False
+1787756536.392 PREEMPT step=250 0-8672a16c status=RUNNING computed=352 npreempt=97 inflight=False
+1787756536.392 step=250 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[153] sched_seq=153/proc_seq=152 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p98:b0 1-9e607a5c:PREEMPTED:c0/336:p106:b0 2-8963aad4:PREEMPTED:c0/336:p106:b0 3-9a7e3289:PREEMPTED:c0/336:p106:b0 4-b7448c81:PREEMPTED:c0/336:p106:b0 5-9d41da2f:PREEMPTED:c0/336:p106:b0
+1787756536.412 PREEMPT step=252 5-9d41da2f status=RUNNING computed=336 npreempt=106 inflight=False
+1787756536.412 PREEMPT step=252 4-b7448c81 status=RUNNING computed=336 npreempt=106 inflight=False
+1787756536.412 PREEMPT step=252 3-9a7e3289 status=RUNNING computed=336 npreempt=106 inflight=False
+1787756536.412 PREEMPT step=252 2-8963aad4 status=RUNNING computed=336 npreempt=106 inflight=False
+1787756536.412 PREEMPT step=252 1-9e607a5c status=RUNNING computed=336 npreempt=106 inflight=False
+1787756536.412 PREEMPT step=252 0-8672a16c status=RUNNING computed=352 npreempt=98 inflight=False
+1787756536.433 PREEMPT step=254 5-9d41da2f status=RUNNING computed=336 npreempt=107 inflight=False
+1787756536.433 PREEMPT step=254 4-b7448c81 status=RUNNING computed=336 npreempt=107 inflight=False
+1787756536.433 PREEMPT step=254 3-9a7e3289 status=RUNNING computed=336 npreempt=107 inflight=False
+1787756536.433 PREEMPT step=254 2-8963aad4 status=RUNNING computed=336 npreempt=107 inflight=False
+1787756536.433 PREEMPT step=254 1-9e607a5c status=RUNNING computed=336 npreempt=107 inflight=False
+1787756536.433 PREEMPT step=254 0-8672a16c status=RUNNING computed=352 npreempt=99 inflight=False
+1787756536.452 PREEMPT step=256 5-9d41da2f status=RUNNING computed=336 npreempt=108 inflight=False
+1787756536.452 PREEMPT step=256 4-b7448c81 status=RUNNING computed=336 npreempt=108 inflight=False
+1787756536.452 PREEMPT step=256 3-9a7e3289 status=RUNNING computed=336 npreempt=108 inflight=False
+1787756536.452 PREEMPT step=256 2-8963aad4 status=RUNNING computed=336 npreempt=108 inflight=False
+1787756536.452 PREEMPT step=256 1-9e607a5c status=RUNNING computed=336 npreempt=108 inflight=False
+1787756536.452 PREEMPT step=256 0-8672a16c status=RUNNING computed=352 npreempt=100 inflight=False
+1787756536.472 PREEMPT step=258 5-9d41da2f status=RUNNING computed=336 npreempt=109 inflight=False
+1787756536.472 PREEMPT step=258 4-b7448c81 status=RUNNING computed=336 npreempt=109 inflight=False
+1787756536.472 PREEMPT step=258 3-9a7e3289 status=RUNNING computed=336 npreempt=109 inflight=False
+1787756536.472 PREEMPT step=258 2-8963aad4 status=RUNNING computed=336 npreempt=109 inflight=False
+1787756536.472 PREEMPT step=258 1-9e607a5c status=RUNNING computed=336 npreempt=109 inflight=False
+1787756536.472 PREEMPT step=258 0-8672a16c status=RUNNING computed=352 npreempt=101 inflight=False
+1787756536.492 PREEMPT step=260 5-9d41da2f status=RUNNING computed=336 npreempt=110 inflight=False
+1787756536.492 PREEMPT step=260 4-b7448c81 status=RUNNING computed=336 npreempt=110 inflight=False
+1787756536.492 PREEMPT step=260 3-9a7e3289 status=RUNNING computed=336 npreempt=110 inflight=False
+1787756536.492 PREEMPT step=260 2-8963aad4 status=RUNNING computed=336 npreempt=110 inflight=False
+1787756536.492 PREEMPT step=260 1-9e607a5c status=RUNNING computed=336 npreempt=110 inflight=False
+1787756536.492 PREEMPT step=260 0-8672a16c status=RUNNING computed=352 npreempt=102 inflight=False
+1787756536.512 PREEMPT step=262 5-9d41da2f status=RUNNING computed=336 npreempt=111 inflight=False
+1787756536.512 PREEMPT step=262 4-b7448c81 status=RUNNING computed=336 npreempt=111 inflight=False
+1787756536.512 PREEMPT step=262 3-9a7e3289 status=RUNNING computed=336 npreempt=111 inflight=False
+1787756536.512 PREEMPT step=262 2-8963aad4 status=RUNNING computed=336 npreempt=111 inflight=False
+1787756536.512 PREEMPT step=262 1-9e607a5c status=RUNNING computed=336 npreempt=111 inflight=False
+1787756536.512 PREEMPT step=262 0-8672a16c status=RUNNING computed=352 npreempt=103 inflight=False
+1787756536.531 PREEMPT step=264 5-9d41da2f status=RUNNING computed=336 npreempt=112 inflight=False
+1787756536.532 PREEMPT step=264 4-b7448c81 status=RUNNING computed=336 npreempt=112 inflight=False
+1787756536.532 PREEMPT step=264 3-9a7e3289 status=RUNNING computed=336 npreempt=112 inflight=False
+1787756536.532 PREEMPT step=264 2-8963aad4 status=RUNNING computed=336 npreempt=112 inflight=False
+1787756536.532 PREEMPT step=264 1-9e607a5c status=RUNNING computed=336 npreempt=112 inflight=False
+1787756536.532 PREEMPT step=264 0-8672a16c status=RUNNING computed=352 npreempt=104 inflight=False
+1787756536.551 PREEMPT step=266 5-9d41da2f status=RUNNING computed=336 npreempt=113 inflight=False
+1787756536.552 PREEMPT step=266 4-b7448c81 status=RUNNING computed=336 npreempt=113 inflight=False
+1787756536.552 PREEMPT step=266 3-9a7e3289 status=RUNNING computed=336 npreempt=113 inflight=False
+1787756536.552 PREEMPT step=266 2-8963aad4 status=RUNNING computed=336 npreempt=113 inflight=False
+1787756536.552 PREEMPT step=266 1-9e607a5c status=RUNNING computed=336 npreempt=113 inflight=False
+1787756536.552 PREEMPT step=266 0-8672a16c status=RUNNING computed=352 npreempt=105 inflight=False
+1787756536.571 PREEMPT step=268 5-9d41da2f status=RUNNING computed=336 npreempt=114 inflight=False
+1787756536.571 PREEMPT step=268 4-b7448c81 status=RUNNING computed=336 npreempt=114 inflight=False
+1787756536.571 PREEMPT step=268 3-9a7e3289 status=RUNNING computed=336 npreempt=114 inflight=False
+1787756536.571 PREEMPT step=268 2-8963aad4 status=RUNNING computed=336 npreempt=114 inflight=False
+1787756536.571 PREEMPT step=268 1-9e607a5c status=RUNNING computed=336 npreempt=114 inflight=False
+1787756536.571 PREEMPT step=268 0-8672a16c status=RUNNING computed=352 npreempt=106 inflight=False
+1787756536.590 PREEMPT step=270 5-9d41da2f status=RUNNING computed=336 npreempt=115 inflight=False
+1787756536.590 PREEMPT step=270 4-b7448c81 status=RUNNING computed=336 npreempt=115 inflight=False
+1787756536.590 PREEMPT step=270 3-9a7e3289 status=RUNNING computed=336 npreempt=115 inflight=False
+1787756536.590 PREEMPT step=270 2-8963aad4 status=RUNNING computed=336 npreempt=115 inflight=False
+1787756536.590 PREEMPT step=270 1-9e607a5c status=RUNNING computed=336 npreempt=115 inflight=False
+1787756536.590 PREEMPT step=270 0-8672a16c status=RUNNING computed=352 npreempt=107 inflight=False
+1787756536.610 PREEMPT step=272 5-9d41da2f status=RUNNING computed=336 npreempt=116 inflight=False
+1787756536.610 PREEMPT step=272 4-b7448c81 status=RUNNING computed=336 npreempt=116 inflight=False
+1787756536.610 PREEMPT step=272 3-9a7e3289 status=RUNNING computed=336 npreempt=116 inflight=False
+1787756536.610 PREEMPT step=272 2-8963aad4 status=RUNNING computed=336 npreempt=116 inflight=False
+1787756536.610 PREEMPT step=272 1-9e607a5c status=RUNNING computed=336 npreempt=116 inflight=False
+1787756536.610 PREEMPT step=272 0-8672a16c status=RUNNING computed=352 npreempt=108 inflight=False
+1787756536.629 PREEMPT step=274 5-9d41da2f status=RUNNING computed=336 npreempt=117 inflight=False
+1787756536.629 PREEMPT step=274 4-b7448c81 status=RUNNING computed=336 npreempt=117 inflight=False
+1787756536.629 PREEMPT step=274 3-9a7e3289 status=RUNNING computed=336 npreempt=117 inflight=False
+1787756536.629 PREEMPT step=274 2-8963aad4 status=RUNNING computed=336 npreempt=117 inflight=False
+1787756536.629 PREEMPT step=274 1-9e607a5c status=RUNNING computed=336 npreempt=117 inflight=False
+1787756536.629 PREEMPT step=274 0-8672a16c status=RUNNING computed=352 npreempt=109 inflight=False
+1787756536.648 PREEMPT step=276 5-9d41da2f status=RUNNING computed=336 npreempt=118 inflight=False
+1787756536.649 PREEMPT step=276 4-b7448c81 status=RUNNING computed=336 npreempt=118 inflight=False
+1787756536.649 PREEMPT step=276 3-9a7e3289 status=RUNNING computed=336 npreempt=118 inflight=False
+1787756536.649 PREEMPT step=276 2-8963aad4 status=RUNNING computed=336 npreempt=118 inflight=False
+1787756536.649 PREEMPT step=276 1-9e607a5c status=RUNNING computed=336 npreempt=118 inflight=False
+1787756536.649 PREEMPT step=276 0-8672a16c status=RUNNING computed=352 npreempt=110 inflight=False
+1787756536.667 PREEMPT step=278 5-9d41da2f status=RUNNING computed=336 npreempt=119 inflight=False
+1787756536.667 PREEMPT step=278 4-b7448c81 status=RUNNING computed=336 npreempt=119 inflight=False
+1787756536.667 PREEMPT step=278 3-9a7e3289 status=RUNNING computed=336 npreempt=119 inflight=False
+1787756536.667 PREEMPT step=278 2-8963aad4 status=RUNNING computed=336 npreempt=119 inflight=False
+1787756536.667 PREEMPT step=278 1-9e607a5c status=RUNNING computed=336 npreempt=119 inflight=False
+1787756536.667 PREEMPT step=278 0-8672a16c status=RUNNING computed=352 npreempt=111 inflight=False
+1787756536.686 PREEMPT step=280 5-9d41da2f status=RUNNING computed=336 npreempt=120 inflight=False
+1787756536.687 PREEMPT step=280 4-b7448c81 status=RUNNING computed=336 npreempt=120 inflight=False
+1787756536.687 PREEMPT step=280 3-9a7e3289 status=RUNNING computed=336 npreempt=120 inflight=False
+1787756536.687 PREEMPT step=280 2-8963aad4 status=RUNNING computed=336 npreempt=120 inflight=False
+1787756536.687 PREEMPT step=280 1-9e607a5c status=RUNNING computed=336 npreempt=120 inflight=False
+1787756536.687 PREEMPT step=280 0-8672a16c status=RUNNING computed=352 npreempt=112 inflight=False
+1787756536.705 PREEMPT step=282 5-9d41da2f status=RUNNING computed=336 npreempt=121 inflight=False
+1787756536.706 PREEMPT step=282 4-b7448c81 status=RUNNING computed=336 npreempt=121 inflight=False
+1787756536.706 PREEMPT step=282 3-9a7e3289 status=RUNNING computed=336 npreempt=121 inflight=False
+1787756536.706 PREEMPT step=282 2-8963aad4 status=RUNNING computed=336 npreempt=121 inflight=False
+1787756536.706 PREEMPT step=282 1-9e607a5c status=RUNNING computed=336 npreempt=121 inflight=False
+1787756536.706 PREEMPT step=282 0-8672a16c status=RUNNING computed=352 npreempt=113 inflight=False
+1787756536.725 PREEMPT step=284 5-9d41da2f status=RUNNING computed=336 npreempt=122 inflight=False
+1787756536.725 PREEMPT step=284 4-b7448c81 status=RUNNING computed=336 npreempt=122 inflight=False
+1787756536.725 PREEMPT step=284 3-9a7e3289 status=RUNNING computed=336 npreempt=122 inflight=False
+1787756536.725 PREEMPT step=284 2-8963aad4 status=RUNNING computed=336 npreempt=122 inflight=False
+1787756536.725 PREEMPT step=284 1-9e607a5c status=RUNNING computed=336 npreempt=122 inflight=False
+1787756536.725 PREEMPT step=284 0-8672a16c status=RUNNING computed=352 npreempt=114 inflight=False
+1787756536.744 PREEMPT step=286 5-9d41da2f status=RUNNING computed=336 npreempt=123 inflight=False
+1787756536.744 PREEMPT step=286 4-b7448c81 status=RUNNING computed=336 npreempt=123 inflight=False
+1787756536.744 PREEMPT step=286 3-9a7e3289 status=RUNNING computed=336 npreempt=123 inflight=False
+1787756536.744 PREEMPT step=286 2-8963aad4 status=RUNNING computed=336 npreempt=123 inflight=False
+1787756536.744 PREEMPT step=286 1-9e607a5c status=RUNNING computed=336 npreempt=123 inflight=False
+1787756536.744 PREEMPT step=286 0-8672a16c status=RUNNING computed=352 npreempt=115 inflight=False
+1787756536.763 PREEMPT step=288 5-9d41da2f status=RUNNING computed=336 npreempt=124 inflight=False
+1787756536.763 PREEMPT step=288 4-b7448c81 status=RUNNING computed=336 npreempt=124 inflight=False
+1787756536.763 PREEMPT step=288 3-9a7e3289 status=RUNNING computed=336 npreempt=124 inflight=False
+1787756536.763 PREEMPT step=288 2-8963aad4 status=RUNNING computed=336 npreempt=124 inflight=False
+1787756536.763 PREEMPT step=288 1-9e607a5c status=RUNNING computed=336 npreempt=124 inflight=False
+1787756536.763 PREEMPT step=288 0-8672a16c status=RUNNING computed=352 npreempt=116 inflight=False
+1787756536.782 PREEMPT step=290 5-9d41da2f status=RUNNING computed=336 npreempt=125 inflight=False
+1787756536.782 PREEMPT step=290 4-b7448c81 status=RUNNING computed=336 npreempt=125 inflight=False
+1787756536.782 PREEMPT step=290 3-9a7e3289 status=RUNNING computed=336 npreempt=125 inflight=False
+1787756536.782 PREEMPT step=290 2-8963aad4 status=RUNNING computed=336 npreempt=125 inflight=False
+1787756536.782 PREEMPT step=290 1-9e607a5c status=RUNNING computed=336 npreempt=125 inflight=False
+1787756536.782 PREEMPT step=290 0-8672a16c status=RUNNING computed=352 npreempt=117 inflight=False
+1787756536.801 PREEMPT step=292 5-9d41da2f status=RUNNING computed=336 npreempt=126 inflight=False
+1787756536.801 PREEMPT step=292 4-b7448c81 status=RUNNING computed=336 npreempt=126 inflight=False
+1787756536.801 PREEMPT step=292 3-9a7e3289 status=RUNNING computed=336 npreempt=126 inflight=False
+1787756536.801 PREEMPT step=292 2-8963aad4 status=RUNNING computed=336 npreempt=126 inflight=False
+1787756536.801 PREEMPT step=292 1-9e607a5c status=RUNNING computed=336 npreempt=126 inflight=False
+1787756536.801 PREEMPT step=292 0-8672a16c status=RUNNING computed=352 npreempt=118 inflight=False
+1787756536.820 PREEMPT step=294 5-9d41da2f status=RUNNING computed=336 npreempt=127 inflight=False
+1787756536.820 PREEMPT step=294 4-b7448c81 status=RUNNING computed=336 npreempt=127 inflight=False
+1787756536.820 PREEMPT step=294 3-9a7e3289 status=RUNNING computed=336 npreempt=127 inflight=False
+1787756536.820 PREEMPT step=294 2-8963aad4 status=RUNNING computed=336 npreempt=127 inflight=False
+1787756536.820 PREEMPT step=294 1-9e607a5c status=RUNNING computed=336 npreempt=127 inflight=False
+1787756536.820 PREEMPT step=294 0-8672a16c status=RUNNING computed=352 npreempt=119 inflight=False
+1787756536.839 PREEMPT step=296 5-9d41da2f status=RUNNING computed=336 npreempt=128 inflight=False
+1787756536.839 PREEMPT step=296 4-b7448c81 status=RUNNING computed=336 npreempt=128 inflight=False
+1787756536.839 PREEMPT step=296 3-9a7e3289 status=RUNNING computed=336 npreempt=128 inflight=False
+1787756536.839 PREEMPT step=296 2-8963aad4 status=RUNNING computed=336 npreempt=128 inflight=False
+1787756536.839 PREEMPT step=296 1-9e607a5c status=RUNNING computed=336 npreempt=128 inflight=False
+1787756536.839 PREEMPT step=296 0-8672a16c status=RUNNING computed=352 npreempt=120 inflight=False
+1787756536.857 PREEMPT step=298 5-9d41da2f status=RUNNING computed=336 npreempt=129 inflight=False
+1787756536.858 PREEMPT step=298 4-b7448c81 status=RUNNING computed=336 npreempt=129 inflight=False
+1787756536.858 PREEMPT step=298 3-9a7e3289 status=RUNNING computed=336 npreempt=129 inflight=False
+1787756536.858 PREEMPT step=298 2-8963aad4 status=RUNNING computed=336 npreempt=129 inflight=False
+1787756536.858 PREEMPT step=298 1-9e607a5c status=RUNNING computed=336 npreempt=129 inflight=False
+1787756536.858 PREEMPT step=298 0-8672a16c status=RUNNING computed=352 npreempt=121 inflight=False
+1787756536.877 PREEMPT step=300 5-9d41da2f status=RUNNING computed=336 npreempt=130 inflight=False
+1787756536.877 PREEMPT step=300 4-b7448c81 status=RUNNING computed=336 npreempt=130 inflight=False
+1787756536.877 PREEMPT step=300 3-9a7e3289 status=RUNNING computed=336 npreempt=130 inflight=False
+1787756536.877 PREEMPT step=300 2-8963aad4 status=RUNNING computed=336 npreempt=130 inflight=False
+1787756536.877 PREEMPT step=300 1-9e607a5c status=RUNNING computed=336 npreempt=130 inflight=False
+1787756536.877 PREEMPT step=300 0-8672a16c status=RUNNING computed=352 npreempt=122 inflight=False
+1787756536.877 step=300 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[178] sched_seq=178/proc_seq=177 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p123:b0 1-9e607a5c:PREEMPTED:c0/336:p131:b0 2-8963aad4:PREEMPTED:c0/336:p131:b0 3-9a7e3289:PREEMPTED:c0/336:p131:b0 4-b7448c81:PREEMPTED:c0/336:p131:b0 5-9d41da2f:PREEMPTED:c0/336:p131:b0
+1787756536.896 PREEMPT step=302 5-9d41da2f status=RUNNING computed=336 npreempt=131 inflight=False
+1787756536.896 PREEMPT step=302 4-b7448c81 status=RUNNING computed=336 npreempt=131 inflight=False
+1787756536.896 PREEMPT step=302 3-9a7e3289 status=RUNNING computed=336 npreempt=131 inflight=False
+1787756536.896 PREEMPT step=302 2-8963aad4 status=RUNNING computed=336 npreempt=131 inflight=False
+1787756536.896 PREEMPT step=302 1-9e607a5c status=RUNNING computed=336 npreempt=131 inflight=False
+1787756536.896 PREEMPT step=302 0-8672a16c status=RUNNING computed=352 npreempt=123 inflight=False
+1787756536.916 PREEMPT step=304 5-9d41da2f status=RUNNING computed=336 npreempt=132 inflight=False
+1787756536.916 PREEMPT step=304 4-b7448c81 status=RUNNING computed=336 npreempt=132 inflight=False
+1787756536.916 PREEMPT step=304 3-9a7e3289 status=RUNNING computed=336 npreempt=132 inflight=False
+1787756536.916 PREEMPT step=304 2-8963aad4 status=RUNNING computed=336 npreempt=132 inflight=False
+1787756536.916 PREEMPT step=304 1-9e607a5c status=RUNNING computed=336 npreempt=132 inflight=False
+1787756536.916 PREEMPT step=304 0-8672a16c status=RUNNING computed=352 npreempt=124 inflight=False
+1787756536.935 PREEMPT step=306 5-9d41da2f status=RUNNING computed=336 npreempt=133 inflight=False
+1787756536.935 PREEMPT step=306 4-b7448c81 status=RUNNING computed=336 npreempt=133 inflight=False
+1787756536.935 PREEMPT step=306 3-9a7e3289 status=RUNNING computed=336 npreempt=133 inflight=False
+1787756536.935 PREEMPT step=306 2-8963aad4 status=RUNNING computed=336 npreempt=133 inflight=False
+1787756536.935 PREEMPT step=306 1-9e607a5c status=RUNNING computed=336 npreempt=133 inflight=False
+1787756536.935 PREEMPT step=306 0-8672a16c status=RUNNING computed=352 npreempt=125 inflight=False
+1787756536.953 PREEMPT step=308 5-9d41da2f status=RUNNING computed=336 npreempt=134 inflight=False
+1787756536.954 PREEMPT step=308 4-b7448c81 status=RUNNING computed=336 npreempt=134 inflight=False
+1787756536.954 PREEMPT step=308 3-9a7e3289 status=RUNNING computed=336 npreempt=134 inflight=False
+1787756536.954 PREEMPT step=308 2-8963aad4 status=RUNNING computed=336 npreempt=134 inflight=False
+1787756536.954 PREEMPT step=308 1-9e607a5c status=RUNNING computed=336 npreempt=134 inflight=False
+1787756536.954 PREEMPT step=308 0-8672a16c status=RUNNING computed=352 npreempt=126 inflight=False
+1787756536.973 PREEMPT step=310 5-9d41da2f status=RUNNING computed=336 npreempt=135 inflight=False
+1787756536.973 PREEMPT step=310 4-b7448c81 status=RUNNING computed=336 npreempt=135 inflight=False
+1787756536.973 PREEMPT step=310 3-9a7e3289 status=RUNNING computed=336 npreempt=135 inflight=False
+1787756536.973 PREEMPT step=310 2-8963aad4 status=RUNNING computed=336 npreempt=135 inflight=False
+1787756536.973 PREEMPT step=310 1-9e607a5c status=RUNNING computed=336 npreempt=135 inflight=False
+1787756536.973 PREEMPT step=310 0-8672a16c status=RUNNING computed=352 npreempt=127 inflight=False
+1787756536.992 PREEMPT step=312 5-9d41da2f status=RUNNING computed=336 npreempt=136 inflight=False
+1787756536.992 PREEMPT step=312 4-b7448c81 status=RUNNING computed=336 npreempt=136 inflight=False
+1787756536.992 PREEMPT step=312 3-9a7e3289 status=RUNNING computed=336 npreempt=136 inflight=False
+1787756536.992 PREEMPT step=312 2-8963aad4 status=RUNNING computed=336 npreempt=136 inflight=False
+1787756536.992 PREEMPT step=312 1-9e607a5c status=RUNNING computed=336 npreempt=136 inflight=False
+1787756536.992 PREEMPT step=312 0-8672a16c status=RUNNING computed=352 npreempt=128 inflight=False
+1787756537.012 PREEMPT step=314 5-9d41da2f status=RUNNING computed=336 npreempt=137 inflight=False
+1787756537.012 PREEMPT step=314 4-b7448c81 status=RUNNING computed=336 npreempt=137 inflight=False
+1787756537.012 PREEMPT step=314 3-9a7e3289 status=RUNNING computed=336 npreempt=137 inflight=False
+1787756537.012 PREEMPT step=314 2-8963aad4 status=RUNNING computed=336 npreempt=137 inflight=False
+1787756537.012 PREEMPT step=314 1-9e607a5c status=RUNNING computed=336 npreempt=137 inflight=False
+1787756537.012 PREEMPT step=314 0-8672a16c status=RUNNING computed=352 npreempt=129 inflight=False
+1787756537.032 PREEMPT step=316 5-9d41da2f status=RUNNING computed=336 npreempt=138 inflight=False
+1787756537.032 PREEMPT step=316 4-b7448c81 status=RUNNING computed=336 npreempt=138 inflight=False
+1787756537.032 PREEMPT step=316 3-9a7e3289 status=RUNNING computed=336 npreempt=138 inflight=False
+1787756537.032 PREEMPT step=316 2-8963aad4 status=RUNNING computed=336 npreempt=138 inflight=False
+1787756537.032 PREEMPT step=316 1-9e607a5c status=RUNNING computed=336 npreempt=138 inflight=False
+1787756537.032 PREEMPT step=316 0-8672a16c status=RUNNING computed=352 npreempt=130 inflight=False
+1787756537.053 PREEMPT step=318 5-9d41da2f status=RUNNING computed=336 npreempt=139 inflight=False
+1787756537.053 PREEMPT step=318 4-b7448c81 status=RUNNING computed=336 npreempt=139 inflight=False
+1787756537.053 PREEMPT step=318 3-9a7e3289 status=RUNNING computed=336 npreempt=139 inflight=False
+1787756537.053 PREEMPT step=318 2-8963aad4 status=RUNNING computed=336 npreempt=139 inflight=False
+1787756537.053 PREEMPT step=318 1-9e607a5c status=RUNNING computed=336 npreempt=139 inflight=False
+1787756537.053 PREEMPT step=318 0-8672a16c status=RUNNING computed=352 npreempt=131 inflight=False
+1787756537.073 PREEMPT step=320 5-9d41da2f status=RUNNING computed=336 npreempt=140 inflight=False
+1787756537.073 PREEMPT step=320 4-b7448c81 status=RUNNING computed=336 npreempt=140 inflight=False
+1787756537.073 PREEMPT step=320 3-9a7e3289 status=RUNNING computed=336 npreempt=140 inflight=False
+1787756537.073 PREEMPT step=320 2-8963aad4 status=RUNNING computed=336 npreempt=140 inflight=False
+1787756537.073 PREEMPT step=320 1-9e607a5c status=RUNNING computed=336 npreempt=140 inflight=False
+1787756537.073 PREEMPT step=320 0-8672a16c status=RUNNING computed=352 npreempt=132 inflight=False
+1787756537.093 PREEMPT step=322 5-9d41da2f status=RUNNING computed=336 npreempt=141 inflight=False
+1787756537.093 PREEMPT step=322 4-b7448c81 status=RUNNING computed=336 npreempt=141 inflight=False
+1787756537.093 PREEMPT step=322 3-9a7e3289 status=RUNNING computed=336 npreempt=141 inflight=False
+1787756537.093 PREEMPT step=322 2-8963aad4 status=RUNNING computed=336 npreempt=141 inflight=False
+1787756537.093 PREEMPT step=322 1-9e607a5c status=RUNNING computed=336 npreempt=141 inflight=False
+1787756537.093 PREEMPT step=322 0-8672a16c status=RUNNING computed=352 npreempt=133 inflight=False
+1787756537.112 PREEMPT step=324 5-9d41da2f status=RUNNING computed=336 npreempt=142 inflight=False
+1787756537.112 PREEMPT step=324 4-b7448c81 status=RUNNING computed=336 npreempt=142 inflight=False
+1787756537.113 PREEMPT step=324 3-9a7e3289 status=RUNNING computed=336 npreempt=142 inflight=False
+1787756537.113 PREEMPT step=324 2-8963aad4 status=RUNNING computed=336 npreempt=142 inflight=False
+1787756537.113 PREEMPT step=324 1-9e607a5c status=RUNNING computed=336 npreempt=142 inflight=False
+1787756537.113 PREEMPT step=324 0-8672a16c status=RUNNING computed=352 npreempt=134 inflight=False
+1787756537.132 PREEMPT step=326 5-9d41da2f status=RUNNING computed=336 npreempt=143 inflight=False
+1787756537.132 PREEMPT step=326 4-b7448c81 status=RUNNING computed=336 npreempt=143 inflight=False
+1787756537.132 PREEMPT step=326 3-9a7e3289 status=RUNNING computed=336 npreempt=143 inflight=False
+1787756537.132 PREEMPT step=326 2-8963aad4 status=RUNNING computed=336 npreempt=143 inflight=False
+1787756537.133 PREEMPT step=326 1-9e607a5c status=RUNNING computed=336 npreempt=143 inflight=False
+1787756537.133 PREEMPT step=326 0-8672a16c status=RUNNING computed=352 npreempt=135 inflight=False
+1787756537.152 PREEMPT step=328 5-9d41da2f status=RUNNING computed=336 npreempt=144 inflight=False
+1787756537.153 PREEMPT step=328 4-b7448c81 status=RUNNING computed=336 npreempt=144 inflight=False
+1787756537.153 PREEMPT step=328 3-9a7e3289 status=RUNNING computed=336 npreempt=144 inflight=False
+1787756537.153 PREEMPT step=328 2-8963aad4 status=RUNNING computed=336 npreempt=144 inflight=False
+1787756537.153 PREEMPT step=328 1-9e607a5c status=RUNNING computed=336 npreempt=144 inflight=False
+1787756537.153 PREEMPT step=328 0-8672a16c status=RUNNING computed=352 npreempt=136 inflight=False
+1787756537.172 PREEMPT step=330 5-9d41da2f status=RUNNING computed=336 npreempt=145 inflight=False
+1787756537.172 PREEMPT step=330 4-b7448c81 status=RUNNING computed=336 npreempt=145 inflight=False
+1787756537.172 PREEMPT step=330 3-9a7e3289 status=RUNNING computed=336 npreempt=145 inflight=False
+1787756537.173 PREEMPT step=330 2-8963aad4 status=RUNNING computed=336 npreempt=145 inflight=False
+1787756537.173 PREEMPT step=330 1-9e607a5c status=RUNNING computed=336 npreempt=145 inflight=False
+1787756537.173 PREEMPT step=330 0-8672a16c status=RUNNING computed=352 npreempt=137 inflight=False
+1787756537.192 PREEMPT step=332 5-9d41da2f status=RUNNING computed=336 npreempt=146 inflight=False
+1787756537.192 PREEMPT step=332 4-b7448c81 status=RUNNING computed=336 npreempt=146 inflight=False
+1787756537.192 PREEMPT step=332 3-9a7e3289 status=RUNNING computed=336 npreempt=146 inflight=False
+1787756537.192 PREEMPT step=332 2-8963aad4 status=RUNNING computed=336 npreempt=146 inflight=False
+1787756537.192 PREEMPT step=332 1-9e607a5c status=RUNNING computed=336 npreempt=146 inflight=False
+1787756537.192 PREEMPT step=332 0-8672a16c status=RUNNING computed=352 npreempt=138 inflight=False
+1787756537.211 PREEMPT step=334 5-9d41da2f status=RUNNING computed=336 npreempt=147 inflight=False
+1787756537.211 PREEMPT step=334 4-b7448c81 status=RUNNING computed=336 npreempt=147 inflight=False
+1787756537.211 PREEMPT step=334 3-9a7e3289 status=RUNNING computed=336 npreempt=147 inflight=False
+1787756537.211 PREEMPT step=334 2-8963aad4 status=RUNNING computed=336 npreempt=147 inflight=False
+1787756537.211 PREEMPT step=334 1-9e607a5c status=RUNNING computed=336 npreempt=147 inflight=False
+1787756537.211 PREEMPT step=334 0-8672a16c status=RUNNING computed=352 npreempt=139 inflight=False
+1787756537.231 PREEMPT step=336 5-9d41da2f status=RUNNING computed=336 npreempt=148 inflight=False
+1787756537.231 PREEMPT step=336 4-b7448c81 status=RUNNING computed=336 npreempt=148 inflight=False
+1787756537.231 PREEMPT step=336 3-9a7e3289 status=RUNNING computed=336 npreempt=148 inflight=False
+1787756537.231 PREEMPT step=336 2-8963aad4 status=RUNNING computed=336 npreempt=148 inflight=False
+1787756537.231 PREEMPT step=336 1-9e607a5c status=RUNNING computed=336 npreempt=148 inflight=False
+1787756537.231 PREEMPT step=336 0-8672a16c status=RUNNING computed=352 npreempt=140 inflight=False
+1787756537.250 PREEMPT step=338 5-9d41da2f status=RUNNING computed=336 npreempt=149 inflight=False
+1787756537.250 PREEMPT step=338 4-b7448c81 status=RUNNING computed=336 npreempt=149 inflight=False
+1787756537.250 PREEMPT step=338 3-9a7e3289 status=RUNNING computed=336 npreempt=149 inflight=False
+1787756537.250 PREEMPT step=338 2-8963aad4 status=RUNNING computed=336 npreempt=149 inflight=False
+1787756537.250 PREEMPT step=338 1-9e607a5c status=RUNNING computed=336 npreempt=149 inflight=False
+1787756537.250 PREEMPT step=338 0-8672a16c status=RUNNING computed=352 npreempt=141 inflight=False
+1787756537.269 PREEMPT step=340 5-9d41da2f status=RUNNING computed=336 npreempt=150 inflight=False
+1787756537.269 PREEMPT step=340 4-b7448c81 status=RUNNING computed=336 npreempt=150 inflight=False
+1787756537.269 PREEMPT step=340 3-9a7e3289 status=RUNNING computed=336 npreempt=150 inflight=False
+1787756537.270 PREEMPT step=340 2-8963aad4 status=RUNNING computed=336 npreempt=150 inflight=False
+1787756537.270 PREEMPT step=340 1-9e607a5c status=RUNNING computed=336 npreempt=150 inflight=False
+1787756537.270 PREEMPT step=340 0-8672a16c status=RUNNING computed=352 npreempt=142 inflight=False
+1787756537.289 PREEMPT step=342 5-9d41da2f status=RUNNING computed=336 npreempt=151 inflight=False
+1787756537.289 PREEMPT step=342 4-b7448c81 status=RUNNING computed=336 npreempt=151 inflight=False
+1787756537.289 PREEMPT step=342 3-9a7e3289 status=RUNNING computed=336 npreempt=151 inflight=False
+1787756537.289 PREEMPT step=342 2-8963aad4 status=RUNNING computed=336 npreempt=151 inflight=False
+1787756537.289 PREEMPT step=342 1-9e607a5c status=RUNNING computed=336 npreempt=151 inflight=False
+1787756537.289 PREEMPT step=342 0-8672a16c status=RUNNING computed=352 npreempt=143 inflight=False
+1787756537.309 PREEMPT step=344 5-9d41da2f status=RUNNING computed=336 npreempt=152 inflight=False
+1787756537.309 PREEMPT step=344 4-b7448c81 status=RUNNING computed=336 npreempt=152 inflight=False
+1787756537.309 PREEMPT step=344 3-9a7e3289 status=RUNNING computed=336 npreempt=152 inflight=False
+1787756537.309 PREEMPT step=344 2-8963aad4 status=RUNNING computed=336 npreempt=152 inflight=False
+1787756537.309 PREEMPT step=344 1-9e607a5c status=RUNNING computed=336 npreempt=152 inflight=False
+1787756537.309 PREEMPT step=344 0-8672a16c status=RUNNING computed=352 npreempt=144 inflight=False
+1787756537.328 PREEMPT step=346 5-9d41da2f status=RUNNING computed=336 npreempt=153 inflight=False
+1787756537.329 PREEMPT step=346 4-b7448c81 status=RUNNING computed=336 npreempt=153 inflight=False
+1787756537.329 PREEMPT step=346 3-9a7e3289 status=RUNNING computed=336 npreempt=153 inflight=False
+1787756537.329 PREEMPT step=346 2-8963aad4 status=RUNNING computed=336 npreempt=153 inflight=False
+1787756537.329 PREEMPT step=346 1-9e607a5c status=RUNNING computed=336 npreempt=153 inflight=False
+1787756537.329 PREEMPT step=346 0-8672a16c status=RUNNING computed=352 npreempt=145 inflight=False
+1787756537.348 PREEMPT step=348 5-9d41da2f status=RUNNING computed=336 npreempt=154 inflight=False
+1787756537.348 PREEMPT step=348 4-b7448c81 status=RUNNING computed=336 npreempt=154 inflight=False
+1787756537.348 PREEMPT step=348 3-9a7e3289 status=RUNNING computed=336 npreempt=154 inflight=False
+1787756537.348 PREEMPT step=348 2-8963aad4 status=RUNNING computed=336 npreempt=154 inflight=False
+1787756537.348 PREEMPT step=348 1-9e607a5c status=RUNNING computed=336 npreempt=154 inflight=False
+1787756537.348 PREEMPT step=348 0-8672a16c status=RUNNING computed=352 npreempt=146 inflight=False
+1787756537.368 PREEMPT step=350 5-9d41da2f status=RUNNING computed=336 npreempt=155 inflight=False
+1787756537.368 PREEMPT step=350 4-b7448c81 status=RUNNING computed=336 npreempt=155 inflight=False
+1787756537.368 PREEMPT step=350 3-9a7e3289 status=RUNNING computed=336 npreempt=155 inflight=False
+1787756537.368 PREEMPT step=350 2-8963aad4 status=RUNNING computed=336 npreempt=155 inflight=False
+1787756537.368 PREEMPT step=350 1-9e607a5c status=RUNNING computed=336 npreempt=155 inflight=False
+1787756537.368 PREEMPT step=350 0-8672a16c status=RUNNING computed=352 npreempt=147 inflight=False
+1787756537.368 step=350 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[203] sched_seq=203/proc_seq=202 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p148:b0 1-9e607a5c:PREEMPTED:c0/336:p156:b0 2-8963aad4:PREEMPTED:c0/336:p156:b0 3-9a7e3289:PREEMPTED:c0/336:p156:b0 4-b7448c81:PREEMPTED:c0/336:p156:b0 5-9d41da2f:PREEMPTED:c0/336:p156:b0
+1787756537.387 PREEMPT step=352 5-9d41da2f status=RUNNING computed=336 npreempt=156 inflight=False
+1787756537.387 PREEMPT step=352 4-b7448c81 status=RUNNING computed=336 npreempt=156 inflight=False
+1787756537.387 PREEMPT step=352 3-9a7e3289 status=RUNNING computed=336 npreempt=156 inflight=False
+1787756537.387 PREEMPT step=352 2-8963aad4 status=RUNNING computed=336 npreempt=156 inflight=False
+1787756537.387 PREEMPT step=352 1-9e607a5c status=RUNNING computed=336 npreempt=156 inflight=False
+1787756537.387 PREEMPT step=352 0-8672a16c status=RUNNING computed=352 npreempt=148 inflight=False
+1787756537.407 PREEMPT step=354 5-9d41da2f status=RUNNING computed=336 npreempt=157 inflight=False
+1787756537.407 PREEMPT step=354 4-b7448c81 status=RUNNING computed=336 npreempt=157 inflight=False
+1787756537.407 PREEMPT step=354 3-9a7e3289 status=RUNNING computed=336 npreempt=157 inflight=False
+1787756537.407 PREEMPT step=354 2-8963aad4 status=RUNNING computed=336 npreempt=157 inflight=False
+1787756537.407 PREEMPT step=354 1-9e607a5c status=RUNNING computed=336 npreempt=157 inflight=False
+1787756537.407 PREEMPT step=354 0-8672a16c status=RUNNING computed=352 npreempt=149 inflight=False
+1787756537.427 PREEMPT step=356 5-9d41da2f status=RUNNING computed=336 npreempt=158 inflight=False
+1787756537.427 PREEMPT step=356 4-b7448c81 status=RUNNING computed=336 npreempt=158 inflight=False
+1787756537.427 PREEMPT step=356 3-9a7e3289 status=RUNNING computed=336 npreempt=158 inflight=False
+1787756537.427 PREEMPT step=356 2-8963aad4 status=RUNNING computed=336 npreempt=158 inflight=False
+1787756537.427 PREEMPT step=356 1-9e607a5c status=RUNNING computed=336 npreempt=158 inflight=False
+1787756537.427 PREEMPT step=356 0-8672a16c status=RUNNING computed=352 npreempt=150 inflight=False
+1787756537.446 PREEMPT step=358 5-9d41da2f status=RUNNING computed=336 npreempt=159 inflight=False
+1787756537.446 PREEMPT step=358 4-b7448c81 status=RUNNING computed=336 npreempt=159 inflight=False
+1787756537.446 PREEMPT step=358 3-9a7e3289 status=RUNNING computed=336 npreempt=159 inflight=False
+1787756537.446 PREEMPT step=358 2-8963aad4 status=RUNNING computed=336 npreempt=159 inflight=False
+1787756537.446 PREEMPT step=358 1-9e607a5c status=RUNNING computed=336 npreempt=159 inflight=False
+1787756537.446 PREEMPT step=358 0-8672a16c status=RUNNING computed=352 npreempt=151 inflight=False
+1787756537.466 PREEMPT step=360 5-9d41da2f status=RUNNING computed=336 npreempt=160 inflight=False
+1787756537.466 PREEMPT step=360 4-b7448c81 status=RUNNING computed=336 npreempt=160 inflight=False
+1787756537.466 PREEMPT step=360 3-9a7e3289 status=RUNNING computed=336 npreempt=160 inflight=False
+1787756537.466 PREEMPT step=360 2-8963aad4 status=RUNNING computed=336 npreempt=160 inflight=False
+1787756537.466 PREEMPT step=360 1-9e607a5c status=RUNNING computed=336 npreempt=160 inflight=False
+1787756537.466 PREEMPT step=360 0-8672a16c status=RUNNING computed=352 npreempt=152 inflight=False
+1787756537.486 PREEMPT step=362 5-9d41da2f status=RUNNING computed=336 npreempt=161 inflight=False
+1787756537.486 PREEMPT step=362 4-b7448c81 status=RUNNING computed=336 npreempt=161 inflight=False
+1787756537.486 PREEMPT step=362 3-9a7e3289 status=RUNNING computed=336 npreempt=161 inflight=False
+1787756537.486 PREEMPT step=362 2-8963aad4 status=RUNNING computed=336 npreempt=161 inflight=False
+1787756537.486 PREEMPT step=362 1-9e607a5c status=RUNNING computed=336 npreempt=161 inflight=False
+1787756537.486 PREEMPT step=362 0-8672a16c status=RUNNING computed=352 npreempt=153 inflight=False
+1787756537.505 PREEMPT step=364 5-9d41da2f status=RUNNING computed=336 npreempt=162 inflight=False
+1787756537.505 PREEMPT step=364 4-b7448c81 status=RUNNING computed=336 npreempt=162 inflight=False
+1787756537.505 PREEMPT step=364 3-9a7e3289 status=RUNNING computed=336 npreempt=162 inflight=False
+1787756537.505 PREEMPT step=364 2-8963aad4 status=RUNNING computed=336 npreempt=162 inflight=False
+1787756537.505 PREEMPT step=364 1-9e607a5c status=RUNNING computed=336 npreempt=162 inflight=False
+1787756537.505 PREEMPT step=364 0-8672a16c status=RUNNING computed=352 npreempt=154 inflight=False
+1787756537.525 PREEMPT step=366 5-9d41da2f status=RUNNING computed=336 npreempt=163 inflight=False
+1787756537.525 PREEMPT step=366 4-b7448c81 status=RUNNING computed=336 npreempt=163 inflight=False
+1787756537.525 PREEMPT step=366 3-9a7e3289 status=RUNNING computed=336 npreempt=163 inflight=False
+1787756537.525 PREEMPT step=366 2-8963aad4 status=RUNNING computed=336 npreempt=163 inflight=False
+1787756537.525 PREEMPT step=366 1-9e607a5c status=RUNNING computed=336 npreempt=163 inflight=False
+1787756537.525 PREEMPT step=366 0-8672a16c status=RUNNING computed=352 npreempt=155 inflight=False
+1787756537.544 PREEMPT step=368 5-9d41da2f status=RUNNING computed=336 npreempt=164 inflight=False
+1787756537.544 PREEMPT step=368 4-b7448c81 status=RUNNING computed=336 npreempt=164 inflight=False
+1787756537.544 PREEMPT step=368 3-9a7e3289 status=RUNNING computed=336 npreempt=164 inflight=False
+1787756537.544 PREEMPT step=368 2-8963aad4 status=RUNNING computed=336 npreempt=164 inflight=False
+1787756537.544 PREEMPT step=368 1-9e607a5c status=RUNNING computed=336 npreempt=164 inflight=False
+1787756537.544 PREEMPT step=368 0-8672a16c status=RUNNING computed=352 npreempt=156 inflight=False
+1787756537.564 PREEMPT step=370 5-9d41da2f status=RUNNING computed=336 npreempt=165 inflight=False
+1787756537.564 PREEMPT step=370 4-b7448c81 status=RUNNING computed=336 npreempt=165 inflight=False
+1787756537.564 PREEMPT step=370 3-9a7e3289 status=RUNNING computed=336 npreempt=165 inflight=False
+1787756537.564 PREEMPT step=370 2-8963aad4 status=RUNNING computed=336 npreempt=165 inflight=False
+1787756537.564 PREEMPT step=370 1-9e607a5c status=RUNNING computed=336 npreempt=165 inflight=False
+1787756537.564 PREEMPT step=370 0-8672a16c status=RUNNING computed=352 npreempt=157 inflight=False
+1787756537.584 PREEMPT step=372 5-9d41da2f status=RUNNING computed=336 npreempt=166 inflight=False
+1787756537.584 PREEMPT step=372 4-b7448c81 status=RUNNING computed=336 npreempt=166 inflight=False
+1787756537.584 PREEMPT step=372 3-9a7e3289 status=RUNNING computed=336 npreempt=166 inflight=False
+1787756537.584 PREEMPT step=372 2-8963aad4 status=RUNNING computed=336 npreempt=166 inflight=False
+1787756537.584 PREEMPT step=372 1-9e607a5c status=RUNNING computed=336 npreempt=166 inflight=False
+1787756537.584 PREEMPT step=372 0-8672a16c status=RUNNING computed=352 npreempt=158 inflight=False
+1787756537.603 PREEMPT step=374 5-9d41da2f status=RUNNING computed=336 npreempt=167 inflight=False
+1787756537.603 PREEMPT step=374 4-b7448c81 status=RUNNING computed=336 npreempt=167 inflight=False
+1787756537.603 PREEMPT step=374 3-9a7e3289 status=RUNNING computed=336 npreempt=167 inflight=False
+1787756537.603 PREEMPT step=374 2-8963aad4 status=RUNNING computed=336 npreempt=167 inflight=False
+1787756537.603 PREEMPT step=374 1-9e607a5c status=RUNNING computed=336 npreempt=167 inflight=False
+1787756537.603 PREEMPT step=374 0-8672a16c status=RUNNING computed=352 npreempt=159 inflight=False
+1787756537.623 PREEMPT step=376 5-9d41da2f status=RUNNING computed=336 npreempt=168 inflight=False
+1787756537.623 PREEMPT step=376 4-b7448c81 status=RUNNING computed=336 npreempt=168 inflight=False
+1787756537.623 PREEMPT step=376 3-9a7e3289 status=RUNNING computed=336 npreempt=168 inflight=False
+1787756537.623 PREEMPT step=376 2-8963aad4 status=RUNNING computed=336 npreempt=168 inflight=False
+1787756537.623 PREEMPT step=376 1-9e607a5c status=RUNNING computed=336 npreempt=168 inflight=False
+1787756537.623 PREEMPT step=376 0-8672a16c status=RUNNING computed=352 npreempt=160 inflight=False
+1787756537.642 PREEMPT step=378 5-9d41da2f status=RUNNING computed=336 npreempt=169 inflight=False
+1787756537.642 PREEMPT step=378 4-b7448c81 status=RUNNING computed=336 npreempt=169 inflight=False
+1787756537.642 PREEMPT step=378 3-9a7e3289 status=RUNNING computed=336 npreempt=169 inflight=False
+1787756537.642 PREEMPT step=378 2-8963aad4 status=RUNNING computed=336 npreempt=169 inflight=False
+1787756537.642 PREEMPT step=378 1-9e607a5c status=RUNNING computed=336 npreempt=169 inflight=False
+1787756537.642 PREEMPT step=378 0-8672a16c status=RUNNING computed=352 npreempt=161 inflight=False
+1787756537.661 PREEMPT step=380 5-9d41da2f status=RUNNING computed=336 npreempt=170 inflight=False
+1787756537.661 PREEMPT step=380 4-b7448c81 status=RUNNING computed=336 npreempt=170 inflight=False
+1787756537.661 PREEMPT step=380 3-9a7e3289 status=RUNNING computed=336 npreempt=170 inflight=False
+1787756537.661 PREEMPT step=380 2-8963aad4 status=RUNNING computed=336 npreempt=170 inflight=False
+1787756537.661 PREEMPT step=380 1-9e607a5c status=RUNNING computed=336 npreempt=170 inflight=False
+1787756537.661 PREEMPT step=380 0-8672a16c status=RUNNING computed=352 npreempt=162 inflight=False
+1787756537.680 PREEMPT step=382 5-9d41da2f status=RUNNING computed=336 npreempt=171 inflight=False
+1787756537.680 PREEMPT step=382 4-b7448c81 status=RUNNING computed=336 npreempt=171 inflight=False
+1787756537.680 PREEMPT step=382 3-9a7e3289 status=RUNNING computed=336 npreempt=171 inflight=False
+1787756537.680 PREEMPT step=382 2-8963aad4 status=RUNNING computed=336 npreempt=171 inflight=False
+1787756537.680 PREEMPT step=382 1-9e607a5c status=RUNNING computed=336 npreempt=171 inflight=False
+1787756537.680 PREEMPT step=382 0-8672a16c status=RUNNING computed=352 npreempt=163 inflight=False
+1787756537.699 PREEMPT step=384 5-9d41da2f status=RUNNING computed=336 npreempt=172 inflight=False
+1787756537.699 PREEMPT step=384 4-b7448c81 status=RUNNING computed=336 npreempt=172 inflight=False
+1787756537.699 PREEMPT step=384 3-9a7e3289 status=RUNNING computed=336 npreempt=172 inflight=False
+1787756537.699 PREEMPT step=384 2-8963aad4 status=RUNNING computed=336 npreempt=172 inflight=False
+1787756537.699 PREEMPT step=384 1-9e607a5c status=RUNNING computed=336 npreempt=172 inflight=False
+1787756537.699 PREEMPT step=384 0-8672a16c status=RUNNING computed=352 npreempt=164 inflight=False
+1787756537.717 PREEMPT step=386 5-9d41da2f status=RUNNING computed=336 npreempt=173 inflight=False
+1787756537.717 PREEMPT step=386 4-b7448c81 status=RUNNING computed=336 npreempt=173 inflight=False
+1787756537.717 PREEMPT step=386 3-9a7e3289 status=RUNNING computed=336 npreempt=173 inflight=False
+1787756537.717 PREEMPT step=386 2-8963aad4 status=RUNNING computed=336 npreempt=173 inflight=False
+1787756537.717 PREEMPT step=386 1-9e607a5c status=RUNNING computed=336 npreempt=173 inflight=False
+1787756537.717 PREEMPT step=386 0-8672a16c status=RUNNING computed=352 npreempt=165 inflight=False
+1787756537.736 PREEMPT step=388 5-9d41da2f status=RUNNING computed=336 npreempt=174 inflight=False
+1787756537.736 PREEMPT step=388 4-b7448c81 status=RUNNING computed=336 npreempt=174 inflight=False
+1787756537.736 PREEMPT step=388 3-9a7e3289 status=RUNNING computed=336 npreempt=174 inflight=False
+1787756537.736 PREEMPT step=388 2-8963aad4 status=RUNNING computed=336 npreempt=174 inflight=False
+1787756537.736 PREEMPT step=388 1-9e607a5c status=RUNNING computed=336 npreempt=174 inflight=False
+1787756537.736 PREEMPT step=388 0-8672a16c status=RUNNING computed=352 npreempt=166 inflight=False
+1787756537.754 PREEMPT step=390 5-9d41da2f status=RUNNING computed=336 npreempt=175 inflight=False
+1787756537.755 PREEMPT step=390 4-b7448c81 status=RUNNING computed=336 npreempt=175 inflight=False
+1787756537.755 PREEMPT step=390 3-9a7e3289 status=RUNNING computed=336 npreempt=175 inflight=False
+1787756537.755 PREEMPT step=390 2-8963aad4 status=RUNNING computed=336 npreempt=175 inflight=False
+1787756537.755 PREEMPT step=390 1-9e607a5c status=RUNNING computed=336 npreempt=175 inflight=False
+1787756537.755 PREEMPT step=390 0-8672a16c status=RUNNING computed=352 npreempt=167 inflight=False
+1787756537.774 PREEMPT step=392 5-9d41da2f status=RUNNING computed=336 npreempt=176 inflight=False
+1787756537.774 PREEMPT step=392 4-b7448c81 status=RUNNING computed=336 npreempt=176 inflight=False
+1787756537.774 PREEMPT step=392 3-9a7e3289 status=RUNNING computed=336 npreempt=176 inflight=False
+1787756537.774 PREEMPT step=392 2-8963aad4 status=RUNNING computed=336 npreempt=176 inflight=False
+1787756537.774 PREEMPT step=392 1-9e607a5c status=RUNNING computed=336 npreempt=176 inflight=False
+1787756537.774 PREEMPT step=392 0-8672a16c status=RUNNING computed=352 npreempt=168 inflight=False
+1787756537.792 PREEMPT step=394 5-9d41da2f status=RUNNING computed=336 npreempt=177 inflight=False
+1787756537.792 PREEMPT step=394 4-b7448c81 status=RUNNING computed=336 npreempt=177 inflight=False
+1787756537.792 PREEMPT step=394 3-9a7e3289 status=RUNNING computed=336 npreempt=177 inflight=False
+1787756537.792 PREEMPT step=394 2-8963aad4 status=RUNNING computed=336 npreempt=177 inflight=False
+1787756537.792 PREEMPT step=394 1-9e607a5c status=RUNNING computed=336 npreempt=177 inflight=False
+1787756537.792 PREEMPT step=394 0-8672a16c status=RUNNING computed=352 npreempt=169 inflight=False
+1787756537.811 PREEMPT step=396 5-9d41da2f status=RUNNING computed=336 npreempt=178 inflight=False
+1787756537.811 PREEMPT step=396 4-b7448c81 status=RUNNING computed=336 npreempt=178 inflight=False
+1787756537.811 PREEMPT step=396 3-9a7e3289 status=RUNNING computed=336 npreempt=178 inflight=False
+1787756537.811 PREEMPT step=396 2-8963aad4 status=RUNNING computed=336 npreempt=178 inflight=False
+1787756537.811 PREEMPT step=396 1-9e607a5c status=RUNNING computed=336 npreempt=178 inflight=False
+1787756537.811 PREEMPT step=396 0-8672a16c status=RUNNING computed=352 npreempt=170 inflight=False
+1787756537.830 PREEMPT step=398 5-9d41da2f status=RUNNING computed=336 npreempt=179 inflight=False
+1787756537.830 PREEMPT step=398 4-b7448c81 status=RUNNING computed=336 npreempt=179 inflight=False
+1787756537.830 PREEMPT step=398 3-9a7e3289 status=RUNNING computed=336 npreempt=179 inflight=False
+1787756537.830 PREEMPT step=398 2-8963aad4 status=RUNNING computed=336 npreempt=179 inflight=False
+1787756537.830 PREEMPT step=398 1-9e607a5c status=RUNNING computed=336 npreempt=179 inflight=False
+1787756537.830 PREEMPT step=398 0-8672a16c status=RUNNING computed=352 npreempt=171 inflight=False
+1787756537.848 PREEMPT step=400 5-9d41da2f status=RUNNING computed=336 npreempt=180 inflight=False
+1787756537.848 PREEMPT step=400 4-b7448c81 status=RUNNING computed=336 npreempt=180 inflight=False
+1787756537.848 PREEMPT step=400 3-9a7e3289 status=RUNNING computed=336 npreempt=180 inflight=False
+1787756537.848 PREEMPT step=400 2-8963aad4 status=RUNNING computed=336 npreempt=180 inflight=False
+1787756537.848 PREEMPT step=400 1-9e607a5c status=RUNNING computed=336 npreempt=180 inflight=False
+1787756537.848 PREEMPT step=400 0-8672a16c status=RUNNING computed=352 npreempt=172 inflight=False
+1787756537.849 step=400 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[228] sched_seq=228/proc_seq=227 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p173:b0 1-9e607a5c:PREEMPTED:c0/336:p181:b0 2-8963aad4:PREEMPTED:c0/336:p181:b0 3-9a7e3289:PREEMPTED:c0/336:p181:b0 4-b7448c81:PREEMPTED:c0/336:p181:b0 5-9d41da2f:PREEMPTED:c0/336:p181:b0
+1787756537.849 STEP_CAP 400 reached -- final snapshot then exit
+1787756537.849 step=400 run=0 wait=6 skip=0 free=0 reserved=0 inflight_prefills=0 deferred=6entries/127blocks fences=[228] sched_seq=228/proc_seq=227 sched_tok=0 new=0 preempted=['0-8672a16c', '1-9e607a5c', '2-8963aad4', '3-9a7e3289', '4-b7448c81', '5-9d41da2f'] finished=[] | 0-8672a16c:PREEMPTED:c0/352:p173:b0 1-9e607a5c:PREEMPTED:c0/336:p181:b0 2-8963aad4:PREEMPTED:c0/336:p181:b0 3-9a7e3289:PREEMPTED:c0/336:p181:b0 4-b7448c81:PREEMPTED:c0/336:p181:b0 5-9d41da2f:PREEMPTED:c0/336:p181:b0
+Thread 0x00007fc38dfff640 (most recent call first):
+  File "/usr/lib/python3.12/threading.py", line 359 in wait
+  File "/usr/lib/python3.12/threading.py", line 655 in wait
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/lmcache/v1/periodic_thread.py", line 366 in _run_loop
+  File "/usr/lib/python3.12/threading.py", line 1012 in run
+  File "/usr/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007fc3a7fff640 (most recent call first):
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/zmq/sugar/socket.py", line 713 in send
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/zmq/sugar/socket.py", line 765 in send_multipart
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/lmcache/v1/multiprocess/mq.py", line 327 in process_outbound_task
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/lmcache/v1/multiprocess/mq.py", line 247 in _main_loop
+  File "/usr/lib/python3.12/threading.py", line 1012 in run
+  File "/usr/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007fca0dfff640 (most recent call first):
+  File "/usr/lib/python3.12/threading.py", line 359 in wait
+  File "/usr/lib/python3.12/threading.py", line 655 in wait
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/tqdm/_monitor.py", line 69 in run
+  File "/usr/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007fcebe9b6640 (most recent call first):
+  File "/usr/lib/python3.12/threading.py", line 359 in wait
+  File "/usr/lib/python3.12/threading.py", line 655 in wait
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/tqdm/_monitor.py", line 69 in run
+  File "/usr/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Thread 0x00007fcb5bfff640 (most recent call first):
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/usage/usage_lib.py", line 256 in _report_continuous_usage
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/usage/usage_lib.py", line 174 in _report_usage_worker
+  File "/usr/lib/python3.12/threading.py", line 1012 in run
+  File "/usr/lib/python3.12/threading.py", line 1075 in _bootstrap_inner
+  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap
+
+Current thread 0x00007fd8b9169280 (most recent call first):
+  File "/tmp/claude-1016/-home-bo-LMCache-worktrees-multi-modal/2fd28306-24c3-492e-810e-96e902af066e/scratchpad/preempt_traced.py", line 94 in patched_schedule
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 653 in step_with_batch_queue
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 320 in get_output
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 304 in step
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/entrypoints/offline_utils.py", line 595 in _run_engine
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/entrypoints/offline_utils.py", line 385 in _run_chat
+  File "/home/bo/venvs/vllm-mm/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 686 in chat
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/harness.py", line 1246 in run_batch
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/harness.py", line 1599 in run_batch
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/isolated_cases.py", line 590 in run_preemption
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/isolated_cases.py", line 991 in main
+  File "/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/isolated_cases.py", line 1002 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 98 in _run_module_code
+  File "<frozen runpy>", line 287 in run_path
+  File "/tmp/claude-1016/-home-bo-LMCache-worktrees-multi-modal/2fd28306-24c3-492e-810e-96e902af066e/scratchpad/preempt_traced.py", line 181 in <module>

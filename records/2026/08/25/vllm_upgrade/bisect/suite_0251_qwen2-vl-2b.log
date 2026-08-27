@@ -1,0 +1,77 @@
+...F.........................                                            [100%]
+=================================== FAILURES ===================================
+_______________ test_isolated_scenario[mp_connector-qwen2-vl-2b] _______________
+
+scenario = 'mp_connector', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/pytest-of-bo/pytest-148/test_isolated_scenario_mp_conn0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+>           raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+E           AssertionError: mp_connector[qwen2-vl-2b] crashed before reporting (exit 1):
+E           stdout tail: alent to setting -cc.mode=none -cc.cudagraph_mode=none
+E           WARNING 08-25 13:07:48 [vllm.py:1144] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+E           INFO 08-25 13:07:48 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+E           INFO 08-25 13:07:48 [vllm.py:1322] Cudagraph is disabled under eager mode
+E           INFO 08-25 13:07:49 [cuda.py:476] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+E           INFO 08-25 13:07:49 [flash_attn.py:718] Using FlashAttention version 3
+E           INFO 08-25 13:07:50 [weight_utils.py:849] Filesystem type for checkpoints: XFS. Checkpoint size: 4.11 GiB. Available RAM: 1242.12 GiB.
+E           INFO 08-25 13:07:50 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (XFS) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+E           INFO 08-25 13:07:51 [default_loader.py:430] Loading weights took 1.03 seconds
+E           INFO 08-25 13:07:51 [model_runner.py:302] Model loading took 4.26 GiB and 3.859843 seconds
+E           INFO 08-25 13:07:52 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+E           INFO 08-25 13:07:52 [utils.py:44] Connectors do not specify a kv cache layout, defaulting to NHD.
+E           INFO 08-25 13:07:54 [gpu_worker.py:538] Available KV cache memory: 43.46 GiB
+E           INFO 08-25 13:07:54 [kv_cache_utils.py:2146] GPU KV cache size: 1,627,344 tokens
+E           INFO 08-25 13:07:54 [kv_cache_utils.py:2147] Maximum concurrency for 8,192 tokens per request: 198.65x
+E           INFO 08-25 13:07:54 [factory.py:62] Creating v1 connector with name: LMCacheMPConnector and engine_id: e6fe118e-1a74-4bce-8fd4-440b19efa2ea
+E           WARNING 08-25 13:07:54 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+E           
+E           stderr tail: model_runner.initialize_kv_cache(kv_cache_config)
+E           [rank0]:   File "/home/bo/venvs/vllm-bisect-0.25.1/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 490, in initialize_kv_cache
+E           [rank0]:     self.kv_connector = get_kv_connector(self.vllm_config, kv_caches_dict)
+E           [rank0]:                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           [rank0]:   File "/home/bo/venvs/vllm-bisect-0.25.1/lib/python3.12/site-packages/vllm/v1/worker/gpu/kv_connector.py", line 123, in get_kv_connector
+E           [rank0]:     return ActiveKVConnector(vllm_config, kv_caches_dict)
+E           [rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           [rank0]:   File "/home/bo/venvs/vllm-bisect-0.25.1/lib/python3.12/site-packages/vllm/v1/worker/gpu/kv_connector.py", line 56, in __init__
+E           [rank0]:     self.kv_connector.register_kv_caches(kv_caches_dict)
+E           [rank0]:   File "/home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/lmcache_mp_connector.py", line 493, in register_kv_caches
+E           [rank0]:     self.worker_adapter.register_kv_caches(
+E           [rank0]:   File "/home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/vllm_multi_process_adapter.py", line 1287, in register_kv_caches
+E           [rank0]:     self._send_register_kv_caches_request(kv_caches)
+E           [rank0]:   File "/home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/vllm_multi_process_adapter.py", line 1330, in _send_register_kv_caches_request
+E           [rank0]:     raise ConnectionError(
+E           [rank0]: ConnectionError: LMCache server did not respond to register_kv_caches within 300.0s. Is the server running?
+E           [rank0]:[W825 13:12:55.841471305 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E           [rank0]:[W825 13:12:55.491283158 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]
+
+test_isolated_paths.py:58: AssertionError
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 92 warnings
+  /home/bo/venvs/vllm-bisect-0.25.1/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-bisect-0.25.1/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test_isolated_paths.py::test_isolated_scenario[mp_connector-qwen2-vl-2b]
+1 failed, 28 passed, 8 deselected, 106 warnings in 1041.38s (0:17:21)
+[rank0]:[W825 13:15:46.751277021 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

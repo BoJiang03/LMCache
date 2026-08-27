@@ -1,0 +1,63 @@
+F
+=================================== FAILURES ===================================
+_______________ test_isolated_scenario[mp_connector-qwen2-vl-2b] _______________
+
+scenario = 'mp_connector', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/claude-1016/-home-bo-LMCache-worktrees-multi-modal/9f97519c-4ddb-42c1-9946-dd923c96aa34/scratchpad/bisect/mp_debug/pytest-of-bo/pytest-0/test_isolated_scenario_mp_conn0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: mp_connector[qwen2-vl-2b] failed:
+E         repeat A hit only 0/297
+E         image B hit 0 tokens, too close to A's full hit 0 -- cross-image false hit
+E         text-only repeat hit only 0/37
+E         prefix reuse too shallow: 0 of ~297
+E         swapped order hit 0 vs full 0
+E         shared image prefix not reused: 0
+E         batched store not hittable: 0/297
+E         negative control did not trip on the MP path: blind B hit only 0 of 297 tokens
+E         metrics: {
+E           "t01": {
+E             "prompt_tokens": 297,
+E             "full_hit": 0,
+E             "b_hit": 0
+E           },
+E           "conservation": {
+E             "missed": 4699,
+E             "stored": 4608,
+E             "resident_keys": 195,
+E             "resident_bytes": 89456640
+E           },
+E           "server_log_tail": "15:38:02,596] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,597] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,597] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,597] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35386 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:02,700] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,701] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,701] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,701] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35400 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:02,805] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,805] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,805] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,805] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35410 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:02,909] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,909] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,909] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:02,909] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35420 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:03,013] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,013] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,013] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,013] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35426 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:03,117] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,117] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,117] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,117] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35434 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:03,221] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,221] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,222] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,222] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35442 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 15:38:03,325] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,326] LMCache INFO:\u001b[0m  - Total active allocations: 249 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,326] LMCache INFO:\u001b[0m  - Total allocated size: 108.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,326] LMCache INFO:\u001b[0m  - Total free size: 3987.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:35444 - \"GET /status HTTP/1.1\" 200 OK\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-25 15:38:03,549] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,550] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,550] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,768] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,769] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,769] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:03,770] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,414] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,414] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,415] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,415] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,424] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7f3825f1ade0 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:04,425] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7f3825f1ade0 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:05,939] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-25 15:38:05,939] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [2201578]\n"
+E         }
+E       assert ['repeat A hi...used: 0', ...] == []
+E         
+E         Left contains 8 more items, first extra item: 'repeat A hit only 0/297'
+E         Use -v to get more diff
+
+tests/e2e_mm/test_isolated_paths.py:64: AssertionError
+=========================== short test summary info ============================
+FAILED tests/e2e_mm/test_isolated_paths.py::test_isolated_scenario[mp_connector-qwen2-vl-2b]
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 3 deselected in 742.89s (0:12:22)

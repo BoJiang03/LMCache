@@ -1,0 +1,256 @@
+{
+ "stage": "done",
+ "model": "Qwen/Qwen3-0.6B",
+ "n_cases": 16,
+ "vllm_version": "0.23.0",
+ "torch_version": "2.11.0+cu130",
+ "prompt_tokens": 450,
+ "baseline": [
+  " violet\n\nAnswer:\nThe stone kept in box Q0 is",
+  " \\boxed{amber}\n\nAnswer:\nTo find the color of",
+  " crimson\n\nAnswer:\nTo find the color of the stone in",
+  " olive\n\nSo, the answer is olive.\nAnswer:\nol",
+  " indigo\n\nAnswer:\nTo find the color of the stone",
+  " scarlet\n\nAnswer:\nTo find the color of the stone",
+  " teal\n\nAnswer:\nThe stone kept in box Q6 is",
+  " maroon\n\nAnswer:\nTo find the color of the stone",
+  " azure\n\nThe answer is azure.\nThe answer is azure.\n",
+  " saffron\nAnswer: saffron\nAnswer:",
+  " emerald\nAnswer:\nThe stone kept in box Q1",
+  " Q11\n\nThe answer is Q11.\nAnswer",
+  " cobalt\nAnswer:\nThe stone kept in box Q1",
+  " ochre\n\nAnswer:\nTo find the color of the stone",
+  " magenta\n\nAnswer:\nTo find the color of the stone",
+  " turquoise\n\nAnswer:\nTo find the color of the stone in"
+ ],
+ "miss": [
+  " violet\n\nAnswer:\nThe stone kept in box Q0 is",
+  " \\boxed{amber}\n\nAnswer:\nTo find the color of",
+  " crimson\n\nAnswer:\nTo find the color of the stone in",
+  " olive\n\nSo, the answer is olive.\nAnswer:\nol",
+  " indigo\n\nAnswer:\nTo find the color of the stone",
+  " scarlet\n\nAnswer:\nTo find the color of the stone",
+  " teal\n\nAnswer:\nThe stone kept in box Q6 is",
+  " maroon\n\nAnswer:\nTo find the color of the stone",
+  " azure\n\nThe answer is azure.\nThe answer is azure.\n",
+  " saffron\nAnswer: saffron\nAnswer:",
+  " emerald\nAnswer:\nThe stone kept in box Q1",
+  " Q11\n\nThe answer is Q11.\nAnswer",
+  " cobalt\nAnswer:\nThe stone kept in box Q1",
+  " ochre\n\nAnswer:\nTo find the color of the stone",
+  " magenta\n\nAnswer:\nTo find the color of the stone",
+  " turquoise\n\nAnswer:\nTo find the color of the stone in"
+ ],
+ "valid": true,
+ "reset_mode": "public_api",
+ "accuracy": {
+  "baseline": 0.9375,
+  "miss": 0.9375,
+  "hit": 0.9375
+ },
+ "agreement": {
+  "baseline_eq_miss": 1.0,
+  "hit_eq_miss_text": 0.6875,
+  "hit_eq_miss_token_ids": 0.6875
+ },
+ "external_cached_tokens_per_hit": [
+  448,
+  448,
+  448,
+  448,
+  448,
+  448,
+  447,
+  448,
+  432,
+  448,
+  448,
+  448,
+  448,
+  448,
+  448,
+  448
+ ],
+ "local_cached_tokens_per_hit": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "external_cached_tokens_per_miss": [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "cases": [
+  {
+   "i": 0,
+   "truth": "violet",
+   "baseline": " violet\n\nAnswer:\nThe stone kept in box Q0 is",
+   "miss": " violet\n\nAnswer:\nThe stone kept in box Q0 is",
+   "hit": " violet\n\nAnswer:\nTo find the color of the stone in",
+   "hit_eq_miss": false,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 1,
+   "truth": "amber",
+   "baseline": " \\boxed{amber}\n\nAnswer:\nTo find the color of",
+   "miss": " \\boxed{amber}\n\nAnswer:\nTo find the color of",
+   "hit": " \\boxed{amber}\n\nAnswer:\nTo find the color of",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 2,
+   "truth": "crimson",
+   "baseline": " crimson\n\nAnswer:\nTo find the color of the stone in",
+   "miss": " crimson\n\nAnswer:\nTo find the color of the stone in",
+   "hit": " crimson\n\nAnswer:\nTo find the answer, look at the",
+   "hit_eq_miss": false,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 3,
+   "truth": "olive",
+   "baseline": " olive\n\nSo, the answer is olive.\nAnswer:\nol",
+   "miss": " olive\n\nSo, the answer is olive.\nAnswer:\nol",
+   "hit": " olive\n\nSo, the answer is olive.\nThe answer is",
+   "hit_eq_miss": false,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 4,
+   "truth": "indigo",
+   "baseline": " indigo\n\nAnswer:\nTo find the color of the stone",
+   "miss": " indigo\n\nAnswer:\nTo find the color of the stone",
+   "hit": " indigo\n\nAnswer:\nTo find the color of the stone",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 5,
+   "truth": "scarlet",
+   "baseline": " scarlet\n\nAnswer:\nTo find the color of the stone",
+   "miss": " scarlet\n\nAnswer:\nTo find the color of the stone",
+   "hit": " scarlet\n\nAnswer:\nTo find the color of the stone",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 6,
+   "truth": "teal",
+   "baseline": " teal\n\nAnswer:\nThe stone kept in box Q6 is",
+   "miss": " teal\n\nAnswer:\nThe stone kept in box Q6 is",
+   "hit": " teal\n\nAnswer:\nThe stone kept in box Q6 is",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 447
+  },
+  {
+   "i": 7,
+   "truth": "maroon",
+   "baseline": " maroon\n\nAnswer:\nTo find the color of the stone",
+   "miss": " maroon\n\nAnswer:\nTo find the color of the stone",
+   "hit": " maroon\n\nAnswer:\nThe stone kept in box Q7",
+   "hit_eq_miss": false,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 8,
+   "truth": "azure",
+   "baseline": " azure\n\nThe answer is azure.\nThe answer is azure.\n",
+   "miss": " azure\n\nThe answer is azure.\nThe answer is azure.\n",
+   "hit": " azure\n\nAnswer:\nThe stone kept in box Q8 is",
+   "hit_eq_miss": false,
+   "hit_external_tokens": 432
+  },
+  {
+   "i": 9,
+   "truth": "saffron",
+   "baseline": " saffron\nAnswer: saffron\nAnswer:",
+   "miss": " saffron\nAnswer: saffron\nAnswer:",
+   "hit": " saffron\nAnswer: saffron\nAnswer:",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 10,
+   "truth": "emerald",
+   "baseline": " emerald\nAnswer:\nThe stone kept in box Q1",
+   "miss": " emerald\nAnswer:\nThe stone kept in box Q1",
+   "hit": " emerald\nAnswer:\nThe stone kept in box Q1",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 11,
+   "truth": "russet",
+   "baseline": " Q11\n\nThe answer is Q11.\nAnswer",
+   "miss": " Q11\n\nThe answer is Q11.\nAnswer",
+   "hit": " Q11\n\nThe answer is Q11.\nAnswer",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 12,
+   "truth": "cobalt",
+   "baseline": " cobalt\nAnswer:\nThe stone kept in box Q1",
+   "miss": " cobalt\nAnswer:\nThe stone kept in box Q1",
+   "hit": " cobalt\nAnswer:\nThe stone kept in box Q1",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 13,
+   "truth": "ochre",
+   "baseline": " ochre\n\nAnswer:\nTo find the color of the stone",
+   "miss": " ochre\n\nAnswer:\nTo find the color of the stone",
+   "hit": " ochre\n\nAnswer:\nTo find the color of the stone",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 14,
+   "truth": "magenta",
+   "baseline": " magenta\n\nAnswer:\nTo find the color of the stone",
+   "miss": " magenta\n\nAnswer:\nTo find the color of the stone",
+   "hit": " magenta\n\nAnswer:\nTo find the color of the stone",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  },
+  {
+   "i": 15,
+   "truth": "turquoise",
+   "baseline": " turquoise\n\nAnswer:\nTo find the color of the stone in",
+   "miss": " turquoise\n\nAnswer:\nTo find the color of the stone in",
+   "hit": " turquoise\n\nAnswer:\nTo find the color of the stone in",
+   "hit_eq_miss": true,
+   "hit_external_tokens": 448
+  }
+ ]
+}

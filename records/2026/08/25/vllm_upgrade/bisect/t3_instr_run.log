@@ -1,0 +1,88 @@
+[32;20m[2026-08-25 13:54:36,716] LMCache INFO:[0m torch_dev=<module 'torch.cuda' from '/home/bo/venvs/vllm-bisect-0.23.0/lib/python3.12/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda [3m(_device_detect.py:143:lmcache.v1.platform._device_detect)[0m
+[33;20m[2026-08-25 13:54:36,717] LMCache WARNING:[0m lmcache.cuda_ops compiled extension not found; CudaDeviceOps stays on the torch baseline for all ops. [3m(device_ops.py:34:lmcache.v1.platform.cuda.device_ops)[0m
+[32;20m[2026-08-25 13:54:41,842] LMCache INFO:[0m multi_layer_block_kv_transfer mode: tensor [3m(base.py:95:lmcache.v1.multiprocess.transfer_context.base)[0m
+INFO 08-25 13:54:43 [api_utils.py:273] non-default args: {'max_model_len': 8192, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.35, 'disable_log_stats': True, 'enforce_eager': True, 'limit_mm_per_prompt': {'image': 2, 'video': 1}, 'kv_transfer_config': KVTransferConfig(kv_connector='LMCacheMPConnector', engine_id='5f378938-e6bb-4923-b7f1-dd9ca0c12e2e', kv_buffer_device='cuda', kv_buffer_size=1000000000.0, kv_role='kv_both', kv_rank=None, kv_parallel_size=1, kv_ip='127.0.0.1', kv_port=14579, kv_connector_extra_config={'lmcache.mp.host': 'tcp://localhost', 'lmcache.mp.port': 27916, 'lmcache.mp.heartbeat_interval': 21600.0}, kv_connector_module_path='lmcache.integration.vllm.lmcache_mp_connector', enable_permute_local_kv=False, kv_load_failure_policy='fail'), 'model': 'Qwen/Qwen2-VL-2B-Instruct'}
+WARNING 08-25 13:54:43 [arg_utils.py:1557] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 08-25 13:54:44 [model.py:611] Resolved architecture: Qwen2VLForConditionalGeneration
+INFO 08-25 13:54:44 [model.py:1745] Using max model len 8192
+INFO 08-25 13:54:44 [scheduler.py:239] Chunked prefill is enabled with max_num_batched_tokens=16384.
+INFO 08-25 13:54:44 [vllm.py:999] Asynchronous scheduling is enabled.
+WARNING 08-25 13:54:44 [vllm.py:1055] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 08-25 13:54:44 [vllm.py:1097] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 08-25 13:54:44 [kernel.py:270] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 08-25 13:54:45 [vllm.py:1273] Cudagraph is disabled under eager mode
+INFO 08-25 13:54:45 [compilation.py:321] Enabled custom fusions: norm_quant, act_quant
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+INFO 08-25 13:55:02 [core.py:113] Initializing a V1 LLM engine (v0.23.0) with config: model='Qwen/Qwen2-VL-2B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2-VL-2B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2-VL-2B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [16384], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+INFO 08-25 13:55:02 [parallel_state.py:1568] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://10.2.201.16:42075 backend=nccl
+INFO 08-25 13:55:03 [parallel_state.py:1903] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+INFO 08-25 13:55:04 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+INFO 08-25 13:55:04 [gpu_model_runner.py:5092] Starting to load model Qwen/Qwen2-VL-2B-Instruct...
+INFO 08-25 13:55:04 [cuda.py:433] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 08-25 13:55:04 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+WARNING 08-25 13:55:05 [vllm.py:1055] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 08-25 13:55:05 [vllm.py:1097] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 08-25 13:55:05 [kernel.py:270] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 08-25 13:55:05 [vllm.py:1273] Cudagraph is disabled under eager mode
+INFO 08-25 13:55:05 [cuda.py:378] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 08-25 13:55:05 [flash_attn.py:636] Using FlashAttention version 3
+INFO 08-25 13:55:06 [weight_utils.py:922] Filesystem type for checkpoints: XFS. Checkpoint size: 4.11 GiB. Available RAM: 1236.48 GiB.
+INFO 08-25 13:55:06 [weight_utils.py:945] Auto-prefetch is disabled because the filesystem (XFS) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:00<00:00,  1.15it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  2.07it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.85it/s]
+
+INFO 08-25 13:55:07 [default_loader.py:397] Loading weights took 1.10 seconds
+INFO 08-25 13:55:08 [gpu_model_runner.py:5187] Model loading took 4.26 GiB memory and 2.426939 seconds
+INFO 08-25 13:55:08 [gpu_model_runner.py:6200] Encoder cache will be initialized with a budget of 16384 tokens, and profiled with 1 video items of the maximum feature size.
+INFO 08-25 13:55:11 [gpu_worker.py:480] Available KV cache memory: 42.07 GiB
+INFO 08-25 13:55:11 [kv_cache_utils.py:1744] GPU KV cache size: 1,575,328 tokens
+INFO 08-25 13:55:11 [kv_cache_utils.py:1745] Maximum concurrency for 8,192 tokens per request: 192.30x
+INFO 08-25 13:55:11 [factory.py:62] Creating v1 connector with name: LMCacheMPConnector and engine_id: 5f378938-e6bb-4923-b7f1-dd9ca0c12e2e
+WARNING 08-25 13:55:11 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+[32;20m[2026-08-25 13:55:11,910] LMCache INFO:[0m lmcache.mp.mq_timeout = 300.0 [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:11,910] LMCache INFO:[0m lmcache.mp.heartbeat_interval = 21600.0 (overridden, default: 10.0) [3m(vllm_multi_process_adapter.py:116:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:11,910] LMCache INFO:[0m lmcache.mp.mp_transfer_mode = auto [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:11,911] LMCache INFO:[0m LMCache MP worker adapter created with instance_id=4340105978977694093 [3m(vllm_multi_process_adapter.py:1100:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[33;20m[2026-08-25 13:55:11,914] LMCache WARNING:[0m lmcache.mp.heartbeat_interval is 21600.0s, so 3 x heartbeat_interval (64800.0s) exceeds the MP server's default worker reap timeout floor (30.0s). Raise the server's worker reap timeout to at least 3 x the heartbeat interval, or the server may reap this worker between heartbeats. [3m(vllm_multi_process_adapter.py:1175:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+INFO 08-25 13:55:11 [utils.py:44] Connectors do not specify a kv cache layout, defaulting to NHD.
+[32;20m[2026-08-25 13:55:11,929] LMCache INFO:[0m Registering kv caches! [3m(lmcache_mp_connector.py:480:lmcache.integration.vllm.lmcache_mp_connector)[0m
+[32;20m[2026-08-25 13:55:11,930] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-08-25 13:55:11,930] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-08-25 13:55:11,930] LMCache INFO:[0m Registering kv caches [3m(vllm_multi_process_adapter.py:1255:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:11,931] LMCache INFO:[0m Creating transfer context (device_type=cuda, mode=auto) [3m(worker_transfer.py:879:lmcache.v1.multiprocess.transfer_context.worker_transfer)[0m
+[32;20m[2026-08-25 13:55:11,931] LMCache INFO:[0m Wrapping 28 KV cache tensors for IPC [3m(kv_wrap.py:63:lmcache.v1.platform.kv_wrap)[0m
+2026-08-25 13:55:12,098 - INFO - autotuner.py:622 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+2026-08-25 13:55:12,124 - INFO - autotuner.py:641 - flashinfer.jit: [Autotuner]: Autotuning process ends
+INFO 08-25 13:55:12 [jit_monitor.py:54] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+INFO 08-25 13:55:12 [core.py:313] init engine (profile, create kv cache, warmup model) took 4.52 s
+INFO 08-25 13:55:12 [factory.py:62] Creating v1 connector with name: LMCacheMPConnector and engine_id: 5f378938-e6bb-4923-b7f1-dd9ca0c12e2e
+WARNING 08-25 13:55:12 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+
+ _     __  __    ____           _          
+| |   |  \/  |  / ___|__ _  ___| |__   ___      LMCache v0.5.4.dev112 (g0040c6bd)
+| |   | |\/| | | |   / _` |/ __| '_ \ / _ \     Website:  https://lmcache.ai/
+| |___| |  | | | |__| (_| | (__| | | |  __/     Recipes:  https://docs.lmcache.ai/recipes
+|_____|_|  |_|  \____\__,_|\___|_| |_|\___|     LinkedIn: https://www.linkedin.com/company/lmcache-lab
+Set LMCACHE_DISABLE_BANNER=1 to hide this banner.
+
+[32;20m[2026-08-25 13:55:12,570] LMCache INFO:[0m lmcache.mp.mq_timeout = 300.0 [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:12,570] LMCache INFO:[0m lmcache.mp.heartbeat_interval = 21600.0 (overridden, default: 10.0) [3m(vllm_multi_process_adapter.py:116:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:12,570] LMCache INFO:[0m lmcache.mp.mp_transfer_mode = auto [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 13:55:12,627] LMCache INFO:[0m Bind GPU block pool in LMCacheMPConnector scheduler [3m(lmcache_mp_connector.py:726:lmcache.integration.vllm.lmcache_mp_connector)[0m
+INFO 08-25 13:55:17 [hf.py:548] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+WARNING 08-25 13:55:33 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 08-25 13:55:33 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _triton_mrope_forward. This causes a latency spike; consider extending warmup to cover this shape/config.
+[32;20m[2026-08-25 13:55:33,469] LMCache INFO:[0m PeriodicThread lmcache-heartbeat entering main loop (interval=21600.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-08-25 13:55:33,469] LMCache INFO:[0m Started PeriodicThread: lmcache-heartbeat (level=critical, interval=21600.0s, init_wait=0.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[
+  "[T3 t05 repeat] t05-text: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got=\"I'm sorry, but I'm not\" reference='Paris' expected_probe=('paris',)",
+  "prefix reuse too shallow: 0 of ~297",
+  "swapped order hit 0 vs full 0",
+  "shared image prefix not reused: 0",
+  "batched store not hittable: 0/297",
+  "negative control did not trip on the MP path: blind B hit only 0 of 297 tokens"
+]
+[rank0]:[W825 13:55:40.199849729 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W825 13:55:40.342899057 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

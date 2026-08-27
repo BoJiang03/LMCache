@@ -1,0 +1,25 @@
+questions=2374 byte-identical=1215 (51.2%)
+batch-flips=121 (5.10%)  gate-budget@0.5%=11.87
+flips by category: {'celebrity': 33, 'artwork': 24, 'posters': 16, 'landmark': 10, 'numerical_calculation': 6, 'commonsense_reasoning': 6, 'OCR': 6, 'scene': 6, 'code_reasoning': 5, 'text_translation': 4, 'color': 3, 'count': 1, 'existence': 1}
+flip directions: {('no', 'yes'): 17, ('no', ''): 28, ('', 'no'): 14, ('yes', ''): 27, ('', 'yes'): 19, ('yes', 'no'): 16}
+gold direction: toward=43 away=59 (rest involve '')
+  q0 [code_reasoning] 'no'->'yes' gold='yes'
+  q3 [code_reasoning] 'no'->'' gold='no'
+  q19 [code_reasoning] ''->'no' gold='no'
+  q34 [code_reasoning] 'yes'->'' gold='yes'
+  q35 [code_reasoning] ''->'no' gold='no'
+  q67 [artwork] 'yes'->'' gold='no'
+  q70 [artwork] 'yes'->'' gold='yes'
+  q76 [artwork] 'no'->'' gold='yes'
+  q81 [artwork] ''->'no' gold='no'
+  q96 [artwork] ''->'yes' gold='yes'
+  q105 [artwork] 'no'->'' gold='no'
+  q118 [artwork] ''->'yes' gold='yes'
+  q121 [artwork] ''->'yes' gold='no'
+  q231 [artwork] 'no'->'' gold='no'
+  q244 [artwork] 'no'->'yes' gold='yes'
+  q252 [artwork] ''->'yes' gold='yes'
+  q255 [artwork] 'no'->'' gold='no'
+  q283 [artwork] 'no'->'' gold='no'
+  q286 [artwork] ''->'yes' gold='yes'
+  q297 [artwork] 'no'->'' gold='no'

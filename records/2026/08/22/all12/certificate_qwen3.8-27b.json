@@ -1,0 +1,158 @@
+{
+  "schema_version": 4,
+  "verdict": "SUPPORTED",
+  "verdict_meaning": "synthetic suite + MME parity green on the paths below",
+  "model_key": "qwen3.8-27b",
+  "hf_id": "Qwen/Qwen3.8-27B",
+  "commit": "0040c6bd73c02ed11552267994229e67d65548df",
+  "tested_tree": {
+    "commit_at_start": "0040c6bd73c02ed11552267994229e67d65548df",
+    "commit_at_finish": "0040c6bd73c02ed11552267994229e67d65548df",
+    "dirty_at_start": false,
+    "dirty_at_finish": false,
+    "stable": true,
+    "note": "`commit` names the tree under test only when `stable` is true; otherwise HEAD moved or the tree carried uncommitted changes while the suite ran"
+  },
+  "generated_at": "2026-08-23T02:32:46.711404+00:00",
+  "scope": {
+    "deployment_paths": [
+      "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+    ],
+    "modalities": [
+      "image",
+      "video"
+    ],
+    "chunk_size": 784,
+    "chunk_size_note": "vLLM unified block size (Mamba/GDN align mode)",
+    "backend": "MP cache server L1, separate object groups",
+    "scheduling": [
+      "chunked prefill (inherent: a scheduler step advances one unified block)",
+      "concurrent batch submission (vLLM executes it serially -- see known_not_covered)",
+      "capacity eviction"
+    ]
+  },
+  "suite": {
+    "green": true,
+    "exit_code": 0,
+    "pressure_n": 64,
+    "tests": 27,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time": 1793.867
+  },
+  "parity": {
+    "source": "recorded:/home/bo/LMCache-worktrees/multi_modal/records/2026/08/22/recert/parity_qwen3.8-27b.json",
+    "report": {
+      "model": "Qwen/Qwen3.8-27B",
+      "benchmark": "mme",
+      "deployment_path": "mp",
+      "num_questions": 2374,
+      "scores": {
+        "baseline": {
+          "perception": 1616.5,
+          "cognition": 653.57,
+          "total": 2270.07,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.0,
+            "celebrity": 131.76,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 158.57,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 132.25,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        },
+        "pass1_miss": {
+          "perception": 1616.5,
+          "cognition": 653.57,
+          "total": 2270.07,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.0,
+            "celebrity": 131.76,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 158.57,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 132.25,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        },
+        "pass2_hit": {
+          "perception": 1616.89,
+          "cognition": 653.57,
+          "total": 2270.46,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.25,
+            "celebrity": 132.65,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 158.57,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 131.5,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        }
+      },
+      "flips_pass1_vs_baseline": 0,
+      "flips_pass2_vs_pass1": 13,
+      "pass2_lookup_hit_ratio": 0.1683,
+      "cache_granularity_tokens": 784,
+      "pass1_stored_tokens": 199920,
+      "pass2_lookup_hit_tokens": 226576,
+      "pass2_lookup_tokens": 1346241,
+      "pass2_achievable_hit_tokens": 214032,
+      "pass2_external_cached_tokens": 226576,
+      "pass2_local_cached_tokens": 0,
+      "baseline_answer_parse_ratio": 0.9962,
+      "gate": {
+        "pass": true,
+        "max_flips": 23.740000000000002,
+        "score_delta_pass2_vs_pass1": 0.38999999999987267,
+        "score_delta_pass1_vs_baseline": 0.0,
+        "baseline_answer_parse_ratio": 0.9962,
+        "hit_criterion": "coverage",
+        "cache_granularity_tokens": 784,
+        "pass2_hit_coverage": 1.0586,
+        "thresholds": {
+          "max_flip_fraction": 0.01,
+          "max_score_delta": 10.0,
+          "min_hit_ratio": 0.8,
+          "min_hit_coverage": 0.95,
+          "min_parse_ratio": 0.9
+        }
+      }
+    }
+  },
+  "known_not_covered": [
+    "tensor-parallel (TP>1) and pipeline-parallel deployments",
+    "remote / disk storage backends and cross-instance sharing",
+    "allocator-level buffer accounting (tracked by the pin-count project)",
+    "audio modality: this model's spec does not declare `audio`, so none of the suite's audio or cross-modal cases ran for it and it is certified on its image/video paths only -- note that a checkpoint can carry an audio tower and still be certified this way (Gemma 4 does)",
+    "chunked-prefill step boundaries falling inside an image span: that scenario pins the batched-token budget far below one prompt, while align mode needs the opposite -- a step wide enough for one whole 544-784 token block, so the state snapshot lands on a boundary. Contradictory by construction, not a plumbing gap",
+    "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV cache manager only to connectors that advertise support for it, so a hybrid model fails engine init there outright",
+    "recovery from a failed KV load (the connector's degraded mode): vLLM rewinds the affected requests through `_update_requests_with_invalid_blocks`, which unpacks a single KV cache group and therefore raises on a hybrid -- so on this path a load error is fatal to the engine, not recoverable",
+    "bit-exact generation -- the GDN kernels have no batch-invariant mode, and a hit RESTORES a recurrent-state page rather than reproducing KV bit-for-bit, so output equality is gated by the parity benchmark's flip/score budget, not bytes",
+    "genuinely concurrent execution of a submitted batch: align mode pins the step budget to one unified block, and vLLM schedules running requests first, so a single decoding request leaves too little budget for any other request's block-aligned prefill chunk (which vLLM then truncates to zero and skips). Measured on Qwen3.5-2B: a 6-request batch never had more than one request running, and adding 6 tokens to the budget is enough to change that. So the suite exercises concurrent SUBMISSION and the connector's batched store/lookup traffic, but not two of these requests occupying the GPU at the same time",
+    "preemption-driven recompute, at any pool size: align mode's one-block step budget means two of these requests never run at once, so a pool large enough to survive has nothing to preempt (measured: 128, 48 and 32 blocks all yield 0 preemptions), while every pool small enough to create pressure aborts the engine with the connector attached -- 24, 20 and 16 blocks each hit `block_pool.cache_full_blocks: assert blk.block_hash is None`, which plain vLLM at the same pools does not. Not a missing measurement; the two regions do not overlap"
+  ]
+}

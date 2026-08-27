@@ -1,0 +1,60 @@
+Traceback (most recent call last):
+  File "/home/bo/LMCache-worktrees/multi_modal/tests/e2e_mm/isolated_cases.py", line 979, in <module>
+    sys.exit(main(sys.argv[1:]))
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/multi_modal/tests/e2e_mm/isolated_cases.py", line 968, in main
+    report = SCENARIOS[scenario_name](spec)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/multi_modal/tests/e2e_mm/isolated_cases.py", line 346, in run_chunked_prefill
+    baselines = compute_baselines(
+                ^^^^^^^^^^^^^^^^^^
+  File "/home/bo/LMCache-worktrees/multi_modal/tests/e2e_mm/harness.py", line 1474, in compute_baselines
+    raise RuntimeError(
+RuntimeError: Baseline runner failed (exit 1):
+stdout tail: vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 132, in __init__
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]   File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]     return func(*args, **kwargs)
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]   File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 268, in _initialize_kv_caches
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]     kv_cache_configs = get_kv_cache_configs(
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]                        ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]   File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/core/kv_cache_utils.py", line 2052, in get_kv_cache_configs
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]     _check_enough_kv_cache_memory(
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]   File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/core/kv_cache_utils.py", line 720, in _check_enough_kv_cache_memory
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195]     raise ValueError(
+(EngineCore pid=117648) ERROR 08-22 07:31:30 [core.py:1195] ValueError: No available memory for the cache blocks. Try increasing `gpu_memory_utilization` when initializing the engine (this flag also controls CPU memory reservation on the CPU backend, despite its name). See https://docs.vllm.ai/en/latest/configuration/conserving_memory/ for more details.
+
+stderr tail:     main(sys.argv[1], sys.argv[2])
+  File "/home/bo/LMCache-worktrees/multi_modal/tests/e2e_mm/baseline_runner.py", line 35, in main
+    llm = LLM(**engine_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 349, in __init__
+    self.llm_engine = LLMEngine.from_engine_args(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 170, in from_engine_args
+    return cls(
+           ^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 104, in __init__
+    self.engine_core = EngineCoreClient.make_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 102, in make_client
+    return SyncMPClient(vllm_config, executor_class, log_stats)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 771, in __init__
+    super().__init__(
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 570, in __init__
+    with launch_core_engines(
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1190, in launch_core_engines
+    wait_for_engine_startup(
+  File "/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1249, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+

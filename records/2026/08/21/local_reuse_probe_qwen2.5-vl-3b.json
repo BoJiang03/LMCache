@@ -1,0 +1,21 @@
+{
+ "config": "plain",
+ "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+ "block_size": 16,
+ "first": {
+  "prompt_tokens": 860,
+  "num_cached_tokens": 0
+ },
+ "second_same_prompt": {
+  "prompt_tokens": 860,
+  "num_cached_tokens": 848
+ },
+ "third_same_prompt": {
+  "prompt_tokens": 860,
+  "num_cached_tokens": 848
+ },
+ "different_prompt": {
+  "prompt_tokens": 860,
+  "num_cached_tokens": 16
+ }
+}

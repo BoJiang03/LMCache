@@ -1,0 +1,1 @@
+[32;20m[2026-08-25 11:03:40,463] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m

@@ -1,0 +1,5 @@
+may be quoted inside double quotes by preceding it with a backslash; the backslash is removed when the dollar sign is removed. Within double quotes, the backslash retains its special meaning only when followed by one of the following characters: $, `, ", \, or <newline>. Any other character following a backslash is treated as a literal character.
+
+Here’s a brief summary of the quoting mechanisms:
+
+1. **Escape Character (\)**: Used to preserve the literal value of the next character.

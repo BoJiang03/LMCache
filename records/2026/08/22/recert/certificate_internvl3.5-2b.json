@@ -1,0 +1,146 @@
+{
+  "schema_version": 4,
+  "verdict": "SUPPORTED",
+  "verdict_meaning": "synthetic suite + MME parity green on the paths below",
+  "model_key": "internvl3.5-2b",
+  "hf_id": "OpenGVLab/InternVL3_5-2B-HF",
+  "commit": "dc1590c1b007b1e7472e0004a9dab2851d4206e0",
+  "tested_tree": {
+    "commit_at_start": "dc1590c1b007b1e7472e0004a9dab2851d4206e0",
+    "commit_at_finish": "dc1590c1b007b1e7472e0004a9dab2851d4206e0",
+    "dirty_at_start": false,
+    "dirty_at_finish": false,
+    "stable": true,
+    "note": "`commit` names the tree under test only when `stable` is true; otherwise HEAD moved or the tree carried uncommitted changes while the suite ran"
+  },
+  "generated_at": "2026-08-22T16:09:51.124895+00:00",
+  "scope": {
+    "deployment_paths": [
+      "LMCacheConnectorV1 (in-process, single GPU, TP=1)",
+      "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+    ],
+    "modalities": [
+      "image",
+      "video"
+    ],
+    "chunk_size": 16,
+    "chunk_size_note": "LMCache chunk size",
+    "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+    "scheduling": [
+      "single-step and chunked prefill",
+      "concurrent batches",
+      "capacity eviction",
+      "preemption-driven recompute"
+    ]
+  },
+  "suite": {
+    "green": true,
+    "exit_code": 0,
+    "pressure_n": 64,
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time": 775.739
+  },
+  "parity": {
+    "source": "recorded:/home/bo/LMCache-worktrees/multi_modal/records/2026/08/20/parity_internvl3.5-2b.json",
+    "report": {
+      "model": "OpenGVLab/InternVL3_5-2B-HF",
+      "num_questions": 2374,
+      "scores": {
+        "baseline": {
+          "perception": 1362.32,
+          "cognition": 334.29,
+          "total": 1696.61,
+          "per_category": {
+            "code_reasoning": 47.5,
+            "artwork": 133.25,
+            "celebrity": 120.59,
+            "numerical_calculation": 20.0,
+            "text_translation": 177.5,
+            "count": 125.0,
+            "color": 118.33,
+            "commonsense_reasoning": 89.29,
+            "position": 108.33,
+            "OCR": 95.0,
+            "landmark": 163.25,
+            "scene": 159.25,
+            "existence": 190.0,
+            "posters": 149.32
+          }
+        },
+        "pass1_miss": {
+          "perception": 1362.32,
+          "cognition": 334.29,
+          "total": 1696.61,
+          "per_category": {
+            "code_reasoning": 47.5,
+            "artwork": 133.25,
+            "celebrity": 120.59,
+            "numerical_calculation": 20.0,
+            "text_translation": 177.5,
+            "count": 125.0,
+            "color": 118.33,
+            "commonsense_reasoning": 89.29,
+            "position": 108.33,
+            "OCR": 95.0,
+            "landmark": 163.25,
+            "scene": 159.25,
+            "existence": 190.0,
+            "posters": 149.32
+          }
+        },
+        "pass2_hit": {
+          "perception": 1362.32,
+          "cognition": 334.29,
+          "total": 1696.61,
+          "per_category": {
+            "code_reasoning": 47.5,
+            "artwork": 133.25,
+            "celebrity": 120.59,
+            "numerical_calculation": 20.0,
+            "text_translation": 177.5,
+            "count": 125.0,
+            "color": 118.33,
+            "commonsense_reasoning": 89.29,
+            "position": 108.33,
+            "OCR": 95.0,
+            "landmark": 163.25,
+            "scene": 159.25,
+            "existence": 190.0,
+            "posters": 149.32
+          }
+        }
+      },
+      "flips_pass1_vs_baseline": 0,
+      "flips_pass2_vs_pass1": 0,
+      "pass2_lookup_hit_ratio": 1.0,
+      "baseline_answer_parse_ratio": 0.9351,
+      "gate": {
+        "pass": true,
+        "max_flips": 11.870000000000001,
+        "score_delta_pass2_vs_pass1": 0.0,
+        "score_delta_pass1_vs_baseline": 0.0,
+        "baseline_answer_parse_ratio": 0.9351,
+        "hit_criterion": "raw_hit_ratio",
+        "cache_granularity_tokens": 16,
+        "pass2_hit_coverage": null,
+        "thresholds": {
+          "max_flip_fraction": 0.005,
+          "max_score_delta": 10.0,
+          "min_hit_ratio": 0.8,
+          "min_hit_coverage": 0.95,
+          "min_parse_ratio": 0.9
+        }
+      }
+    }
+  },
+  "known_not_covered": [
+    "tensor-parallel (TP>1) and pipeline-parallel deployments",
+    "remote / disk storage backends and cross-instance sharing",
+    "allocator-level buffer accounting (tracked by the pin-count project)",
+    "audio modality: this model's spec does not declare `audio`, so none of the suite's audio or cross-modal cases ran for it and it is certified on its image/video paths only -- note that a checkpoint can carry an audio tower and still be certified this way (Gemma 4 does)",
+    "MP path chunk-boundary phases and collision pressure (T0.4/T0.2 run on the in-process path; keys are transport-independent)"
+  ]
+}

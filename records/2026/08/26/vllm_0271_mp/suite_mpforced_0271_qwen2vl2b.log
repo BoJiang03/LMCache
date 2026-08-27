@@ -1,0 +1,216 @@
+FFF..........................                                            [100%]
+=================================== FAILURES ===================================
+_____________ test_isolated_scenario[chunked_prefill-qwen2-vl-2b] ______________
+
+scenario = 'chunked_prefill', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/mpsw271/pytest-of-bo/pytest-0/test_isolated_scenario_chunked0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: chunked_prefill[qwen2-vl-2b] failed:
+E         [T0.9 pad 40 repeat A] t09-p40-A: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got=' Dick沙龙ani allyeluD.ヴ' reference='Blue' expected_probe=('red',)
+E         [T0.9 pad 40 different B] t09-p40-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Blue' expected_probe=('blue',)
+E         [T0.9 pad 56 repeat A] t09-p56-A: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got='吹olv将 XechALSochondائ' reference='Blue' expected_probe=('red',)
+E         [T0.9 pad 56 different B] t09-p56-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Blue' expected_probe=('blue',)
+E         [T0.9 pad 72 repeat A] t09-p72-A: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got="ossify Turoاتهرنäll'" reference='Blue' expected_probe=('red',)
+E         [T0.9 pad 72 different B] t09-p72-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Blue' expected_probe=('blue',)
+E         [T0.9 pad 88 repeat A] t09-p88-A: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got='oss掩盖切换 raz5繁 Levy' reference='Blue' expected_probe=('red',)
+E         [T0.9 pad 88 different B] t09-p88-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Blue' expected_probe=('blue',)
+E         metrics: {
+E           "pad_40": {
+E             "prompt_tokens": 336,
+E             "full_hit": 336,
+E             "b_hit": 64
+E           },
+E           "pad_56": {
+E             "prompt_tokens": 352,
+E             "full_hit": 352,
+E             "b_hit": 80
+E           },
+E           "pad_72": {
+E             "prompt_tokens": 368,
+E             "full_hit": 368,
+E             "b_hit": 96
+E           },
+E           "pad_88": {
+E             "prompt_tokens": 384,
+E             "full_hit": 384,
+E             "b_hit": 112
+E           },
+E           "stored_delta": {
+E             "stored": 2528,
+E             "missed": 2528
+E           }
+E         }
+E       assert ["[T0.9 pad 4...blue',)", ...] == []
+E         
+E         Left contains 8 more items, first extra item: "[T0.9 pad 40 repeat A] t09-p40-A: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got=' Dick沙龙ani allyeluD.ヴ' reference='Blue' expected_probe=('red',)"
+E         Use -v to get more diff
+
+tests/e2e_mm/test_isolated_paths.py:64: AssertionError
+____________ test_isolated_scenario[capacity_eviction-qwen2-vl-2b] _____________
+
+scenario = 'capacity_eviction', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/mpsw271/pytest-of-bo/pytest-0/test_isolated_scenario_capacit0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: capacity_eviction[qwen2-vl-2b] failed:
+E         resident bytes 60096512 exceed the 53687091-byte capacity -- eviction is not bounding the backend
+E         metrics: {
+E           "capacity_gb": 0.05,
+E           "pass1_hits": [
+E             0,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16,
+E             16
+E           ],
+E           "resident": {
+E             "num_keys": 131,
+E             "total_bytes": 60096512,
+E             "capacity_bytes": 53687091,
+E             "intended_bytes": 250019840
+E           },
+E           "server_log_tail": "m[2026-08-25 19:38:40,222] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45330 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,325] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,326] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,326] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,326] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45332 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,429] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,430] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,430] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,430] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45336 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,443] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 18/18 retained keys (18 L1, 0 L2) in 2.6 ms (external_request_id=33-b5e82962, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,485] LMCache INFO:\u001b[0m Retrieved 288 tokens in 0.037 seconds \u001b[3m(lmcache_driven_transfer.py:1472:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,574] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,575] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,575] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,575] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45346 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,678] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,679] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,679] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,679] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45350 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,782] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,782] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,783] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,783] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45366 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,886] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,886] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,886] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,886] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45378 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 19:38:40,989] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,989] LMCache INFO:\u001b[0m  - Total active allocations: 105 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,990] LMCache INFO:\u001b[0m  - Total allocated size: 45.937500 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:40,990] LMCache INFO:\u001b[0m  - Total free size: 18.062500 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:45384 - \"GET /status HTTP/1.1\" 200 OK\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-25 19:38:41,112] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,113] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,113] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,513] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,514] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,515] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:41,515] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,581] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,581] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,582] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,582] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,597] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7f69f90cccb0 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:42,597] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7f69f90cccb0 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:43,956] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-25 19:38:43,956] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [2706564]\n"
+E         }
+E       assert ['resident by... the backend'] == []
+E         
+E         Left contains one more item: 'resident bytes 60096512 exceed the 53687091-byte capacity -- eviction is not bounding the backend'
+E         Use -v to get more diff
+
+tests/e2e_mm/test_isolated_paths.py:64: AssertionError
+________________ test_isolated_scenario[preemption-qwen2-vl-2b] ________________
+
+scenario = 'preemption', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/mpsw271/pytest-of-bo/pytest-0/test_isolated_scenario_preempt0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+>       proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+
+tests/e2e_mm/test_isolated_paths.py:51: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:2116: in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: -9 args: ['/home/bo/venvs/vllm-mm/bin/python', '/home/bo...>
+endtime = 2790041.721809731, orig_timeout = 2400
+stdout_seq = [b"INFO 08-25 19:40:27 [api_utils.py:273] non-default args: {'max_model_len': 2048, 'enable_prefix_caching': False, 'g...led by user settings, optimizations settings that are only active during inductor compilation will be ignored.\n', ...]
+stderr_seq = [b"\x1b[32;20m[2026-08-25 19:40:19,309] LMCache INFO:\x1b[0m torch_dev=<module 'torch.cuda' from '/home/bo/venvs/vllm-... [00:00<?, ?it/s]\n', b'\rLoading safetensors checkpoint shards:  50% Completed | 1/2 [00:01<00:01,  1.00s/it]\n', ...]
+skip_check_and_raise = False
+
+    def _check_timeout(self, endtime, orig_timeout, stdout_seq, stderr_seq,
+                       skip_check_and_raise=False):
+        """Convenience for checking if a timeout has expired."""
+        if endtime is None:
+            return
+        if skip_check_and_raise or _time() > endtime:
+>           raise TimeoutExpired(
+                    self.args, orig_timeout,
+                    output=b''.join(stdout_seq) if stdout_seq else None,
+                    stderr=b''.join(stderr_seq) if stderr_seq else None)
+E           subprocess.TimeoutExpired: Command '['/home/bo/venvs/vllm-mm/bin/python', '/home/bo/LMCache-worktrees/multi_modal_verify/tests/e2e_mm/isolated_cases.py', 'preemption', 'qwen2-vl-2b', '/tmp/mpsw271/pytest-of-bo/pytest-0/test_isolated_scenario_preempt0/preemption_qwen2-vl-2b.json']' timed out after 2400 seconds
+
+/usr/lib/python3.12/subprocess.py:1253: TimeoutExpired
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 59 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/e2e_mm/test_isolated_paths.py::test_isolated_scenario[chunked_prefill-qwen2-vl-2b]
+FAILED tests/e2e_mm/test_isolated_paths.py::test_isolated_scenario[capacity_eviction-qwen2-vl-2b]
+FAILED tests/e2e_mm/test_isolated_paths.py::test_isolated_scenario[preemption-qwen2-vl-2b]
+3 failed, 26 passed, 8 deselected, 73 warnings in 3211.40s (0:53:31)
+[rank0]:[W825 20:25:59.937630943 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W825 20:25:59.062106269 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

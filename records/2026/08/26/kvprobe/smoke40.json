@@ -1,0 +1,72 @@
+{
+  "model": "Qwen/Qwen2-VL-2B-Instruct",
+  "benchmark": "mme",
+  "deployment_path": "mp",
+  "num_questions": 40,
+  "scores": {
+    "baseline": {
+      "perception": 0.0,
+      "cognition": 77.5,
+      "total": 77.5,
+      "per_category": {
+        "code_reasoning": 77.5
+      }
+    },
+    "pass1_miss": {
+      "perception": 0.0,
+      "cognition": 77.5,
+      "total": 77.5,
+      "per_category": {
+        "code_reasoning": 77.5
+      }
+    },
+    "pass2_hit": {
+      "perception": 0.0,
+      "cognition": 77.5,
+      "total": 77.5,
+      "per_category": {
+        "code_reasoning": 77.5
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 0,
+  "flips_pass2_vs_pass1": 0,
+  "answer_flips_pass1_vs_baseline": 0,
+  "parse_flips_pass1_vs_baseline": 0,
+  "answer_flips_pass2_vs_pass1": 0,
+  "parse_flips_pass2_vs_pass1": 0,
+  "pass2_lookup_hit_ratio": 0.1441,
+  "cache_granularity_tokens": 16,
+  "pass1_stored_tokens": 6688,
+  "pass2_lookup_hit_tokens": 992,
+  "pass2_lookup_tokens": 6883,
+  "pass2_achievable_hit_tokens": 6544,
+  "pass2_external_cached_tokens": 992,
+  "pass2_local_cached_tokens": 0,
+  "baseline_answer_parse_ratio": 1.0,
+  "pass1_answer_parse_ratio": 1.0,
+  "pass2_answer_parse_ratio": 1.0,
+  "gate": {
+    "pass": false,
+    "max_flips": 0.4,
+    "answer_flips_pass2_vs_pass1": 0,
+    "answer_flips_pass1_vs_baseline": 0,
+    "parse_ratio_deltas": {
+      "pass2_vs_pass1": 0.0,
+      "pass1_vs_baseline": 0.0
+    },
+    "score_delta_pass2_vs_pass1": 0.0,
+    "score_delta_pass1_vs_baseline": 0.0,
+    "baseline_answer_parse_ratio": 1.0,
+    "hit_criterion": "raw_hit_ratio",
+    "cache_granularity_tokens": 16,
+    "pass2_hit_coverage": 0.1516,
+    "thresholds": {
+      "max_flip_fraction": 0.01,
+      "max_parse_ratio_delta": 0.02,
+      "min_hit_ratio": 0.8,
+      "min_hit_coverage": 0.95,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

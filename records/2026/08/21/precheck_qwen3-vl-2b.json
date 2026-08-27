@@ -1,0 +1,118 @@
+{
+ "normal": {
+  "image-0": {
+   "text": "red",
+   "expect": "red",
+   "probe_ok": true
+  },
+  "image-1": {
+   "text": "green",
+   "expect": "green",
+   "probe_ok": true
+  },
+  "image-2": {
+   "text": "blue",
+   "expect": "blue",
+   "probe_ok": true
+  },
+  "image-3": {
+   "text": "yellow",
+   "expect": "yellow",
+   "probe_ok": true
+  },
+  "image-4": {
+   "text": "purple",
+   "expect": "purple",
+   "probe_ok": true
+  },
+  "image-5": {
+   "text": "orange",
+   "expect": "orange",
+   "probe_ok": true
+  },
+  "video-0": {
+   "text": "red",
+   "expect": "red",
+   "probe_ok": true
+  },
+  "video-1": {
+   "text": "green",
+   "expect": "green",
+   "probe_ok": true
+  },
+  "video-2": {
+   "text": "blue",
+   "expect": "blue",
+   "probe_ok": true
+  },
+  "video-3": {
+   "text": "yellow",
+   "expect": "yellow",
+   "probe_ok": true
+  },
+  "video-4": {
+   "text": "purple",
+   "expect": "purple",
+   "probe_ok": true
+  },
+  "video-5": {
+   "text": "orange",
+   "expect": "orange",
+   "probe_ok": true
+  }
+ },
+ "blind": {
+  "image-0": {
+   "text": "red",
+   "diverged": false
+  },
+  "image-1": {
+   "text": "green",
+   "diverged": false
+  },
+  "image-2": {
+   "text": "blue",
+   "diverged": false
+  },
+  "image-3": {
+   "text": "yellow",
+   "diverged": false
+  },
+  "image-4": {
+   "text": "purple",
+   "diverged": false
+  },
+  "image-5": {
+   "text": "orange",
+   "diverged": false
+  },
+  "video-0": {
+   "text": "red",
+   "diverged": false
+  },
+  "video-1": {
+   "text": "green",
+   "diverged": false
+  },
+  "video-2": {
+   "text": "blue",
+   "diverged": false
+  },
+  "video-3": {
+   "text": "yellow",
+   "diverged": false
+  },
+  "video-4": {
+   "text": "purple",
+   "diverged": false
+  },
+  "video-5": {
+   "text": "orange",
+   "diverged": false
+  }
+ },
+ "sensitivity": {
+  "probes_correct": "12/12",
+  "blind_diverged": "0/12"
+ }
+}

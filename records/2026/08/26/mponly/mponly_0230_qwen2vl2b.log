@@ -1,0 +1,27 @@
+.............................                                            [100%]
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 59 warnings
+  /home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[qwen2-vl-2b]
+  /home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/flashinfer/gemm/kernels/grouped_gemm_masked_blackwell.py:2383: DeprecationWarning: tcgen05.OperandMajorMode is deprecated, use cute.nvgpu.OperandMajorMode instead
+    a_major_mode: tcgen05.OperandMajorMode,
+
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[qwen2-vl-2b]
+  /home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/flashinfer/gemm/kernels/grouped_gemm_masked_blackwell.py:2385: DeprecationWarning: tcgen05.OperandMajorMode is deprecated, use cute.nvgpu.OperandMajorMode instead
+    b_major_mode: tcgen05.OperandMajorMode,
+
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[qwen2-vl-2b]
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[qwen2-vl-2b]
+  /home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/flashinfer/gdn_kernels/blackwell/gated_delta_net_chunked.py:99: DeprecationWarning: tcgen05.OperandMajorMode is deprecated, use cute.nvgpu.OperandMajorMode instead
+    from cutlass.cute.nvgpu.tcgen05 import OperandMajorMode
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+29 passed, 3 deselected, 77 warnings in 1003.83s (0:16:43)
+[rank0]:[W826 08:57:52.018266303 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W826 08:57:52.130429188 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

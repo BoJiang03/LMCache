@@ -1,0 +1,60 @@
+{
+  "model": "Qwen/Qwen2-VL-2B-Instruct",
+  "benchmark": "mme",
+  "engine": "plain vLLM, enable_prefix_caching=True, no reset between passes",
+  "lmcache": "not loaded",
+  "num_questions": 2374,
+  "scores": {
+    "pass_a": {
+      "perception": 1523.78,
+      "cognition": 445.0,
+      "total": 1968.78,
+      "per_category": {
+        "code_reasoning": 77.5,
+        "artwork": 141.0,
+        "celebrity": 143.82,
+        "numerical_calculation": 72.5,
+        "text_translation": 185.0,
+        "count": 140.0,
+        "color": 180.0,
+        "commonsense_reasoning": 110.0,
+        "position": 143.33,
+        "OCR": 80.0,
+        "landmark": 175.25,
+        "scene": 155.75,
+        "existence": 200.0,
+        "posters": 164.63
+      }
+    },
+    "pass_b": {
+      "perception": 1523.78,
+      "cognition": 445.0,
+      "total": 1968.78,
+      "per_category": {
+        "code_reasoning": 77.5,
+        "artwork": 141.0,
+        "celebrity": 143.82,
+        "numerical_calculation": 72.5,
+        "text_translation": 185.0,
+        "count": 140.0,
+        "color": 180.0,
+        "commonsense_reasoning": 110.0,
+        "position": 143.33,
+        "OCR": 80.0,
+        "landmark": 175.25,
+        "scene": 155.75,
+        "existence": 200.0,
+        "posters": 164.63
+      }
+    }
+  },
+  "flips_b_vs_a": 0,
+  "flip_indices": [],
+  "flip_direction": {},
+  "images_touched": 0,
+  "images_with_both_questions_flipped": 0,
+  "unparseable": [
+    0,
+    0
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "chunk_size": 16,
+  "registered": false,
+  "error": "ValueError: LMCache chunk size 16 must be a multiple of engine group 0 tokens_per_block 32",
+  "traceback_tail": [
+    "    result = run_method(self.driver_worker, method, args, kwargs)",
+    "             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+    "  File \"/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/serial_utils.py\", line 510, in run_method",
+    "    return func(*args, **kwargs)",
+    "           ^^^^^^^^^^^^^^^^^^^^^",
+    "  File \"/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/worker/worker_base.py\", line 319, in initialize_from_config",
+    "    self.worker.initialize_from_config(kv_cache_config)  # type: ignore",
+    "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+    "  File \"/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/tracing/otel.py\", line 178, in sync_wrapper",
+    "    return func(*args, **kwargs)",
+    "           ^^^^^^^^^^^^^^^^^^^^^",
+    "  File \"/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py\", line 578, in initialize_from_config",
+    "    self.model_runner.initialize_kv_cache(kv_cache_config)",
+    "  File \"/home/bo/venvs/vllm-lazy/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py\", line 7340, in initialize_kv_cache",
+    "    kv_transfer_group.register_kv_caches(kv_caches)",
+    "  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/lmcache_mp_connector.py\", line 493, in register_kv_caches",
+    "    self.worker_adapter.register_kv_caches(",
+    "  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/vllm_multi_process_adapter.py\", line 1261, in register_kv_caches",
+    "    raise ValueError(",
+    "ValueError: LMCache chunk size 16 must be a multiple of engine group 0 tokens_per_block 32"
+  ]
+}

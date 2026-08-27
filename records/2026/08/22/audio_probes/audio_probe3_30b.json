@@ -1,0 +1,105 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "mm_backend": "TORCH_SDPA",
+  "sound_kind": {
+    "rows": [
+      {
+        "expected": "tone",
+        "answer": "tone",
+        "correct": true,
+        "stable": true,
+        "prompt_tokens": 67
+      },
+      {
+        "expected": "noise",
+        "answer": "noise",
+        "correct": true,
+        "stable": true,
+        "prompt_tokens": 67
+      },
+      {
+        "expected": "silence",
+        "answer": "tone",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 67
+      }
+    ],
+    "all_correct": false,
+    "all_stable": true,
+    "all_distinct": false
+  },
+  "kind_pairs": {
+    "rows": [
+      {
+        "expected": "tone tone",
+        "answer": "Musical tone Static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "tone noise",
+        "answer": "musical tone static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "tone silence",
+        "answer": "Musical tone Silence",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "noise tone",
+        "answer": "static noise musical tone",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "noise noise",
+        "answer": "static noise static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "noise silence",
+        "answer": "Static noise Silence",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "silence tone",
+        "answer": "Musical tone Silence",
+        "correct": false,
+        "stable": false,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "silence noise",
+        "answer": "silence static noise",
+        "correct": false,
+        "stable": false,
+        "prompt_tokens": 110
+      },
+      {
+        "expected": "silence silence",
+        "answer": "Musical tone Silence",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 110
+      }
+    ],
+    "all_correct": false,
+    "all_stable": false,
+    "all_distinct": false,
+    "n_distinct": 6,
+    "n_total": 9,
+    "n_correct": 0
+  }
+}

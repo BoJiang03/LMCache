@@ -1,0 +1,51 @@
+{
+  "unparsed_at_8": 239,
+  "by_category": {
+    "code_reasoning": 1,
+    "artwork": 117,
+    "celebrity": 82,
+    "numerical_calculation": 5,
+    "commonsense_reasoning": 8,
+    "landmark": 14,
+    "scene": 4,
+    "posters": 8
+  },
+  "budgets": {
+    "8": {
+      "resolved": 0,
+      "of": 239,
+      "projected_parse_ratio": 0.8993,
+      "samples": [
+        "Let's trace the execution of the",
+        "I do not have enough information to definitively",
+        "I do not have enough information to definitively",
+        "I do not have the capability to determine",
+        "I do not have the capability to determine"
+      ]
+    },
+    "64": {
+      "resolved": 0,
+      "of": 239,
+      "projected_parse_ratio": 0.8993,
+      "samples": [
+        "Let's trace the execution of the Python code step by step:\n\n1. **`a = [1, 2, 6, 9]`**: A list named `a` is initialized with the values `[1, 2, 6, 9]`.\n\n2. **`",
+        "I do not have enough information to definitively confirm the title of the artwork based solely on the image provided. Therefore, I cannot answer yes or no with certainty.",
+        "I do not have enough information to definitively confirm or deny that the artwork is titled \"Doge Ziani Receiving the Benediction of Pope Alexander III.\" I can only analyze the image provided, and without external metadata or context, I cannot verify the specific title.",
+        "I do not have the capability to determine the current physical location of a specific artwork based only on an image. Therefore, I cannot answer yes or no to whether this artwork is displayed in mus\u00e9e toulouse-lautrec, albi.",
+        "I do not have the capability to determine the physical location where a specific artwork is currently displayed. Therefore, I cannot answer yes or no to whether this artwork is displayed in Kupferstichkabinett, Gotha."
+      ]
+    },
+    "256": {
+      "resolved": 0,
+      "of": 239,
+      "projected_parse_ratio": 0.8993,
+      "samples": [
+        "Let's trace the execution of the Python code step by step:\n\n1. **`a = [1, 2, 6, 9]`**: A list named `a` is initialized with the values `[1, 2, 6, 9]`.\n\n2. **`b = max(a) + a[1]`**: This line calculates the value of `b`.\n   * **`max(a)`**: This finds the maximum value in the list `a`. The maximum value in `[1, 2, 6, 9]` is **9**.\n   * **`a[1]`**: This accesses the element at index 1 of the list `a`. In Python, indexing starts at 0, so `a[1]` is the second element, which is **2**.\n   * **`b = 9 + 2`**: Therefore, `b` is assigned the value **11**.\n\n3. **`print(b)`**: This prints the current value of `b`, which is 11.\n\nThe output of the code is **11**, not 9.\n\nno",
+        "I do not have enough information to definitively confirm the title of the artwork based solely on the image provided. Therefore, I cannot answer yes or no with certainty.",
+        "I do not have enough information to definitively confirm or deny that the artwork is titled \"Doge Ziani Receiving the Benediction of Pope Alexander III.\" I can only analyze the image provided, and without external metadata or context, I cannot verify the specific title.",
+        "I do not have the capability to determine the current physical location of a specific artwork based only on an image. Therefore, I cannot answer yes or no to whether this artwork is displayed in mus\u00e9e toulouse-lautrec, albi.",
+        "I do not have the capability to determine the physical location where a specific artwork is currently displayed. Therefore, I cannot answer yes or no to whether this artwork is displayed in Kupferstichkabinett, Gotha."
+      ]
+    }
+  }
+}

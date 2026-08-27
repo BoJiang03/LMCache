@@ -1,0 +1,134 @@
+[32;20m[2026-08-25 14:45:33,411] LMCache INFO:[0m torch_dev=<module 'torch.cuda' from '/home/bo/venvs/vllm-bisect-0.23.0/lib/python3.12/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda [3m(_device_detect.py:143:lmcache.v1.platform._device_detect)[0m
+[33;20m[2026-08-25 14:45:33,411] LMCache WARNING:[0m lmcache.cuda_ops compiled extension not found; CudaDeviceOps stays on the torch baseline for all ops. [3m(device_ops.py:34:lmcache.v1.platform.cuda.device_ops)[0m
+[32;20m[2026-08-25 14:45:38,542] LMCache INFO:[0m multi_layer_block_kv_transfer mode: tensor [3m(base.py:95:lmcache.v1.multiprocess.transfer_context.base)[0m
+[T3DBG 1787694338.556 pid=2127481] patched LMCacheMPWorkerAdapter from /home/bo/LMCache-worktrees/multi_modal/lmcache/integration/vllm/vllm_multi_process_adapter.py
+INFO 08-25 14:45:40 [api_utils.py:273] non-default args: {'max_model_len': 8192, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.35, 'disable_log_stats': True, 'enforce_eager': True, 'limit_mm_per_prompt': {'image': 2, 'video': 1}, 'kv_transfer_config': KVTransferConfig(kv_connector='LMCacheMPConnector', engine_id='6a33bf3d-839d-4dc7-8ae7-e6f253428feb', kv_buffer_device='cuda', kv_buffer_size=1000000000.0, kv_role='kv_both', kv_rank=None, kv_parallel_size=1, kv_ip='127.0.0.1', kv_port=14579, kv_connector_extra_config={'lmcache.mp.host': 'tcp://localhost', 'lmcache.mp.port': 27481, 'lmcache.mp.heartbeat_interval': 21600.0}, kv_connector_module_path='lmcache.integration.vllm.lmcache_mp_connector', enable_permute_local_kv=False, kv_load_failure_policy='fail'), 'model': 'Qwen/Qwen2-VL-2B-Instruct'}
+WARNING 08-25 14:45:40 [arg_utils.py:1557] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 08-25 14:45:41 [model.py:611] Resolved architecture: Qwen2VLForConditionalGeneration
+INFO 08-25 14:45:41 [model.py:1745] Using max model len 8192
+INFO 08-25 14:45:41 [scheduler.py:239] Chunked prefill is enabled with max_num_batched_tokens=16384.
+INFO 08-25 14:45:41 [vllm.py:999] Asynchronous scheduling is enabled.
+WARNING 08-25 14:45:41 [vllm.py:1055] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 08-25 14:45:41 [vllm.py:1097] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 08-25 14:45:41 [kernel.py:270] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 08-25 14:45:41 [vllm.py:1273] Cudagraph is disabled under eager mode
+INFO 08-25 14:45:41 [compilation.py:321] Enabled custom fusions: norm_quant, act_quant
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+INFO 08-25 14:45:59 [core.py:113] Initializing a V1 LLM engine (v0.23.0) with config: model='Qwen/Qwen2-VL-2B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2-VL-2B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2-VL-2B-Instruct, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [16384], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+INFO 08-25 14:45:59 [parallel_state.py:1568] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://10.2.201.16:39619 backend=nccl
+INFO 08-25 14:45:59 [parallel_state.py:1903] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+INFO 08-25 14:46:01 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+INFO 08-25 14:46:01 [gpu_model_runner.py:5092] Starting to load model Qwen/Qwen2-VL-2B-Instruct...
+INFO 08-25 14:46:01 [cuda.py:433] Using backend AttentionBackendEnum.FLASH_ATTN for vit attention
+INFO 08-25 14:46:01 [mm_encoder_attention.py:372] Using AttentionBackendEnum.FLASH_ATTN for MMEncoderAttention.
+WARNING 08-25 14:46:01 [vllm.py:1055] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 08-25 14:46:01 [vllm.py:1097] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 08-25 14:46:01 [kernel.py:270] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 08-25 14:46:01 [vllm.py:1273] Cudagraph is disabled under eager mode
+INFO 08-25 14:46:01 [cuda.py:378] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 08-25 14:46:01 [flash_attn.py:636] Using FlashAttention version 3
+INFO 08-25 14:46:02 [weight_utils.py:922] Filesystem type for checkpoints: EXT4. Checkpoint size: 4.11 GiB. Available RAM: 1447.13 GiB.
+INFO 08-25 14:46:02 [weight_utils.py:945] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:00<00:00,  1.27it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  2.22it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.99it/s]
+
+INFO 08-25 14:46:03 [default_loader.py:397] Loading weights took 1.03 seconds
+INFO 08-25 14:46:04 [gpu_model_runner.py:5187] Model loading took 4.26 GiB memory and 2.224906 seconds
+INFO 08-25 14:46:04 [gpu_model_runner.py:6200] Encoder cache will be initialized with a budget of 16384 tokens, and profiled with 1 video items of the maximum feature size.
+INFO 08-25 14:46:08 [gpu_worker.py:480] Available KV cache memory: 42.07 GiB
+INFO 08-25 14:46:08 [kv_cache_utils.py:1744] GPU KV cache size: 1,575,328 tokens
+INFO 08-25 14:46:08 [kv_cache_utils.py:1745] Maximum concurrency for 8,192 tokens per request: 192.30x
+INFO 08-25 14:46:08 [factory.py:62] Creating v1 connector with name: LMCacheMPConnector and engine_id: 6a33bf3d-839d-4dc7-8ae7-e6f253428feb
+WARNING 08-25 14:46:08 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+[32;20m[2026-08-25 14:46:08,254] LMCache INFO:[0m lmcache.mp.mq_timeout = 300.0 [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,254] LMCache INFO:[0m lmcache.mp.heartbeat_interval = 21600.0 (overridden, default: 10.0) [3m(vllm_multi_process_adapter.py:116:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,254] LMCache INFO:[0m lmcache.mp.mp_transfer_mode = auto [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,256] LMCache INFO:[0m LMCache MP worker adapter created with instance_id=3525483693350435668 [3m(vllm_multi_process_adapter.py:1100:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[33;20m[2026-08-25 14:46:08,258] LMCache WARNING:[0m lmcache.mp.heartbeat_interval is 21600.0s, so 3 x heartbeat_interval (64800.0s) exceeds the MP server's default worker reap timeout floor (30.0s). Raise the server's worker reap timeout to at least 3 x the heartbeat interval, or the server may reap this worker between heartbeats. [3m(vllm_multi_process_adapter.py:1175:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+INFO 08-25 14:46:08 [utils.py:44] Connectors do not specify a kv cache layout, defaulting to NHD.
+[32;20m[2026-08-25 14:46:08,294] LMCache INFO:[0m Registering kv caches! [3m(lmcache_mp_connector.py:480:lmcache.integration.vllm.lmcache_mp_connector)[0m
+[32;20m[2026-08-25 14:46:08,295] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-08-25 14:46:08,296] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_NB_TWO_BS_NH_HS NL x [NB, 2, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-08-25 14:46:08,297] LMCache INFO:[0m Registering kv caches [3m(vllm_multi_process_adapter.py:1255:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,297] LMCache INFO:[0m Creating transfer context (device_type=cuda, mode=auto) [3m(worker_transfer.py:879:lmcache.v1.multiprocess.transfer_context.worker_transfer)[0m
+[32;20m[2026-08-25 14:46:08,298] LMCache INFO:[0m Wrapping 28 KV cache tensors for IPC [3m(kv_wrap.py:63:lmcache.v1.platform.kv_wrap)[0m
+2026-08-25 14:46:08,542 - INFO - autotuner.py:622 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+2026-08-25 14:46:08,581 - INFO - autotuner.py:641 - flashinfer.jit: [Autotuner]: Autotuning process ends
+INFO 08-25 14:46:08 [jit_monitor.py:54] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+INFO 08-25 14:46:08 [core.py:313] init engine (profile, create kv cache, warmup model) took 4.35 s
+INFO 08-25 14:46:08 [factory.py:62] Creating v1 connector with name: LMCacheMPConnector and engine_id: 6a33bf3d-839d-4dc7-8ae7-e6f253428feb
+WARNING 08-25 14:46:08 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+
+ _     __  __    ____           _          
+| |   |  \/  |  / ___|__ _  ___| |__   ___      LMCache v0.5.4.dev112 (g0040c6bd)
+| |   | |\/| | | |   / _` |/ __| '_ \ / _ \     Website:  https://lmcache.ai/
+| |___| |  | | | |__| (_| | (__| | | |  __/     Recipes:  https://docs.lmcache.ai/recipes
+|_____|_|  |_|  \____\__,_|\___|_| |_|\___|     LinkedIn: https://www.linkedin.com/company/lmcache-lab
+Set LMCACHE_DISABLE_BANNER=1 to hide this banner.
+
+[32;20m[2026-08-25 14:46:08,957] LMCache INFO:[0m lmcache.mp.mq_timeout = 300.0 [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,957] LMCache INFO:[0m lmcache.mp.heartbeat_interval = 21600.0 (overridden, default: 10.0) [3m(vllm_multi_process_adapter.py:116:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,957] LMCache INFO:[0m lmcache.mp.mp_transfer_mode = auto [3m(vllm_multi_process_adapter.py:124:lmcache.integration.vllm.vllm_multi_process_adapter)[0m
+[32;20m[2026-08-25 14:46:08,988] LMCache INFO:[0m Bind GPU block pool in LMCacheMPConnector scheduler [3m(lmcache_mp_connector.py:726:lmcache.integration.vllm.lmcache_mp_connector)[0m
+INFO 08-25 14:46:14 [hf.py:548] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+WARNING 08-25 14:46:29 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+WARNING 08-25 14:46:29 [jit_monitor.py:103] Triton kernel JIT compilation during inference: _triton_mrope_forward. This causes a latency spike; consider extending warmup to cover this shape/config.
+[T3DBG 1787694389.160 pid=2127481] ENG.SUBMIT_STORE req=0-ae93e23c start=0 end=288 skip=0 nblk=18 blk[:4]=[1, 2, 3, 4]
+[32;20m[2026-08-25 14:46:29,160] LMCache INFO:[0m PeriodicThread lmcache-heartbeat entering main loop (interval=21600.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-08-25 14:46:29,160] LMCache INFO:[0m Started PeriodicThread: lmcache-heartbeat (level=critical, interval=21600.0s, init_wait=0.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[T3DBG 1787694389.273 pid=2127481] ENG.SUBMIT_STORE req=1-98d7f893 start=0 end=288 skip=0 nblk=18 blk[:4]=[20, 21, 22, 23]
+[T3DBG 1787694389.317 pid=2127481] ENG.SUBMIT_STORE req=2-b1441835 start=0 end=288 skip=0 nblk=18 blk[:4]=[39, 40, 41, 42]
+[T3DBG 1787694389.368 pid=2127481] ENG.SUBMIT_STORE req=3-83c3d49c start=0 end=32 skip=0 nblk=2 blk[:4]=[58, 59]
+[T3DBG 1787694389.368 pid=2127481] ENG.GET_FINISHED stores=['0-ae93e23c'] retrieves=[]
+[T3DBG 1787694389.433 pid=2127481] ENG.SUBMIT_STORE req=4-8e833291 start=0 end=288 skip=0 nblk=18 blk[:4]=[61, 62, 63, 64]
+[T3DBG 1787694389.433 pid=2127481] ENG.GET_FINISHED stores=['1-98d7f893', '2-b1441835', '3-83c3d49c'] retrieves=[]
+[T3DBG 1787694389.468 pid=2127481] ENG.SUBMIT_RETRIEVE req=5-aedf38a1 start=0 end=32 skip=0 nblk=2 blk[:4]=[80, 81]
+[T3DBG 1787694391.575 pid=2127481] ENG.GET_FINISHED stores=['4-8e833291'] retrieves=[]
+[T3DBG 1787694392.460 pid=2127481] ENG.RETRIEVE_DONE reqs=['5-aedf38a1']
+[T3DBG 1787694392.460 pid=2127481] ENG.GET_FINISHED stores=[] retrieves=['5-aedf38a1']
+[T3DBG 1787694392.580 pid=2127481] ENG.SUBMIT_RETRIEVE req=6-bfcbcfe8 start=0 end=16 skip=0 nblk=1 blk[:4]=[83]
+[T3DBG 1787694392.581 pid=2127481] ENG.GET_FINISHED stores=['5-aedf38a1'] retrieves=[]
+[T3DBG 1787694393.093 pid=2127481] ENG.RETRIEVE_DONE reqs=['6-bfcbcfe8']
+[T3DBG 1787694393.093 pid=2127481] ENG.GET_FINISHED stores=[] retrieves=['6-bfcbcfe8']
+[T3DBG 1787694393.127 pid=2127481] ENG.SUBMIT_STORE req=6-bfcbcfe8 start=16 end=288 skip=0 nblk=17 blk[:4]=[84, 85, 86, 87]
+[T3DBG 1787694393.253 pid=2127481] ENG.SUBMIT_STORE req=7-bb947480 start=0 end=288 skip=0 nblk=18 blk[:4]=[102, 103, 104, 105]
+[T3DBG 1787694393.253 pid=2127481] ENG.GET_FINISHED stores=['6-bfcbcfe8'] retrieves=[]
+[T3DBG 1787694393.299 pid=2127481] ENG.SUBMIT_STORE req=8-a9123866 start=0 end=288 skip=0 nblk=18 blk[:4]=[121, 122, 123, 124]
+[T3DBG 1787694393.369 pid=2127481] ENG.SUBMIT_STORE req=9-aef94552 start=0 end=560 skip=0 nblk=35 blk[:4]=[140, 141, 142, 143]
+[T3DBG 1787694393.369 pid=2127481] ENG.GET_FINISHED stores=['7-bb947480'] retrieves=[]
+[T3DBG 1787694393.389 pid=2127481] ENG.GET_FINISHED stores=['8-a9123866'] retrieves=[]
+[T3DBG 1787694393.439 pid=2127481] ENG.SUBMIT_STORE req=10-80752f2e start=0 end=560 skip=0 nblk=35 blk[:4]=[176, 177, 178, 179]
+[T3DBG 1787694393.509 pid=2127481] ENG.SUBMIT_STORE req=11-8dd77ce9 start=0 end=560 skip=0 nblk=35 blk[:4]=[212, 213, 214, 215]
+[T3DBG 1787694393.528 pid=2127481] ENG.GET_FINISHED stores=['9-aef94552'] retrieves=[]
+[T3DBG 1787694393.577 pid=2127481] ENG.SUBMIT_STORE req=12-83cf2776 start=0 end=288 skip=0 nblk=18 blk[:4]=[248, 249, 250, 251]
+[T3DBG 1787694393.673 pid=2127481] ENG.SUBMIT_STORE req=13-8260e5cc start=0 end=560 skip=0 nblk=35 blk[:4]=[267, 268, 269, 270]
+[T3DBG 1787694393.674 pid=2127481] ENG.GET_FINISHED stores=['10-80752f2e', '11-8dd77ce9'] retrieves=[]
+[T3DBG 1787694393.693 pid=2127481] ENG.GET_FINISHED stores=['12-83cf2776'] retrieves=[]
+[T3DBG 1787694393.785 pid=2127481] ENG.SUBMIT_STORE req=14-934d2588 start=0 end=288 skip=0 nblk=18 blk[:4]=[303, 304, 305, 306]
+[T3DBG 1787694393.786 pid=2127481] ENG.SUBMIT_STORE req=15-acd62971 start=0 end=288 skip=0 nblk=18 blk[:4]=[322, 323, 324, 325]
+[T3DBG 1787694393.786 pid=2127481] ENG.SUBMIT_STORE req=16-80c60452 start=0 end=288 skip=0 nblk=18 blk[:4]=[341, 342, 343, 344]
+[T3DBG 1787694393.786 pid=2127481] ENG.SUBMIT_STORE req=17-993199a6 start=0 end=32 skip=0 nblk=2 blk[:4]=[360, 361]
+[T3DBG 1787694393.786 pid=2127481] ENG.SUBMIT_STORE req=18-ad829ed5 start=0 end=288 skip=0 nblk=18 blk[:4]=[363, 364, 365, 366]
+[T3DBG 1787694393.786 pid=2127481] ENG.GET_FINISHED stores=['13-8260e5cc'] retrieves=[]
+[T3DBG 1787694393.857 pid=2127481] ENG.SUBMIT_STORE req=19-8e80043b start=0 end=288 skip=0 nblk=18 blk[:4]=[382, 383, 384, 385]
+[T3DBG 1787694393.878 pid=2127481] ENG.GET_FINISHED stores=['14-934d2588'] retrieves=[]
+[T3DBG 1787694393.933 pid=2127481] ENG.SUBMIT_STORE req=20-aafaec41 start=0 end=288 skip=0 nblk=18 blk[:4]=[401, 402, 403, 404]
+[T3DBG 1787694393.933 pid=2127481] ENG.GET_FINISHED stores=['15-acd62971', '16-80c60452'] retrieves=[]
+[T3DBG 1787694393.953 pid=2127481] ENG.GET_FINISHED stores=['17-993199a6', '18-ad829ed5', '19-8e80043b'] retrieves=[]
+[T3DBG 1787694394.007 pid=2127481] ENG.SUBMIT_STORE req=21-a01ceb73 start=0 end=288 skip=0 nblk=18 blk[:4]=[420, 421, 422, 423]
+[T3DBG 1787694394.007 pid=2127481] ENG.GET_FINISHED stores=['20-aafaec41'] retrieves=[]
+[
+  "repeat A hit only 0/297",
+  "image B hit 0 tokens, too close to A's full hit 0 -- cross-image false hit",
+  "[T3 t05 repeat] t05-text: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got=' is the dominant color of in this' reference='Paris' expected_probe=('paris',)",
+  "[T3 t05 B] t05-B: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='' baseline='Orange' expected_probe=('orange',)",
+  "prefix reuse too shallow: 0 of ~297",
+  "swapped order hit 0 vs full 0",
+  "shared image prefix not reused: 0",
+  "batched store not hittable: 0/297",
+  "negative control did not trip on the MP path: blind B hit only 0 of 297 tokens"
+]
+[rank0]:[W825 14:46:37.959177302 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W825 14:46:37.039807751 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

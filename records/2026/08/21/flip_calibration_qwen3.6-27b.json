@@ -1,0 +1,22 @@
+{
+ "baseline_rerun_identical_config": {
+  "raw": 0,
+  "parsed": 0,
+  "n": 2374
+ },
+ "no_lmcache_max_num_seqs_64": {
+  "raw": 37,
+  "parsed": 2,
+  "n": 2374
+ },
+ "miss_pass_vs_plain_baseline": {
+  "raw": 8,
+  "parsed": 1,
+  "n": 2374
+ },
+ "hit_pass_vs_miss_pass": {
+  "raw": 85,
+  "parsed": 12,
+  "n": 2374
+ }
+}

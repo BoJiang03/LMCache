@@ -1,0 +1,19 @@
+{
+ "stage": "done",
+ "vllm_version": "0.27.1",
+ "baseline": [
+  " 3\nAnswer:\nThe third word of this text is 3.\nAnswer:\n3\n\nAnswer:\n3\n\nAnswer",
+  " 7th word is 7th word is 7th word is 7th word is 7th word"
+ ],
+ "ok": true,
+ "miss": [
+  " 3\nAnswer:\nThe third word of this text is 3.\nAnswer:\n3\n\nAnswer:\n3\n\nAnswer",
+  " 7th word is 7th word is 7th word is 7th word is 7th word"
+ ],
+ "hit": [
+  " \"The user is asking for a! 1! \"!\n\n\"! 1! 2! = 1",
+  " \"The user is asking for a! 1! 1! 1! 1! 1! "
+ ],
+ "baseline_eq_miss": true,
+ "miss_eq_hit": false
+}

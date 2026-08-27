@@ -1,0 +1,22 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "chunk_size": 32,
+  "registered": true,
+  "cache_config_block_size": 16,
+  "passes": [
+    {
+      "pass": "store",
+      "text": "item0 item1 item2 item3",
+      "external": 0,
+      "local_cached": 0
+    },
+    {
+      "pass": "load",
+      "text": "item0 item1 item2 item3",
+      "external": 2304,
+      "local_cached": 0
+    }
+  ],
+  "loaded_second_pass": true,
+  "texts_match": true
+}

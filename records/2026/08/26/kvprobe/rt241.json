@@ -1,0 +1,52 @@
+{
+ "row": 241,
+ "qid": "artwork/11724.jpg",
+ "answers": {
+  "pass1": "Yes",
+  "pass2": "Yes",
+  "pass3": "Yes"
+ },
+ "first_token_logprobs": {
+  "pass1": {
+   "'Yes'": -0.791092,
+   "'No'": -0.916092,
+   "'yes'": -2.541092,
+   "'no'": -2.791092,
+   "'NO'": -7.291092
+  },
+  "pass2": {
+   "'Yes'": -0.78379,
+   "'No'": -0.90879,
+   "'yes'": -2.53379,
+   "'no'": -2.90879,
+   "'NO'": -7.28379
+  },
+  "pass3": {
+   "'Yes'": -0.78379,
+   "'No'": -0.90879,
+   "'yes'": -2.53379,
+   "'no'": -2.90879,
+   "'NO'": -7.28379
+  }
+ },
+ "store_op": {
+  "start": 0,
+  "end": 416
+ },
+ "retrieve_op": {
+  "start": 0,
+  "end": 416,
+  "skip_first_n_tokens": 0
+ },
+ "n_tokens_compared": 416,
+ "p1_vs_p2": {
+  "layers_with_diff": 0,
+  "layers": {},
+  "max_abs": 0.0
+ },
+ "p2_vs_p3": {
+  "layers_with_diff": 0,
+  "layers": {},
+  "max_abs": 0.0
+ }
+}

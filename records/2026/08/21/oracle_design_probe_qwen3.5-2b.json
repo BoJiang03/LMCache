@@ -1,0 +1,49 @@
+{
+ "model": "Qwen/Qwen3.5-2B",
+ "runs": [
+  {
+   "label": "first (cold)",
+   "clear_mode": "none",
+   "prompt_tokens": 852,
+   "reported_num_cached_tokens": 0,
+   "vllm_local_cached": 0,
+   "vllm_external_cached": 0,
+   "lmcache_lookup_tokens": 852,
+   "lmcache_reported_hits": 0,
+   "text": "the quick brown fox jumps over the lazy"
+  },
+  {
+   "label": "repeat, no clear",
+   "clear_mode": "none",
+   "prompt_tokens": 852,
+   "reported_num_cached_tokens": 544,
+   "vllm_local_cached": 544,
+   "vllm_external_cached": 0,
+   "lmcache_lookup_tokens": 852,
+   "lmcache_reported_hits": 544,
+   "text": "the quick brown fox jumps over the lazy"
+  },
+  {
+   "label": "repeat, after clear",
+   "clear_mode": "forced",
+   "prompt_tokens": 852,
+   "reported_num_cached_tokens": 544,
+   "vllm_local_cached": 0,
+   "vllm_external_cached": 544,
+   "lmcache_lookup_tokens": 852,
+   "lmcache_reported_hits": 544,
+   "text": "the quick brown fox jumps over the lazy"
+  },
+  {
+   "label": "repeat, after clear again",
+   "clear_mode": "forced",
+   "prompt_tokens": 852,
+   "reported_num_cached_tokens": 544,
+   "vllm_local_cached": 0,
+   "vllm_external_cached": 544,
+   "lmcache_lookup_tokens": 852,
+   "lmcache_reported_hits": 544,
+   "text": "the quick brown fox jumps over the lazy"
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "stage": "done",
+ "vllm_version": "0.23.0",
+ "torch_version": "2.11.0+cu130",
+ "n_layers": 28,
+ "layers": [
+  {
+   "name": "model.layers.0.self_attn.attn",
+   "shape": [
+    23205,
+    2,
+    16,
+    8,
+    128
+   ],
+   "stride": [
+    32768,
+    16384,
+    1024,
+    128,
+    1
+   ],
+   "dtype": "torch.bfloat16",
+   "contiguous": true
+  },
+  {
+   "name": "model.layers.1.self_attn.attn",
+   "shape": [
+    23205,
+    2,
+    16,
+    8,
+    128
+   ],
+   "stride": [
+    32768,
+    16384,
+    1024,
+    128,
+    1
+   ],
+   "dtype": "torch.bfloat16",
+   "contiguous": true
+  }
+ ],
+ "vllm_kv_cache_layout": "NHD",
+ "lmcache_layout_hints": {
+  "kv_layout": "NHD"
+ }
+}

@@ -1,0 +1,20 @@
+..........................                                               [100%]
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 59 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/transformers/modeling_rope_utils.py:1074: FutureWarning: `rope_config_validation` is deprecated and has been removed. Its functionality has been moved to RotaryEmbeddingConfigMixin.validate_rope method. PreTrainedConfig inherits this class, so please call self.validate_rope() instead. Also, make sure to use the new rope_parameters syntax. You can call self.standardize_rope_params() in the meantime.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+26 passed, 5 deselected, 76 warnings in 980.80s (0:16:20)
+[rank0]:[W826 10:54:29.119680455 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W826 10:54:29.248761028 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

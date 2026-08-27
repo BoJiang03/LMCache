@@ -1,0 +1,62 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______________ test_isolated_scenario[mp_connector-qwen2-vl-2b] _______________
+
+scenario = 'mp_connector', model_key = 'qwen2-vl-2b'
+tmp_path = PosixPath('/tmp/pytest-of-bo/pytest-153/test_isolated_scenario_mp_conn0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: mp_connector[qwen2-vl-2b] failed:
+E         repeat A hit only 0/297
+E         image B hit 0 tokens, too close to A's full hit 0 -- cross-image false hit
+E         text-only repeat hit only 0/37
+E         prefix reuse too shallow: 0 of ~297
+E         swapped order hit 0 vs full 0
+E         shared image prefix not reused: 0
+E         batched store not hittable: 0/297
+E         negative control did not trip on the MP path: blind B hit only 0 of 297 tokens
+E         metrics: {
+E           "t01": {
+E             "prompt_tokens": 297,
+E             "full_hit": 0,
+E             "b_hit": 0
+E           },
+E           "conservation": {
+E             "missed": 4699,
+E             "stored": 4608,
+E             "resident_keys": 195,
+E             "resident_bytes": 89456640
+E           },
+E           "server_log_tail": "per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\n\u001b[31;20m[2026-08-25 13:49:48,979] LMCache ERROR:\u001b[0m Cannot store keys due to exception \u001b[3m(lmcache_driven_transfer.py:1185:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nTraceback (most recent call last):\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 1173, in store\n    transfer_kv_per_object_group(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 493, in transfer_kv_per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\n\u001b[31;20m[2026-08-25 13:49:48,983] LMCache ERROR:\u001b[0m Cannot store keys due to exception \u001b[3m(lmcache_driven_transfer.py:1185:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nTraceback (most recent call last):\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 1173, in store\n    transfer_kv_per_object_group(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 493, in transfer_kv_per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\n\u001b[31;20m[2026-08-25 13:49:49,039] LMCache ERROR:\u001b[0m Cannot store keys due to exception \u001b[3m(lmcache_driven_transfer.py:1185:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nTraceback (most recent call last):\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 1173, in store\n    transfer_kv_per_object_group(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 493, in transfer_kv_per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\n\u001b[31;20m[2026-08-25 13:49:49,117] LMCache ERROR:\u001b[0m Cannot store keys due to exception \u001b[3m(lmcache_driven_transfer.py:1185:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nTraceback (most recent call last):\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 1173, in store\n    transfer_kv_per_object_group(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 493, in transfer_kv_per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\n\u001b[31;20m[2026-08-25 13:49:49,187] LMCache ERROR:\u001b[0m Cannot store keys due to exception \u001b[3m(lmcache_driven_transfer.py:1185:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nTraceback (most recent call last):\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 1173, in store\n    transfer_kv_per_object_group(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 493, in transfer_kv_per_object_group\n    _run_object_group_transfer_plan(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py\", line 353, in _run_object_group_transfer_plan\n    device_ops.KernelGroupSpec(\n  File \"/home/bo/LMCache-worktrees/multi_modal/lmcache/v1/platform/ops_types.py\", line 81, in __init__\n    raise NotImplementedError(\nNotImplementedError: KernelGroupSpec requires the cuda_ops native extension; no pure-Python fallback exists.\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-25 13:49:49,376] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,376] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,377] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,779] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,779] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,780] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:49,780] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,227] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,228] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,228] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,229] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,236] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7ff70d87bf50 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:50,237] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7ff70d87bf50 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:51,696] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-25 13:49:51,697] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [2026257]\n"
+E         }
+E       assert ['repeat A hi...used: 0', ...] == []
+E         
+E         Left contains 8 more items, first extra item: 'repeat A hit only 0/297'
+E         Use -v to get more diff
+
+test_isolated_paths.py:64: AssertionError
+=========================== short test summary info ============================
+FAILED test_isolated_paths.py::test_isolated_scenario[mp_connector-qwen2-vl-2b]
+1 failed, 3 deselected in 141.84s (0:02:21)

@@ -1,0 +1,98 @@
+{
+  "model": "Qwen/Qwen3.6-27B",
+  "deployment_path": "mp",
+  "num_questions": 2374,
+  "scores": {
+    "baseline": {
+      "perception": 1759.52,
+      "cognition": 700.0,
+      "total": 2459.52,
+      "per_category": {
+        "code_reasoning": 177.5,
+        "artwork": 162.25,
+        "celebrity": 177.06,
+        "numerical_calculation": 185.0,
+        "text_translation": 162.5,
+        "count": 173.33,
+        "color": 195.0,
+        "commonsense_reasoning": 175.0,
+        "position": 168.33,
+        "OCR": 200.0,
+        "landmark": 162.25,
+        "scene": 148.75,
+        "existence": 195.0,
+        "posters": 177.55
+      }
+    },
+    "pass1_miss": {
+      "perception": 1760.27,
+      "cognition": 700.0,
+      "total": 2460.27,
+      "per_category": {
+        "code_reasoning": 177.5,
+        "artwork": 162.25,
+        "celebrity": 177.06,
+        "numerical_calculation": 185.0,
+        "text_translation": 162.5,
+        "count": 173.33,
+        "color": 195.0,
+        "commonsense_reasoning": 175.0,
+        "position": 168.33,
+        "OCR": 200.0,
+        "landmark": 162.25,
+        "scene": 149.5,
+        "existence": 195.0,
+        "posters": 177.55
+      }
+    },
+    "pass2_hit": {
+      "perception": 1759.27,
+      "cognition": 700.0,
+      "total": 2459.27,
+      "per_category": {
+        "code_reasoning": 177.5,
+        "artwork": 160.5,
+        "celebrity": 177.06,
+        "numerical_calculation": 185.0,
+        "text_translation": 162.5,
+        "count": 173.33,
+        "color": 195.0,
+        "commonsense_reasoning": 175.0,
+        "position": 168.33,
+        "OCR": 200.0,
+        "landmark": 163.75,
+        "scene": 148.75,
+        "existence": 195.0,
+        "posters": 177.55
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 1,
+  "flips_pass2_vs_pass1": 12,
+  "pass2_lookup_hit_ratio": 0.1663,
+  "cache_granularity_tokens": 784,
+  "pass1_stored_tokens": 196784,
+  "pass2_lookup_hit_tokens": 235200,
+  "pass2_lookup_tokens": 1414292,
+  "pass2_achievable_hit_tokens": 222656,
+  "pass2_external_cached_tokens": 235200,
+  "pass2_local_cached_tokens": 0,
+  "baseline_answer_parse_ratio": 0.9983,
+  "gate": {
+    "pass": true,
+    "max_flips": 23.740000000000002,
+    "score_delta_pass2_vs_pass1": 1.0,
+    "score_delta_pass1_vs_baseline": 0.75,
+    "baseline_answer_parse_ratio": 0.9983,
+    "hit_criterion": "coverage",
+    "cache_granularity_tokens": 784,
+    "pass2_hit_coverage": 1.0563,
+    "thresholds": {
+      "max_flip_fraction": 0.01,
+      "max_score_delta": 10.0,
+      "min_hit_ratio": 0.8,
+      "min_hit_coverage": 0.95,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "candidates": {
+    "beep_count": {
+      "question": "How many separate beeps are in this audio? Reply with just the digit.",
+      "rows": [
+        {
+          "expected": "1",
+          "answer": "1",
+          "correct": true,
+          "stable": true,
+          "seconds": 0.8
+        },
+        {
+          "expected": "2",
+          "answer": "2",
+          "correct": true,
+          "stable": true,
+          "seconds": 1.4
+        },
+        {
+          "expected": "3",
+          "answer": "4",
+          "correct": false,
+          "stable": true,
+          "seconds": 2.0
+        },
+        {
+          "expected": "4",
+          "answer": "3",
+          "correct": false,
+          "stable": true,
+          "seconds": 2.6
+        }
+      ],
+      "all_correct": false,
+      "all_stable": true
+    },
+    "pitch_binary": {
+      "question": "Is the tone in this audio low-pitched or high-pitched? Reply with one word: low or high.",
+      "rows": [
+        {
+          "expected": "low",
+          "answer": "low",
+          "correct": true,
+          "stable": true,
+          "seconds": 1.6
+        },
+        {
+          "expected": "high",
+          "answer": "low",
+          "correct": false,
+          "stable": true,
+          "seconds": 1.6
+        }
+      ],
+      "all_correct": false,
+      "all_stable": true
+    }
+  }
+}

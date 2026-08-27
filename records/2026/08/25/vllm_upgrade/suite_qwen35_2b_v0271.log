@@ -1,0 +1,500 @@
+.F.F.....F...F.............                                              [100%]
+=================================== FAILURES ===================================
+_______________ test_isolated_scenario[mp_connector-qwen3.5-2b] ________________
+
+scenario = 'mp_connector', model_key = 'qwen3.5-2b'
+tmp_path = PosixPath('/tmp/pytest-of-bo/pytest-144/test_isolated_scenario_mp_conn0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+            raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+        report = json.loads(out_json.read_text())
+>       assert report["failures"] == [], (
+            f"{scenario}[{model_key}] failed:\n"
+            + "\n".join(report["failures"])
+            + f"\nmetrics: {json.dumps(report['metrics'], indent=2)}"
+        )
+E       AssertionError: mp_connector[qwen3.5-2b] failed:
+E         [T3 t22 AC] t22-AC: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='yellow, yellow' baseline='green, yellow' expected_probe=('green', 'yellow')
+E         metrics: {
+E           "t01": {
+E             "prompt_tokens": 3518,
+E             "full_hit": 3264,
+E             "b_hit": 1088
+E           },
+E           "conservation": {
+E             "missed": 33377,
+E             "stored": 29376,
+E             "resident_keys": 108,
+E             "resident_bytes": 1443889152
+E           },
+E           "server_log_tail": "218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,195] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,242] LMCache INFO:\u001b[0m Stored 544 tokens in 0.004 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,383] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,383] LMCache INFO:\u001b[0m  - Total active allocations: 108 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,384] LMCache INFO:\u001b[0m  - Total allocated size: 1377.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,384] LMCache INFO:\u001b[0m  - Total free size: 29343.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:44094 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-25 09:45:04,493] LMCache INFO:\u001b[0m Stored 544 tokens in 0.009 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,537] LMCache INFO:\u001b[0m Stored 544 tokens in 0.009 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,580] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,628] LMCache INFO:\u001b[0m Stored 544 tokens in 0.004 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,675] LMCache INFO:\u001b[0m Stored 544 tokens in 0.004 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,722] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 3/12 retained keys (3 L1, 0 L2) in 0.6 ms (external_request_id=15-a7fddf75, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:04,725] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:05,004] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 7/12 retained keys (7 L1, 0 L2) in 0.6 ms (external_request_id=16-8d6efd7b, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:05,007] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 3/12 retained keys (3 L1, 0 L2) in 0.6 ms (external_request_id=17-872e509f, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,089] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 3/12 retained keys (3 L1, 0 L2) in 0.6 ms (external_request_id=18-bfd9ac99, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,156] LMCache INFO:\u001b[0m Stored 2176 tokens in 0.007 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,218] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 7/12 retained keys (7 L1, 0 L2) in 0.5 ms (external_request_id=19-8e760ecd, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,225] LMCache INFO:\u001b[0m Retrieved 3264 tokens in 0.006 seconds \u001b[3m(lmcache_driven_transfer.py:1427:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,412] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,461] LMCache INFO:\u001b[0m Stored 544 tokens in 0.008 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,504] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,554] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,603] LMCache INFO:\u001b[0m Stored 544 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,651] LMCache INFO:\u001b[0m Stored 544 tokens in 0.004 seconds \u001b[3m(lmcache_driven_transfer.py:1218:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,762] LMCache INFO:\u001b[0m Prefetch request completed (L1+L2): 7/12 retained keys (7 L1, 0 L2) in 0.4 ms (external_request_id=21-bedde893, prefetch_request_id=-1) \u001b[3m(storage_manager.py:744:lmcache.v1.distributed.storage_manager)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:06,769] LMCache INFO:\u001b[0m Retrieved 3264 tokens in 0.005 seconds \u001b[3m(lmcache_driven_transfer.py:1427:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)\u001b[0m\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-25 09:45:07,055] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,055] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,055] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,436] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,436] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,436] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,436] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,865] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,865] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,865] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,865] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,868] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7f26baa19d90 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:07,868] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7f26baa19d90 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:10,853] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-25 09:45:10,853] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [1542812]\n"
+E         }
+E       assert ["[T3 t22 AC]...', 'yellow')"] == []
+E         
+E         Left contains one more item: "[T3 t22 AC] t22-AC: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='yellow, yellow' baseline='green, yellow' expected_probe=('green', 'yellow')"
+E         Use -v to get more diff
+
+test_isolated_paths.py:64: AssertionError
+____________________ test_t0_collision_pressure[qwen3.5-2b] ____________________
+
+harness = <harness.MPHarness object at 0x7f5b24e12720>
+
+    def test_t0_collision_pressure(harness):
+        """T0.2 + T0.7: N distinct same-shape images, with storage conservation.
+    
+        T0.2 is the regression for the 16-bit mm_hash truncation (issue #3301):
+        with 16-bit identity, ~300 distinct images give ~50% collision
+        probability; any collision shows up here as a hit count above the
+        text-prefix steady state.
+    
+        T0.7 audits the STORE side of the same traffic: every token the lookup
+        missed must be store-requested AND land as resident chunk keys in the
+        local CPU backend (under-storage = silently dropped KV), and the full-hit
+        replay in pass 2 must store ~nothing new (over-storage = unstable keys or
+        a lookup/store disagreement) while never losing resident entries.
+        """
+        requests = pressure_requests(pressure_n())
+        n = len(requests)
+        decode_budget = sum(effective_max_tokens(harness.spec, r) for r in requests)
+    
+        stored_0 = harness.stored_tokens_total()
+        resident_0 = harness.storage()
+        pass1 = [harness.run(r) for r in requests]
+    
+        assert pass1[0].lookup_hits == 0, "fresh case salt must not hit anything"
+        steady = pass1[1].lookup_hits
+        # The steady state is the shared text prefix only, never into the image.
+        assert steady <= pass1[1].lookup_tokens - harness.image_span_margin
+        for i, res in enumerate(pass1[1:], start=1):
+            same_identifier = [
+                j
+                for j in range(i)
+                if pass1[j].identifiers and pass1[j].identifiers == res.identifiers
+            ]
+            assert res.lookup_hits == steady, (
+                f"pressure request {i}: hit {res.lookup_hits} tokens, steady "
+                f"state is {steady} -- cache-key anomaly (above steady = false "
+                f"hit on another image; below = lookup misbehavior). "
+                f"identifiers={res.identifiers} "
+                f"earlier requests with identical identifiers: {same_identifier}"
+            )
+    
+        # T0.7 pass-1 conservation: missed tokens -> store requests -> resident
+        # keys. Tolerances: chunk alignment (one partial chunk per request) and
+        # the decode tokens vLLM may also hand over for storage.
+        stored_1 = harness.stored_tokens_total()
+        resident_1 = harness.storage()
+        missed = sum(r.lookup_tokens - r.lookup_hits for r in pass1)
+        stored_delta = stored_1 - stored_0
+        assert stored_delta >= missed - n * harness.chunk, (
+            f"under-storage: lookup missed {missed} tokens but only "
+            f"{stored_delta} were store-requested -- LMCache is dropping KV"
+        )
+        assert stored_delta <= missed + decode_budget + n * harness.chunk, (
+            f"over-storage: {stored_delta} tokens store-requested for only "
+            f"{missed} missed (+{decode_budget} decode budget) -- duplicate "
+            f"stores or a lookup/store disagreement"
+        )
+        key_delta = resident_1.num_keys - resident_0.num_keys
+        # One resident object per chunk, or one per KV cache group per chunk for
+        # a hybrid model running with separate object groups.
+        expected_chunks = (missed // harness.chunk) * harness.objects_per_chunk
+        chunk_slack = n * harness.objects_per_chunk
+        assert key_delta >= expected_chunks - chunk_slack, (
+            f"resident-key deficit: expected ~{expected_chunks} new chunk keys, "
+            f"found {key_delta} -- store-requested KV never became resident "
+            f"(allocation failure or silent drop)"
+        )
+        assert key_delta <= expected_chunks + 2 * chunk_slack, (
+            f"resident-key surplus: expected ~{expected_chunks} new chunk keys, "
+            f"found {key_delta} -- unstable keys are storing duplicates"
+        )
+        assert resident_1.total_bytes > resident_0.total_bytes
+    
+        # Pass 2: every image repeats, must fully hit and reproduce its output.
+        for req, first in zip(requests, pass1, strict=True):
+            second = harness.run(req)
+>           harness.check_replay_text(req, first.text, second.text, "T0.2 replay")
+
+test_mm_acceptance.py:147: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <harness.MPHarness object at 0x7f5b24e12720>
+request = MMRequest(key='t02-5', salt='t02', question='What is the dominant color of this image? Answer with exactly one word.',...=('yellow',), max_tokens=8, needs_baseline=False, video_indices=(), ignore_eos=False, audio_indices=(), media_order=())
+reference_text = 'yellow', text = 'white', where = 'T0.2 replay'
+
+    def check_replay_text(
+        self, request: MMRequest, reference_text: str, text: str, where: str
+    ) -> None:
+        """Verify a hit-path replay against its own miss-path output.
+    
+        The miss pass (KV computed) and the hit pass (KV loaded from
+        LMCache) are different numeric regimes, so byte equality is expected
+        but not guaranteed; a verbose answer style (GLM preambles) gives the
+        regime noise many tokens to flip. Policy: exact match passes; a
+        mismatch passes with a warning when the extracted final answers
+        match (non-empty) or the semantic probe passes; otherwise the replay
+        fails hard — KV corruption or contamination flips the answer itself,
+        not just the phrasing.
+    
+        Args:
+            request: The request replayed.
+            reference_text: The miss-path (first pass) generated text.
+            text: The hit-path (replay) generated text.
+            where: Human-readable context for failure messages.
+    
+        Raises:
+            AssertionError: On divergence not rescued by an extracted-answer
+                match or the semantic probe.
+        """
+        if text == reference_text:
+            return
+        extracted = self.extracted_answer(text)
+        if extracted and extracted == self.extracted_answer(reference_text):
+            warnings.warn(
+                f"[{where}] {request.key}: hit-path text diverged from "
+                f"miss-path but extracted answers match ({extracted!r}); "
+                f"got {text!r}, reference {reference_text!r}",
+                stacklevel=2,
+            )
+            return
+        if request.expected_probe and self.probe_ok(request, text):
+            warnings.warn(
+                f"[{where}] {request.key}: hit-path text diverged from "
+                f"miss-path but semantic probe passed (got {text!r}, "
+                f"reference {reference_text!r})",
+                stacklevel=2,
+            )
+            return
+>       raise AssertionError(
+            f"[{where}] {request.key}: hit-path output diverged from its "
+            f"miss-path reference AND no rescue (extracted answer/probe) "
+            f"applies. got={text!r} reference={reference_text!r} "
+            f"expected_probe={request.expected_probe}"
+        )
+E       AssertionError: [T0.2 replay] t02-5: hit-path output diverged from its miss-path reference AND no rescue (extracted answer/probe) applies. got='white' reference='yellow' expected_probe=('yellow',)
+
+harness.py:1427: AssertionError
+----------------------------- Captured stdout call -----------------------------
+WARNING 08-25 09:48:38 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:38 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:39 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:39 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:39 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:40 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:40 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:41 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:41 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:41 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:42 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:42 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:43 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:43 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:43 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:44 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:44 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:45 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:45 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:46 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:46 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:46 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:47 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:47 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:48 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:48 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:48 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:49 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:49 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:50 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:50 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:50 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:51 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:51 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:52 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:52 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:52 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:53 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:53 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:54 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:54 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:54 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:55 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:55 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:56 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:56 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:56 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:57 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:58 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:58 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:58 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:59 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:59 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:48:59 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:00 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:00 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:01 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:01 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:01 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:02 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:02 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:03 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:03 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:03 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:04 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+------------------------------ Captured log call -------------------------------
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+_________________ test_t0_chunk_boundary_phases[qwen3.5-2b-3] __________________
+
+harness = <harness.MPHarness object at 0x7f5b24e12720>, phase = 3
+
+    @pytest.mark.parametrize("phase", range(BOUNDARY_PHASES))
+    def test_t0_chunk_boundary_phases(harness, phase):
+        """T0.4: correctness holds for every span-vs-chunk alignment phase."""
+        req_a = CATALOG[f"t04-p{phase}-A"]
+        req_b = CATALOG[f"t04-p{phase}-B"]
+    
+        a1 = harness.run(req_a)
+        harness.check_output(req_a, a1, f"T0.4 phase {phase} first A")
+        b1 = harness.run(req_b)
+        harness.check_output(req_b, b1, f"T0.4 phase {phase} different image B")
+        a2 = harness.run(req_a)
+>       harness.check_output(req_a, a2, f"T0.4 phase {phase} repeat A")
+
+test_mm_acceptance.py:245: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+harness.py:1326: in check_output
+    self.check_text(request, result.text, where)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <harness.MPHarness object at 0x7f5b24e12720>
+request = MMRequest(key='t04-p3-A', salt='t04 phase 3 pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pa...be=('green',), max_tokens=8, needs_baseline=True, video_indices=(), ignore_eos=False, audio_indices=(), media_order=())
+text = 'white', where = 'T0.4 phase 3 repeat A'
+
+    def check_text(self, request: MMRequest, text: str, where: str) -> None:
+        """Verify one generated text against baseline and semantic probe.
+    
+        Policy: exact match against the plain-vLLM baseline is required. If
+        the exact match fails but the semantic probe still passes, the step
+        passes with a warning (GPU nondeterminism); if the probe also fails,
+        this is cross-image contamination and the step fails hard.
+    
+        Args:
+            request: The request that produced ``text``.
+            text: The generated text to verify.
+            where: Human-readable context for failure messages.
+    
+        Raises:
+            AssertionError: On baseline mismatch without probe rescue, or on
+                probe failure.
+        """
+        probe_ok = self.probe_ok(request, text)
+        if request.key in self.baselines:
+            baseline = self.baselines[request.key]
+            if text == baseline:
+                return
+            if probe_ok:
+                warnings.warn(
+                    f"[{where}] {request.key}: exact baseline mismatch but "
+                    f"semantic probe passed (got {text!r}, "
+                    f"baseline {baseline!r})",
+                    stacklevel=2,
+                )
+                return
+>           raise AssertionError(
+                f"[{where}] {request.key}: output diverged from baseline AND "
+                f"semantic probe failed -- cross-image contamination. "
+                f"got={text!r} baseline={baseline!r} "
+                f"expected_probe={request.expected_probe}"
+            )
+E           AssertionError: [T0.4 phase 3 repeat A] t04-p3-A: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='white' baseline='green' expected_probe=('green',)
+
+harness.py:1358: AssertionError
+----------------------------- Captured stdout call -----------------------------
+WARNING 08-25 09:49:09 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:10 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:10 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+------------------------------ Captured log call -------------------------------
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+_________________ test_t0_chunk_boundary_phases[qwen3.5-2b-7] __________________
+
+harness = <harness.MPHarness object at 0x7f5b24e12720>, phase = 7
+
+    @pytest.mark.parametrize("phase", range(BOUNDARY_PHASES))
+    def test_t0_chunk_boundary_phases(harness, phase):
+        """T0.4: correctness holds for every span-vs-chunk alignment phase."""
+        req_a = CATALOG[f"t04-p{phase}-A"]
+        req_b = CATALOG[f"t04-p{phase}-B"]
+    
+        a1 = harness.run(req_a)
+        harness.check_output(req_a, a1, f"T0.4 phase {phase} first A")
+        b1 = harness.run(req_b)
+        harness.check_output(req_b, b1, f"T0.4 phase {phase} different image B")
+        a2 = harness.run(req_a)
+>       harness.check_output(req_a, a2, f"T0.4 phase {phase} repeat A")
+
+test_mm_acceptance.py:245: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+harness.py:1326: in check_output
+    self.check_text(request, result.text, where)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <harness.MPHarness object at 0x7f5b24e12720>
+request = MMRequest(key='t04-p7-A', salt='t04 phase 7 pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pad pa...be=('green',), max_tokens=8, needs_baseline=True, video_indices=(), ignore_eos=False, audio_indices=(), media_order=())
+text = 'black', where = 'T0.4 phase 7 repeat A'
+
+    def check_text(self, request: MMRequest, text: str, where: str) -> None:
+        """Verify one generated text against baseline and semantic probe.
+    
+        Policy: exact match against the plain-vLLM baseline is required. If
+        the exact match fails but the semantic probe still passes, the step
+        passes with a warning (GPU nondeterminism); if the probe also fails,
+        this is cross-image contamination and the step fails hard.
+    
+        Args:
+            request: The request that produced ``text``.
+            text: The generated text to verify.
+            where: Human-readable context for failure messages.
+    
+        Raises:
+            AssertionError: On baseline mismatch without probe rescue, or on
+                probe failure.
+        """
+        probe_ok = self.probe_ok(request, text)
+        if request.key in self.baselines:
+            baseline = self.baselines[request.key]
+            if text == baseline:
+                return
+            if probe_ok:
+                warnings.warn(
+                    f"[{where}] {request.key}: exact baseline mismatch but "
+                    f"semantic probe passed (got {text!r}, "
+                    f"baseline {baseline!r})",
+                    stacklevel=2,
+                )
+                return
+>           raise AssertionError(
+                f"[{where}] {request.key}: output diverged from baseline AND "
+                f"semantic probe failed -- cross-image contamination. "
+                f"got={text!r} baseline={baseline!r} "
+                f"expected_probe={request.expected_probe}"
+            )
+E           AssertionError: [T0.4 phase 7 repeat A] t04-p7-A: output diverged from baseline AND semantic probe failed -- cross-image contamination. got='black' baseline='green' expected_probe=('green',)
+
+harness.py:1358: AssertionError
+----------------------------- Captured stdout call -----------------------------
+WARNING 08-25 09:49:13 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:13 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING 08-25 09:49:14 [block_pool.py:774] Failed to reset prefix cache because some blocks (10) are not freed yet
+------------------------------ Captured log call -------------------------------
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+WARNING  vllm.v1.core.block_pool:block_pool.py:774 Failed to reset prefix cache because some blocks (10) are not freed yet
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 59 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test_isolated_paths.py::test_isolated_scenario[mp_connector-qwen3.5-2b]
+FAILED test_mm_acceptance.py::test_t0_collision_pressure[qwen3.5-2b] - Assert...
+FAILED test_mm_acceptance.py::test_t0_chunk_boundary_phases[qwen3.5-2b-3] - A...
+FAILED test_mm_acceptance.py::test_t0_chunk_boundary_phases[qwen3.5-2b-7] - A...
+4 failed, 23 passed, 8 deselected, 73 warnings in 786.40s (0:13:06)
+[rank0]:[W825 09:49:28.159005770 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W825 09:49:28.292291004 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

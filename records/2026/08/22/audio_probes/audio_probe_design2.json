@@ -1,0 +1,141 @@
+{
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "families": {
+    "beeps_gap_600ms": {
+      "question": "How many separate beeps are in this audio? Reply with just the digit.",
+      "rows": [
+        {
+          "expected": "1",
+          "answer": "1",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 66,
+          "seconds": 1.15
+        },
+        {
+          "expected": "2",
+          "answer": "3",
+          "correct": false,
+          "stable": true,
+          "prompt_tokens": 88,
+          "seconds": 2.05
+        },
+        {
+          "expected": "3",
+          "answer": "3",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 111,
+          "seconds": 2.95
+        },
+        {
+          "expected": "4",
+          "answer": "4",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 133,
+          "seconds": 3.85
+        },
+        {
+          "expected": "5",
+          "answer": "4",
+          "correct": false,
+          "stable": true,
+          "prompt_tokens": 156,
+          "seconds": 4.75
+        }
+      ],
+      "all_correct": false,
+      "all_stable": true,
+      "all_distinct": false
+    },
+    "sound_kind": {
+      "question": "Is this audio a musical tone, static noise, or silence? Reply with one word: tone, noise, or silence.",
+      "rows": [
+        {
+          "expected": "tone",
+          "answer": "tone",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 86,
+          "seconds": 1.6
+        },
+        {
+          "expected": "noise",
+          "answer": "noise",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 86,
+          "seconds": 1.6
+        },
+        {
+          "expected": "silence",
+          "answer": "silence",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 86,
+          "seconds": 1.6
+        }
+      ],
+      "all_correct": true,
+      "all_stable": true,
+      "all_distinct": true
+    },
+    "pitch_wide": {
+      "question": "Is the pitch of this tone very low, medium, or very high? Reply with one word: low, medium, or high.",
+      "rows": [
+        {
+          "expected": "low",
+          "answer": "low",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 90,
+          "seconds": 1.7
+        },
+        {
+          "expected": "medium",
+          "answer": "low",
+          "correct": false,
+          "stable": true,
+          "prompt_tokens": 90,
+          "seconds": 1.7
+        },
+        {
+          "expected": "high",
+          "answer": "high",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 90,
+          "seconds": 1.7
+        }
+      ],
+      "all_correct": false,
+      "all_stable": true,
+      "all_distinct": false
+    },
+    "pitch_direction": {
+      "question": "Does the pitch go up or down between the two tones? Reply with one word: up or down.",
+      "rows": [
+        {
+          "expected": "up",
+          "answer": "up",
+          "correct": true,
+          "stable": true,
+          "prompt_tokens": 83,
+          "seconds": 1.65
+        },
+        {
+          "expected": "down",
+          "answer": "up",
+          "correct": false,
+          "stable": true,
+          "prompt_tokens": 83,
+          "seconds": 1.65
+        }
+      ],
+      "all_correct": false,
+      "all_stable": true,
+      "all_distinct": false
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "geometry": {
+    "num_blocks": 1035,
+    "groups": [
+      {
+        "spec": "MambaSpec",
+        "layers": 16,
+        "block_size": 8192,
+        "page_size_bytes": 3211264,
+        "sliding_window": null
+      },
+      {
+        "spec": "MambaSpec",
+        "layers": 16,
+        "block_size": 8192,
+        "page_size_bytes": 3211264,
+        "sliding_window": null
+      },
+      {
+        "spec": "MambaSpec",
+        "layers": 16,
+        "block_size": 8192,
+        "page_size_bytes": 3211264,
+        "sliding_window": null
+      },
+      {
+        "spec": "FullAttentionSpec",
+        "layers": 16,
+        "block_size": 784,
+        "page_size_bytes": 3211264,
+        "sliding_window": null
+      }
+    ]
+  },
+  "probes": {
+    "image-0": {
+      "want": "red",
+      "text": "Red",
+      "hit": true
+    },
+    "image-1": {
+      "want": "green",
+      "text": "Green",
+      "hit": true
+    },
+    "image-2": {
+      "want": "blue",
+      "text": "Blue",
+      "hit": true
+    },
+    "image-3": {
+      "want": "yellow",
+      "text": "Yellow",
+      "hit": true
+    },
+    "image-4": {
+      "want": "purple",
+      "text": "Purple",
+      "hit": true
+    },
+    "image-5": {
+      "want": "orange",
+      "text": "Orange",
+      "hit": true
+    },
+    "video-0": {
+      "want": "red",
+      "text": "Red",
+      "hit": true
+    },
+    "video-1": {
+      "want": "green",
+      "text": "Green",
+      "hit": true
+    },
+    "video-2": {
+      "want": "blue",
+      "text": "Blue",
+      "hit": true
+    },
+    "video-3": {
+      "want": "yellow",
+      "text": "Yellow",
+      "hit": true
+    },
+    "video-4": {
+      "want": "purple",
+      "text": "Purple",
+      "hit": true
+    },
+    "video-5": {
+      "want": "orange",
+      "text": "Orange",
+      "hit": true
+    }
+  },
+  "correct": 12,
+  "of": 12
+}

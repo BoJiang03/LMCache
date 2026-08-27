@@ -1,0 +1,10 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "vllm": "0.27.1",
+  "result": {
+    "ok": false,
+    "stage": "stage2_weight_shape",
+    "error": "AssertionError: Attempted to load weight (torch.Size([512])) into parameter (torch.Size([256]))",
+    "needed_per_layer_override": true
+  }
+}

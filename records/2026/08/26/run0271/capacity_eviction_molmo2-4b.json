@@ -1,0 +1,52 @@
+{
+  "failures": [
+    "no resident keys after the eviction traffic",
+    "traffic stored only ~0 bytes against a 67108864-byte cap -- eviction never exercised; raise EVICTION_N, or lower this model's capacity (the path default or ModelSpec.eviction_capacity_gb) toward one cache object"
+  ],
+  "metrics": {
+    "capacity_gb": 0.0625,
+    "pass1_hits": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "resident": {
+      "num_keys": 0,
+      "total_bytes": 0,
+      "capacity_bytes": 67108864,
+      "intended_bytes": 0
+    },
+    "server_log_tail": "(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:34,964] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:34,964] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48828 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,067] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,067] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,067] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,068] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48842 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,171] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,171] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,171] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,171] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48854 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[33;20m[2026-08-26 09:24:35,266] LMCache WARNING:\u001b[0m Failed to batched allocate 49 memory blocks of size 2359296 because no enough memory is available (short by 21 blocks) \u001b[3m(memory_management.py:1490:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,353] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,353] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,354] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,354] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48860 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,457] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,457] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,457] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,457] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48862 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,560] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,561] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,561] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,561] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48864 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,665] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,666] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,666] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,666] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48876 - \"GET /status HTTP/1.1\" 200 OK\n\u001b[32;20m[2026-08-26 09:24:35,770] LMCache INFO:\u001b[0m Checking memory allocator consistency \u001b[3m(tensor_memory_allocator.py:298:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,770] LMCache INFO:\u001b[0m  - Total active allocations: 0 \u001b[3m(tensor_memory_allocator.py:299:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,770] LMCache INFO:\u001b[0m  - Total allocated size: 0.000000 MB \u001b[3m(tensor_memory_allocator.py:300:lmcache.v1.memory_management)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,770] LMCache INFO:\u001b[0m  - Total free size: 64.000000 MB \u001b[3m(tensor_memory_allocator.py:307:lmcache.v1.memory_management)\u001b[0m\nINFO:     127.0.0.1:48886 - \"GET /status HTTP/1.1\" 200 OK\nINFO:     Shutting down\nINFO:     Waiting for application shutdown.\n\u001b[32;20m[2026-08-26 09:24:35,936] LMCache INFO:\u001b[0m Shutting down LMCache HTTP server... \u001b[3m(http_server.py:168:__main__)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,937] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-continuous \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:35,937] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-continuous stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:36,337] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l2 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:36,337] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l2 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:36,338] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-usage-l1 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:36,338] LMCache INFO:\u001b[0m PeriodicThread lmcache-usage-l1 stopped during init_wait \u001b[3m(periodic_thread.py:298:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,359] LMCache INFO:\u001b[0m Stopping PeriodicThread: lmcache-mp-worker-reaper \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,360] LMCache INFO:\u001b[0m PeriodicThread lmcache-mp-worker-reaper loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,360] LMCache INFO:\u001b[0m Stopping PeriodicThread: DeviceHostFuncDispatcher \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,360] LMCache INFO:\u001b[0m PeriodicThread DeviceHostFuncDispatcher loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,380] LMCache INFO:\u001b[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7fa95b0efc20 \u001b[3m(periodic_thread.py:267:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:37,380] LMCache INFO:\u001b[0m PeriodicThread SessionManager-cleanup-thread-7fa95b0efc20 loop stopped \u001b[3m(periodic_thread.py:371:lmcache.v1.periodic_thread)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:39,054] LMCache INFO:\u001b[0m MPCacheServer closed \u001b[3m(server.py:126:lmcache.v1.multiprocess.server)\u001b[0m\n\u001b[32;20m[2026-08-26 09:24:39,055] LMCache INFO:\u001b[0m LMCache HTTP server stopped \u001b[3m(http_server.py:186:__main__)\u001b[0m\nINFO:     Application shutdown complete.\nINFO:     Finished server process [3849703]\n"
+  },
+  "scenario": "capacity_eviction",
+  "model": "molmo2-4b"
+}

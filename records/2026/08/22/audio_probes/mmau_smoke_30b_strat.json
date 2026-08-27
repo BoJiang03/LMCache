@@ -1,0 +1,522 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "n": 45,
+  "n_by_task": {
+    "music": 15,
+    "sound": 15,
+    "speech": 15
+  },
+  "n_by_choice_count": {
+    "4": 45
+  },
+  "parse_ratio": 1.0,
+  "accuracy": 0.6889,
+  "stable_ratio": 1.0,
+  "accuracy_by_task": {
+    "music": 0.4667,
+    "sound": 0.6,
+    "speech": 1.0
+  },
+  "prompt_tokens": {
+    "min": 172,
+    "max": 483,
+    "mean": 284.7
+  },
+  "rows": [
+    {
+      "qid": "2a2f9c14-e693-4efc-843e-20fa67d84340",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "C",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 185
+    },
+    {
+      "qid": "3fe64f3d-282c-4bc8-a753-68f8f6c35652",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 180
+    },
+    {
+      "qid": "62b58932-80b8-4c3b-8229-cf356ad7d059",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "C",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 409
+    },
+    {
+      "qid": "5f3fc487-26a8-4bfa-8e50-2a0550a8d50d",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "C",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 392
+    },
+    {
+      "qid": "72fb5481-73ae-409d-8e16-c94ac48d2ee4",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 184
+    },
+    {
+      "qid": "b857dd9a-7f5e-4f26-acfd-de2bc8cf4f06",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 457
+    },
+    {
+      "qid": "7a0376a4-111a-4bb4-b7d9-a453dd582b5e",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "B",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 371
+    },
+    {
+      "qid": "6aee68bf-6629-442b-981d-ae8195597c8e",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 182
+    },
+    {
+      "qid": "f820f11a-5395-4e1b-8261-e2b7fa81c1a5",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 428
+    },
+    {
+      "qid": "82c84931-2431-41ab-b217-f6844e72bc45",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "C",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 178
+    },
+    {
+      "qid": "9593f394-dcac-4d88-a37d-0468f8b0152c",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "qid": "0db9ce05-5204-483b-9318-b0e7735ddb78",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 281
+    },
+    {
+      "qid": "80513d09-21a1-41e9-9265-142efbed6a4e",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 425
+    },
+    {
+      "qid": "aeafb34d-6c51-4351-8b6e-16266b698fc0",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 184
+    },
+    {
+      "qid": "4452ab49-197b-4e61-8eb5-458999f0e914",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 443
+    },
+    {
+      "qid": "3f1c1b54-9f4f-430e-ba44-79c412dfac82",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 442
+    },
+    {
+      "qid": "51ff0fea-3c42-4ffc-a3f1-7c0c295228c5",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "qid": "56105b0b-057f-403a-b877-b4ac8f555037",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 475
+    },
+    {
+      "qid": "f0545a74-9d98-4efe-9bed-e293b0c6d215",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 194
+    },
+    {
+      "qid": "5ea5886d-e8d9-44bb-8707-8b0715964be3",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "C",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 178
+    },
+    {
+      "qid": "e7413501-4cda-4e0b-a56d-6b68a31c2f2e",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 366
+    },
+    {
+      "qid": "f0920d0d-791c-4c03-9f66-cffca5128aec",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 461
+    },
+    {
+      "qid": "a68348a7-68ea-4c79-800c-7c870eb15f0a",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "qid": "0bbc588e-8c88-4b0e-8b27-2dfa208acc02",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 251
+    },
+    {
+      "qid": "a92d62aa-ba19-428e-9d76-441355db5b20",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "C",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 449
+    },
+    {
+      "qid": "da2d42eb-b544-44dc-a507-0acf0bbb8d95",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 182
+    },
+    {
+      "qid": "aaedb051-562e-4edc-b261-dccd3f329110",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "C",
+      "parsed": "C",
+      "expected": "C",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 342
+    },
+    {
+      "qid": "0f7daed8-802a-499f-8336-8345b206fe2e",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 407
+    },
+    {
+      "qid": "676a6e29-5d80-4fef-b260-6a9cdfd51dd5",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 179
+    },
+    {
+      "qid": "520aea17-b159-4d22-ad68-978fcc152e27",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "D",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 172
+    },
+    {
+      "qid": "b6fd8b14-ea4e-4b8f-a045-0a93b29752e8",
+      "task": "music",
+      "difficulty": "hard",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "C",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 452
+    },
+    {
+      "qid": "a1a3d478-9a73-4f10-87b5-0e8199c1ac47",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "C",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 182
+    },
+    {
+      "qid": "99258b00-6754-41f4-94ae-6676d47b92b1",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 483
+    },
+    {
+      "qid": "2ac676ef-d536-4764-ab25-d856ed9cb035",
+      "task": "music",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "A",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 190
+    },
+    {
+      "qid": "0ea9b39c-178b-4704-886f-f745b6fa2f8c",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 180
+    },
+    {
+      "qid": "0fbc3dde-70c0-4352-a4ff-66551d9f2a43",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "B",
+      "parsed": "B",
+      "expected": "B",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 356
+    },
+    {
+      "qid": "2d849164-8a14-4986-b207-2fb0aa664d57",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "C",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 183
+    },
+    {
+      "qid": "3d9d2c50-6cb1-4a73-8b4f-2d205ef23d83",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "B",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 183
+    },
+    {
+      "qid": "a6571f36-993f-4c5f-8bd0-31610d787bed",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 214
+    },
+    {
+      "qid": "6e4953fb-1a8b-46ef-a7c8-fee3fe3b603e",
+      "task": "music",
+      "difficulty": "hard",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 367
+    },
+    {
+      "qid": "f8015f87-7178-4cd6-b43e-9b02b7654ec1",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "qid": "3ffe9ee1-8d66-4542-aab3-b40fbde3f157",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 202
+    },
+    {
+      "qid": "8d19063c-5251-4f16-9361-de98fdc8c43c",
+      "task": "music",
+      "difficulty": "easy",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 190
+    },
+    {
+      "qid": "2ed50dd0-e496-4df4-b5e1-a380f08320d3",
+      "task": "sound",
+      "difficulty": "medium",
+      "raw": "A",
+      "parsed": "A",
+      "expected": "A",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 180
+    },
+    {
+      "qid": "889e087d-9d50-4fc1-8769-465cae7140b6",
+      "task": "speech",
+      "difficulty": "medium",
+      "raw": "D",
+      "parsed": "D",
+      "expected": "D",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 327
+    }
+  ]
+}

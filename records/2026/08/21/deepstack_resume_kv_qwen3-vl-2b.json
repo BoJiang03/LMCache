@@ -1,0 +1,62 @@
+{
+ "normal_cut8": {
+  "prompt_tokens": 224,
+  "chunks": 14,
+  "keep_chunks": 8,
+  "replay_hits": 128,
+  "replay_tokens": 224,
+  "text_first": "red",
+  "text_replay": "red",
+  "text_equal": true,
+  "restored": 6,
+  "missing_after_replay": 0,
+  "max_rel_fro": 0.03270449424144494,
+  "mean_rel_fro": 0.022364838402166628,
+  "max_abs": 8.6875
+ },
+ "normal_cut5": {
+  "prompt_tokens": 224,
+  "chunks": 14,
+  "keep_chunks": 5,
+  "replay_hits": 80,
+  "replay_tokens": 224,
+  "text_first": "green",
+  "text_replay": "green",
+  "text_equal": true,
+  "restored": 9,
+  "missing_after_replay": 0,
+  "max_rel_fro": 0.04440055842476007,
+  "mean_rel_fro": 0.022952752915026638,
+  "max_abs": 19.75
+ },
+ "blind_cut8": {
+  "prompt_tokens": 224,
+  "chunks": 14,
+  "keep_chunks": 8,
+  "replay_hits": 128,
+  "replay_tokens": 224,
+  "text_first": "blue",
+  "text_replay": " blue",
+  "text_equal": false,
+  "restored": 6,
+  "missing_after_replay": 0,
+  "max_rel_fro": 0.6508375690552292,
+  "mean_rel_fro": 0.5486889934613699,
+  "max_abs": 130.34765625
+ },
+ "blind_cut5": {
+  "prompt_tokens": 224,
+  "chunks": 14,
+  "keep_chunks": 5,
+  "replay_hits": 80,
+  "replay_tokens": 224,
+  "text_first": "yellow",
+  "text_replay": "yellow",
+  "text_equal": true,
+  "restored": 9,
+  "missing_after_replay": 0,
+  "max_rel_fro": 0.6989980174397433,
+  "mean_rel_fro": 0.5961631481054578,
+  "max_abs": 146.71484375
+ }
+}

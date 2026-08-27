@@ -1,0 +1,105 @@
+{
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "mm_backend": "",
+  "sound_kind": {
+    "rows": [
+      {
+        "expected": "tone",
+        "answer": "tone",
+        "correct": true,
+        "stable": true,
+        "prompt_tokens": 86
+      },
+      {
+        "expected": "noise",
+        "answer": "noise",
+        "correct": true,
+        "stable": true,
+        "prompt_tokens": 86
+      },
+      {
+        "expected": "silence",
+        "answer": "silence",
+        "correct": true,
+        "stable": true,
+        "prompt_tokens": 86
+      }
+    ],
+    "all_correct": true,
+    "all_stable": true,
+    "all_distinct": true
+  },
+  "kind_pairs": {
+    "rows": [
+      {
+        "expected": "tone tone",
+        "answer": "Silence, static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "tone noise",
+        "answer": "Silence Static",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "tone silence",
+        "answer": "Silence [1] Silence [2]",
+        "correct": false,
+        "stable": false,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "noise tone",
+        "answer": "Static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "noise noise",
+        "answer": "Static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "noise silence",
+        "answer": "Static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "silence tone",
+        "answer": "Silence, Static",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "silence noise",
+        "answer": "Static noise",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      },
+      {
+        "expected": "silence silence",
+        "answer": "Silence / Silence",
+        "correct": false,
+        "stable": true,
+        "prompt_tokens": 148
+      }
+    ],
+    "all_correct": false,
+    "all_stable": false,
+    "all_distinct": false,
+    "n_distinct": 6,
+    "n_total": 9,
+    "n_correct": 0
+  }
+}

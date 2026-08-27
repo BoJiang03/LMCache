@@ -1,0 +1,69 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "mm_backend": "TORCH_SDPA",
+  "question": "Which of these best describes the audio: a steady musical tone, static noise, silence, repeated beeping, a low rumble, or a warbling tone? Reply with one word: tone, noise, silence, beeping, rumble, or warble.",
+  "rows": [
+    {
+      "expected": "tone",
+      "answer": "tone",
+      "normalized": "tone",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 96
+    },
+    {
+      "expected": "noise",
+      "answer": "noise",
+      "normalized": "noise",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 96
+    },
+    {
+      "expected": "silence",
+      "answer": "tone",
+      "normalized": "tone",
+      "correct": false,
+      "stable": true,
+      "prompt_tokens": 96
+    },
+    {
+      "expected": "beeping",
+      "answer": "beeping",
+      "normalized": "beeping",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 94
+    },
+    {
+      "expected": "rumble",
+      "answer": "rumble",
+      "normalized": "rumble",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 96
+    },
+    {
+      "expected": "warble",
+      "answer": "warble",
+      "normalized": "warble",
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 96
+    }
+  ],
+  "answer_counts": {
+    "tone": 2,
+    "noise": 1,
+    "beeping": 1,
+    "rumble": 1,
+    "warble": 1
+  },
+  "usable_palette": [
+    "noise",
+    "beeping",
+    "rumble",
+    "warble"
+  ],
+  "palette_size": 4
+}

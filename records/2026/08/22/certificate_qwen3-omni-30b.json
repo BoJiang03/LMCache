@@ -1,0 +1,123 @@
+{
+  "schema_version": 3,
+  "verdict": "SUPPORTED",
+  "verdict_meaning": "synthetic suite + MME parity green on the paths below",
+  "model_key": "qwen3-omni-30b",
+  "hf_id": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "commit": "8519c60c24d7647f2def12140954d1bc541806c3",
+  "generated_at": "2026-08-22T15:01:08.351964+00:00",
+  "scope": {
+    "deployment_paths": [
+      "LMCacheConnectorV1 (in-process, single GPU, TP=1)",
+      "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+    ],
+    "modalities": [
+      "audio",
+      "image"
+    ],
+    "chunk_size": 16,
+    "chunk_size_note": "LMCache chunk size",
+    "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+    "scheduling": [
+      "single-step and chunked prefill",
+      "concurrent batches",
+      "capacity eviction",
+      "preemption-driven recompute"
+    ]
+  },
+  "suite": {
+    "green": true,
+    "exit_code": 0,
+    "pressure_n": 64,
+    "tests": 31,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time": 953.069
+  },
+  "parity": {
+    "source": "recorded:/home/bo/LMCache-worktrees/multi_modal/records/2026/08/22/mmau_parity_full.json",
+    "report": {
+      "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+      "benchmark": "mmau",
+      "deployment_path": "in_process",
+      "num_questions": 1000,
+      "scores": {
+        "baseline": {
+          "total": 66.9,
+          "per_task": {
+            "music": 70.06,
+            "sound": 71.47,
+            "speech": 59.16
+          },
+          "n_by_task": {
+            "music": 334,
+            "sound": 333,
+            "speech": 333
+          }
+        },
+        "pass1_miss": {
+          "total": 66.9,
+          "per_task": {
+            "music": 70.06,
+            "sound": 71.47,
+            "speech": 59.16
+          },
+          "n_by_task": {
+            "music": 334,
+            "sound": 333,
+            "speech": 333
+          }
+        },
+        "pass2_hit": {
+          "total": 66.9,
+          "per_task": {
+            "music": 70.06,
+            "sound": 71.47,
+            "speech": 59.16
+          },
+          "n_by_task": {
+            "music": 334,
+            "sound": 333,
+            "speech": 333
+          }
+        }
+      },
+      "flips_pass1_vs_baseline": 0,
+      "flips_pass2_vs_pass1": 0,
+      "pass2_lookup_hit_ratio": 1.0,
+      "cache_granularity_tokens": 16,
+      "pass1_stored_tokens": 231584,
+      "pass2_lookup_hit_tokens": 233984,
+      "pass2_lookup_tokens": 233984,
+      "pass2_achievable_hit_tokens": 0,
+      "pass2_external_cached_tokens": 233240,
+      "pass2_local_cached_tokens": 0,
+      "baseline_answer_parse_ratio": 1.0,
+      "gate": {
+        "pass": true,
+        "max_flips": 5.0,
+        "score_delta_pass2_vs_pass1": 0.0,
+        "score_delta_pass1_vs_baseline": 0.0,
+        "baseline_answer_parse_ratio": 1.0,
+        "hit_criterion": "raw_hit_ratio",
+        "cache_granularity_tokens": 16,
+        "pass2_hit_coverage": 0.0,
+        "thresholds": {
+          "max_flip_fraction": 0.005,
+          "max_score_delta": 1.0,
+          "min_hit_ratio": 0.8,
+          "min_hit_coverage": 0.95,
+          "min_parse_ratio": 0.9
+        }
+      }
+    }
+  },
+  "known_not_covered": [
+    "tensor-parallel (TP>1) and pipeline-parallel deployments",
+    "remote / disk storage backends and cross-instance sharing",
+    "audio modality: the suite has no audio probes, so a model with an audio tower (Gemma 4 has one) is certified on its image/video paths only",
+    "allocator-level buffer accounting (tracked by the pin-count project)",
+    "MP path chunk-boundary phases and collision pressure (T0.4/T0.2 run on the in-process path; keys are transport-independent)"
+  ]
+}

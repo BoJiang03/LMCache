@@ -1,0 +1,99 @@
+{
+  "model": "allenai/Molmo2-4B",
+  "benchmark": "mme",
+  "deployment_path": "in_process",
+  "num_questions": 2374,
+  "scores": {
+    "baseline": {
+      "perception": 1441.38,
+      "cognition": 453.57,
+      "total": 1894.95,
+      "per_category": {
+        "code_reasoning": 127.5,
+        "artwork": 109.75,
+        "celebrity": 93.53,
+        "numerical_calculation": 115.0,
+        "text_translation": 67.5,
+        "count": 175.0,
+        "color": 173.33,
+        "commonsense_reasoning": 143.57,
+        "position": 150.0,
+        "OCR": 95.0,
+        "landmark": 137.0,
+        "scene": 153.25,
+        "existence": 195.0,
+        "posters": 159.52
+      }
+    },
+    "pass1_miss": {
+      "perception": 1442.38,
+      "cognition": 453.57,
+      "total": 1895.95,
+      "per_category": {
+        "code_reasoning": 127.5,
+        "artwork": 109.75,
+        "celebrity": 93.53,
+        "numerical_calculation": 115.0,
+        "text_translation": 67.5,
+        "count": 175.0,
+        "color": 173.33,
+        "commonsense_reasoning": 143.57,
+        "position": 150.0,
+        "OCR": 95.0,
+        "landmark": 138.0,
+        "scene": 153.25,
+        "existence": 195.0,
+        "posters": 159.52
+      }
+    },
+    "pass2_hit": {
+      "perception": 1441.63,
+      "cognition": 453.57,
+      "total": 1895.2,
+      "per_category": {
+        "code_reasoning": 127.5,
+        "artwork": 109.75,
+        "celebrity": 93.53,
+        "numerical_calculation": 115.0,
+        "text_translation": 67.5,
+        "count": 175.0,
+        "color": 173.33,
+        "commonsense_reasoning": 143.57,
+        "position": 150.0,
+        "OCR": 95.0,
+        "landmark": 137.25,
+        "scene": 153.25,
+        "existence": 195.0,
+        "posters": 159.52
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 2,
+  "flips_pass2_vs_pass1": 1,
+  "pass2_lookup_hit_ratio": 1.0,
+  "cache_granularity_tokens": 16,
+  "pass1_stored_tokens": 2133264,
+  "pass2_lookup_hit_tokens": 2142992,
+  "pass2_lookup_tokens": 2143008,
+  "pass2_achievable_hit_tokens": null,
+  "pass2_external_cached_tokens": 2152862,
+  "pass2_local_cached_tokens": 0,
+  "baseline_answer_parse_ratio": 1.0,
+  "gate": {
+    "pass": true,
+    "max_flips": 11.870000000000001,
+    "score_delta_pass2_vs_pass1": 0.75,
+    "score_delta_pass1_vs_baseline": 1.0,
+    "baseline_answer_parse_ratio": 1.0,
+    "hit_criterion": "raw_hit_ratio",
+    "cache_granularity_tokens": 16,
+    "pass2_hit_coverage": null,
+    "thresholds": {
+      "max_flip_fraction": 0.005,
+      "max_score_delta": 10.0,
+      "min_hit_ratio": 0.8,
+      "min_hit_coverage": 0.95,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

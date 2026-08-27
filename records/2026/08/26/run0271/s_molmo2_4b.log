@@ -1,0 +1,63 @@
+F........................                                                [100%]
+=================================== FAILURES ===================================
+_____________ test_isolated_scenario[capacity_eviction-molmo2-4b] ______________
+
+scenario = 'capacity_eviction', model_key = 'molmo2-4b'
+tmp_path = PosixPath('/tmp/mm27/molmo2-4b/pytest-of-bo/pytest-0/test_isolated_scenario_capacit0')
+
+    @pytest.mark.parametrize("scenario,model_key", _scenario_cases())
+    def test_isolated_scenario(scenario, model_key, tmp_path):
+        configure_environment()
+        out_json = tmp_path / f"{scenario}_{model_key}.json"
+        runner = pathlib.Path(__file__).parent / "isolated_cases.py"
+        proc = subprocess.run(
+            [sys.executable, str(runner), scenario, model_key, str(out_json)],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        if not out_json.exists():
+>           raise AssertionError(
+                f"{scenario}[{model_key}] crashed before reporting "
+                f"(exit {proc.returncode}):\nstdout tail: {proc.stdout[-2000:]}\n"
+                f"stderr tail: {proc.stderr[-2000:]}"
+            )
+E           AssertionError: capacity_eviction[molmo2-4b] crashed before reporting (exit 1):
+E           stdout tail: 
+E           stderr tail: ic_thread.py:298:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,136] LMCache INFO:[0m Stopping PeriodicThread: lmcache-usage-l2 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,137] LMCache INFO:[0m PeriodicThread lmcache-usage-l2 stopped during init_wait [3m(periodic_thread.py:298:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,137] LMCache INFO:[0m Stopping PeriodicThread: lmcache-usage-l1 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,138] LMCache INFO:[0m PeriodicThread lmcache-usage-l1 stopped during init_wait [3m(periodic_thread.py:298:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,739] LMCache INFO:[0m Stopping PeriodicThread: lmcache-mp-worker-reaper [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,740] LMCache INFO:[0m PeriodicThread lmcache-mp-worker-reaper loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,741] LMCache INFO:[0m Stopping PeriodicThread: DeviceHostFuncDispatcher [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,741] LMCache INFO:[0m PeriodicThread DeviceHostFuncDispatcher loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,742] LMCache INFO:[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7f22c1745550 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:04,742] LMCache INFO:[0m PeriodicThread SessionManager-cleanup-thread-7f22c1745550 loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+E           [32;20m[2026-08-26 09:09:05,728] LMCache INFO:[0m MPCacheServer closed [3m(server.py:126:lmcache.v1.multiprocess.server)[0m
+E           [32;20m[2026-08-26 09:09:05,729] LMCache INFO:[0m LMCache HTTP server stopped [3m(http_server.py:186:__main__)[0m
+E           INFO:     Application shutdown complete.
+
+test_isolated_paths.py:58: AssertionError
+=============================== warnings summary ===============================
+test_mm_acceptance.py: 59 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/opentelemetry/sdk/_logs/_internal/__init__.py:531: DeprecationWarning: `LoggingHandler` in `opentelemetry-sdk` is deprecated. Use the handler from `opentelemetry-instrumentation-logging` instead.
+    warnings.warn(
+
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+test_mm_acceptance.py::test_t0_cross_image_isolation_and_hit_equivalence[molmo2-4b]
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/transformers/modeling_rope_utils.py:1074: FutureWarning: `rope_config_validation` is deprecated and has been removed. Its functionality has been moved to RotaryEmbeddingConfigMixin.validate_rope method. PreTrainedConfig inherits this class, so please call self.validate_rope() instead. Also, make sure to use the new rope_parameters syntax. You can call self.standardize_rope_params() in the meantime.
+    warnings.warn(
+
+test_mm_acceptance.py: 14 warnings
+  /home/bo/venvs/vllm-mm/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test_isolated_paths.py::test_isolated_scenario[capacity_eviction-molmo2-4b]
+1 failed, 24 passed, 6 deselected, 76 warnings in 646.88s (0:10:46)
+[rank0]:[W826 09:17:55.439082338 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W826 09:17:56.597761769 CudaIPCTypes.cpp:16] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]

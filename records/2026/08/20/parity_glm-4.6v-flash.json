@@ -1,0 +1,86 @@
+{
+  "model": "zai-org/GLM-4.6V-Flash",
+  "num_questions": 2374,
+  "scores": {
+    "baseline": {
+      "perception": 1399.91,
+      "cognition": 520.0,
+      "total": 1919.91,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 126.5,
+        "celebrity": 139.71,
+        "numerical_calculation": 87.5,
+        "text_translation": 152.5,
+        "count": 176.67,
+        "color": 138.33,
+        "commonsense_reasoning": 125.0,
+        "position": 131.67,
+        "OCR": 42.5,
+        "landmark": 153.0,
+        "scene": 157.75,
+        "existence": 195.0,
+        "posters": 138.78
+      }
+    },
+    "pass1_miss": {
+      "perception": 1396.2,
+      "cognition": 529.64,
+      "total": 1925.84,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 125.75,
+        "celebrity": 140.59,
+        "numerical_calculation": 87.5,
+        "text_translation": 160.0,
+        "count": 178.33,
+        "color": 138.33,
+        "commonsense_reasoning": 127.14,
+        "position": 131.67,
+        "OCR": 42.5,
+        "landmark": 153.0,
+        "scene": 156.0,
+        "existence": 195.0,
+        "posters": 135.03
+      }
+    },
+    "pass2_hit": {
+      "perception": 1409.86,
+      "cognition": 514.64,
+      "total": 1924.5,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 125.75,
+        "celebrity": 140.59,
+        "numerical_calculation": 87.5,
+        "text_translation": 145.0,
+        "count": 178.33,
+        "color": 138.33,
+        "commonsense_reasoning": 127.14,
+        "position": 131.67,
+        "OCR": 50.0,
+        "landmark": 154.5,
+        "scene": 156.0,
+        "existence": 200.0,
+        "posters": 134.69
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 27,
+  "flips_pass2_vs_pass1": 17,
+  "pass2_lookup_hit_ratio": 1.0,
+  "baseline_answer_parse_ratio": 0.9208,
+  "gate": {
+    "pass": false,
+    "max_flips": 11.870000000000001,
+    "score_delta_pass2_vs_pass1": 1.3399999999999181,
+    "score_delta_pass1_vs_baseline": 5.929999999999836,
+    "baseline_answer_parse_ratio": 0.9208,
+    "thresholds": {
+      "max_flip_fraction": 0.005,
+      "max_score_delta": 10.0,
+      "min_hit_ratio": 0.8,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

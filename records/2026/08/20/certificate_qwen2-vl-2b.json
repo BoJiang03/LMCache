@@ -1,0 +1,132 @@
+{
+  "schema_version": 2,
+  "verdict": "SUPPORTED",
+  "verdict_meaning": "synthetic suite + MME parity green on the paths below",
+  "model_key": "qwen2-vl-2b",
+  "hf_id": "Qwen/Qwen2-VL-2B-Instruct",
+  "commit": "6dc6ce0c98ec129036d40dd54524e596eb7e65f8",
+  "generated_at": "2026-08-20T10:55:57.340965+00:00",
+  "scope": {
+    "deployment_paths": [
+      "LMCacheConnectorV1 (in-process, single GPU, TP=1)",
+      "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+    ],
+    "modalities": [
+      "image",
+      "video"
+    ],
+    "chunk_size": 16,
+    "backend": "LocalCPUBackend (in-process) / MP cache server L1",
+    "scheduling": [
+      "single-step and chunked prefill",
+      "concurrent batches",
+      "capacity eviction",
+      "preemption-driven recompute"
+    ]
+  },
+  "suite": {
+    "green": true,
+    "exit_code": 0,
+    "pressure_n": 64,
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time": 833.534
+  },
+  "parity": {
+    "source": "recorded:/home/bo/LMCache-worktrees/multi_modal/records/2026/08/19/mme_full_qwen2-vl-2b.json",
+    "report": {
+      "model": "Qwen/Qwen2-VL-2B-Instruct",
+      "num_questions": 2374,
+      "scores": {
+        "baseline": {
+          "perception": 1528.56,
+          "cognition": 437.5,
+          "total": 1966.06,
+          "per_category": {
+            "code_reasoning": 85.0,
+            "artwork": 140.75,
+            "celebrity": 142.94,
+            "numerical_calculation": 65.0,
+            "text_translation": 177.5,
+            "count": 140.0,
+            "color": 180.0,
+            "commonsense_reasoning": 110.0,
+            "position": 148.33,
+            "OCR": 80.0,
+            "landmark": 175.75,
+            "scene": 156.5,
+            "existence": 200.0,
+            "posters": 164.29
+          }
+        },
+        "pass1_miss": {
+          "perception": 1528.56,
+          "cognition": 437.5,
+          "total": 1966.06,
+          "per_category": {
+            "code_reasoning": 85.0,
+            "artwork": 140.75,
+            "celebrity": 142.94,
+            "numerical_calculation": 65.0,
+            "text_translation": 177.5,
+            "count": 140.0,
+            "color": 180.0,
+            "commonsense_reasoning": 110.0,
+            "position": 148.33,
+            "OCR": 80.0,
+            "landmark": 175.75,
+            "scene": 156.5,
+            "existence": 200.0,
+            "posters": 164.29
+          }
+        },
+        "pass2_hit": {
+          "perception": 1528.56,
+          "cognition": 437.5,
+          "total": 1966.06,
+          "per_category": {
+            "code_reasoning": 85.0,
+            "artwork": 140.75,
+            "celebrity": 142.94,
+            "numerical_calculation": 65.0,
+            "text_translation": 177.5,
+            "count": 140.0,
+            "color": 180.0,
+            "commonsense_reasoning": 110.0,
+            "position": 148.33,
+            "OCR": 80.0,
+            "landmark": 175.75,
+            "scene": 156.5,
+            "existence": 200.0,
+            "posters": 164.29
+          }
+        }
+      },
+      "flips_pass1_vs_baseline": 0,
+      "flips_pass2_vs_pass1": 0,
+      "pass2_lookup_hit_ratio": 1.0,
+      "gate": {
+        "pass": true,
+        "max_flips": 11.870000000000001,
+        "score_delta_pass2_vs_pass1": 0.0,
+        "score_delta_pass1_vs_baseline": 0.0,
+        "baseline_answer_parse_ratio": 1.0,
+        "thresholds": {
+          "max_flip_fraction": 0.005,
+          "max_score_delta": 10.0,
+          "min_hit_ratio": 0.8,
+          "min_parse_ratio": 0.9
+        }
+      }
+    }
+  },
+  "known_not_covered": [
+    "tensor-parallel (TP>1) and pipeline-parallel deployments",
+    "remote / disk storage backends and cross-instance sharing",
+    "audio modality (no audio model registered yet)",
+    "MP path chunk-boundary phases and collision pressure (T0.4/T0.2 run on the in-process path; keys are transport-independent)",
+    "allocator-level buffer accounting (tracked by the pin-count project)"
+  ]
+}

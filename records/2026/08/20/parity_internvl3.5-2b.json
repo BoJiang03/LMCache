@@ -1,0 +1,86 @@
+{
+  "model": "OpenGVLab/InternVL3_5-2B-HF",
+  "num_questions": 2374,
+  "scores": {
+    "baseline": {
+      "perception": 1362.32,
+      "cognition": 334.29,
+      "total": 1696.61,
+      "per_category": {
+        "code_reasoning": 47.5,
+        "artwork": 133.25,
+        "celebrity": 120.59,
+        "numerical_calculation": 20.0,
+        "text_translation": 177.5,
+        "count": 125.0,
+        "color": 118.33,
+        "commonsense_reasoning": 89.29,
+        "position": 108.33,
+        "OCR": 95.0,
+        "landmark": 163.25,
+        "scene": 159.25,
+        "existence": 190.0,
+        "posters": 149.32
+      }
+    },
+    "pass1_miss": {
+      "perception": 1362.32,
+      "cognition": 334.29,
+      "total": 1696.61,
+      "per_category": {
+        "code_reasoning": 47.5,
+        "artwork": 133.25,
+        "celebrity": 120.59,
+        "numerical_calculation": 20.0,
+        "text_translation": 177.5,
+        "count": 125.0,
+        "color": 118.33,
+        "commonsense_reasoning": 89.29,
+        "position": 108.33,
+        "OCR": 95.0,
+        "landmark": 163.25,
+        "scene": 159.25,
+        "existence": 190.0,
+        "posters": 149.32
+      }
+    },
+    "pass2_hit": {
+      "perception": 1362.32,
+      "cognition": 334.29,
+      "total": 1696.61,
+      "per_category": {
+        "code_reasoning": 47.5,
+        "artwork": 133.25,
+        "celebrity": 120.59,
+        "numerical_calculation": 20.0,
+        "text_translation": 177.5,
+        "count": 125.0,
+        "color": 118.33,
+        "commonsense_reasoning": 89.29,
+        "position": 108.33,
+        "OCR": 95.0,
+        "landmark": 163.25,
+        "scene": 159.25,
+        "existence": 190.0,
+        "posters": 149.32
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 0,
+  "flips_pass2_vs_pass1": 0,
+  "pass2_lookup_hit_ratio": 1.0,
+  "baseline_answer_parse_ratio": 0.9351,
+  "gate": {
+    "pass": true,
+    "max_flips": 11.870000000000001,
+    "score_delta_pass2_vs_pass1": 0.0,
+    "score_delta_pass1_vs_baseline": 0.0,
+    "baseline_answer_parse_ratio": 0.9351,
+    "thresholds": {
+      "max_flip_fraction": 0.005,
+      "max_score_delta": 10.0,
+      "min_hit_ratio": 0.8,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

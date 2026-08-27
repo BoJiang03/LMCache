@@ -1,0 +1,18 @@
+{
+  "failures": [],
+  "metrics": {
+    "t01": {
+      "prompt_tokens": 297,
+      "full_hit": 288,
+      "b_hit": 16
+    },
+    "conservation": {
+      "missed": 3211,
+      "stored": 3120,
+      "resident_keys": 195,
+      "resident_bytes": 115015680
+    }
+  },
+  "scenario": "mp_connector",
+  "model": "qwen2.5-vl-3b"
+}

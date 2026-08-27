@@ -1,0 +1,144 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "mm_backend": "TORCH_SDPA",
+  "question": "Which of these best describes the audio: a steady musical tone, static noise, repeated beeping, a low rumble, or a warbling tone? Reply with one word: tone, noise, beeping, rumble, or warble.",
+  "palette": [
+    "tone",
+    "noise",
+    "beeping",
+    "rumble",
+    "warble"
+  ],
+  "rows": [
+    {
+      "index": 0,
+      "expected": "tone",
+      "answer": "tone",
+      "normalized": "tone",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 1,
+      "expected": "noise",
+      "answer": "noise",
+      "normalized": "noise",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 2,
+      "expected": "beeping",
+      "answer": "beeping",
+      "normalized": "beeping",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 3,
+      "expected": "rumble",
+      "answer": "rumble",
+      "normalized": "rumble",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 4,
+      "expected": "warble",
+      "answer": "warble",
+      "normalized": "warble",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 5,
+      "expected": "tone",
+      "answer": "tone",
+      "normalized": "tone",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 6,
+      "expected": "noise",
+      "answer": "noise",
+      "normalized": "noise",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 7,
+      "expected": "beeping",
+      "answer": "beeping",
+      "normalized": "beeping",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 8,
+      "expected": "rumble",
+      "answer": "rumble",
+      "normalized": "rumble",
+      "probe_passes": true,
+      "correct": true,
+      "stable": false,
+      "prompt_tokens": 181
+    },
+    {
+      "index": 9,
+      "expected": "warble",
+      "answer": "warble",
+      "normalized": "warble",
+      "probe_passes": true,
+      "correct": true,
+      "stable": true,
+      "prompt_tokens": 181
+    }
+  ],
+  "all_probe_pass": true,
+  "all_stable": false,
+  "same_kind_agrees": {
+    "beeping": true,
+    "noise": true,
+    "rumble": true,
+    "tone": true,
+    "warble": true
+  },
+  "answers_per_kind": {
+    "beeping": [
+      "beeping"
+    ],
+    "noise": [
+      "noise"
+    ],
+    "rumble": [
+      "rumble"
+    ],
+    "tone": [
+      "tone"
+    ],
+    "warble": [
+      "warble"
+    ]
+  },
+  "cross_kind_collisions": {},
+  "prompt_tokens": [
+    181
+  ]
+}

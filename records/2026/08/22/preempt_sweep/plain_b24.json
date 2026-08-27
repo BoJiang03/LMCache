@@ -1,0 +1,24 @@
+{
+  "model": "Qwen/Qwen3.5-2B",
+  "block": 544,
+  "blocks": 24,
+  "budget": 550,
+  "texts": [
+    "red\nuser\nSession t11. Ignore the following filler text. pad ",
+    "green\nuser\nSession t11. Ignore the following filler text. pa",
+    "blue\nuser\nSession t11. Ignore the following filler text. pad",
+    "yellow\nuser\nSession t11. Ignore the following filler text. p",
+    "purple\nuser\nSession t11. Ignore the following filler text. p",
+    "orange\nuser\n\nuser\n\nuser\n\nuser\n\nuser\n\nuser\n\nuser\n\nuser\n\nuser\n"
+  ],
+  "prompt_tokens": [
+    3518,
+    3518,
+    3518,
+    3518,
+    3518,
+    3518
+  ],
+  "preemptions": 0,
+  "ok": true
+}

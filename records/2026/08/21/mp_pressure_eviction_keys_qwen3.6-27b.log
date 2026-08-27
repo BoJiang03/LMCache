@@ -1,0 +1,84 @@
+[KEYS] t02-0 tokens=4958 hits=0 missed=4958 blocks_expected=6 stored_tokens=4704 new_keys=12 total_keys=12 19.0s
+[KEYS] t02-1 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=20 0.6s
+[KEYS] t02-2 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=28 0.7s
+[KEYS] t02-3 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=36 3.3s
+[KEYS] t02-4 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=44 8.4s
+[KEYS] t02-5 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=52 7.2s
+[KEYS] t02-6 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=60 4.7s
+[KEYS] t02-7 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=68 1.8s
+[KEYS] t02-8 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=76 3.5s
+[KEYS] t02-9 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=84 7.0s
+[KEYS] t02-10 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=92 2.2s
+[KEYS] t02-11 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=100 7.3s
+[KEYS] t02-12 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=108 5.3s
+[KEYS] t02-13 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=116 3.5s
+[KEYS] t02-14 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=124 3.6s
+[KEYS] t02-15 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=132 0.6s
+[KEYS] t02-16 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=140 1.8s
+[KEYS] t02-17 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=148 1.3s
+[KEYS] t02-18 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=156 4.7s
+[KEYS] t02-19 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=164 7.6s
+[KEYS] t02-20 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=172 0.7s
+[KEYS] t02-21 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=180 7.0s
+[KEYS] t02-22 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=188 9.7s
+[KEYS] t02-23 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=196 1.0s
+[KEYS] t02-24 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=204 2.5s
+[KEYS] t02-25 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=212 6.2s
+[KEYS] t02-26 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=220 5.0s
+[KEYS] t02-27 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=228 1.3s
+[KEYS] t02-28 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=236 1.5s
+[KEYS] t02-29 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=244 4.4s
+[KEYS] t02-30 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=252 8.3s
+[KEYS] t02-31 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=260 1.7s
+[KEYS] t02-32 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=268 8.0s
+[KEYS] t02-33 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=276 3.3s
+[KEYS] t02-34 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=284 2.2s
+[KEYS] t02-35 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=292 4.7s
+[KEYS] t02-36 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=300 20.0s
+[KEYS] t02-37 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=308 9.2s
+[KEYS] t02-38 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=316 2.8s
+[KEYS] t02-39 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=324 4.9s
+[KEYS] t02-40 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=332 12.4s
+[KEYS] t02-41 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=340 1.1s
+[KEYS] t02-42 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=348 3.1s
+[KEYS] t02-43 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=356 10.1s
+[KEYS] t02-44 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=364 5.0s
+[KEYS] t02-45 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=372 8.9s
+[KEYS] t02-46 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=380 15.7s
+[KEYS] t02-47 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=388 4.3s
+[KEYS] t02-48 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=396 2.8s
+[KEYS] t02-49 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=404 1.5s
+[KEYS] t02-50 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=412 7.9s
+[KEYS] t02-51 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=420 11.2s
+[KEYS] t02-52 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=428 15.4s
+[KEYS] t02-53 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=436 6.6s
+[KEYS] t02-54 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=444 2.1s
+[KEYS] t02-55 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=452 8.1s
+[KEYS] t02-56 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=460 4.2s
+[KEYS] t02-57 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=468 3.0s
+[KEYS] t02-58 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=476 12.0s
+[KEYS] t02-59 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=484 5.0s
+[KEYS] t02-60 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=492 13.5s
+[KEYS] t02-61 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=500 10.5s
+[KEYS] t02-62 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=-92 total_keys=408 6.7s
+[KEYS] t02-63 tokens=4958 hits=1568 missed=3390 blocks_expected=4 stored_tokens=3136 new_keys=8 total_keys=416 12.5s
+[2026-08-21 11:59:14,555] LMCache INFO: Starting L1EvictionController... (eviction_controller.py:53:lmcache.v1.distributed.storage_controllers.eviction_controller)
+[2026-08-21 11:59:14,577] LMCache INFO: Starting L2EvictionController... (eviction_controller.py:250:lmcache.v1.distributed.storage_controllers.eviction_controller)
+[2026-08-21 11:59:17,758] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 30720 MB / 204800 MB (15.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:20,195] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 40960 MB / 204800 MB (20.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:22,543] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 51200 MB / 204800 MB (25.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:25,028] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 61440 MB / 204800 MB (30.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:28,317] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 71680 MB / 204800 MB (35.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:30,716] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 81920 MB / 204800 MB (40.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:33,317] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 92160 MB / 204800 MB (45.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:35,711] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 102400 MB / 204800 MB (50.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:38,134] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 112640 MB / 204800 MB (55.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:40,623] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 122880 MB / 204800 MB (60.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:43,901] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 133120 MB / 204800 MB (65.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:46,400] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 143360 MB / 204800 MB (70.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:48,855] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 153600 MB / 204800 MB (75.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:51,307] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 163840 MB / 204800 MB (80.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:53,847] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 174080 MB / 204800 MB (85.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:56,386] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 184320 MB / 204800 MB (90.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 11:59:59,482] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 194560 MB / 204800 MB (95.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)
+[2026-08-21 12:00:01,979] LMCache INFO: LazyMemoryAllocator: Expanded 10240 MB pinned memory, now total is 204800 MB / 204800 MB (100.0%) (lazy_memory_allocator.py:328:lmcache.v1.memory_allocators.lazy_memory_allocator)

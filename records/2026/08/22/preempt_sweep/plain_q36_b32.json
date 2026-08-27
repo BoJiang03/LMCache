@@ -1,0 +1,24 @@
+{
+  "model": "Qwen/Qwen3.6-27B",
+  "block": 784,
+  "blocks": 32,
+  "budget": 790,
+  "texts": [
+    "The user wants me to identify the dominant color of the prov",
+    "The user wants me to identify the dominant color of the prov",
+    "The user wants me to identify the dominant color of the prov",
+    "The user wants me to identify the dominant color of the prov",
+    "The user wants me to identify the dominant color of the prov",
+    "The user wants me to identify the dominant color of the prov"
+  ],
+  "prompt_tokens": [
+    4956,
+    4956,
+    4956,
+    4956,
+    4956,
+    4956
+  ],
+  "preemptions": 1,
+  "ok": true
+}

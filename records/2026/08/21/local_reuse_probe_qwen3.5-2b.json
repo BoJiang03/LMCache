@@ -1,0 +1,21 @@
+{
+ "config": "hybrid",
+ "model": "Qwen/Qwen3.5-2B",
+ "block_size": 544,
+ "first": {
+  "prompt_tokens": 852,
+  "num_cached_tokens": 0
+ },
+ "second_same_prompt": {
+  "prompt_tokens": 852,
+  "num_cached_tokens": 544
+ },
+ "third_same_prompt": {
+  "prompt_tokens": 852,
+  "num_cached_tokens": 544
+ },
+ "different_prompt": {
+  "prompt_tokens": 852,
+  "num_cached_tokens": 0
+ }
+}

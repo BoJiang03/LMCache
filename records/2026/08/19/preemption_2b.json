@@ -1,0 +1,13 @@
+{
+  "failures": [],
+  "metrics": {
+    "preemptions": 2,
+    "batch": {
+      "lookup_tokens": 2304,
+      "lookup_hits": 576,
+      "stored_delta": 1728
+    }
+  },
+  "scenario": "preemption",
+  "model": "qwen2-vl-2b"
+}

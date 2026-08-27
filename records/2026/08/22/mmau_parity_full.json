@@ -1,0 +1,75 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "benchmark": "mmau",
+  "deployment_path": "in_process",
+  "num_questions": 1000,
+  "scores": {
+    "baseline": {
+      "total": 66.9,
+      "per_task": {
+        "music": 70.06,
+        "sound": 71.47,
+        "speech": 59.16
+      },
+      "n_by_task": {
+        "music": 334,
+        "sound": 333,
+        "speech": 333
+      }
+    },
+    "pass1_miss": {
+      "total": 66.9,
+      "per_task": {
+        "music": 70.06,
+        "sound": 71.47,
+        "speech": 59.16
+      },
+      "n_by_task": {
+        "music": 334,
+        "sound": 333,
+        "speech": 333
+      }
+    },
+    "pass2_hit": {
+      "total": 66.9,
+      "per_task": {
+        "music": 70.06,
+        "sound": 71.47,
+        "speech": 59.16
+      },
+      "n_by_task": {
+        "music": 334,
+        "sound": 333,
+        "speech": 333
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 0,
+  "flips_pass2_vs_pass1": 0,
+  "pass2_lookup_hit_ratio": 1.0,
+  "cache_granularity_tokens": 16,
+  "pass1_stored_tokens": 231584,
+  "pass2_lookup_hit_tokens": 233984,
+  "pass2_lookup_tokens": 233984,
+  "pass2_achievable_hit_tokens": 0,
+  "pass2_external_cached_tokens": 233240,
+  "pass2_local_cached_tokens": 0,
+  "baseline_answer_parse_ratio": 1.0,
+  "gate": {
+    "pass": true,
+    "max_flips": 5.0,
+    "score_delta_pass2_vs_pass1": 0.0,
+    "score_delta_pass1_vs_baseline": 0.0,
+    "baseline_answer_parse_ratio": 1.0,
+    "hit_criterion": "raw_hit_ratio",
+    "cache_granularity_tokens": 16,
+    "pass2_hit_coverage": 0.0,
+    "thresholds": {
+      "max_flip_fraction": 0.005,
+      "max_score_delta": 1.0,
+      "min_hit_ratio": 0.8,
+      "min_hit_coverage": 0.95,
+      "min_parse_ratio": 0.9
+    }
+  }
+}

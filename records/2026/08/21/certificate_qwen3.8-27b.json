@@ -1,0 +1,146 @@
+{
+  "schema_version": 3,
+  "verdict": "SUPPORTED",
+  "verdict_meaning": "synthetic suite + MME parity green on the paths below",
+  "model_key": "qwen3.8-27b",
+  "hf_id": "Qwen/Qwen3.8-27B",
+  "commit": "da537bf029b2af12f4374fc839d88b4d8d84e52d",
+  "generated_at": "2026-08-22T02:04:49.559489+00:00",
+  "scope": {
+    "deployment_paths": [
+      "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+    ],
+    "modalities": [
+      "image",
+      "video"
+    ],
+    "chunk_size": 784,
+    "chunk_size_note": "vLLM unified block size (Mamba/GDN align mode)",
+    "backend": "MP cache server L1, separate object groups",
+    "scheduling": [
+      "chunked prefill (inherent: a scheduler step advances one unified block)",
+      "concurrent batches"
+    ]
+  },
+  "suite": {
+    "green": true,
+    "exit_code": 0,
+    "pressure_n": 64,
+    "tests": 26,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "time": 1207.633
+  },
+  "parity": {
+    "source": "fresh_run",
+    "report": {
+      "model": "Qwen/Qwen3.8-27B",
+      "deployment_path": "mp",
+      "num_questions": 2374,
+      "scores": {
+        "baseline": {
+          "perception": 1616.5,
+          "cognition": 653.57,
+          "total": 2270.07,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.0,
+            "celebrity": 131.76,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 158.57,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 132.25,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        },
+        "pass1_miss": {
+          "perception": 1615.62,
+          "cognition": 653.57,
+          "total": 2269.19,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.0,
+            "celebrity": 130.88,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 158.57,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 132.25,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        },
+        "pass2_hit": {
+          "perception": 1616.0,
+          "cognition": 652.86,
+          "total": 2268.86,
+          "per_category": {
+            "code_reasoning": 177.5,
+            "artwork": 156.25,
+            "celebrity": 131.76,
+            "numerical_calculation": 162.5,
+            "text_translation": 155.0,
+            "count": 170.0,
+            "color": 185.0,
+            "commonsense_reasoning": 157.86,
+            "position": 163.33,
+            "OCR": 170.0,
+            "landmark": 131.5,
+            "scene": 142.75,
+            "existence": 195.0,
+            "posters": 170.41
+          }
+        }
+      },
+      "flips_pass1_vs_baseline": 1,
+      "flips_pass2_vs_pass1": 12,
+      "pass2_lookup_hit_ratio": 0.1644,
+      "cache_granularity_tokens": 784,
+      "pass1_stored_tokens": 199920,
+      "pass2_lookup_hit_tokens": 229712,
+      "pass2_lookup_tokens": 1397290,
+      "pass2_achievable_hit_tokens": 217168,
+      "pass2_external_cached_tokens": 229712,
+      "pass2_local_cached_tokens": 0,
+      "baseline_answer_parse_ratio": 0.9962,
+      "gate": {
+        "pass": true,
+        "max_flips": 23.740000000000002,
+        "score_delta_pass2_vs_pass1": 0.32999999999992724,
+        "score_delta_pass1_vs_baseline": 0.8800000000001091,
+        "baseline_answer_parse_ratio": 0.9962,
+        "hit_criterion": "coverage",
+        "cache_granularity_tokens": 784,
+        "pass2_hit_coverage": 1.0578,
+        "thresholds": {
+          "max_flip_fraction": 0.01,
+          "max_score_delta": 10.0,
+          "min_hit_ratio": 0.8,
+          "min_hit_coverage": 0.95,
+          "min_parse_ratio": 0.9
+        }
+      }
+    }
+  },
+  "known_not_covered": [
+    "tensor-parallel (TP>1) and pipeline-parallel deployments",
+    "remote / disk storage backends and cross-instance sharing",
+    "audio modality (no audio model registered yet)",
+    "allocator-level buffer accounting (tracked by the pin-count project)",
+    "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV cache manager only to connectors that advertise support for it, so a hybrid model fails engine init there outright",
+    "capacity eviction and preemption-driven recompute: both isolated scenarios drive the in-process connector (see IN_PROCESS_SCENARIOS)",
+    "bit-exact generation -- the GDN kernels have no batch-invariant mode, so output equality is gated by the MME flip/score budget, not bytes",
+    "recovery from a failed KV load (the connector's degraded mode): vLLM rewinds the affected requests through `_update_requests_with_invalid_blocks`, which unpacks a single KV cache group and therefore raises on a hybrid -- so on this path a load error is fatal to the engine, not recoverable"
+  ]
+}

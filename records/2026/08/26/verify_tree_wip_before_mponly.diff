@@ -1,0 +1,528 @@
+diff --git a/tests/e2e_mm/README.md b/tests/e2e_mm/README.md
+index f8bbf233..4e426993 100644
+--- a/tests/e2e_mm/README.md
++++ b/tests/e2e_mm/README.md
+@@ -91,6 +91,7 @@ Environment knobs:
+ | `LMCACHE_MM_E2E` | unset | Must be `1` for any test to run (opt-in guard). |
+ | `LMCACHE_MM_E2E_MODELS` | `qwen2.5-vl-3b` | Comma-separated model keys from `specs.py`. |
+ | `LMCACHE_MM_E2E_PRESSURE_N` | `64` | Number of distinct images in the collision pressure test (T0.2). Nightly runs should raise this to `1000`. |
++| `LMCACHE_MM_E2E_PATH` | `auto` | Deployment path: `auto` runs hybrids on the multi-process path and every other model in-process, `mp` runs every model on the multi-process path, `in_process` forces the in-process path (rejected for a hybrid model). |
+ 
+ Run from inside `tests/e2e_mm` so its local `pytest.ini` anchors the rootdir
+ and the global `tests/conftest.py` (autouse mocks and allocator patches that
+diff --git a/tests/e2e_mm/certify.py b/tests/e2e_mm/certify.py
+index 2098503e..0d3632ac 100644
+--- a/tests/e2e_mm/certify.py
++++ b/tests/e2e_mm/certify.py
+@@ -33,7 +33,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+ 
+ # First Party (test-local)
+ from benchmark_parity import parity_gate  # noqa: E402
+-from harness import LMCACHE_TEST_CHUNK_SIZE  # noqa: E402
++from harness import (  # noqa: E402
++    LMCACHE_TEST_CHUNK_SIZE,
++    DeploymentPath,
++    selected_deployment_path,
++)
+ from isolated_routing import (  # noqa: E402
+     CAPACITY_EVICTION,
+     CHUNKED_PREFILL,
+@@ -81,6 +85,14 @@ DUAL_PATH_NOT_COVERED = [
+     "(T0.4/T0.2 run on the in-process path; keys are transport-independent)",
+ ]
+ 
++# Additional exclusion for a NON-hybrid model run with
++# ``LMCACHE_MM_E2E_PATH=mp``: nothing was measured in-process. Unlike a
++# hybrid, this model could run there -- it just was not run there.
++MP_ONLY_NOT_COVERED = [
++    "the in-process LMCacheConnectorV1 path: this run certified the "
++    "multi-process deployment path only (LMCACHE_MM_E2E_PATH=mp)",
++]
++
+ # Additional exclusions for ANY multi-KV-group model, which is MP-only.
+ HYBRID_NOT_COVERED = [
+     "the in-process LMCacheConnectorV1 path: vLLM offers its hybrid KV "
+@@ -341,7 +353,11 @@ def git_dirty(cwd: pathlib.Path) -> bool:
+ 
+ 
+ IN_PROCESS_PATH = "LMCacheConnectorV1 (in-process, single GPU, TP=1)"
+-MP_PATH = (
++# The whole suite ran on the MP path (every hybrid, and any model run with
++# ``LMCACHE_MM_E2E_PATH=mp``).
++MP_PATH_FULL = "LMCacheMPConnector + MP cache server (single GPU, TP=1)"
++# Only the T3 scenario crossed the transport; the bulk ran in-process.
++MP_PATH_T3_CORE = (
+     "LMCacheMPConnector + MP cache server (single GPU, TP=1; T0/T1 core, see README T3)"
+ )
+ 
+@@ -349,12 +365,13 @@ MP_PATH = (
+ def certified_scope(spec: ModelSpec) -> dict:
+     """Describe exactly what a green run for ``spec`` covers.
+ 
+-    The scope is deployment-path dependent: a model whose KV cache vLLM
+-    splits into several groups runs the whole suite on the MP path (the
+-    in-process connector cannot serve it) at that model's chunk
+-    granularity, while every other model runs the bulk in-process at the
+-    16-token LMCache chunk size and crosses the transport in the T3
+-    scenario only.
++    The scope follows the deployment path the run actually took (see
++    ``harness.selected_deployment_path``): on the MP path the whole suite
++    crossed the transport, and for a model whose KV cache vLLM splits into
++    several groups that is the only path there is -- the in-process
++    connector cannot serve it. An in-process run keeps its bulk in-process
++    at the 16-token LMCache chunk size and crosses the transport in the T3
++    scenario only, so it claims both paths at different depths.
+ 
+     Args:
+         spec: The model under certification.
+@@ -363,17 +380,24 @@ def certified_scope(spec: ModelSpec) -> dict:
+         The certificate's ``scope`` block: deployment paths, modalities,
+         cache granularity, storage backend and scheduling regimes proven.
+     """
+-    if spec.hybrid_block_tokens:
++    if selected_deployment_path(spec) is DeploymentPath.MP:
++        hybrid = bool(spec.hybrid_block_tokens)
+         return {
+-            "deployment_paths": [MP_PATH],
++            "deployment_paths": [MP_PATH_FULL],
+             "modalities": sorted(spec.modalities),
+-            "chunk_size": spec.hybrid_block_tokens,
+-            "chunk_size_note": _CHUNK_NOTE[spec.hybrid_family],
+-            "backend": "MP cache server L1, separate object groups",
++            "chunk_size": spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
++            "chunk_size_note": (
++                _CHUNK_NOTE[spec.hybrid_family] if hybrid else "LMCache chunk size"
++            ),
++            "backend": (
++                "MP cache server L1, separate object groups"
++                if hybrid
++                else "MP cache server L1"
++            ),
+             "scheduling": _scheduling(spec),
+         }
+     return {
+-        "deployment_paths": [IN_PROCESS_PATH, MP_PATH],
++        "deployment_paths": [IN_PROCESS_PATH, MP_PATH_T3_CORE],
+         "modalities": sorted(spec.modalities),
+         "chunk_size": LMCACHE_TEST_CHUNK_SIZE,
+         "chunk_size_note": "LMCache chunk size",
+@@ -411,6 +435,8 @@ def known_not_covered(spec: ModelSpec) -> list[str]:
+     if not spec.media_prefix_stable:
+         base.append(MEDIA_PREFIX_NOT_COVERED)
+     if not spec.hybrid_block_tokens:
++        if selected_deployment_path(spec) is DeploymentPath.MP:
++            return base + MP_ONLY_NOT_COVERED
+         return base + DUAL_PATH_NOT_COVERED
+     extra = list(HYBRID_NOT_COVERED)
+     if spec.hybrid_family is HybridFamily.RECURRENT_STATE:
+@@ -563,7 +589,7 @@ def load_parity_report(
+         )
+     # Reports recorded before the field existed are all in-process runs.
+     recorded_path = report.get("deployment_path", "in_process")
+-    expected_path = "mp" if spec.hybrid_block_tokens else "in_process"
++    expected_path = selected_deployment_path(spec).value
+     if recorded_path != expected_path:
+         raise ValueError(
+             f"parity report {path} was produced on the {recorded_path!r} "
+diff --git a/tests/e2e_mm/conftest.py b/tests/e2e_mm/conftest.py
+index e926bfc2..c04d6189 100644
+--- a/tests/e2e_mm/conftest.py
++++ b/tests/e2e_mm/conftest.py
+@@ -40,6 +40,12 @@ HYBRID_WORDS_PER_TOKEN = 1.0
+ # override this via ``ModelSpec.mp_server_l1_gb``; too small a capacity
+ # evicts inside a test and fails its store-conservation audit.
+ HYBRID_MP_SERVER_L1_GB = 60.0
++# The MP cache server backing a NON-hybrid run forced onto the MP path with
++# ``LMCACHE_MM_E2E_PATH=mp``. Mirrors the local CPU pool the in-process path
++# gets from ``configure_environment``, so the two paths certify the same
++# model under the same capacity and an eviction test means the same thing on
++# both.
++MM_MP_SERVER_L1_GB = 40.0
+ 
+ 
+ def pytest_configure(config):
+@@ -181,12 +187,15 @@ def _model_keys() -> list[str]:
+ def harness(request, tmp_path_factory):
+     """Session harness for one model: baselines + LMCache engine.
+ 
+-    A Mamba/GDN hybrid model runs on the MP deployment path with a cache
+-    server started here: vLLM's hybrid KV cache manager is only offered to
+-    connectors that advertise support for it, and the in-process
+-    ``LMCacheConnectorV1`` does not — it fails engine init outright
+-    ("Hybrid KV cache manager is disabled but failed to convert the KV
+-    cache specs to one unified type").
++    ``LMCACHE_MM_E2E_PATH`` selects the deployment path (see
++    ``harness.selected_deployment_path``); on the MP path a cache server is
++    started here and torn down with the harness.
++
++    A Mamba/GDN hybrid model always takes the MP path: vLLM's hybrid KV
++    cache manager is only offered to connectors that advertise support for
++    it, and the in-process ``LMCacheConnectorV1`` does not — it fails
++    engine init outright ("Hybrid KV cache manager is disabled but failed
++    to convert the KV cache specs to one unified type").
+     """
+     from catalog import (
+         audio_requests,
+@@ -196,10 +205,13 @@ def harness(request, tmp_path_factory):
+         video_requests,
+     )
+     from harness import (
++        LMCACHE_TEST_CHUNK_SIZE,
++        DeploymentPath,
+         MMHarness,
+         MPHarness,
+         compute_baselines,
+         configure_environment,
++        selected_deployment_path,
+         start_mp_cache_server,
+     )
+     from specs import MODEL_SPECS
+@@ -225,19 +237,26 @@ def harness(request, tmp_path_factory):
+         all_requests += list(cross_modal_requests().values())
+     workdir = tmp_path_factory.mktemp(f"mm_e2e_{spec.key}")
+     baselines = compute_baselines(spec, all_requests, workdir)
+-    if not spec.hybrid_block_tokens:
++    if selected_deployment_path(spec) is DeploymentPath.IN_PROCESS:
+         h = MMHarness(spec, baselines)
+         yield h
+         h.close()
+         return
+ 
++    # A hybrid's chunk must be vLLM's unified block size, and its
++    # recurrent-state layers need cache objects of their own; a non-hybrid
++    # model on this path keeps the chunk size the in-process path uses.
+     server = start_mp_cache_server(
+         zmq_port=24000 + (os.getpid() % 1000),
+         http_port=24000 + (os.getpid() % 1000) + 1000,
+-        chunk_size=spec.hybrid_block_tokens,
++        chunk_size=spec.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE,
+         log_path=workdir / "mp_server.log",
+-        l1_size_gb=spec.mp_server_l1_gb or HYBRID_MP_SERVER_L1_GB,
+-        separate_object_groups=True,
++        l1_size_gb=(
++            (spec.mp_server_l1_gb or HYBRID_MP_SERVER_L1_GB)
++            if spec.hybrid_block_tokens
++            else MM_MP_SERVER_L1_GB
++        ),
++        separate_object_groups=bool(spec.hybrid_block_tokens),
+     )
+     # The hybrid engine settings themselves come from the spec via
+     # MMHarness (shared with the baseline engine).
+diff --git a/tests/e2e_mm/harness.py b/tests/e2e_mm/harness.py
+index 1dc81ceb..53c041b3 100644
+--- a/tests/e2e_mm/harness.py
++++ b/tests/e2e_mm/harness.py
+@@ -11,12 +11,14 @@ from dataclasses import dataclass
+ from types import MappingProxyType
+ from typing import Mapping
+ import contextlib
++import enum
+ import json
+ import os
+ import pathlib
+ import re
+ import subprocess
+ import sys
++import time
+ import warnings
+ 
+ # First Party (test-local)
+@@ -25,6 +27,60 @@ from specs import HybridFamily, ModelSpec
+ 
+ LMCACHE_TEST_CHUNK_SIZE = 16
+ 
++# Deployment path selection. Multi-process is the mode this project supports
++# first, so the suite must be able to certify ANY model on it -- not only the
++# Mamba/GDN hybrids that have no choice (vLLM offers its hybrid KV cache
++# manager only to connectors advertising ``SupportsHMA``, which the
++# in-process ``LMCacheConnectorV1`` does not, so a hybrid fails engine init
++# on that path). Default routing keeps the historical split.
++DEPLOYMENT_PATH_ENV_VAR = "LMCACHE_MM_E2E_PATH"
++
++
++class DeploymentPath(enum.Enum):
++    """Which LMCache deployment the harness drives for one model."""
++
++    IN_PROCESS = "in_process"
++    MP = "mp"
++
++
++def selected_deployment_path(spec: ModelSpec) -> DeploymentPath:
++    """Resolve the deployment path for one model from the environment.
++
++    ``LMCACHE_MM_E2E_PATH`` selects it: ``auto`` (the default) sends
++    hybrids to the multi-process path and every other model in-process;
++    ``mp`` sends every model to the multi-process path; ``in_process``
++    forces the in-process path, which a hybrid model cannot use.
++
++    Args:
++        spec: The model under certification.
++
++    Returns:
++        The deployment path this model's harness must use.
++
++    Raises:
++        ValueError: If the variable holds an unknown value, or asks for
++            the in-process path for a hybrid model.
++    """
++    requested = os.environ.get(DEPLOYMENT_PATH_ENV_VAR, "auto").strip().lower()
++    known = {"auto"} | {member.value for member in DeploymentPath}
++    if requested not in known:
++        raise ValueError(
++            f"{DEPLOYMENT_PATH_ENV_VAR}={requested!r} is not one of {sorted(known)}"
++        )
++    if spec.hybrid_block_tokens:
++        if requested == DeploymentPath.IN_PROCESS.value:
++            raise ValueError(
++                f"{spec.key} is a hybrid model: vLLM's hybrid KV cache "
++                "manager is offered only to connectors advertising "
++                "SupportsHMA, so the in-process path fails engine init. "
++                f"Drop {DEPLOYMENT_PATH_ENV_VAR} or set it to 'mp'."
++            )
++        return DeploymentPath.MP
++    if requested == DeploymentPath.MP.value:
++        return DeploymentPath.MP
++    return DeploymentPath.IN_PROCESS
++
++
+ # Salt for the startup probe that checks media/text ordering. Deliberately
+ # not a real case salt: it must never collide with one, and it must be a
+ # literal that survives tokenizer round-tripping unchanged.
+@@ -1504,23 +1560,114 @@ class MPHarness(MMHarness):
+     def _cumulative_lookup_stats(self) -> tuple[int, int]:
+         return (self._counters.lookup_tokens, self._counters.lookup_hits)
+ 
++    # Store settling: on the MP path a store is asynchronous twice over --
++    # the worker submits it around the time the engine answers, and the
++    # server holds each key write-locked between reserve_write and
++    # finish_write (50-300ms observed under load). Without a barrier, a
++    # back-to-back request's lookup beats the previous request's store
++    # (KEY_NOT_EXIST) or lands inside the write-lock window
++    # (KEY_NOT_READABLE), and the prefix fold turns one such chunk into a
++    # whole-prompt miss. The suite certifies cache correctness, not request
++    # pacing, so each run waits for its own stores to become readable.
++    _SETTLE_SUBMIT_TIMEOUT_S = 10.0
++    _SETTLE_SERVER_TIMEOUT_S = 30.0
++    _SETTLE_POLL_INTERVAL_S = 0.1
++    _SETTLE_QUIET_POLLS = 4
++
++    def run(self, request: MMRequest) -> StepResult:
++        """Run one request, then wait for its stores to become readable.
++
++        The returned stats are unaffected by the wait: they are read by the
++        base implementation before the barrier starts.
++        """
++        stored_before = self.stored_tokens_total()
++        result = super().run(request)
++        # Everything the lookup missed must be store-submitted, except the
++        # trailing partial chunk, which LMCache never stores.
++        expected_new = result.lookup_tokens - result.lookup_hits - self.chunk
++        self._settle_stores(stored_before + max(0, expected_new))
++        return result
++
++    def run_batch(self, requests: list[MMRequest]) -> BatchResult:
++        """Run one batch, then wait for its stores to become readable.
++
++        Identical prefixes inside one batch are stored once but missed by
++        every request, so the aggregate miss count overstates what will be
++        submitted; the barrier therefore uses no submission target and
++        relies on quiescence alone.
++        """
++        result = super().run_batch(requests)
++        self._settle_stores(self.stored_tokens_total())
++        return result
++
+     def stored_tokens_total(self) -> int:
+         """Cumulative tokens submitted to the MP server for storage."""
+         return self._counters.stored_tokens
+ 
+     def storage(self) -> StorageSnapshot:
+         """Resident object count/bytes from the MP server's /status API."""
++        l1 = self._fetch_l1_status()
++        return StorageSnapshot(
++            num_keys=l1["total_object_count"],
++            total_bytes=l1["memory_used_bytes"],
++        )
++
++    def _fetch_l1_status(self) -> dict:
++        """Fetch the server L1 manager's status dict over HTTP.
++
++        Returns:
++            The ``storage_manager.l1_manager`` section of the ``/status``
++            response; the keys used here are ``total_object_count``,
++            ``write_locked_count``, and ``memory_used_bytes``.
++        """
+         # Standard
+         import urllib.request
+ 
+         url = f"http://localhost:{self._http_port}/status"
+         with urllib.request.urlopen(url, timeout=30) as resp:
+             status = json.loads(resp.read())
+-        l1 = status["storage_manager"]["l1_manager"]
+-        return StorageSnapshot(
+-            num_keys=l1["total_object_count"],
+-            total_bytes=l1["memory_used_bytes"],
+-        )
++        return status["storage_manager"]["l1_manager"]
++
++    def _settle_stores(self, min_stored_tokens: int) -> None:
++        """Block until in-flight stores are submitted and readable.
++
++        Two phases, both bounded and non-fatal (on timeout the caller's own
++        assertions report whatever is actually wrong):
++
++        1. Submission: wait until the engine-side store counter reaches
++           ``min_stored_tokens``, so quiescence below cannot be observed in
++           the gap before the worker has even submitted the store.
++        2. Quiescence: wait until the server holds no write-locked objects
++           and (store counter, object count, lock count) is unchanged for
++           ``_SETTLE_QUIET_POLLS`` consecutive polls, i.e. the submitted
++           stores have arrived and finished writing.
++
++        Args:
++            min_stored_tokens: Cumulative ``stored_tokens_total`` value to
++                wait for in phase 1.
++        """
++        deadline = time.monotonic() + self._SETTLE_SUBMIT_TIMEOUT_S
++        while (
++            self.stored_tokens_total() < min_stored_tokens
++            and time.monotonic() < deadline
++        ):
++            time.sleep(self._SETTLE_POLL_INTERVAL_S)
++
++        deadline = time.monotonic() + self._SETTLE_SERVER_TIMEOUT_S
++        quiet = 0
++        previous: tuple[int, int, int] = (-1, -1, -1)
++        while time.monotonic() < deadline:
++            l1 = self._fetch_l1_status()
++            current = (
++                self.stored_tokens_total(),
++                l1["total_object_count"],
++                l1["write_locked_count"],
++            )
++            quiet = quiet + 1 if current == previous and current[2] == 0 else 0
++            previous = current
++            if quiet >= self._SETTLE_QUIET_POLLS:
++                return
++            time.sleep(self._SETTLE_POLL_INTERVAL_S)
+ 
+     def close(self) -> None:
+         """Tear down the engine (the MP server is managed by the caller)."""
+diff --git a/tests/e2e_mm/isolated_cases.py b/tests/e2e_mm/isolated_cases.py
+index e323b555..f94c4c48 100644
+--- a/tests/e2e_mm/isolated_cases.py
++++ b/tests/e2e_mm/isolated_cases.py
+@@ -39,9 +39,11 @@ from catalog import (
+ )
+ from harness import LMCACHE_TEST_CHUNK_SIZE as CHUNK
+ from harness import (
++    DeploymentPath,
+     MMHarness,
+     MPHarness,
+     compute_baselines,
++    selected_deployment_path,
+     start_mp_cache_server,
+     vllm_preemption_total,
+ )
+@@ -217,7 +219,10 @@ def _deployment_harness(
+     metrics: dict[str, object],
+     cache_capacity_gb: float = 0.0,
+ ) -> "Iterator[MMHarness]":
+-    """Yield a harness on the only deployment path *spec* can actually run.
++    """Yield a harness on the deployment path selected for *spec*.
++
++    ``LMCACHE_MM_E2E_PATH`` chooses it (see
++    ``harness.selected_deployment_path``); a hybrid model has no choice.
+ 
+     A model with more than one KV cache group needs vLLM's hybrid KV cache
+     manager, and vLLM offers that only to connectors implementing
+@@ -260,7 +265,7 @@ def _deployment_harness(
+             spec, requests, tmpdir, extra_engine_kwargs=extra_engine_kwargs
+         )
+ 
+-        if not spec.hybrid_block_tokens:
++        if selected_deployment_path(spec) is DeploymentPath.IN_PROCESS:
+             # Pass the capacity only when one is imposed, so the harness's
+             # own default stays the single source of truth for it.
+             capacity_kwargs: dict[str, float] = {}
+@@ -285,13 +290,19 @@ def _deployment_harness(
+             zmq_port=zmq_port,
+             http_port=http_port,
+             # A hybrid's chunk must be vLLM's unified block size, and its
+-            # per-group layers need their own cache objects.
+-            chunk_size=spec.hybrid_block_tokens,
++            # per-group layers need their own cache objects; a non-hybrid
++            # model forced onto this path keeps the in-process chunk size.
++            chunk_size=spec.hybrid_block_tokens or CHUNK,
+             log_path=log_path,
+             l1_size_gb=(
+-                cache_capacity_gb or spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID
++                cache_capacity_gb
++                or (
++                    (spec.mp_server_l1_gb or MP_SERVER_L1_GB_HYBRID)
++                    if spec.hybrid_block_tokens
++                    else MP_SERVER_L1_GB
++                )
+             ),
+-            separate_object_groups=True,
++            separate_object_groups=bool(spec.hybrid_block_tokens),
+             start_timeout_s=MP_SERVER_START_TIMEOUT_S,
+         )
+         harness = MPHarness(
+@@ -342,19 +353,12 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
+         )
+         for pad in CHUNKED_PAD_PHASES
+     }
+-    with tempfile.TemporaryDirectory() as tmp:
+-        baselines = compute_baselines(
+-            spec,
+-            [r for pair in pairs.values() for r in pair],
+-            pathlib.Path(tmp),
+-            extra_engine_kwargs=engine_kwargs,
+-        )
+-    harness = MMHarness(spec, baselines=baselines, extra_engine_kwargs=engine_kwargs)
+     failures: list[str] = []
+-    metrics: dict[str, dict] = {}
+-    stored_before = harness.stored_tokens_total()
+-    total_missed = 0
+-    try:
++    metrics: dict[str, object] = {}
++    requests = [r for pair in pairs.values() for r in pair]
++    with _deployment_harness(spec, requests, engine_kwargs, metrics) as harness:
++        stored_before = harness.stored_tokens_total()
++        total_missed = 0
+         for pad, (req_a, req_b) in pairs.items():
+             a1 = harness.run(req_a)
+             _expect(
+@@ -414,8 +418,6 @@ def run_chunked_prefill(spec: ModelSpec) -> dict:
+             f"tokens but only {stored_delta} were store-requested",
+         )
+         metrics["stored_delta"] = {"stored": stored_delta, "missed": total_missed}
+-    finally:
+-        harness.close()
+     return {"failures": failures, "metrics": metrics}
+ 
+ 
+@@ -440,7 +442,9 @@ def run_capacity_eviction(spec: ModelSpec) -> dict:
+     # Assert against the capacity actually configured, not a nominal one the
+     # tier never agreed to.
+     capacity_gb = spec.eviction_capacity_gb or (
+-        EVICTION_CAPACITY_GB_MP if spec.hybrid_block_tokens else EVICTION_CAPACITY_GB
++        EVICTION_CAPACITY_GB_MP
++        if selected_deployment_path(spec) is DeploymentPath.MP
++        else EVICTION_CAPACITY_GB
+     )
+     capacity_bytes = int(capacity_gb * 1024**3)
+     metrics["capacity_gb"] = capacity_gb
+@@ -565,7 +569,10 @@ def run_preemption(spec: ModelSpec) -> dict:
+         # vLLM refuses a block pool smaller than one max-length request. The
+         # pool must still be too small for the whole batch, or nothing is
+         # preempted and the scenario asserts itself vacuous below.
+-        "num_gpu_blocks_override": spec.preemption_gpu_blocks or PREEMPTION_GPU_BLOCKS,
++        "num_gpu_blocks_override": int(
++            os.environ.get("LMCACHE_MM_E2E_PREEMPT_BLOCKS", "")
++            or (spec.preemption_gpu_blocks or PREEMPTION_GPU_BLOCKS)
++        ),
+         "max_model_len": PREEMPTION_MAX_MODEL_LEN,
+         "max_num_seqs": PREEMPTION_N,
+         "disable_log_stats": False,  # the preemption counter needs stats on

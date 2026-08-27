@@ -1,0 +1,18 @@
+{
+  "failures": [],
+  "metrics": {
+    "t01": {
+      "prompt_tokens": 296,
+      "full_hit": 288,
+      "b_hit": 16
+    },
+    "conservation": {
+      "missed": 3199,
+      "stored": 3120,
+      "resident_keys": 390,
+      "resident_bytes": 434503680
+    }
+  },
+  "scenario": "mp_connector",
+  "model": "gemma-3-4b"
+}

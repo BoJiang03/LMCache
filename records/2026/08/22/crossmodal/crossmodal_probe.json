@@ -1,0 +1,278 @@
+{
+  "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+  "mm_encoder_attn_backend": "TORCH_SDPA",
+  "rows": [
+    {
+      "tag": "IA-i0a0",
+      "order": [
+        "image",
+        "audio"
+      ],
+      "image_index": 0,
+      "audio_index": 0,
+      "expected": [
+        "red",
+        "tone"
+      ],
+      "text": "red, tone",
+      "text_again": "red, tone",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "IA-i0a2",
+      "order": [
+        "image",
+        "audio"
+      ],
+      "image_index": 0,
+      "audio_index": 2,
+      "expected": [
+        "red",
+        "beeping"
+      ],
+      "text": "red, beeping",
+      "text_again": "red, beeping",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "IA-i2a0",
+      "order": [
+        "image",
+        "audio"
+      ],
+      "image_index": 2,
+      "audio_index": 0,
+      "expected": [
+        "blue",
+        "tone"
+      ],
+      "text": "blue, tone",
+      "text_again": "blue, tone",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "IA-i2a4",
+      "order": [
+        "image",
+        "audio"
+      ],
+      "image_index": 2,
+      "audio_index": 4,
+      "expected": [
+        "blue",
+        "warble"
+      ],
+      "text": "blue, warble",
+      "text_again": "blue, warble",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "IA-i1a2",
+      "order": [
+        "image",
+        "audio"
+      ],
+      "image_index": 1,
+      "audio_index": 2,
+      "expected": [
+        "green",
+        "beeping"
+      ],
+      "text": "green, beeping",
+      "text_again": "green, beeping",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "AI-i0a0",
+      "order": [
+        "audio",
+        "image"
+      ],
+      "image_index": 0,
+      "audio_index": 0,
+      "expected": [
+        "red",
+        "tone"
+      ],
+      "text": "red, tone",
+      "text_again": "red, tone",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "AI-i0a2",
+      "order": [
+        "audio",
+        "image"
+      ],
+      "image_index": 0,
+      "audio_index": 2,
+      "expected": [
+        "red",
+        "beeping"
+      ],
+      "text": "red, beeping",
+      "text_again": "red, beeping",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "AI-i2a0",
+      "order": [
+        "audio",
+        "image"
+      ],
+      "image_index": 2,
+      "audio_index": 0,
+      "expected": [
+        "blue",
+        "tone"
+      ],
+      "text": "blue, tone",
+      "text_again": "blue, tone",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "AI-i2a4",
+      "order": [
+        "audio",
+        "image"
+      ],
+      "image_index": 2,
+      "audio_index": 4,
+      "expected": [
+        "blue",
+        "warble"
+      ],
+      "text": "blue, warble",
+      "text_again": "blue, warble",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    },
+    {
+      "tag": "AI-i1a2",
+      "order": [
+        "audio",
+        "image"
+      ],
+      "image_index": 1,
+      "audio_index": 2,
+      "expected": [
+        "green",
+        "beeping"
+      ],
+      "text": "green, beeping",
+      "text_again": "green, beeping",
+      "color_ok": true,
+      "kind_ok": true,
+      "correct": true,
+      "stable": true,
+      "probe_passes": true
+    }
+  ],
+  "distinct_within_order": {
+    "IA": {
+      "n": 5,
+      "unique": 5,
+      "all_distinct": true
+    },
+    "AI": {
+      "n": 5,
+      "unique": 5,
+      "all_distinct": true
+    }
+  },
+  "cross_order": [
+    {
+      "combo": [
+        0,
+        0
+      ],
+      "ia_text": "red, tone",
+      "ai_text": "red, tone",
+      "same": true,
+      "both_correct": true
+    },
+    {
+      "combo": [
+        0,
+        2
+      ],
+      "ia_text": "red, beeping",
+      "ai_text": "red, beeping",
+      "same": true,
+      "both_correct": true
+    },
+    {
+      "combo": [
+        2,
+        0
+      ],
+      "ia_text": "blue, tone",
+      "ai_text": "blue, tone",
+      "same": true,
+      "both_correct": true
+    },
+    {
+      "combo": [
+        2,
+        4
+      ],
+      "ia_text": "blue, warble",
+      "ai_text": "blue, warble",
+      "same": true,
+      "both_correct": true
+    },
+    {
+      "combo": [
+        1,
+        2
+      ],
+      "ia_text": "green, beeping",
+      "ai_text": "green, beeping",
+      "same": true,
+      "both_correct": true
+    }
+  ],
+  "summary": {
+    "n": 10,
+    "correct": 10,
+    "stable": 10,
+    "color_ok": 10,
+    "kind_ok": 10,
+    "usable": true
+  }
+}

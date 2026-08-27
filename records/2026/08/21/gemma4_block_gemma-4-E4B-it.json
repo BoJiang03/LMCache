@@ -1,0 +1,15 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "cache_config.block_size": 16,
+  "num_groups": 6,
+  "distinct_group_block_sizes": [
+    16,
+    32
+  ],
+  "bytes_per_token": 57344.0,
+  "kb_per_token": 56.0,
+  "sliding_window_buckets": [
+    0,
+    512
+  ]
+}

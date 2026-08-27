@@ -1,0 +1,88 @@
+{
+  "model": "google/gemma-4-E4B-it",
+  "override": {
+    "allow_global_per_layer_attribute_access": true,
+    "text_config": {
+      "allow_global_per_layer_attribute_access": true,
+      "global_head_dim": 512
+    }
+  },
+  "num_blocks": 262967,
+  "num_groups": 6,
+  "groups": [
+    {
+      "spec": "SlidingWindowSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.0.self_attn.attn",
+        "language_model.model.layers.6.self_attn.attn",
+        "language_model.model.layers.12.self_attn.attn"
+      ],
+      "block_size": 32,
+      "page_size_bytes": 65536,
+      "sliding_window": 512
+    },
+    {
+      "spec": "SlidingWindowSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.1.self_attn.attn",
+        "language_model.model.layers.7.self_attn.attn",
+        "language_model.model.layers.13.self_attn.attn"
+      ],
+      "block_size": 32,
+      "page_size_bytes": 65536,
+      "sliding_window": 512
+    },
+    {
+      "spec": "SlidingWindowSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.2.self_attn.attn",
+        "language_model.model.layers.8.self_attn.attn",
+        "language_model.model.layers.14.self_attn.attn"
+      ],
+      "block_size": 32,
+      "page_size_bytes": 65536,
+      "sliding_window": 512
+    },
+    {
+      "spec": "SlidingWindowSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.3.self_attn.attn",
+        "language_model.model.layers.9.self_attn.attn",
+        "language_model.model.layers.15.self_attn.attn"
+      ],
+      "block_size": 32,
+      "page_size_bytes": 65536,
+      "sliding_window": 512
+    },
+    {
+      "spec": "SlidingWindowSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.4.self_attn.attn",
+        "language_model.model.layers.10.self_attn.attn",
+        "language_model.model.layers.16.self_attn.attn"
+      ],
+      "block_size": 32,
+      "page_size_bytes": 65536,
+      "sliding_window": 512
+    },
+    {
+      "spec": "FullAttentionSpec",
+      "layers": 4,
+      "layer_names_head": [
+        "language_model.model.layers.5.self_attn.attn",
+        "language_model.model.layers.11.self_attn.attn",
+        "language_model.model.layers.17.self_attn.attn"
+      ],
+      "block_size": 16,
+      "page_size_bytes": 65536,
+      "sliding_window": null
+    }
+  ],
+  "bytes_per_token_all_layers": 49152.0,
+  "hybrid_manager_required": true
+}

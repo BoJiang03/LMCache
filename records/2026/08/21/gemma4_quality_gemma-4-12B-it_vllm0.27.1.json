@@ -1,0 +1,35 @@
+{
+  "model": "google/gemma-4-12B-it",
+  "vllm": "0.27.1",
+  "override": {
+    "allow_global_per_layer_attribute_access": true,
+    "text_config": {
+      "allow_global_per_layer_attribute_access": true,
+      "global_head_dim": 512,
+      "num_global_key_value_heads": 1
+    }
+  },
+  "outcome": "loaded",
+  "probes": {
+    "capital": "Paris",
+    "arith": "4"
+  },
+  "colours": {
+    "image-0": {
+      "want": "red",
+      "text": "Brown",
+      "hit": false
+    },
+    "image-1": {
+      "want": "green",
+      "text": "Green",
+      "hit": true
+    },
+    "image-2": {
+      "want": "blue",
+      "text": "Black",
+      "hit": false
+    }
+  },
+  "colour_hits": 1
+}

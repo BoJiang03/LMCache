@@ -1,0 +1,72 @@
+{
+  "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+  "num_questions": 2374,
+  "scores": {
+    "baseline": {
+      "perception": 1586.55,
+      "cognition": 613.21,
+      "total": 2199.76,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 146.25,
+        "celebrity": 138.82,
+        "numerical_calculation": 132.5,
+        "text_translation": 200.0,
+        "count": 163.33,
+        "color": 180.0,
+        "commonsense_reasoning": 125.71,
+        "position": 158.33,
+        "OCR": 110.0,
+        "landmark": 180.25,
+        "scene": 154.5,
+        "existence": 185.0,
+        "posters": 170.07
+      }
+    },
+    "pass1_miss": {
+      "perception": 1586.55,
+      "cognition": 613.21,
+      "total": 2199.76,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 146.25,
+        "celebrity": 138.82,
+        "numerical_calculation": 132.5,
+        "text_translation": 200.0,
+        "count": 163.33,
+        "color": 180.0,
+        "commonsense_reasoning": 125.71,
+        "position": 158.33,
+        "OCR": 110.0,
+        "landmark": 180.25,
+        "scene": 154.5,
+        "existence": 185.0,
+        "posters": 170.07
+      }
+    },
+    "pass2_hit": {
+      "perception": 1586.55,
+      "cognition": 613.21,
+      "total": 2199.76,
+      "per_category": {
+        "code_reasoning": 155.0,
+        "artwork": 146.25,
+        "celebrity": 138.82,
+        "numerical_calculation": 132.5,
+        "text_translation": 200.0,
+        "count": 163.33,
+        "color": 180.0,
+        "commonsense_reasoning": 125.71,
+        "position": 158.33,
+        "OCR": 110.0,
+        "landmark": 180.25,
+        "scene": 154.5,
+        "existence": 185.0,
+        "posters": 170.07
+      }
+    }
+  },
+  "flips_pass1_vs_baseline": 0,
+  "flips_pass2_vs_pass1": 0,
+  "pass2_lookup_hit_ratio": 1.0
+}
