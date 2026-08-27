@@ -842,6 +842,17 @@ class StorageManager:
         """
         return self._l1_manager.get_memory_usage()
 
+    def get_l1_deletion_totals(self) -> tuple[int, int]:
+        """Cumulative L1 deletion totals since construction.
+
+        Backing data for the ``GET_L1_PRESSURE`` endpoint's eviction-rate
+        estimation.
+
+        Returns:
+            Tuple of monotonic ``(deleted_bytes, deleted_chunks)``.
+        """
+        return self._l1_manager.deletion_totals()
+
     def get_usage_bytes_by_cache_salt(self) -> dict[str, int]:
         """Aggregate ``cache_salt`` byte usage across every L2 adapter.
 

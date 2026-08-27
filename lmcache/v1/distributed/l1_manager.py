@@ -191,6 +191,12 @@ class L1Manager:
 
         self._objects: dict[ObjectKey, L1ObjectState] = {}
 
+        # Cumulative deletion totals for deletion_totals(). Guarded by
+        # self._lock like the object map: every deletion site runs inside
+        # an l1_mgr_synchronized method.
+        self._deleted_bytes_total = 0
+        self._deleted_chunks_total = 0
+
         # GDS, Device-DAX, and CPU L1 are mutually exclusive tiers. Each tier
         # owns its backing allocator instead of branching inside the CPU path.
         self._memory_manager: L1ManagerProtocol
@@ -415,6 +421,7 @@ class L1Manager:
             successful_keys.append(key)
 
         freed_meta = [self._object_meta(obj) for obj in need_to_free]
+        self._account_deletions(freed_meta)
         self._memory_manager.free(need_to_free)
 
         for listener in self._registered_listeners:
@@ -711,6 +718,7 @@ class L1Manager:
             successful_keys.append(key)
 
         freed_meta = [self._object_meta(obj) for obj in need_to_free]
+        self._account_deletions(freed_meta)
         self._memory_manager.free(need_to_free)
 
         for listener in self._registered_listeners:
@@ -759,6 +767,7 @@ class L1Manager:
             all_keys = list(self._objects.keys())
             all_memory_objs = [entry.memory_obj for entry in self._objects.values()]
             all_meta = [self._object_meta(obj) for obj in all_memory_objs]
+            self._account_deletions(all_meta)
             self._memory_manager.free(all_memory_objs)
             self._objects.clear()
             for listener in self._registered_listeners:
@@ -790,6 +799,7 @@ class L1Manager:
             del self._objects[key]
 
         cleared_meta = [self._object_meta(obj) for obj in objs_to_free]
+        self._account_deletions(cleared_meta)
         self._memory_manager.free(objs_to_free)
 
         if keys_to_clear:
@@ -915,6 +925,29 @@ class L1Manager:
             num_read_locked,
         )
         return mem_check_result
+
+    def deletion_totals(self) -> tuple[int, int]:
+        """Return cumulative ``(deleted_bytes, deleted_chunks)`` so far.
+
+        Counts every object freed by key deletion since construction --
+        watermark eviction, temporary-object cleanup, and ``clear`` alike --
+        because any deletion shortens effective L1 residence. Both counters
+        are monotonic.
+        """
+        with self._lock:
+            return self._deleted_bytes_total, self._deleted_chunks_total
+
+    def _account_deletions(self, metas: list[L1ObjectMeta]) -> None:
+        """Fold freed objects into the deletion totals.
+
+        Args:
+            metas: Metadata of the objects just freed.
+
+        The caller must hold ``self._lock`` (all deletion sites are
+        ``l1_mgr_synchronized``); this helper must not re-take it.
+        """
+        self._deleted_bytes_total += sum(meta.size_bytes for meta in metas)
+        self._deleted_chunks_total += len(metas)
 
     def _object_meta(self, memory_obj: MemoryObj) -> L1ObjectMeta:
         """Build the listener-facing metadata for one resident object."""

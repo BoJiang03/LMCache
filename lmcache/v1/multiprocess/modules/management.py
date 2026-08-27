@@ -16,6 +16,7 @@ from lmcache.v1.multiprocess.engine_module import (
     ThreadPoolType,
 )
 from lmcache.v1.multiprocess.protocols.base import RequestType
+from lmcache.v1.multiprocess.protocols.controller import L1PressureStats
 from lmcache.v1.periodic_thread import (
     PeriodicThread,
     ThreadLevel,
@@ -101,6 +102,11 @@ class ManagementModule:
                 self.get_experimental,
                 ThreadPoolType.SYNC,
             ),
+            HandlerSpec(
+                RequestType.GET_L1_PRESSURE,
+                self.get_l1_pressure,
+                ThreadPoolType.SYNC,
+            ),
             HandlerSpec(RequestType.PING, self.ping, ThreadPoolType.NORMAL),
             HandlerSpec(RequestType.NOOP, self.debug, ThreadPoolType.SYNC),
             HandlerSpec(
@@ -176,6 +182,25 @@ class ManagementModule:
             The chunk size.
         """
         return self._ctx.chunk_size
+
+    def get_l1_pressure(self) -> L1PressureStats:
+        """Return an L1 capacity/eviction snapshot for rate estimation.
+
+        Returns:
+            The current L1 capacity and usage together with the cumulative
+            deletion totals. Usage and totals are read without a common
+            lock, so the two can be up to one deletion event apart.
+        """
+        used_bytes, total_bytes = self._ctx.storage_manager.get_l1_usage()
+        evicted_bytes, evicted_chunks = (
+            self._ctx.storage_manager.get_l1_deletion_totals()
+        )
+        return L1PressureStats(
+            total_bytes=total_bytes,
+            used_bytes=used_bytes,
+            evicted_bytes_total=evicted_bytes,
+            evicted_chunks_total=evicted_chunks,
+        )
 
     def get_experimental(self) -> list[str]:
         """Return the experimental intermediate tensor transfer built in the

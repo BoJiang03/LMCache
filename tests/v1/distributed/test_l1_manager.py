@@ -1971,3 +1971,80 @@ class TestIsKeyEvictable:
         assert manager.is_key_evictable(key) is True
 
         manager.close()
+
+
+# =============================================================================
+# Tests for L1Manager.deletion_totals()
+# =============================================================================
+
+
+class TestDeletionTotals:
+    """
+    Tests for L1Manager.deletion_totals().
+
+    Per the docstring:
+    - Returns cumulative (deleted_bytes, deleted_chunks) since construction.
+    - Counts every object freed by key deletion (delete and clear alike).
+    - Both counters are monotonic.
+    """
+
+    def test_starts_at_zero(self, basic_l1_config):
+        manager = L1Manager(basic_l1_config)
+
+        assert manager.deletion_totals() == (0, 0)
+
+        manager.close()
+
+    def test_delete_accounts_freed_bytes_and_chunks(
+        self, basic_l1_config, basic_layout
+    ):
+        manager = L1Manager(basic_l1_config)
+        keys = [make_object_key(1), make_object_key(2)]
+        manager.reserve_write(keys, [False, False], basic_layout)
+        manager.finish_write(keys)
+        used_before, _ = manager.get_memory_usage()
+
+        result = manager.delete(keys)
+
+        assert all(err == L1Error.SUCCESS for err in result.values())
+        used_after, _ = manager.get_memory_usage()
+        deleted_bytes, deleted_chunks = manager.deletion_totals()
+        assert deleted_chunks == 2
+        assert deleted_bytes == used_before - used_after
+        assert deleted_bytes > 0
+
+        manager.close()
+
+    def test_failed_delete_accounts_nothing(self, basic_l1_config, basic_layout):
+        manager = L1Manager(basic_l1_config)
+        key = make_object_key(1)
+        manager.reserve_write([key], [False], basic_layout)  # still write-locked
+
+        result = manager.delete([key])
+
+        assert result[key] == L1Error.KEY_IS_LOCKED
+        assert manager.deletion_totals() == (0, 0)
+
+        manager.finish_write([key])
+        manager.close()
+
+    def test_clear_accounts_and_totals_are_monotonic(
+        self, basic_l1_config, basic_layout
+    ):
+        manager = L1Manager(basic_l1_config)
+        first = make_object_key(1)
+        manager.reserve_write([first], [False], basic_layout)
+        manager.finish_write([first])
+        manager.delete([first])
+        bytes_after_delete, chunks_after_delete = manager.deletion_totals()
+
+        second = make_object_key(2)
+        manager.reserve_write([second], [False], basic_layout)
+        manager.finish_write([second])
+        manager.clear()
+
+        deleted_bytes, deleted_chunks = manager.deletion_totals()
+        assert deleted_chunks == chunks_after_delete + 1
+        assert deleted_bytes == bytes_after_delete * 2  # same layout, same size
+
+        manager.close()

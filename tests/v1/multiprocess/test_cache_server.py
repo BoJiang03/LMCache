@@ -723,3 +723,21 @@ def test_get_chunk_size(
     ).result(timeout=DEFAULT_TIMEOUT)
 
     assert chunk_size == CHUNK_SIZE, f"Chunk size should be {CHUNK_SIZE}"
+
+
+def test_get_l1_pressure(
+    client: MessageQueueClient,
+):
+    """
+    Test retrieving an L1 pressure snapshot from the server.
+    """
+    stats = client.submit_request(
+        RequestType.GET_L1_PRESSURE,
+        [],
+        get_response_class(RequestType.GET_L1_PRESSURE),
+    ).result(timeout=DEFAULT_TIMEOUT)
+
+    assert stats.total_bytes > 0, "L1 capacity should be positive"
+    assert 0 <= stats.used_bytes <= stats.total_bytes
+    assert stats.evicted_bytes_total >= 0
+    assert stats.evicted_chunks_total >= 0

@@ -96,6 +96,11 @@ class RequestType(enum.Enum):
     # Experimental transfer intermediate tensor
     GET_EXPERIMENTAL = enum.auto()
 
+    # Controller operations (appended past their category block: enum values
+    # ride the wire as msgspec ordinals, so members are only ever added at
+    # the end).
+    GET_L1_PRESSURE = enum.auto()
+
 
 @dataclass
 class ProtocolDefinition:
