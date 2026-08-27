@@ -918,6 +918,38 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # engine's context without a pixel cap.
         ),
         ModelSpec(
+            key="mistral-small-3.1-24b",
+            hf_id="mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+            # Image only: the repo carries no audio or video path.
+            modalities=frozenset({"image"}),
+            # Measured 2026-08-27 on a live 0.27.1 engine: ONE KV cache group
+            # (FullAttentionSpec, block 16, 40 layers, 64 KiB per page) ->
+            # 160 KB/token, the widest KV in the suite (Molmo 2's 144 KB was
+            # the previous widest). Not a hybrid, and use_mla is False.
+            #
+            # No mme_mm_processor_kwargs, and that is a measurement rather
+            # than an omission. vLLM resolves this checkpoint to
+            # PixtralForConditionalGeneration -- the repo ships
+            # consolidated.safetensors and params.json, so the mistral format
+            # wins over config.json's Mistral3ForConditionalGeneration -- and
+            # that path builds MistralCommonPixtralProcessor, which sizes
+            # images from params.json's vision_encoder.max_image_size and
+            # ignores the HF `size` kwarg the other specs cap photos with.
+            # Measured with one engine per value, since vLLM caches the
+            # processor per process: at longest_edge default, 756 and 512 the
+            # prompt is 446 tokens for a 640x480 photo and 3094 for a
+            # 1540x1540 one, unchanged. A cap is not needed anyway -- the
+            # model's own 1540-pixel bound already keeps the worst photo
+            # inside the 8192-token parity context.
+            #
+            # Full MME is 2374 questions at ~446 prompt tokens for a
+            # 640x480 photo, so ~175 GB of KV at this width; 260 GB holds the
+            # run with room for the larger photos. The 40 GB default would
+            # evict every entry before its pass-2 revisit and fail the hit
+            # gate at ~0.
+            mme_max_local_cpu_gb=260.0,
+        ),
+        ModelSpec(
             key="molmo2-4b",
             hf_id="allenai/Molmo2-4B",
             # The only member of the four-model "hitchhiker" batch that vLLM
