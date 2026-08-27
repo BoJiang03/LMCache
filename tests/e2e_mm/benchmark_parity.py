@@ -51,8 +51,10 @@ Exit code 0 = parity holds (see THRESHOLDS below), 1 = parity violated.
 import abc
 import argparse
 import base64
+import contextlib
 import dataclasses
 import glob
+import hashlib
 import io
 import json
 import math
@@ -165,6 +167,78 @@ STORE_COMMIT_GRACE_S = 5.0
 MAX_PARSE_RATIO_DELTA = 0.02
 
 
+# Re-encoding MME's images to PNG is the whole cost of loading it. Measured
+# 2026-08-27: load_dataset takes 3.7s and the non-image columns 0.1s, while
+# the 1187 PNG encodes take 4.4 minutes on an idle box and 12-13 under three
+# concurrent certifications. Every parity run pays that twice, because the
+# items (1.3 GB of base64) do not cross into the baseline subprocess, so a
+# run burned up to 25 minutes encoding images before either process reached
+# a GPU. The encodings are therefore cached on disk. Only the image bytes
+# are cached -- questions, answers and categories are re-read from the
+# dataset on every call -- and a cached run builds byte-identical items,
+# verified against a fresh load (records/2026/08/27/4_).
+_IMAGE_CACHE_ENV = "LMCACHE_MM_E2E_IMAGE_CACHE"
+
+
+def image_cache_dir(tag: str) -> pathlib.Path:
+    """Directory holding cached image encodings for one dataset.
+
+    Args:
+        tag: Names the dataset and its size ("mme-2374"). The row count is
+            part of it so that a dataset which gains or loses rows -- a new
+            revision on the hub -- lands in a fresh directory instead of
+            silently reusing encodings keyed by ids that may have moved.
+
+    Returns:
+        The directory, which need not exist yet. LMCACHE_MM_E2E_IMAGE_CACHE
+        overrides the root; deleting the directory is how a run is forced to
+        re-encode everything from the dataset.
+    """
+    root = os.environ.get(_IMAGE_CACHE_ENV, "")
+    if not root:
+        base = os.environ.get("XDG_CACHE_HOME", "") or str(
+            pathlib.Path.home() / ".cache"
+        )
+        root = str(pathlib.Path(base) / "lmcache_mm_e2e")
+    return pathlib.Path(root) / tag
+
+
+def png_cache_path(cache: pathlib.Path, qid: str) -> pathlib.Path:
+    """Where one benchmark image's cached PNG encoding lives.
+
+    Args:
+        cache: Directory from ``image_cache_dir``.
+        qid: The dataset's id for the image. MME's ids carry a path
+            separator ("count/000000450303.jpg"), so the file is named by a
+            digest of the id rather than by the id itself.
+
+    Returns:
+        The path, whether or not a file is there.
+    """
+    return cache / f"{hashlib.sha256(qid.encode()).hexdigest()[:32]}.png"
+
+
+def store_png(path: pathlib.Path, data: bytes) -> None:
+    """Add one encoded image to the cache, tolerating a failed write.
+
+    A cache that cannot be written -- read-only home, full disk -- must not
+    fail the run it exists only to speed up, and the caller already holds
+    the bytes, so every filesystem error is swallowed.
+
+    Args:
+        path: From ``png_cache_path``.
+        data: The PNG bytes to store.
+    """
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Concurrent parity runs fill the same directory. The bytes go to a
+        # private name and are renamed into place, so a reader sees either
+        # no file or a complete one, never a half-written PNG.
+        staged = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        staged.write_bytes(data)
+        staged.replace(path)
+
+
 class Benchmark(abc.ABC):
     """One question-answering benchmark the parity harness can run.
 
@@ -262,6 +336,9 @@ class MMEBenchmark(Benchmark):
     def load_items(self, limit: int) -> list[dict]:
         """Load MME questions: [{qid, image_uri, question, answer, category}].
 
+        Image encodings come from the on-disk cache; everything else is
+        read from the dataset on every call. See ``image_cache_dir``.
+
         Args:
             limit: Maximum questions; 0 loads all 2374.
 
@@ -275,26 +352,38 @@ class MMEBenchmark(Benchmark):
         ds = load_dataset("lmms-lab/MME", split="test")
         if limit:
             ds = ds.select(range(min(limit, len(ds))))
-        items = []
+        # Materializing a row decodes its image, and only the first row
+        # carrying a given question id needs one -- the 2374 questions
+        # share 1187 images. So the metadata pass drops the column and the
+        # images are fetched by index, once each.
+        rows = list(ds.remove_columns("image"))
+        first_row: dict[str, int] = {}
+        for index, row in enumerate(rows):
+            first_row.setdefault(row["question_id"], index)
+        cache = image_cache_dir(f"{self.key}-{len(ds)}")
         uri_cache: dict[str, str] = {}
-        for row in ds:
-            qid = row["question_id"]
-            if qid not in uri_cache:
+        for qid, index in first_row.items():
+            path = png_cache_path(cache, qid)
+            try:
+                png = path.read_bytes()
+            except OSError:
                 buf = io.BytesIO()
-                row["image"].convert("RGB").save(buf, format="PNG")
-                uri_cache[qid] = "data:image/png;base64," + base64.b64encode(
-                    buf.getvalue()
-                ).decode("ascii")
-            items.append(
-                {
-                    "qid": qid,
-                    "image_uri": uri_cache[qid],
-                    "question": row["question"],
-                    "answer": row["answer"].strip().lower(),
-                    "category": row["category"],
-                }
+                ds[index]["image"].convert("RGB").save(buf, format="PNG")
+                png = buf.getvalue()
+                store_png(path, png)
+            uri_cache[qid] = "data:image/png;base64," + base64.b64encode(png).decode(
+                "ascii"
             )
-        return items
+        return [
+            {
+                "qid": row["question_id"],
+                "image_uri": uri_cache[row["question_id"]],
+                "question": row["question"],
+                "answer": row["answer"].strip().lower(),
+                "category": row["category"],
+            }
+            for row in rows
+        ]
 
     def conversations(self, items: list[dict]) -> list[list[dict]]:
         """Build one single-turn conversation per benchmark question."""
