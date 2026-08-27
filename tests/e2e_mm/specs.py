@@ -536,12 +536,41 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 2026-08-20: hit_ratio 0.013 with 0 flips and 0.00 score
             # delta -- pure recompute). 280 GB holds the whole run.
             mme_max_local_cpu_gb=280.0,
-            # Preemption avoidance: see phi4-mm for why the parity run must
-            # not preempt. At 112 KB/token and <=1000-token MME prompts, on
-            # ~76 GiB of KV (~712k tokens), vLLM's default batch wants
-            # 1024 x 1000 = 1.02M tokens -- more than the pool -- while this
-            # cap wants 64 x 1000 = 64k, 11x inside.
-            mme_max_num_seqs=64,
+            # Preemption avoidance, and the measurement the other two
+            # shaped models cite. A preempted request is served by an
+            # upstream contract the connector does not implement: vLLM
+            # REPLACES a resumed request's block ids while the connector
+            # only appends them, so the request keeps a freed block table
+            # and its next store writes another request's KV under its own
+            # key, read back on the hit pass as fluent-but-wrong output
+            # (records/2026/08/27/7_). The defect is upstream, so the suite
+            # avoids the trigger instead of certifying through it.
+            #
+            # Six full-MME runs of THIS model, 2026-08-27, all at the same
+            # 720,864-token pool, varying only the running batch. The count
+            # is the connector's own `<preempted>` warnings:
+            #
+            #   batch   preempts  flips  dir      p       scoreD  gate
+            #   253          253     33  -30/+3   0.0000   39.11  FAIL
+            #   default      134     61  -54/+7   0.0000  107.73  FAIL
+            #   default       62     44  -35/+9   0.0001   49.92  FAIL
+            #   32            44     13   -9/+4   0.1334    5.74  FAIL
+            #   8              0      6   -5/+1   0.1094    2.90  PASS
+            #   1              0      6   -4/+2   0.3438    0.28  PASS
+            #
+            # Monotone in preemptions, and both zero-preemption runs pass
+            # with the same 6 flips -- a residual independent of batch shape
+            # and well inside the budget. 8 is therefore the cap, not a
+            # value derived from pool size: 32 preempts 44 times even though
+            # 32 x 1000 tokens is 22x inside that pool, and all 44 land in
+            # ONE 27-second burst, so what exhausts the pool is a transient
+            # backlog of in-flight stores holding blocks, not the batch's
+            # static footprint. Arithmetic cannot pick this number; only the
+            # run's own zero-preemption precondition can confirm it.
+            #
+            # The cap costs little here: the full run takes ~38 minutes at
+            # 8, prefill-bound at ~21k tok/s.
+            mme_max_num_seqs=8,
         ),
         ModelSpec(
             key="qwen3-vl-2b",
@@ -857,12 +886,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 2.4x Gemma 4, which shares KV across 18 of its 42 layers
             # while Gemma 3 shares none.
             mme_max_local_cpu_gb=280.0,
-            # Preemption avoidance: see phi4-mm for why the parity run must
-            # not preempt. At 136 KB/token and ~800-token MME prompts, on
-            # ~72 GiB of KV (~555k tokens), vLLM's default batch wants
-            # 1024 x 800 = 819k tokens -- half again the pool, so it
-            # preempts -- while this cap wants 64 x 800 = 51k, 11x inside.
-            mme_max_num_seqs=64,
+            # Preemption avoidance: see internvl3.5-2b for the mechanism
+            # and for the six-run dose-response that fixes the cap at 8.
+            # This model has no zero-preemption run yet; its NOT_SUPPORTED
+            # certificate rests on a default-batch run that preempted, so
+            # the cap is carried over rather than measured here, and the
+            # run's zero-preemption precondition is what confirms it.
+            mme_max_num_seqs=8,
             # No threshold overrides: the defaults pass with room to spare.
             # Measured 2026-08-22 on the full 2374-question MME parity
             # (deployment_path mp, granularity 16): pass1 scores 1715.68
@@ -1207,25 +1237,21 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             # 40 GB default would evict every entry before its pass-2
             # revisit and fail the hit gate at ~0.
             mme_max_local_cpu_gb=200.0,
-            # Preemption avoidance (2026-08-27). vLLM preempts only when a
-            # running request cannot grow, and a preempted request is served
-            # by an upstream contract the connector does not implement -- it
-            # keeps a freed block table and its next store writes another
-            # request's KV under its own key, read back as fluent-but-wrong
-            # output on the hit pass (records/2026/08/27/7_). The fix is
-            # upstream and out of this branch's scope, so the parity run
-            # avoids the trigger by keeping the batch far inside the pool.
-            #
-            # The arithmetic, at this spec's 484-token photos and 128
-            # KB/token, on the parity engine's 0.6 of a 139.8 GiB card
-            # (~69 GiB of KV after ~11 GiB of weights, ~566k tokens):
-            #   vLLM default batch ... 1024 x 516 = 528k tokens, at the pool
-            #   this cap ............... 64 x 516 =  33k tokens, 17x inside
-            # The 17x is an estimate from measured widths, not a measured
-            # pool, which is why the run asserts zero preemptions rather
-            # than trusting this comment -- see
-            # benchmark_parity.preemption_precondition.
-            mme_max_num_seqs=64,
+            # Preemption avoidance: see internvl3.5-2b for the mechanism
+            # and for the six-run dose-response that fixes the cap at 8.
+            # Measured here on 2026-08-27 at batch 1 (585,959-token pool,
+            # zero `<preempted>` warnings): 12 answer flips pass2-vs-pass1,
+            # 9 regressions to 3 improvements (p = 0.073, so not one-sided),
+            # 3 parse flips, pass-2 parse ratio 0.9983 against pass 1's
+            # 0.9996, and 4 flips pass1-vs-baseline. The only gate that
+            # fails is the flip COUNT, at 12 against a 0.5% budget of 11.87
+            # -- the model sits ON its budget with the trigger removed, so
+            # what remains is a calibration question, not corruption: the
+            # 12 are 10 singletons plus one adjacent pair, where corrupted
+            # KV takes BOTH questions of an image, and the 3 parse losses
+            # are the model dropping a leading "No, " from an otherwise
+            # unchanged sentence.
+            mme_max_num_seqs=8,
             # See _PHI4_MM_CHAT_TEMPLATE: the repo's own template renders
             # `<|system|>...<|end|><|user|><|image_1|>...<|end|><|assistant|>`
             # from STRING content, which is what vLLM's chat path passes,
