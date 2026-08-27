@@ -44,6 +44,15 @@ from isolated_routing import (  # noqa: E402
 )
 from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 
+# 8: the parity gate under the certificate bounds answer flips by
+# DIRECTION as well as by count. Engine noise is two-sided (batch-shape
+# numerics move first-token logits by one bf16 quantum, so borderline
+# questions flip either way in roughly equal numbers) while a KV defect is
+# one-sided, and only the direction separates them -- so a per-model flip
+# budget widened to cover the noise no longer widens the cover a defect
+# gets. A schema-7 verdict passed on count alone, which is why a recorded
+# parity report without the direction counters is refused here rather than
+# re-gated: at 7 those two facts are indistinguishable in the certificate.
 # 7: the parity gate under the certificate splits verdict-to-verdict
 # answer flips (still budgeted by flip fraction) from ''<->verdict parse
 # flips (bounded by the parse-ratio delta between passes) and reports
@@ -65,7 +74,7 @@ from specs import MODEL_SPECS, HybridFamily, ModelSpec  # noqa: E402
 # below was produced by the two-path suite and its scope block no longer
 # describes what the suite measures -- those models need re-certifying,
 # not re-labelling.
-CERTIFICATE_SCHEMA_VERSION = 7
+CERTIFICATE_SCHEMA_VERSION = 8
 
 # What a SUPPORTED verdict never covers, whatever the model.
 KNOWN_NOT_COVERED = [
@@ -546,18 +555,23 @@ def run_suite(model_key: str, pressure_n: int, workdir: pathlib.Path) -> dict:
     }
 
 
-def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
-    """Run the MME benchmark-parity check (T0.6) for one model.
+def parity_command(model_key: str, limit: int, out: pathlib.Path) -> list[str]:
+    """Build the ``benchmark_parity.py`` command line for one model.
+
+    Every parity flag is derived from the model's ``ModelSpec`` here, so a
+    parity run launched by hand covers the same geometry, budgets and
+    processor kwargs the certificate re-gates against. Hand-assembled
+    invocations drift from the spec and produce reports the certificate
+    then judges on different thresholds than the run used.
 
     Args:
         model_key: Registered model key from ``specs.py``.
         limit: Question limit passed through (0 = full benchmark).
-        workdir: Directory for the parity report JSON.
+        out: Path the run should write its report JSON to.
 
     Returns:
-        The parity report dict (including its ``gate``).
+        The argv list, starting with the running interpreter.
     """
-    out = workdir / f"parity_{model_key}.json"
     script = pathlib.Path(__file__).resolve().parent / "benchmark_parity.py"
     spec = MODEL_SPECS[model_key]
     cmd = [
@@ -595,9 +609,26 @@ def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
         cmd += ["--hybrid-family", spec.hybrid_family.value]
     if spec.trust_remote_code:
         cmd += ["--trust-remote-code"]
+    return cmd
+
+
+def run_parity(model_key: str, limit: int, workdir: pathlib.Path) -> dict:
+    """Run the MME benchmark-parity check (T0.6) for one model.
+
+    Args:
+        model_key: Registered model key from ``specs.py``.
+        limit: Question limit passed through (0 = full benchmark).
+        workdir: Directory for the parity report JSON.
+
+    Returns:
+        The parity report dict (including its ``gate``).
+    """
+    out = workdir / f"parity_{model_key}.json"
+    cmd = parity_command(model_key, limit, out)
+    here = pathlib.Path(__file__).resolve().parent
     subprocess.run(
         cmd,
-        cwd=script.parent,
+        cwd=here,
         timeout=6 * 3600,
     )
     if not out.exists():
@@ -628,8 +659,9 @@ def load_parity_report(
         The report dict with a freshly evaluated ``gate``.
 
     Raises:
-        ValueError: If the report is for a different model or was produced
-            on a deployment path this model is not certified on.
+        ValueError: If the report is for a different model, was produced on
+            a deployment path this model is not certified on, or predates
+            the flip-direction counters the gate needs.
     """
     report = json.loads(path.read_text())
     if report.get("model") != spec.hf_id:
@@ -645,6 +677,26 @@ def load_parity_report(
             f"parity report {path} was produced on the {recorded_path!r} "
             f"deployment path; certificates cover the multi-process path "
             f"only, so this report has to be rerun"
+        )
+    # A report predating the direction counters cannot be re-gated on
+    # direction, and silently gating it on count alone would let a
+    # schema-8 certificate claim a check that never ran.
+    missing = [
+        field
+        for field in (
+            "answer_regressions_pass2_vs_pass1",
+            "answer_improvements_pass2_vs_pass1",
+            "answer_regressions_pass1_vs_baseline",
+            "answer_improvements_pass1_vs_baseline",
+        )
+        if field not in report
+    ]
+    if missing:
+        raise ValueError(
+            f"parity report {path} carries no flip-direction counters "
+            f"(missing {', '.join(missing)}); schema "
+            f"{CERTIFICATE_SCHEMA_VERSION} gates flip direction, so this "
+            f"report has to be rerun"
         )
     report["gate"] = parity_gate(report, max_flip_fraction, min_parse_ratio)
     return report

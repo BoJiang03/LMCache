@@ -93,9 +93,12 @@ class ModelSpec:
             deterministic) numeric regimes, and a 200+-token reasoning
             chain amplifies the regime difference into ~1% of borderline
             answers landing on the other side or a repetition loop
-            (parse ''), with no corruption signature. Real KV corruption
-            is still caught by the byte-identical replay oracles, the
-            hit-ratio gate, and the score-delta gates.
+            (parse ''), with no corruption signature. Widening this is safe
+            because it loosens only the COUNT: the gate separately requires
+            the flips to be two-sided, and every source of regime noise
+            flips answers both ways while KV corruption only degrades. Real
+            corruption is still caught by that direction test, by the
+            byte-identical replay oracles, and by the hit-ratio gate.
         mme_min_parse_ratio: Floor on the fraction of BASELINE answers that
             must parse to yes/no. 0 keeps the gate's 0.9 default. The gate
             exists to catch a model whose verdict never lands inside the

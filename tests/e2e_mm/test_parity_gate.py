@@ -2,18 +2,22 @@
 """Unit tests for the parity gate's flip-split semantics (CPU-only).
 
 The gate separates verdict-to-verdict answer flips (budgeted by
-``MAX_FLIP_FRACTION``) from ``''``<->verdict parse flips (bounded through
-the per-pass parse-ratio deltas), and reports score deltas without gating
-them. Each case here is a scenario the full MME runs actually produced;
-see records/2026/08/26/8_ for the measurements the thresholds encode.
+``MAX_FLIP_FRACTION`` in count and by ``MAX_FLIP_ASYMMETRY_P`` in
+direction) from ``''``<->verdict parse flips (bounded through the per-pass
+parse-ratio deltas), and reports score deltas without gating them. Each
+case here is a scenario the full MME runs actually produced; see
+records/2026/08/26/8_ and records/2026/08/26/10_ for the measurements the
+thresholds encode.
 """
 
 # First Party (test-local)
 from benchmark_parity import (
     MAX_PARSE_RATIO_DELTA,
     FlipCounts,
+    MMAUBenchmark,
     MMEBenchmark,
     count_flips,
+    flip_asymmetry_p,
     parity_gate,
 )
 
@@ -36,8 +40,14 @@ def _report(**overrides) -> dict:
         "flips_pass2_vs_pass1": 0,
         "answer_flips_pass1_vs_baseline": 0,
         "parse_flips_pass1_vs_baseline": 0,
+        "answer_regressions_pass1_vs_baseline": 0,
+        "answer_improvements_pass1_vs_baseline": 0,
+        "answer_lateral_pass1_vs_baseline": 0,
         "answer_flips_pass2_vs_pass1": 0,
         "parse_flips_pass2_vs_pass1": 0,
+        "answer_regressions_pass2_vs_pass1": 0,
+        "answer_improvements_pass2_vs_pass1": 0,
+        "answer_lateral_pass2_vs_pass1": 0,
         "pass2_lookup_hit_ratio": 0.98,
         "cache_granularity_tokens": 16,
         "pass2_achievable_hit_tokens": 1266912,
@@ -141,8 +151,14 @@ def test_pre_split_report_gates_combined_flips():
     for key in (
         "answer_flips_pass1_vs_baseline",
         "parse_flips_pass1_vs_baseline",
+        "answer_regressions_pass1_vs_baseline",
+        "answer_improvements_pass1_vs_baseline",
+        "answer_lateral_pass1_vs_baseline",
         "answer_flips_pass2_vs_pass1",
         "parse_flips_pass2_vs_pass1",
+        "answer_regressions_pass2_vs_pass1",
+        "answer_improvements_pass2_vs_pass1",
+        "answer_lateral_pass2_vs_pass1",
         "pass1_answer_parse_ratio",
         "pass2_answer_parse_ratio",
     ):
@@ -151,6 +167,7 @@ def test_pre_split_report_gates_combined_flips():
     assert gate["pass"] is False
     assert gate["answer_flips_pass2_vs_pass1"] == 15
     assert gate["parse_ratio_deltas"] == {}
+    assert gate["flip_asymmetry_p"] == {}
 
 
 def test_hit_ratio_floor_still_binds():
@@ -160,9 +177,129 @@ def test_hit_ratio_floor_still_binds():
 
 def test_count_flips_classifies_both_kinds():
     bench = MMEBenchmark()
-    items = [{"qid": str(i)} for i in range(4)]
+    items = [{"qid": str(i), "answer": "yes"} for i in range(4)]
     pass_x = ["Yes", "Yes", "maybe", "No"]
     pass_y = ["No", "Yes", "No", ""]
     counts = count_flips(bench, items, pass_x, pass_y)
-    assert counts == FlipCounts(answer_flips=1, parse_flips=2)
+    # Item 0 flips no->yes against an answer key of yes, so the pass under
+    # test is the one that got it right: an improvement, not a regression.
+    assert counts == FlipCounts(
+        answer_flips=1,
+        parse_flips=2,
+        regressions=0,
+        improvements=1,
+        lateral=0,
+    )
     assert counts.total == 3
+
+
+def test_count_flips_directions_split_by_answer_key():
+    bench = MMEBenchmark()
+    items = [
+        {"qid": "0", "answer": "yes"},
+        {"qid": "1", "answer": "no"},
+    ]
+    # Both items flip; the answer key decides which way each one counts.
+    counts = count_flips(bench, items, ["No", "Yes"], ["Yes", "No"])
+    assert counts.answer_flips == 2
+    assert (counts.regressions, counts.improvements, counts.lateral) == (2, 0, 0)
+
+
+def test_count_flips_lateral_needs_more_than_two_verdicts():
+    # MMAU offers up to four options, so a flip can move between two wrong
+    # ones -- direction-free, and left to the count budget alone.
+    bench = MMAUBenchmark()
+    items = [{"qid": "0", "choices": ["a", "b", "c"], "answer_letter": "C"}]
+    counts = count_flips(bench, items, ["A"], ["B"])
+    assert counts.answer_flips == 1
+    assert (counts.regressions, counts.improvements, counts.lateral) == (0, 0, 1)
+
+
+def test_flip_asymmetry_p_is_the_exact_binomial_tail():
+    assert flip_asymmetry_p(0, 0) == 1.0
+    assert flip_asymmetry_p(1, 1) == 0.75
+    assert flip_asymmetry_p(19, 0) == 0.5**19
+    # Symmetric input can never be evidence of skew.
+    assert flip_asymmetry_p(50, 50) > 0.5
+
+
+def test_one_sided_flips_fail_inside_the_count_budget():
+    # 11 flips sit under the default budget of 0.005 * 2374 = 11.87, so the
+    # count alone passes them. All 11 leaning the same way is what a
+    # corrupting cache looks like (p = 0.5**11), and that fails.
+    gate = parity_gate(
+        _report(
+            flips_pass2_vs_pass1=11,
+            answer_flips_pass2_vs_pass1=11,
+            answer_regressions_pass2_vs_pass1=11,
+            answer_improvements_pass2_vs_pass1=0,
+        )
+    )
+    assert gate["pass"] is False
+    assert gate["answer_flips_pass2_vs_pass1"] <= gate["max_flips"]
+    assert gate["flip_asymmetry_p"]["pass2_vs_pass1"] == 0.5**11
+
+
+def test_balanced_flips_pass_a_widened_budget():
+    # The qwen2-vl-2b case on vLLM 0.27.1: 19 flips against a 0.01 budget,
+    # near-evenly split, which is the engine's batch-shape numerics rather
+    # than a defect.
+    gate = parity_gate(
+        _report(
+            flips_pass2_vs_pass1=19,
+            answer_flips_pass2_vs_pass1=19,
+            answer_regressions_pass2_vs_pass1=10,
+            answer_improvements_pass2_vs_pass1=9,
+        ),
+        max_flip_fraction=0.01,
+    )
+    assert gate["pass"] is True
+
+
+def test_asymmetry_calibration_at_the_widened_budget():
+    # What the widened budget still catches: of 19 flips, 15 one way fails
+    # and 14 passes. Pins the calibration the threshold comment claims.
+    def gate_for(regressions: int) -> dict:
+        return parity_gate(
+            _report(
+                flips_pass2_vs_pass1=19,
+                answer_flips_pass2_vs_pass1=19,
+                answer_regressions_pass2_vs_pass1=regressions,
+                answer_improvements_pass2_vs_pass1=19 - regressions,
+            ),
+            max_flip_fraction=0.01,
+        )
+
+    assert gate_for(15)["pass"] is False
+    assert gate_for(14)["pass"] is True
+
+
+def test_baseline_comparison_is_gated_on_direction_too():
+    # pass1 vs the no-LMCache baseline exercises the store path; a one-sided
+    # lean there is a defect the cold pass wrote, not a hit-path artifact.
+    gate = parity_gate(
+        _report(
+            flips_pass1_vs_baseline=8,
+            answer_flips_pass1_vs_baseline=8,
+            answer_regressions_pass1_vs_baseline=8,
+            answer_improvements_pass1_vs_baseline=0,
+        )
+    )
+    assert gate["pass"] is False
+    assert gate["flip_asymmetry_p"]["pass1_vs_baseline"] == 0.5**8
+
+
+def test_lateral_flips_do_not_move_the_asymmetry():
+    # Direction-free flips stay out of the binomial; they are bounded by the
+    # count budget, which 5 flips of 2374 does not reach.
+    gate = parity_gate(
+        _report(
+            flips_pass2_vs_pass1=5,
+            answer_flips_pass2_vs_pass1=5,
+            answer_regressions_pass2_vs_pass1=0,
+            answer_improvements_pass2_vs_pass1=0,
+            answer_lateral_pass2_vs_pass1=5,
+        )
+    )
+    assert gate["pass"] is True
+    assert gate["flip_asymmetry_p"]["pass2_vs_pass1"] == 1.0

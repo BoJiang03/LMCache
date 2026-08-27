@@ -55,6 +55,7 @@ import dataclasses
 import glob
 import io
 import json
+import math
 import os
 import pathlib
 import re
@@ -108,6 +109,20 @@ MAX_PIXELS = 768 * 28 * 28
 # gateable quantity; a concentration of flips in one category is diagnosed
 # from the per-category table the report already carries.
 MAX_FLIP_FRACTION = 0.005  # verdict-to-verdict answer flips, both comparisons
+# Answer flips are bounded by COUNT above and by DIRECTION here, because the
+# count alone cannot separate the two things that move a verdict. Engine
+# noise is two-sided: a question sitting within one bf16 quantum of the
+# yes/no boundary is a coin flip, so regressions and improvements arrive in
+# roughly equal numbers -- qwen2-vl-2b on vLLM 0.27.1 flips 19 of 2374 and
+# moves the MME total by 2.25 of 1968.78, with the per-category table gaining
+# and losing in turn (records/2026/08/26/10_). A KV defect is one-sided: it
+# only degrades, which is how the stream-ordering corruption was recognized
+# before it was located. This threshold is the exact one-sided binomial tail
+# for the observed regression share against a fair coin; a run fails when
+# chance explains the skew with probability below it. At 19 flips that takes
+# 15 or more leaning one way, so a widened per-model count budget buys
+# tolerance for noise without also buying tolerance for a defect.
+MAX_FLIP_ASYMMETRY_P = 0.01
 MIN_HIT_RATIO = 0.8  # pass2 lookup hit ratio (else parity is vacuous)
 # Fraction of what pass 1 stored that pass 2 must actually LOAD back.
 # Replaces the raw hit-ratio floor when the cache granularity is coarse: a
@@ -202,6 +217,20 @@ class Benchmark(abc.ABC):
             text: The model's generated text for this question.
             item: The item the answer belongs to, for benchmarks whose
                 valid answers depend on the question (MMAU's option list).
+        """
+
+    @abc.abstractmethod
+    def ground_truth(self, item: dict) -> str:
+        """The correct verdict for one question, in ``parse_answer`` terms.
+
+        Lets ``count_flips`` label a flip as a regression or an improvement,
+        so the gate can tell one-sided corruption from two-sided numeric
+        noise. The value must be comparable with what ``parse_answer``
+        returns for the same item, since ``scores`` already compares the
+        two directly.
+
+        Args:
+            item: The item whose answer key is wanted.
         """
 
     @abc.abstractmethod
@@ -320,6 +349,14 @@ class MMEBenchmark(Benchmark):
             return "no"
         return ""
 
+    def ground_truth(self, item: dict) -> str:
+        """MME's yes/no answer key, as the dataset stores it.
+
+        Args:
+            item: The item whose answer key is wanted.
+        """
+        return item["answer"]
+
     def scores(self, items: list[dict], answers: list[str]) -> dict:
         """Standard MME scoring: per-category acc*100 + acc+*100, summed.
 
@@ -330,7 +367,7 @@ class MMEBenchmark(Benchmark):
         by_cat: dict[str, dict[str, list]] = {}
         for item, answer in zip(items, answers, strict=True):
             cat = by_cat.setdefault(item["category"], {"correct": [], "by_image": {}})
-            ok = self.parse_answer(answer, item) == item["answer"]
+            ok = self.parse_answer(answer, item) == self.ground_truth(item)
             cat["correct"].append(ok)
             cat["by_image"].setdefault(item["qid"], []).append(ok)
 
@@ -543,6 +580,14 @@ class MMAUBenchmark(Benchmark):
         ]
         return hits[0] if len(hits) == 1 else ""
 
+    def ground_truth(self, item: dict) -> str:
+        """The correct option letter for this question.
+
+        Args:
+            item: The item whose answer key is wanted.
+        """
+        return item["answer_letter"]
+
     def scores(self, items: list[dict], answers: list[str]) -> dict:
         """Per-task accuracy percentages, plus their mean as ``total``.
 
@@ -553,7 +598,7 @@ class MMAUBenchmark(Benchmark):
         """
         by_task: dict[str, list[bool]] = {}
         for item, answer in zip(items, answers, strict=True):
-            ok = self.parse_answer(answer, item) == item["answer_letter"]
+            ok = self.parse_answer(answer, item) == self.ground_truth(item)
             by_task.setdefault(item["task"], []).append(ok)
         per_task = {
             name: round(100.0 * sum(flags) / len(flags), 2)
@@ -600,6 +645,13 @@ def achievable_hit_tokens(prompt_lengths: list[int], granularity: int) -> int:
 class FlipCounts:
     """Tally of changed verdicts between two aligned answer passes.
 
+    One pass is under test and the other is the reference it is compared
+    against; that asymmetry is what makes ``regressions`` meaningful, and
+    ``count_flips`` fixes which is which.
+
+    ``regressions``, ``improvements`` and ``lateral`` partition
+    ``answer_flips``.
+
     Attributes:
         answer_flips: Questions where both passes parsed to a verdict and
             the verdicts differ -- the only kind of flip a KV defect must
@@ -607,10 +659,23 @@ class FlipCounts:
         parse_flips: Questions where exactly one pass parsed to a verdict.
             These measure abstain/answer marginality and are bounded via
             the parse-ratio delta instead (``MAX_PARSE_RATIO_DELTA``).
+        regressions: Answer flips where the reference pass was right and
+            the pass under test is wrong. Their share of the directional
+            flips is what ``MAX_FLIP_ASYMMETRY_P`` bounds.
+        improvements: Answer flips the other way round: the reference was
+            wrong and the pass under test is right.
+        lateral: Answer flips between two wrong verdicts, which carry no
+            direction and so stay bounded by the count budget alone.
+            Unreachable on a two-verdict benchmark like MME, where a
+            changed verdict always crosses the answer key; reachable on
+            MMAU, whose questions offer up to four options.
     """
 
     answer_flips: int
     parse_flips: int
+    regressions: int
+    improvements: int
+    lateral: int
 
     @property
     def total(self) -> int:
@@ -627,27 +692,73 @@ def count_flips(
     """Classify every changed verdict between two aligned passes.
 
     Args:
-        benchmark: Supplies ``parse_answer``.
+        benchmark: Supplies ``parse_answer`` and ``ground_truth``.
         items: The questions, aligned with both answer lists.
-        answers_x: Generated answers of one pass, in item order.
-        answers_y: Generated answers of the other pass, same order.
+        answers_x: Generated answers of the pass UNDER TEST, in item order
+            (the hit pass, or the cold pass when the reference is the
+            no-LMCache baseline).
+        answers_y: Generated answers of the REFERENCE pass, same order.
+            A flip away from a correct reference verdict is the regression
+            that ``FlipCounts.regressions`` counts.
 
     Returns:
-        The flip tally; both counts are zero when the passes agree on
-        every question.
+        The flip tally; every count is zero when the passes agree on every
+        question.
     """
     answer_flips = 0
     parse_flips = 0
+    regressions = 0
+    improvements = 0
+    lateral = 0
     for a, b, item in zip(answers_x, answers_y, items, strict=True):
         verdict_a = benchmark.parse_answer(a, item)
         verdict_b = benchmark.parse_answer(b, item)
         if verdict_a == verdict_b:
             continue
-        if verdict_a and verdict_b:
-            answer_flips += 1
-        else:
+        if not (verdict_a and verdict_b):
             parse_flips += 1
-    return FlipCounts(answer_flips=answer_flips, parse_flips=parse_flips)
+            continue
+        answer_flips += 1
+        truth = benchmark.ground_truth(item)
+        if verdict_b == truth:
+            regressions += 1
+        elif verdict_a == truth:
+            improvements += 1
+        else:
+            lateral += 1
+    return FlipCounts(
+        answer_flips=answer_flips,
+        parse_flips=parse_flips,
+        regressions=regressions,
+        improvements=improvements,
+        lateral=lateral,
+    )
+
+
+def flip_asymmetry_p(regressions: int, improvements: int) -> float:
+    """Probability that two-sided noise alone produces this regression skew.
+
+    The exact one-sided binomial tail ``P(X >= regressions)`` for X over
+    ``regressions + improvements`` fair coin flips. A small value means the
+    flips lean toward "was right, now wrong" further than chance accounts
+    for, which is a corrupting cache rather than the engine's batch-shape
+    numerics. The test is one-sided on purpose: an excess of improvements
+    is not a corruption signature.
+
+    Args:
+        regressions: Flips where the reference pass was correct and the
+            pass under test is not.
+        improvements: Flips the other way round.
+
+    Returns:
+        A probability in (0, 1]; 1.0 when there are no directional flips,
+        which reads as "no evidence of skew", not as "no skew".
+    """
+    n = regressions + improvements
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, i) for i in range(regressions, n + 1))
+    return tail / float(2**n)
 
 
 def answer_parse_ratio(
@@ -673,6 +784,19 @@ def answer_parse_ratio(
     return round(parsed / len(items), 4)
 
 
+def lateral_text(counts: FlipCounts) -> str:
+    """Summary-line fragment naming direction-free flips, empty when none.
+
+    Args:
+        counts: The tally whose ``lateral`` count is to be rendered.
+
+    Returns:
+        ``"/=N"`` for N direction-free flips, or ``""`` when the benchmark
+        produced none (always the case for MME).
+    """
+    return f"/={counts.lateral}" if counts.lateral else ""
+
+
 def parity_gate(
     report: dict, max_flip_fraction: float = 0.0, min_parse_ratio: float = 0.0
 ) -> dict:
@@ -696,7 +820,9 @@ def parity_gate(
         Dict with ``pass`` (bool), the evaluated deltas, the flip budget,
         the hit criterion that applied, and the thresholds used. Score
         deltas appear for observability but do not gate (see the threshold
-        block above ``MAX_FLIP_FRACTION``). ``pass2_hit_coverage`` is None
+        block above ``MAX_FLIP_FRACTION``). ``flip_asymmetry_p`` carries one
+        entry per comparison whose direction counts the report records, and
+        is empty for a report predating them. ``pass2_hit_coverage`` is None
         when the report provides no denominator for it (one recorded
         before the coverage fields existed); that is "not measured", not a
         coverage of zero, and it fails a coverage gate rather than
@@ -740,6 +866,23 @@ def parity_gate(
     parse_stable = all(
         delta <= MAX_PARSE_RATIO_DELTA for delta in parse_ratio_deltas.values()
     )
+    # Which way the answer flips lean. A report recorded before the
+    # direction counters existed contributes no entry and keeps gating on
+    # count alone, which is the pre-direction behavior: that can only
+    # over-fail relative to the count budget, never let a defect through
+    # that the budget would have caught.
+    asymmetry_p: dict[str, float] = {}
+    for delta_key in ("pass2_vs_pass1", "pass1_vs_baseline"):
+        regressions = report.get(f"answer_regressions_{delta_key}")
+        improvements = report.get(f"answer_improvements_{delta_key}")
+        if regressions is None or improvements is None:
+            continue
+        # Kept at full precision: rounding before the comparison could lift
+        # a tail that sits just under the threshold up onto it.
+        asymmetry_p[delta_key] = flip_asymmetry_p(regressions, improvements)
+    flips_two_sided = all(
+        probability >= MAX_FLIP_ASYMMETRY_P for probability in asymmetry_p.values()
+    )
     hit_ratio = report["pass2_lookup_hit_ratio"]
     # Reports recorded before the parse-ratio guard existed lack the field;
     # their high absolute MME scores already prove the answers parsed.
@@ -771,6 +914,7 @@ def parity_gate(
     ok = (
         answer_flips_p2_p1 <= max_flips
         and answer_flips_p1_base <= max_flips
+        and flips_two_sided
         and parse_stable
         and hit_ok
         and parse_ratio >= parse_floor
@@ -780,6 +924,7 @@ def parity_gate(
         "max_flips": max_flips,
         "answer_flips_pass2_vs_pass1": answer_flips_p2_p1,
         "answer_flips_pass1_vs_baseline": answer_flips_p1_base,
+        "flip_asymmetry_p": asymmetry_p,
         "parse_ratio_deltas": parse_ratio_deltas,
         "score_delta_pass2_vs_pass1": delta_p2_p1,
         "score_delta_pass1_vs_baseline": delta_p1_base,
@@ -789,6 +934,7 @@ def parity_gate(
         "pass2_hit_coverage": coverage,
         "thresholds": {
             "max_flip_fraction": flip_fraction,
+            "max_flip_asymmetry_p": MAX_FLIP_ASYMMETRY_P,
             "max_parse_ratio_delta": MAX_PARSE_RATIO_DELTA,
             "min_hit_ratio": MIN_HIT_RATIO,
             "min_hit_coverage": MIN_HIT_COVERAGE,
@@ -1258,8 +1404,14 @@ def main() -> int:
         "flips_pass2_vs_pass1": flips_p2_p1.total,
         "answer_flips_pass1_vs_baseline": flips_p1_base.answer_flips,
         "parse_flips_pass1_vs_baseline": flips_p1_base.parse_flips,
+        "answer_regressions_pass1_vs_baseline": flips_p1_base.regressions,
+        "answer_improvements_pass1_vs_baseline": flips_p1_base.improvements,
+        "answer_lateral_pass1_vs_baseline": flips_p1_base.lateral,
         "answer_flips_pass2_vs_pass1": flips_p2_p1.answer_flips,
         "parse_flips_pass2_vs_pass1": flips_p2_p1.parse_flips,
+        "answer_regressions_pass2_vs_pass1": flips_p2_p1.regressions,
+        "answer_improvements_pass2_vs_pass1": flips_p2_p1.improvements,
+        "answer_lateral_pass2_vs_pass1": flips_p2_p1.lateral,
         "pass2_lookup_hit_ratio": round(hit_ratio, 4),
         "cache_granularity_tokens": (
             args.hybrid_block_tokens or LMCACHE_TEST_CHUNK_SIZE
@@ -1308,10 +1460,16 @@ def main() -> int:
         f"{gate['score_delta_pass1_vs_baseline']:.2f} "
         f"answer_flips(pass2 vs pass1)="
         f"{flips_p2_p1.answer_flips}/{len(items)} "
-        f"(+{flips_p2_p1.parse_flips} parse) "
+        f"(-{flips_p2_p1.regressions}/+{flips_p2_p1.improvements}"
+        f"{lateral_text(flips_p2_p1)}, "
+        f"p={gate['flip_asymmetry_p']['pass2_vs_pass1']:.4f}, "
+        f"+{flips_p2_p1.parse_flips} parse) "
         f"answer_flips(pass1 vs baseline)="
         f"{flips_p1_base.answer_flips}/{len(items)} "
-        f"(+{flips_p1_base.parse_flips} parse) "
+        f"(-{flips_p1_base.regressions}/+{flips_p1_base.improvements}"
+        f"{lateral_text(flips_p1_base)}, "
+        f"p={gate['flip_asymmetry_p']['pass1_vs_baseline']:.4f}, "
+        f"+{flips_p1_base.parse_flips} parse) "
         f"=> {'PASS' if gate['pass'] else 'FAIL'}"
     )
     return 0 if gate["pass"] else 1

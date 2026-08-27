@@ -172,8 +172,24 @@ across its three tasks, so an aggregate-only score would average away a
 regression confined to one of them.
 
 Pass criteria: verdict-to-verdict answer flips ≤ 0.5% on BOTH comparisons
-(pass1 vs baseline, pass2 vs pass1), parse-ratio movement ≤ 0.02 between
-the passes of each comparison, plus a non-vacuity gate on the hit path.
+(pass1 vs baseline, pass2 vs pass1) **and two-sided in direction**,
+parse-ratio movement ≤ 0.02 between the passes of each comparison, plus a
+non-vacuity gate on the hit path.
+
+Answer flips are bounded twice, in count and in direction, because the
+count alone cannot separate the two things that move a verdict. The engine
+is a two-sided source: batch shape shifts first-token logits by one bf16
+quantum, and a question sitting that close to the yes/no boundary flips
+either way with equal ease — qwen2-vl-2b on vLLM 0.27.1 flips 19 of 2374
+and moves the MME total by 2.25 of 1968.78, its per-category table gaining
+and losing in turn. A KV defect is one-sided: it only degrades. The gate
+therefore scores each comparison's regressions against its improvements
+with the exact one-sided binomial tail and fails below p = 0.01, which at
+19 flips takes 15 or more leaning one way. That is what lets a per-model
+count budget widen to cover engine noise without widening the cover a
+defect gets. Flips between two *wrong* verdicts carry no direction and are
+left to the count budget; MME cannot produce them (a changed yes/no always
+crosses the answer key), MMAU can.
 `''`↔verdict parse flips are counted apart from answer flips: they measure
 how many answers sit on the model's own abstain/answer margin (gemma-4-e4b
 flips a two-digit number of them in both directions between identical
@@ -361,12 +377,16 @@ list. Exit codes: 0 `SUPPORTED`, 2 `PROVISIONAL` (suite green, parity not
 provided), 1 `NOT_SUPPORTED`. A skipped or empty suite can never certify
 (skips are counted as failure).
 
-`schema_version` is **5** since the in-process path was dropped. Every
-certificate at 4 or below was produced by the two-path suite: its `scope`
-block claims a deployment the suite no longer drives, and its
-`known_not_covered` list predates the in-process and deepstack
-exclusions. Those models need re-certifying, not re-labelling — no
-recorded certificate carries a claim this suite would issue today.
+`schema_version` is **8** since the parity gate began bounding answer-flip
+direction; `certify.py` carries the full version log. A recorded parity
+report without the direction counters is refused rather than re-gated on
+count alone, so reaching 8 needs a fresh parity run, not a relabelled
+report. Older certificates are not comparable either: every one at 4 or
+below was produced by the two-path suite, whose `scope` block claims a
+deployment the suite no longer drives and whose `known_not_covered` list
+predates the in-process and deepstack exclusions. Those models need
+re-certifying, not re-labelling — no recorded certificate carries a claim
+this suite would issue today.
 
 Three fields exist because a certificate that overstates itself is worse
 than no certificate, and each began as a real defect in a published one:
@@ -436,7 +456,8 @@ into the tests:
   (2026-08-20): flip counts and flipped-question sets reproduce exactly
   across runs, baseline reruns are byte-identical (0 self-flips), and
   per-question inspection shows no corruption signature; KV corruption is
-  still caught by the replay, hit-ratio, and score-delta oracles.
+  still caught by the replay and hit-ratio oracles and by the flip-direction
+  test, which a widened budget does not loosen.
 - `mme_max_local_cpu_gb` — LMCache local-CPU capacity for the MME parity
   run (0 = the 40 GB default, which holds the full benchmark's KV for
   GQA-2 models at 28–36 KB/token). A wider-KV model (InternVL3.5-2B's
