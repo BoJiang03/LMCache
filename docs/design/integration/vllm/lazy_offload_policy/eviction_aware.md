@@ -349,49 +349,6 @@ vLLM hit instead of 0 on a lookup miss.
   each round either emits (and `max_drain_per_step` is finite) or finds
   nothing due. Only pins that *were* in the queue count, and a shared block
   counts once.
-- **Backlog cap (`max_pending_ops`)**: the danger depth is a forecast, and
-  no forecast built from the preceding steps can see a single admission
-  that consumes thousands of blocks at once. A request whose prefix comes
-  back from a lower tier is exactly that: vLLM allocates blocks for the
-  whole external hit in one step, so the step that would have to be
-  predicted *is* the step that pays for the prediction. Measured on the
-  agentic replay below, 60–80% of all operations lost to eviction were
-  destroyed within 1.5 s of a retrieve, against an 11% baseline for a
-  random instant — a 6–7× enrichment, and the dominant loss mode.
-
-  What cannot be forecast can still be bounded. Above the cap the oldest
-  pending operations are emitted regardless of their free-queue rank, at
-  `max_drain_per_step` per step and only down to the cap (the cap bounds
-  the backlog; it is not an instruction to empty it). Requests are taken
-  in admission order, each contributing the contiguous front run of its
-  surviving operations, so prefix closure, the deduplication-hole cut, the
-  loss check and the one-batch-per-request constraint hold exactly as they
-  do for a pressure-driven emission; a request with a batch in flight, or
-  one this drain already emitted for, is skipped. `0` (the default) leaves
-  the backlog unbounded and the policy behaves exactly as it did before
-  the cap existed.
-
-  Age is the ordering because prefix closure already forces it *within* a
-  request — a batch must start at the front of its pending list — and a
-  request's front operations are both its oldest and the ones whose blocks
-  reached the free queue first, so age is the exposure proxy that costs
-  nothing to compute. Targeting exposure directly (asking `is_free` of
-  every pending block, or reading the queue past the danger depth to rank
-  them) would buy a sharper choice of *which* request goes first while
-  paying per-step for a decision the closure rule has already mostly made.
-
-  The cap trades the wait's filtering for bounded loss. The wait only
-  filters content that is *never* evicted from the GPU while the engine
-  runs — anything evicted later is stored either way, just later — so on
-  the replay the filtering it bought was the 9–22 operations still pending
-  at shutdown, against 114–140 lost to eviction. A backlog deep enough to
-  lose operations is deeper than the workload can defend, which is what
-  makes `dropped_evicted` the sizing sensor: raise the cap while it stays
-  near zero, lower it while it does not. `backlog_emitted` reports how
-  many stores the cap timed rather than the forecast; its share of
-  `emitted` rising towards 1 means the cap has taken over the timing
-  entirely, which is eager offload with extra steps.
-
 - **Idle drain (`idle_drain_max_ops`)**: the pressure trigger has a phase
   problem it cannot fix alone. It times an emission to the moment the
   operation's blocks are about to be reallocated, and the allocator is
@@ -399,11 +356,10 @@ vLLM hit instead of 0 on a lookup miss.
   submitted in phase with the burst they waited out, competing with it for
   the step. A step whose allocation rate is at or below
   `idle_threshold_blocks` is the opposite moment: the drain emits up to
-  `idle_drain_max_ops` of the oldest operations, taken exactly as the
-  backlog drain takes them (admission order, contiguous front run, loss
-  check, economy backstop, one batch per request), so the backlog is
-  worked off in the gaps between bursts instead of inside them. `0` (the
-  default) disables it.
+  `idle_drain_max_ops` of the oldest operations (admission order,
+  contiguous front run, loss check, economy backstop, one batch per
+  request), so the backlog is worked off in the gaps between bursts
+  instead of inside them. `0` (the default) disables it.
 
   The rate is `max(EMA, next-step feedforward)`: the feedforward vetoes
   the first step of a burst before the EMA has seen it, and the EMA
@@ -412,9 +368,8 @@ vLLM hit instead of 0 on a lookup miss.
   per step, so the default threshold of 1.0 separates decode-only steps
   from prefill at typical concurrency.
 
-  The trade is the backlog cap's: an idle emission gives up the wait's
-  remaining filtering, since content evicted after the emission is stored
-  either way. The sensors mirror it — `idle_emitted` is the share of
+  The trade: an idle emission gives up the wait's remaining filtering,
+  since content evicted after the emission is stored either way. The sensors mirror it — `idle_emitted` is the share of
   `emitted` the idle path timed rather than the forecast, and
   `idle_drain_steps` counts the drains in which it emitted at all.
 
@@ -463,11 +418,10 @@ boundaries, so completed request ids do not accumulate.
 ## Observability
 
 `stats()` returns cumulative counters. `dropped_evicted` is the gate-1 sensor
-(drop rate: data lost before we drained — lower the horizon is too tight, or
-the backlog cap is too loose); `emitted / admitted` is store precision's
-denominator; `backlog_emitted` is the share of `emitted` that the backlog cap
-timed rather than the eviction forecast, `idle_emitted` the share the idle
-drain timed (`idle_drain_steps` counts the drains in which it fired);
+(drop rate: data lost before we drained — lower the horizon is too tight);
+`emitted / admitted` is store precision's denominator; `idle_emitted` is the
+share of `emitted` the idle drain timed rather than the eviction forecast
+(`idle_drain_steps` counts the drains in which it fired);
 `rejected_short_prefix` audits gate 3; `danger_floor_raises` counts the
 loss-driven widenings of the danger window (events, not operations, like
 `throttled_drains`). Tests: `tests/v1/test_lazy_offload_eviction_aware.py` (pure, no vLLM).

@@ -112,7 +112,6 @@ def make_queue(
     danger_floor_max_blocks: int = 0,
     min_prefix_tokens: int = 0,
     max_drain_per_step: int = 64,
-    max_pending_ops: int = 0,
     max_drain_blocks_per_step: int = 0,
     idle_drain_max_ops: int = 0,
     idle_threshold_blocks: float = 1.0,
@@ -122,7 +121,6 @@ def make_queue(
         danger_floor_max_blocks=danger_floor_max_blocks,
         min_prefix_tokens=min_prefix_tokens,
         max_drain_per_step=max_drain_per_step,
-        max_pending_ops=max_pending_ops,
         max_drain_blocks_per_step=max_drain_blocks_per_step,
         idle_drain_max_ops=idle_drain_max_ops,
         idle_threshold_blocks=idle_threshold_blocks,
@@ -145,13 +143,6 @@ class TestConfigValidation:
     def test_rejects_zero_drain_cap(self) -> None:
         with pytest.raises(ValueError):
             LazyOffloadPolicyConfig(max_drain_per_step=0)
-
-    def test_backlog_is_unbounded_by_default(self) -> None:
-        assert LazyOffloadPolicyConfig().max_pending_ops == 0
-
-    def test_rejects_negative_backlog_cap(self) -> None:
-        with pytest.raises(ValueError):
-            LazyOffloadPolicyConfig(max_pending_ops=-1)
 
     def test_block_volume_is_unbounded_by_default(self) -> None:
         assert LazyOffloadPolicyConfig().max_drain_blocks_per_step == 0
@@ -1344,201 +1335,6 @@ class TestCoveredPrefix:
             queue.covered_prefix_tokens("", {0: [1]}, [16], 32, -1)
 
 
-class TestBacklogCap:
-    """``max_pending_ops``: bound what one allocation burst can destroy.
-
-    The danger depth is a forecast built from an EMA of per-step
-    allocation, so a single admission that consumes thousands of blocks --
-    the step that pays for the forecast is the step that destroys the
-    backlog -- cannot be anticipated. These tests cover the second line of
-    defence: capping how much content waits at once.
-    """
-
-    def _pin_ops(self, count: int) -> tuple[FakePoolView, EvictionAwareStoreQueue]:
-        """Admit ``count`` ops of one request whose blocks are not free.
-
-        No block is in the free queue, so no op is ever due under
-        eviction pressure: only the backlog cap can release them.
-        """
-        pool = FakePoolView()
-        blocks = list(range(1, count + 1))
-        seed_blocks(pool, blocks, free=False)
-        queue = make_queue(pool, max_pending_ops=2)
-        for index, block in enumerate(blocks):
-            queue.admit(
-                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        return pool, queue
-
-    def test_unbounded_backlog_emits_nothing_without_pressure(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3, 4, 5], free=False)
-        queue = make_queue(pool, max_pending_ops=0)
-        for index, block in enumerate([1, 2, 3, 4, 5]):
-            queue.admit(
-                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert queue.num_pending_ops() == 5
-        assert queue.stats().backlog_emitted == 0
-
-    def test_cap_releases_the_oldest_until_the_backlog_fits(self) -> None:
-        _, queue = self._pin_ops(5)
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        # Oldest first, and only down to the cap: 5 pending - 3 emitted = 2.
-        assert [op.prefix_end_tokens for op in result.to_store] == [256, 512, 768]
-        assert queue.num_pending_ops() == 2
-        stats = queue.stats()
-        assert stats.backlog_emitted == 3
-        assert stats.emitted == 3
-
-    def test_cap_never_binds_while_the_backlog_fits(self) -> None:
-        _, queue = self._pin_ops(2)
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert queue.stats().backlog_emitted == 0
-
-    def test_cap_respects_the_per_step_drain_budget(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3, 4, 5], free=False)
-        queue = make_queue(pool, max_drain_per_step=2, max_pending_ops=1)
-        for index, block in enumerate([1, 2, 3, 4, 5]):
-            queue.admit(
-                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        first = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in first.to_store] == [256, 512]
-        assert queue.num_pending_ops() == 3
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        second = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in second.to_store] == [768, 1024]
-        assert queue.num_pending_ops() == 1
-
-    def test_pressure_emission_leaves_the_budget_it_spent(self) -> None:
-        """One batch per request: a request the pressure loop drained is not
-        drained again by the backlog pass in the same step."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1], free=True)
-        seed_blocks(pool, [2, 3], free=False)
-        queue = make_queue(pool, horizon_steps=1.0, max_pending_ops=1)
-        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
-        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
-        queue.admit(make_op("req", [3], pool, prefix_end_tokens=768))
-        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in result.to_store] == [256]
-        assert queue.num_pending_ops() == 2
-        assert queue.stats().backlog_emitted == 0
-
-    def test_cap_skips_a_request_with_a_batch_in_flight(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3, 4], free=False)
-        queue = make_queue(pool, max_pending_ops=1)
-        for block, end in ((1, 256), (2, 512)):
-            queue.admit(make_op("blocked", [block], pool, prefix_end_tokens=end))
-        for block, end in ((3, 256), (4, 512)):
-            queue.admit(make_op("free-to-go", [block], pool, prefix_end_tokens=end))
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due(blocked_request_ids={"blocked"})
-
-        assert {op.request_id for op in result.to_store} == {"free-to-go"}
-
-    def test_cap_walks_requests_in_admission_order(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3], free=False)
-        queue = make_queue(pool, max_pending_ops=2)
-        queue.admit(make_op("req-z-first", [1], pool, prefix_end_tokens=256))
-        queue.admit(make_op("req-a-second", [2], pool, prefix_end_tokens=256))
-        queue.admit(make_op("req-m-third", [3], pool, prefix_end_tokens=256))
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.request_id for op in result.to_store] == ["req-z-first"]
-
-    def test_cap_drops_a_lost_op_instead_of_storing_stale_data(self) -> None:
-        """The loss check runs on the backlog path too: an op whose block was
-        reallocated must not be emitted under its stale snapshot."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3, 4], free=False)
-        queue = make_queue(pool, max_pending_ops=1)
-        for index, block in enumerate([1, 2, 3, 4]):
-            queue.admit(
-                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        # Block 3 is reallocated: its hash no longer matches the snapshot.
-        pool.hashes[3] = b"reallocated"
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        # Prefix closure: op 3 and everything after it is dropped, and the
-        # cap releases the intact front down to its bound.
-        assert [op.prefix_end_tokens for op in result.to_store] == [256]
-        assert [op.prefix_end_tokens for op in result.dropped_evicted] == [768, 1024]
-        assert queue.num_pending_ops() == 1
-
-    def test_cap_stops_at_a_deduplication_hole(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3], free=False)
-        queue = make_queue(pool, max_pending_ops=1)
-        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
-        # A hole: this op starts past where the previous one ended.
-        queue.admit(
-            make_op("req", [2], pool, prefix_end_tokens=768, prefix_start_tokens=512)
-        )
-        queue.admit(make_op("req", [3], pool, prefix_end_tokens=1024))
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in result.to_store] == [256]
-        assert queue.num_pending_ops() == 2
-
-    def test_backlog_emitted_is_a_subset_of_emitted(self) -> None:
-        """The ledger equation must still close: the new counter reports how
-        a store was timed, not a new way for an op to leave the queue."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1], free=True)
-        seed_blocks(pool, [2, 3, 4], free=False)
-        queue = make_queue(pool, horizon_steps=1.0, max_pending_ops=1)
-        queue.admit(make_op("pressure", [1], pool, prefix_end_tokens=256))
-        for index, block in enumerate([2, 3, 4]):
-            queue.admit(
-                make_op("backlog", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
-
-        queue.collect_due()
-
-        # The pressure emission already shrank the backlog, so the cap only
-        # has to release the remaining overflow: 4 admitted - 1 pressure - 1
-        # cap = 2 backlog emissions.
-        stats = queue.stats()
-        assert stats.emitted == 3
-        assert stats.backlog_emitted == 2
-        assert queue.num_pending_ops() == 1
-        assert stats.admitted == stats.emitted + queue.num_pending_ops()
-
-
 class TestIdleDrain:
     """``idle_drain_max_ops``: work the backlog off in the gaps.
 
@@ -1787,34 +1583,6 @@ class TestBlockVolumeCap:
 
         assert [op.prefix_end_tokens for op in result.to_store] == [256]
         assert result.ops_held_back == 1
-
-    def test_cap_is_shared_with_the_backlog_drain(self) -> None:
-        """One budget per drain: blocks the pressure pass spent are gone
-        for the backlog pass of the same step."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2], free=True)
-        seed_blocks(pool, [3, 4, 5], free=False)
-        queue = make_queue(
-            pool,
-            horizon_steps=1.0,
-            max_pending_ops=1,
-            max_drain_blocks_per_step=3,
-        )
-        queue.admit(make_op("pressure", [1, 2], pool, prefix_end_tokens=256))
-        for index, block in enumerate([3, 4, 5]):
-            queue.admit(
-                make_op("backlog", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        queue.observe_step(new_blocks_allocated=2, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        # Pressure spends 2 of 3 blocks; the backlog overflow of 2 ops gets
-        # one block of budget, so one op crosses the bound and one waits.
-        assert [op.request_id for op in result.to_store] == ["pressure", "backlog"]
-        stats = queue.stats()
-        assert stats.backlog_emitted == 1
-        assert queue.num_pending_ops() == 2
 
     def test_cap_is_shared_with_the_idle_drain(self) -> None:
         pool = FakePoolView()

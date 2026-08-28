@@ -152,8 +152,6 @@ class LazyOffloadPendingStore:
                 0 disables the loss-adaptive danger floor),
                 ``lmcache.mp.lazy_offload_min_prefix_tokens`` (int),
                 ``lmcache.mp.lazy_offload_max_drain_per_step`` (int),
-                ``lmcache.mp.lazy_offload_max_pending_ops`` (int, 0 leaves
-                the backlog unbounded),
                 ``lmcache.mp.lazy_offload_max_drain_blocks_per_step`` (int,
                 0 leaves the per-step block volume unbounded),
                 ``lmcache.mp.lazy_offload_idle_drain_max_ops`` (int, 0
@@ -217,12 +215,6 @@ class LazyOffloadPendingStore:
                 cast(
                     str | int | float,
                     configs.get("lmcache.mp.lazy_offload_max_drain_per_step", 64),
-                )
-            ),
-            max_pending_ops=int(
-                cast(
-                    str | int | float,
-                    configs.get("lmcache.mp.lazy_offload_max_pending_ops", 0),
                 )
             ),
             max_drain_blocks_per_step=int(
