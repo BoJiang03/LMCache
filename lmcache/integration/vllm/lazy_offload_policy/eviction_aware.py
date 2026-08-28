@@ -331,6 +331,18 @@ class PendingStoreOp:
     cache_salt: str = ""
 
 
+def _token_span(ops: list[PendingStoreOp]) -> int:
+    """Total token range covered by a list of operations.
+
+    Args:
+        ops: Operations of one request, each covering a disjoint range.
+
+    Returns:
+        The sum of their token ranges.
+    """
+    return sum(op.prefix_end_tokens - op.prefix_start_tokens for op in ops)
+
+
 def _content_key(
     op: PendingStoreOp,
 ) -> tuple[str, int, tuple["BlockHashWithGroupId", ...]]:
@@ -456,6 +468,14 @@ class LazyOffloadCounters:
 
     ``dropped_evicted`` is the gate-1 quality sensor (drop rate): operations
     lost because their blocks were evicted before the policy drained them.
+    ``dropped_evicted_tokens`` weighs the same losses by the token range they
+    covered, and is the one that says what a drop cost: operations vary from
+    a single chunk to a whole context, so a drop count alone cannot separate
+    a tail of short suffixes from a few destroyed full-length chains. Read
+    against the cache's stored token volume it gives the loss fraction in
+    the unit the cache is actually sized in. Like
+    ``covered_prefix_tokens_skipped`` it is a weight, not an outcome, and
+    stands outside the admission ledger's arithmetic.
     ``rejected_short_prefix`` counts gate-3 rejections: held operations whose
     request finished below the break-even prefix length, plus chains that
     eviction truncated back below it before emission.
@@ -514,6 +534,7 @@ class LazyOffloadCounters:
     admitted: int = 0
     emitted: int = 0
     dropped_evicted: int = 0
+    dropped_evicted_tokens: int = 0
     rejected_short_prefix: int = 0
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
@@ -548,6 +569,7 @@ class LazyOffloadCounters:
             self.admitted,
             self.emitted,
             self.dropped_evicted,
+            self.dropped_evicted_tokens,
             self.rejected_short_prefix,
             self.rejected_unhashed,
             self.rejected_prefix_broken,
@@ -1069,6 +1091,7 @@ class EvictionAwareStoreQueue:
             # rejection (it can never reach break-even now).
             self._counters.rejected_short_prefix += first_lost
             self._counters.dropped_evicted += len(held) - first_lost
+            self._counters.dropped_evicted_tokens += _token_span(held[first_lost:])
             self._broken_prefixes.add(request_id)
             logger.info(
                 "Lazy offload: dropped %d held store op(s) of request %s: "
@@ -1557,6 +1580,7 @@ class EvictionAwareStoreQueue:
         dropped = ops[first_lost:]
         result.dropped_evicted.extend(dropped)
         self._counters.dropped_evicted += len(dropped)
+        self._counters.dropped_evicted_tokens += _token_span(dropped)
         self._broken_prefixes.add(request_id)
         surviving = ops[:first_lost]
         self._replace_pending(request_id, dropped, surviving, result)

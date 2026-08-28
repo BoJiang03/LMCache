@@ -316,6 +316,24 @@ class TestPrefixClosure:
         assert [op.prefix_end_tokens for op in result.dropped_evicted] == [512, 768]
         assert queue.num_pending_ops() == 1  # the intact prefix stays pending
         assert queue.stats().dropped_evicted == 2
+        assert queue.stats().dropped_evicted_tokens == 512  # two 256-token ops
+
+    def test_drop_counter_weighs_lost_tokens_not_ops(self) -> None:
+        """Ops differ by orders of magnitude in range, so the drop count
+        alone cannot say what a loss cost; the token weight can."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1, 2], free=True)
+        queue = make_queue(pool)
+        queue.admit(
+            make_op("req", [1], pool, prefix_start_tokens=0, prefix_end_tokens=8192)
+        )
+        queue.admit(make_op("req", [2], pool, prefix_end_tokens=8448))
+        pool.evict(1)
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        queue.collect_due()
+        stats = queue.stats()
+        assert stats.dropped_evicted == 2
+        assert stats.dropped_evicted_tokens == 8192 + 256
 
     def test_admission_rejected_after_prefix_break(self) -> None:
         pool = FakePoolView()
@@ -412,6 +430,7 @@ class TestEconomyGate:
         stats = queue.stats()
         assert stats.rejected_short_prefix == 1  # the intact front (gate 3)
         assert stats.dropped_evicted == 1  # the lost op (gate 1)
+        assert stats.dropped_evicted_tokens == 256  # weighed, gate-3 front excluded
         later = queue.admit(make_op("req", [3], pool, prefix_end_tokens=1280))
         assert later is AdmitResult.REJECTED_PREFIX_BROKEN
 

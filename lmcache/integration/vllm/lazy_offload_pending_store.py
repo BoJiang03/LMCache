@@ -59,7 +59,10 @@ def _format_ledger(
         counters: The cumulative policy counters.
         num_pending: Operations still buffered at the same instant. Together
             with ``num_held`` it makes the line close as an equation --
-            ``admitted == pending + held + emitted + every drop counter`` --
+            ``admitted == pending + held + emitted + every drop counter``,
+            over the operation counts only; the token weights
+            (``dropped_evicted_tokens``, ``covered_prefix_tokens_skipped``)
+            are not terms in it --
             so a reader can tell an operation still waiting for pressure
             from one that left the queue without incrementing any outcome
             counter. Without them the strongest available check is

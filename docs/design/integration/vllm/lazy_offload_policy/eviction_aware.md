@@ -390,7 +390,12 @@ boundaries, so completed request ids do not accumulate.
 ## Observability
 
 `stats()` returns cumulative counters. `dropped_evicted` is the gate-1 sensor
-(drop rate: data lost before we drained — lower the horizon is too tight);
+(drop rate: data lost before we drained — lower the horizon is too tight),
+and `dropped_evicted_tokens` weighs the same losses by token range, which is
+what says whether a drop rate is a tail of short suffixes or a few destroyed
+full-length chains — ops span anything from one chunk to a whole context.
+Like `covered_prefix_tokens_skipped` it is a weight, not an outcome, so it is
+not a term in the ledger equation below;
 `emitted / admitted` is store precision's denominator;
 `rejected_short_prefix` audits gate 3; `danger_floor_raises` counts the
 loss-driven widenings of the danger window (events, not operations, like
