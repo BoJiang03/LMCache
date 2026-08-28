@@ -273,3 +273,72 @@ permanently lost with its server. `arm.sh` should scrape at profiling start and
 before teardown and report the delta; not changed yet because an arm was running.
 
 Repo clean at `3ec93178` before this record; nothing pushed.
+
+## 9. Whether the method transfers to another model
+
+The question is what has to be re-measured when the model changes, and whether
+the answer can change shape rather than just scale.
+
+Input taxonomy:
+
+```
+KV_B_PER_TOK              config.json arithmetic (2*layers*kv_heads*head_dim*2)
+WEIGHTS_GIB               one server boot log, which prints L0 directly
+OVERHEAD_GIB, HBM_GIB     same log
+PREFILL_TOK_S             one low-load arm
+DECODE_TOK_S              same arm
+ISL/OSL/MAX_REQ_TOK       corpus only, model-independent
+W_GIB, T_S                corpus only
+g(N,S) hit surface        corpus only, 99 k replayed events
+SURFACE_CAL               one gate-passing arm
+OVERSUB_MAX               not measured at all, currently assumed 0.5
+```
+
+Everything in the middle block carries over free. The minimum path for a new
+model is two arms, roughly an hour of GPU: a low-load arm for the two rates,
+and one gate-passing arm to recalibrate the surface haircut and to locate the
+oversubscription ceiling.
+
+Sensitivity, `sens.py`. It allows L0 up to 320 GiB so the trend is visible
+without the HBM of this node clipping it, which is why the baseline row reads
+N=64/L0=320 instead of the real N=48/L0=187:
+
+```
+case                          b KiB    dec     N    L0     L1     d%  over
+baseline (Qwen3-30B-A3B)         96   57.6    64   320    640    8.5  0.26
+KV/token x0.5                    48   57.6   128   320    640    8.6  0.26
+KV/token x2.0                   192   57.6    32   320    640    8.5  0.26
+KV/token x4.0                   384   57.6   NO FEASIBLE POINT
+decode x0.5                      96   28.8    48   320    800   18.8  0.43
+decode x2.0                      96  115.2   128   320    640    5.3  0.32
+decode x3.0                      96  172.8   128   240    600    3.9  0.31
+dense-70B-ish (b x2, dec /2)    192   28.8    24   320    640   18.8  0.43
+small MoE (b /2, dec x2)         48  115.2   128   187    468    4.9  0.25
+```
+
+Bytes per token only rescale N inversely, at constant duty cycle: a session
+costs proportionally more, so proportionally fewer fit, and nothing about the
+timing changes. Decode rate is the only input that moves `d`, hence the only
+one that moves feasibility, which is what the master inequality already said:
+
+    (1+k)*d < oversub_max
+
+The b x4 row fails for a different reason than pressure. The L0 floor is set by
+the largest single request, 766 265 tokens, which at 384 KiB/token is 280 GiB
+before the two average requests beside it. That screen bites first on a dense
+model with full MHA, and it bites on capacity, not on latency.
+
+What does not transfer:
+
+1. `OVERSUB_MAX=0.5` is an assumption. The conc 16/18 round measures it, and
+   the number it returns is still specific to this node and this model.
+2. `SURFACE_CAL=0.85` has one calibration point. It is a haircut, not a fit.
+3. `L1_FETCH_TOK_S=400 000` was inverted from "100 k tokens in 0.1-0.4 s" and
+   has to be re-measured if the interconnect changes.
+4. The `u = L*I/L0` queue term is an M/M/1-shaped approximation never fitted to
+   measurement, so the bistability verdict is a qualitative signal only.
+5. `T_HARNESS_S=89` is the harness's idle-cap-compressed think time and depends
+   on session count (the compression releases somewhere above 27 sessions). It
+   only affects which `--concurrency` reproduces a given N, not N itself.
+
+`sens.py` added to the harness.
