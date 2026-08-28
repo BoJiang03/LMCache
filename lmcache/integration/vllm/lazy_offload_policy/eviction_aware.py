@@ -557,6 +557,7 @@ class LazyOffloadCounters:
             self.deduplicated,
             self.covered_prefix_advances,
             self.covered_prefix_tokens_skipped,
+            self.announced_bursts,
             self.danger_floor_raises,
             self.throttled_drains,
         )

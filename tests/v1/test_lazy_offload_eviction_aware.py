@@ -1388,6 +1388,14 @@ class TestAnnouncedBursts:
         assert queue.collect_due().to_store == []
         assert queue.num_pending_ops() == 1
 
+    def test_an_announcement_is_a_decision(self) -> None:
+        """announced_bursts moves decisions(): the ledger log must not stay
+        quiet across a drain whose only policy event was an announcement."""
+        _, queue = self._quiet_queue_with_deep_op()
+        before = queue.stats().decisions()
+        queue.announce_allocation("hit", num_blocks=1)
+        assert queue.stats().decisions() != before
+
     def test_announcement_widens_the_window(self) -> None:
         _, queue = self._quiet_queue_with_deep_op()
         queue.announce_allocation("hit", num_blocks=4)
