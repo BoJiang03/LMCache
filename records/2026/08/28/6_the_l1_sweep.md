@@ -1,5 +1,15 @@
 # The L1 sweep: R1, R2, R3
 
+> **Superseded in part by record 8.** Every round here ran at `CONC=32`,
+> which is past congestion collapse for this workload: throughput 6.4 k
+> input tok/s against 15.7 k at 10 lanes, and TTFT p50 265-304 s against the
+> corpus's recorded production 2.64 s. **Section 2 (serving performance) is
+> void** -- a 2-5 % TTFT delta on a queue-dominated 300 s baseline is not
+> interpretable. The store-side results in sections 1, 3, 5 and 6 rest on L1
+> churn, which is driven by request volume rather than by the queue, so they
+> are expected to hold, but they are re-measured at a faithful operating
+> point before they are relied on.
+
 The sweep record 4 designed, on the workload record 5
 calibrated. Paired arms, same node, same seed, `CONC=32 DUR=1800 GRACE=600`.
 Eager on GPU4+5, lazy on GPU6+7, both rounds.
