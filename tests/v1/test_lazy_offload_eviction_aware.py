@@ -2681,11 +2681,29 @@ class TestDangerFloor:
         assert queue.degraded
         assert queue.stats().degrade_trials == 1
 
+    def test_raised_floor_holds_before_decaying(self) -> None:
+        """Inside the hold window the floor does not decay at all: a
+        burst cadence must meet the full raised floor, not whatever an
+        exponential decay left of it (the i60F leading-edge loss)."""
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=64)
+        # Settle the raise (floor 30), then run well past where the old
+        # pure-decay behavior would have sunk below rank 19 (30 * 0.999^n
+        # crosses 19 within ~460 drains), but inside the minimum hold.
+        for _ in range(1500):
+            queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+            queue.collect_due()
+        queue.admit(make_op("deep", [20, 21], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["deep"]
+        assert queue.stats().danger_floor_raises == 1
+
     def test_loss_free_drains_decay_the_floor_away(self) -> None:
         pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=64)
-        # Settle the raise, then decay it: 30 * 0.999^n < 1 within 4000
+        # Settle the raise, sit out the minimum hold (2048 drains, single
+        # raise), then decay: 30 * 0.999^n < 1 within a further ~3400
         # loss-free drains.
-        for _ in range(4000):
+        for _ in range(6000):
             queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
             queue.collect_due()
         assert queue.stats().danger_floor_raises == 1

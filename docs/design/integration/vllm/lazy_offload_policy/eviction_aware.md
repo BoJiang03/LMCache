@@ -224,9 +224,15 @@ vLLM hit instead of 0 on a lookup miss.
   lost operations to eviction raises the floor to the recent peak step
   allocation (a sliding sample of the last 8 steps' gross allocation),
   at least doubling the standing requirement on consecutive losses, capped
-  at the knob. Loss-free drains decay it exponentially (halving in ~700
-  drains, i.e. tens of seconds), so the widened window's free-queue read
-  cost is paid only after a measured loss. The effective depth is
+  at the knob. The raised floor first *holds* for two smoothed measured
+  loss intervals (floored at ~2000 drains): bursts recur on a cadence, and
+  a floor that decays between two bursts pays the leading edge of every
+  one — i60F measured 58 raises and 272 lost operations from exactly that
+  cycle. Every loss restarts the hold, so a standing cadence keeps the
+  floor up; once a workload stays quiet past the hold, loss-free drains
+  decay the floor exponentially (halving in ~700 drains, i.e. tens of
+  seconds). The widened window's free-queue read cost therefore outlives
+  the cadence it answers, not the workload. The effective depth is
   `max(rate model, floor, announced)`. `0` (the default) disables it.
 
   The floor is the graduated response between "eat the loss" and the

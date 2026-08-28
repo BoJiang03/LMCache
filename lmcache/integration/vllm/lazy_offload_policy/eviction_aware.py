@@ -113,12 +113,26 @@ _RESIDENCE_RECOVERY_FACTOR = 2.0
 # constants above, each is a property of the measurement, not a workload
 # tunable.
 
-# Per-drain decay of a raised floor. A drain runs once per scheduler step
-# (tens of milliseconds), so 0.999 halves the floor in ~700 steps -- tens
-# of seconds, spanning several burst inter-arrivals. One burst's lesson
-# outlives its immediate successors without paying the widened window's
-# free-queue read cost forever.
+# Per-drain decay of a raised floor, applied only after the hold below has
+# expired. A drain runs once per scheduler step (tens of milliseconds), so
+# 0.999 halves the floor in ~700 steps once decay starts.
 _DANGER_FLOOR_DECAY = 0.999
+
+# How long a raised floor holds flat before decay may start, in multiples
+# of the measured interval between raises. Bursts recur on a cadence; a
+# floor that decays between two bursts loses the leading edge of every
+# burst and re-learns the same size forever (measured on i60F: 58 raises,
+# 272 operations lost to exactly this cycle). Holding for two measured
+# gaps means a standing cadence keeps the floor up, while a workload that
+# genuinely quiets down waits two of its own burst intervals and then
+# decays as before.
+_DANGER_FLOOR_HOLD_GAPS = 2.0
+
+# Hold length while no raise interval has been measured yet (a single
+# raise so far), and the lower bound afterwards, in drains. Sized to span
+# at least one burst inter-arrival: bursts arrive tens of seconds apart
+# and a drain runs every few tens of milliseconds.
+_DANGER_FLOOR_MIN_HOLD_DRAINS = 2048
 
 # A raise at least multiplies the standing requirement by this factor, so
 # consecutive losses escalate geometrically even when the peak-allocation
@@ -440,8 +454,11 @@ class LazyOffloadPolicyConfig:
             cover. The floor closes that gap reactively: a drain interval
             that loses operations to eviction raises the floor to the
             recent peak step allocation (at least doubling the standing
-            requirement), and loss-free intervals decay it back toward the
-            rate model over tens of seconds. Depth is
+            requirement). The raised floor holds flat for two measured
+            loss intervals -- bursts recur on a cadence, and a floor that
+            decays between two bursts pays the leading edge of every one
+            -- and only then decays back toward the rate model over tens
+            of seconds. Depth is
             ``max(rate model, floor, announced)``, so the floor widens the
             window after a measured loss instead of degrading emission
             timing to eager for the whole run. The cap bounds the
@@ -1095,6 +1112,12 @@ class EvictionAwareStoreQueue:
         self._danger_floor_blocks = 0.0
         self._dropped_evicted_at_floor_check = 0
         self._recent_step_allocs: deque[int] = deque(maxlen=_RECENT_ALLOC_STEPS)
+        # Hold bookkeeping: drains seen, the drain of the last raise, and
+        # the smoothed interval between raises (0.0 until two raises have
+        # been observed). Decay starts only after the hold expires.
+        self._floor_drain_index = 0
+        self._floor_last_raise_drain = 0
+        self._floor_raise_gap_ema = 0.0
         # Adaptive-degradation controller state (observe_l1_pressure). The
         # controller runs on the pressure-sample heartbeat: each accepted
         # snapshot appends (time, cumulative evicted bytes, cumulative
@@ -2291,17 +2314,40 @@ class EvictionAwareStoreQueue:
         announcements) was beaten -- in the measured dominant mode, by an
         unannounced allocation burst -- so the floor jumps to the recent
         peak step allocation and at least doubles on consecutive losses,
-        capped at ``danger_floor_max_blocks``. Loss-free intervals decay it
+        capped at ``danger_floor_max_blocks``.
+
+        A raised floor first *holds*: bursts recur on a cadence, and a
+        floor that decays between two bursts pays the leading edge of
+        every one (i60F measured 58 raises and 272 lost operations from
+        exactly that cycle). The hold spans
+        :data:`_DANGER_FLOOR_HOLD_GAPS` times the smoothed measured
+        interval between losses, floored at
+        :data:`_DANGER_FLOOR_MIN_HOLD_DRAINS`; every loss restarts it.
+        Only after the hold expires do loss-free drains decay the floor
         exponentially (:data:`_DANGER_FLOOR_DECAY`), so the widened window
-        and its free-queue read cost are temporary. At cap 0 the floor
-        stays 0 and the depth is the rate model's alone.
+        and its free-queue read cost outlive the cadence they answer, not
+        the workload. At cap 0 the floor stays 0 and the depth is the
+        rate model's alone.
         """
         cap = self._config.danger_floor_max_blocks
         if cap <= 0:
             return
+        self._floor_drain_index += 1
         lost = self._counters.dropped_evicted - self._dropped_evicted_at_floor_check
         self._dropped_evicted_at_floor_check = self._counters.dropped_evicted
         if lost > 0:
+            # Every loss restarts the hold, whether or not it moves the
+            # floor: the cadence being measured is "how often do bursts
+            # beat the forecast", not "how often does the cap bind".
+            if self._floor_last_raise_drain > 0:
+                gap = float(self._floor_drain_index - self._floor_last_raise_drain)
+                if self._floor_raise_gap_ema > 0.0:
+                    self._floor_raise_gap_ema = (
+                        _EMA_ALPHA * gap + (1 - _EMA_ALPHA) * self._floor_raise_gap_ema
+                    )
+                else:
+                    self._floor_raise_gap_ema = gap
+            self._floor_last_raise_drain = self._floor_drain_index
             raised = min(
                 float(cap),
                 max(
@@ -2313,6 +2359,14 @@ class EvictionAwareStoreQueue:
             if raised > self._danger_floor_blocks:
                 self._danger_floor_blocks = raised
                 self._counters.danger_floor_raises += 1
+            return
+        if self._danger_floor_blocks <= 0.0:
+            return
+        hold = max(
+            float(_DANGER_FLOOR_MIN_HOLD_DRAINS),
+            _DANGER_FLOOR_HOLD_GAPS * self._floor_raise_gap_ema,
+        )
+        if self._floor_drain_index - self._floor_last_raise_drain <= hold:
             return
         self._danger_floor_blocks *= _DANGER_FLOOR_DECAY
         if self._danger_floor_blocks < 1.0:
