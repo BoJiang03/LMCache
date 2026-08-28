@@ -108,6 +108,28 @@ _REVERT_COOLDOWN_SECS = 600.0
 # directly would expose the deferred backlog to the next burst.
 _RESIDENCE_RECOVERY_FACTOR = 2.0
 
+# Adaptive danger floor constants (opt-in via
+# LazyOffloadPolicyConfig.danger_floor_max_blocks). Like the degradation
+# constants above, each is a property of the measurement, not a workload
+# tunable.
+
+# Per-drain decay of a raised floor. A drain runs once per scheduler step
+# (tens of milliseconds), so 0.999 halves the floor in ~700 steps -- tens
+# of seconds, spanning several burst inter-arrivals. One burst's lesson
+# outlives its immediate successors without paying the widened window's
+# free-queue read cost forever.
+_DANGER_FLOOR_DECAY = 0.999
+
+# A raise at least multiplies the standing requirement by this factor, so
+# consecutive losses escalate geometrically even when the peak-allocation
+# sample undershoots the burst that caused them.
+_DANGER_FLOOR_GROWTH = 2.0
+
+# Steps of gross allocation retained for the peak sample a raise covers.
+# The loss a drain discovers happened within the last few steps, so the
+# burst that caused it is still in a window this size.
+_RECENT_ALLOC_STEPS = 8
+
 
 class _DegradeRegime(enum.Enum):
     """Where the adaptive-degradation controller currently stands."""
@@ -409,6 +431,25 @@ class LazyOffloadPolicyConfig:
             consumption to treat as "imminent eviction". Larger values drain
             earlier (closer to eager, fewer drops); smaller values drain
             later (better filtering, more drops).
+        danger_floor_max_blocks: Cap, in blocks, on the adaptive danger
+            floor; 0 (the default) disables it. The rate model forecasts
+            the *mean* consumption, so an allocation burst larger than the
+            danger window destroys waiting operations without ever being
+            seen as due -- and an unannounced burst is exactly the case
+            :meth:`EvictionAwareStoreQueue.announce_allocation` cannot
+            cover. The floor closes that gap reactively: a drain interval
+            that loses operations to eviction raises the floor to the
+            recent peak step allocation (at least doubling the standing
+            requirement), and loss-free intervals decay it back toward the
+            rate model over tens of seconds. Depth is
+            ``max(rate model, floor, announced)``, so the floor widens the
+            window after a measured loss instead of degrading emission
+            timing to eager for the whole run. The cap bounds the
+            free-queue read the widened window costs on the scheduler
+            path. Sizing sensor: ``LazyOffloadCounters.danger_floor_raises``
+            alongside ``dropped_evicted`` (raises without further drops
+            mean the floor is absorbing the bursts; drops continuing at
+            the cap mean the cap is below the workload's burst size).
         min_prefix_tokens: Break-even prefix length (gate 3), applied at
             admission: a request's operations are held outside the pending
             machine while its known prefix is shorter than this, promoted
@@ -499,6 +540,7 @@ class LazyOffloadPolicyConfig:
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
+    danger_floor_max_blocks: int = 0
     min_prefix_tokens: int = 0
     max_drain_per_step: int = 64
     max_pending_ops: int = 0
@@ -515,6 +557,11 @@ class LazyOffloadPolicyConfig:
         """
         if self.horizon_steps <= 0:
             raise ValueError(f"horizon_steps must be > 0, got {self.horizon_steps}")
+        if self.danger_floor_max_blocks < 0:
+            raise ValueError(
+                "danger_floor_max_blocks must be >= 0, got "
+                f"{self.danger_floor_max_blocks}"
+            )
         if self.min_prefix_tokens < 0:
             raise ValueError(
                 f"min_prefix_tokens must be >= 0, got {self.min_prefix_tokens}"
@@ -605,6 +652,15 @@ class LazyOffloadCounters:
     rate is the signature of the announcement wiring being disconnected,
     not of the policy choosing to wait.
 
+    ``danger_floor_raises`` counts the loss-driven raises of the adaptive
+    danger floor (:attr:`LazyOffloadPolicyConfig.danger_floor_max_blocks`):
+    drain intervals whose measured eviction loss widened the danger window
+    beyond the rate model. Like ``throttled_drains`` it counts events, not
+    operations, so it stays out of the admission ledger's arithmetic.
+    Raises after which ``dropped_evicted`` goes quiet are the floor
+    absorbing unannounced bursts; raises alongside a still-rising
+    ``dropped_evicted`` mean the cap sits below the workload's burst size.
+
     ``degraded_emitted``, ``degraded_drain_steps``,
     ``degrade_transitions``, ``degrade_trials``, ``degrade_commits``,
     ``degrade_reverts``, ``degrade_probes`` and
@@ -652,6 +708,7 @@ class LazyOffloadCounters:
     idle_emitted: int = 0
     idle_drain_steps: int = 0
     announced_bursts: int = 0
+    danger_floor_raises: int = 0
     degraded_emitted: int = 0
     degraded_drain_steps: int = 0
     degrade_transitions: int = 0
@@ -695,6 +752,7 @@ class LazyOffloadCounters:
             self.backlog_emitted,
             self.idle_emitted,
             self.idle_drain_steps,
+            self.danger_floor_raises,
             self.degraded_emitted,
             self.degraded_drain_steps,
             self.degrade_transitions,
@@ -1030,6 +1088,13 @@ class EvictionAwareStoreQueue:
         # Announced imminent allocations, request id -> expected blocks.
         # While non-empty, the danger depth floors at their sum.
         self._announced_blocks: dict[str, int] = {}
+        # Adaptive danger floor: extra depth demanded by measured loss.
+        # Raised when a drain interval lost operations to eviction, decayed
+        # while intervals stay loss-free; 0 while the feature is off
+        # (danger_floor_max_blocks == 0) or the workload is quiescent.
+        self._danger_floor_blocks = 0.0
+        self._dropped_evicted_at_floor_check = 0
+        self._recent_step_allocs: deque[int] = deque(maxlen=_RECENT_ALLOC_STEPS)
         # Adaptive-degradation controller state (observe_l1_pressure). The
         # controller runs on the pressure-sample heartbeat: each accepted
         # snapshot appends (time, cumulative evicted bytes, cumulative
@@ -1269,6 +1334,7 @@ class EvictionAwareStoreQueue:
                 for callers that cannot provide the incremental signal.
         """
         self._pending_ops.observe_allocations(allocated_block_ids)
+        self._recent_step_allocs.append(new_blocks_allocated)
         if self._ema_initialized:
             self._blocks_per_step_ema = (
                 _EMA_ALPHA * new_blocks_allocated
@@ -1551,12 +1617,25 @@ class EvictionAwareStoreQueue:
         available well before the windowed residence estimate can cross
         the threshold.
 
+        While the adaptive danger floor is enabled and below its cap, the
+        gate stands down: the floor is the graduated response to the same
+        loss (widen the window, stay deferred), and opening a trial on the
+        loss that raised it would flip the run to immediate emission
+        before the response it triggered has been measured. The loss stays
+        in the trailing window, so if it continues once the floor is at
+        its cap -- the burst size exceeds what the cap can absorb -- the
+        gate opens the trial as before. At cap 0 (floor disabled) the gate
+        is unconditional, exactly as it was before the floor existed.
+
         Args:
             now: The current sample's monotonic time.
 
         Returns:
             True when the windowed loss share is material.
         """
+        floor_cap = self._config.danger_floor_max_blocks
+        if floor_cap > 0 and self._danger_floor_blocks < float(floor_cap):
+            return False
         cutoff = now - _TRIAL_SECS
         start_admitted = self._counters.admitted
         start_dropped = self._counters.dropped_evicted
@@ -1748,6 +1827,11 @@ class EvictionAwareStoreQueue:
             The operations to store and to drop this step; see
             :class:`DrainResult`.
         """
+        # Settle the loss delta since the previous drain first: a raise must
+        # widen this very drain's window (the burst that caused the loss may
+        # still be running), and the decay must tick even on the early
+        # returns below or a raised floor would outlive an emptied queue.
+        self._update_danger_floor()
         result = DrainResult()
         for request_id in sorted(finished_request_ids or ()):
             # A finished request's announced admission can no longer land.
@@ -2171,23 +2255,68 @@ class EvictionAwareStoreQueue:
         rate = max(self._blocks_per_step_ema, float(self._next_step_estimate))
         return rate <= self._config.idle_threshold_blocks
 
-    def _danger_depth(self) -> int:
-        """Free-queue depth considered at risk within the horizon.
+    def _rate_depth(self) -> int:
+        """Free-queue depth the rate model alone considers at risk.
 
         Expected consumption below half a block over the whole horizon is
         treated as idle (depth 0): the EMA decays asymptotically after a
-        burst and would otherwise keep a ceil'd depth of 1 forever. An
-        outstanding announcement (:meth:`announce_allocation`) floors the
-        depth at the announced block sum regardless of the rate model:
-        the announced blocks are about to be consumed no matter what the
-        recent per-step rate says.
+        burst and would otherwise keep a ceil'd depth of 1 forever.
         """
         per_step = max(self._blocks_per_step_ema, float(self._next_step_estimate))
         horizon_blocks = per_step * self._config.horizon_steps
-        rate_depth = 0 if horizon_blocks < 0.5 else math.ceil(horizon_blocks)
+        return 0 if horizon_blocks < 0.5 else math.ceil(horizon_blocks)
+
+    def _danger_depth(self) -> int:
+        """Free-queue depth considered at risk within the horizon.
+
+        The maximum of three demands. The rate model covers steady
+        consumption (:meth:`_rate_depth`). The adaptive danger floor covers
+        the burst sizes measured loss has proven the rate model blind to;
+        it is 0 while the feature is off or no loss is recent
+        (:meth:`_update_danger_floor`). An outstanding announcement
+        (:meth:`announce_allocation`) floors the depth at the announced
+        block sum regardless of either model: the announced blocks are
+        about to be consumed no matter what the recent per-step rate says.
+        """
+        depth = max(self._rate_depth(), math.ceil(self._danger_floor_blocks))
         if not self._announced_blocks:
-            return rate_depth
-        return max(rate_depth, sum(self._announced_blocks.values()))
+            return depth
+        return max(depth, sum(self._announced_blocks.values()))
+
+    def _update_danger_floor(self) -> None:
+        """Adapt the danger floor from the drain-to-drain loss delta.
+
+        Runs once per :meth:`collect_due`, before the depth is read. A loss
+        since the previous drain means the forecast (rate model plus
+        announcements) was beaten -- in the measured dominant mode, by an
+        unannounced allocation burst -- so the floor jumps to the recent
+        peak step allocation and at least doubles on consecutive losses,
+        capped at ``danger_floor_max_blocks``. Loss-free intervals decay it
+        exponentially (:data:`_DANGER_FLOOR_DECAY`), so the widened window
+        and its free-queue read cost are temporary. At cap 0 the floor
+        stays 0 and the depth is the rate model's alone.
+        """
+        cap = self._config.danger_floor_max_blocks
+        if cap <= 0:
+            return
+        lost = self._counters.dropped_evicted - self._dropped_evicted_at_floor_check
+        self._dropped_evicted_at_floor_check = self._counters.dropped_evicted
+        if lost > 0:
+            raised = min(
+                float(cap),
+                max(
+                    _DANGER_FLOOR_GROWTH * self._danger_floor_blocks,
+                    float(max(self._recent_step_allocs, default=0)),
+                    _DANGER_FLOOR_GROWTH * self._rate_depth(),
+                ),
+            )
+            if raised > self._danger_floor_blocks:
+                self._danger_floor_blocks = raised
+                self._counters.danger_floor_raises += 1
+            return
+        self._danger_floor_blocks *= _DANGER_FLOOR_DECAY
+        if self._danger_floor_blocks < 1.0:
+            self._danger_floor_blocks = 0.0
 
     def _drop_evicted_suffix(
         self,

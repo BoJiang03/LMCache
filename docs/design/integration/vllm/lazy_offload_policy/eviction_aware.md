@@ -215,6 +215,29 @@ vLLM hit instead of 0 on a lookup miss.
   either.
 - An op is **due** when any covered block's rank < danger depth. Blocks not
   in the free queue (in use / resurrected) are not at risk.
+- **Adaptive danger floor (`danger_floor_max_blocks`)**: the rate model
+  forecasts *mean* consumption, and the measured dominant loss mode is a
+  single allocation burst wider than the window — blocks carried from
+  outside the window to evicted in one step, never observed as due.
+  Announcements cover the bursts the caller can see coming (external-hit
+  admissions); the floor covers the rest reactively. A drain interval that
+  lost operations to eviction raises the floor to the recent peak step
+  allocation (a sliding sample of the last 8 steps' gross allocation),
+  at least doubling the standing requirement on consecutive losses, capped
+  at the knob. Loss-free drains decay it exponentially (halving in ~700
+  drains, i.e. tens of seconds), so the widened window's free-queue read
+  cost is paid only after a measured loss. The effective depth is
+  `max(rate model, floor, announced)`. `0` (the default) disables it.
+
+  The floor is the graduated response between "eat the loss" and the
+  degradation controller's regime flip: it widens *timing* within the
+  deferred regime instead of abandoning deferral, and because drops go
+  quiet while the floor holds, the always-on loss gate below stops seeing
+  material loss — degradation remains the last resort for workloads whose
+  bursts exceed the cap. Sensors: `danger_floor_raises` alongside
+  `dropped_evicted` (raises followed by quiet drops = the floor is
+  absorbing the bursts; drops continuing at the cap = the cap sits below
+  the workload's burst size).
 - **Horizon calibration.** The default is 2.5 scheduler steps. A fine sweep
   over 2.0–8.0 on two opposing Qwen3-8B/H200 workloads selected it as the
   measured compromise: three 120-request hot/cold runs at 2.5 completed in
@@ -474,7 +497,13 @@ it measures both sides by briefly running them:
   be eager because a trial bounds the cost of a false alarm. This gate
   needs no configuration and is always live: losing intake is the one
   way deferral can be strictly worse than storing eagerly, so it is
-  guarded by default.
+  guarded by default. One exception: while the adaptive danger floor is
+  enabled and below its cap, the gate stands down — the floor is the
+  graduated response to the same loss, and a trial opened on the loss
+  that raised the floor would flip the run to immediate emission before
+  the response it triggered has been measured. Losses continuing once
+  the floor is at its cap open the trial as before; with the floor
+  disabled (the default) the gate is unconditional.
 - **Trial**: a bounded window of immediate emission. At its end the
   trial's ledger rate is compared against the deferred baseline
   (the trailing window before the trial): within the neutrality factor
@@ -549,7 +578,9 @@ the backlog cap is too loose); `emitted / admitted` is store precision's
 denominator; `backlog_emitted` is the share of `emitted` that the backlog cap
 timed rather than the eviction forecast, `idle_emitted` the share the idle
 drain timed (`idle_drain_steps` counts the drains in which it fired);
-`rejected_short_prefix` audits gate 3. Tests: `tests/v1/test_lazy_offload_eviction_aware.py` (pure, no vLLM).
+`rejected_short_prefix` audits gate 3; `danger_floor_raises` counts the
+loss-driven widenings of the danger window (events, not operations, like
+`throttled_drains`). Tests: `tests/v1/test_lazy_offload_eviction_aware.py` (pure, no vLLM).
 
 Four counters measure the decision loop's own cost rather than any op's
 fate: `drain_steps`, `free_queue_blocks_read`, `requests_validated` and

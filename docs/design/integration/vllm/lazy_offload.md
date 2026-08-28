@@ -388,6 +388,7 @@ Configuration in `kv_connector_extra_config`:
 lmcache.mp.lazy_offload = true                         # default: false
 lmcache.mp.lazy_offload_policy = EVICTION_AWARE        # default
 lmcache.mp.lazy_offload_horizon_steps = 2.5
+lmcache.mp.lazy_offload_danger_floor_max_blocks = 0  # 0: adaptive floor off
 lmcache.mp.lazy_offload_min_prefix_tokens = 0
 lmcache.mp.lazy_offload_max_drain_per_step = 64
 lmcache.mp.lazy_offload_max_pending_ops = 0     # 0: backlog unbounded

@@ -148,6 +148,8 @@ class LazyOffloadPendingStore:
                 ``lmcache.mp.lazy_offload_policy`` ("EVICTION_AWARE" default,
                 or the legacy "FIFO" policy),
                 ``lmcache.mp.lazy_offload_horizon_steps`` (float),
+                ``lmcache.mp.lazy_offload_danger_floor_max_blocks`` (int,
+                0 disables the loss-adaptive danger floor),
                 ``lmcache.mp.lazy_offload_min_prefix_tokens`` (int),
                 ``lmcache.mp.lazy_offload_max_drain_per_step`` (int),
                 ``lmcache.mp.lazy_offload_max_pending_ops`` (int, 0 leaves
@@ -199,6 +201,12 @@ class LazyOffloadPendingStore:
                         "lmcache.mp.lazy_offload_horizon_steps",
                         DEFAULT_HORIZON_STEPS,
                     ),
+                )
+            ),
+            danger_floor_max_blocks=int(
+                cast(
+                    str | int | float,
+                    configs.get("lmcache.mp.lazy_offload_danger_floor_max_blocks", 0),
                 )
             ),
             min_prefix_tokens=int(

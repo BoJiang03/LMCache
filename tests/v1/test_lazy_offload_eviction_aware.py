@@ -109,6 +109,7 @@ def seed_blocks(pool: FakePoolView, block_ids: list[int], free: bool) -> None:
 def make_queue(
     pool: FakePoolView,
     horizon_steps: float = 1.0,
+    danger_floor_max_blocks: int = 0,
     min_prefix_tokens: int = 0,
     max_drain_per_step: int = 64,
     max_pending_ops: int = 0,
@@ -119,6 +120,7 @@ def make_queue(
 ) -> EvictionAwareStoreQueue:
     config = LazyOffloadPolicyConfig(
         horizon_steps=horizon_steps,
+        danger_floor_max_blocks=danger_floor_max_blocks,
         min_prefix_tokens=min_prefix_tokens,
         max_drain_per_step=max_drain_per_step,
         max_pending_ops=max_pending_ops,
@@ -177,6 +179,13 @@ class TestConfigValidation:
     def test_rejects_negative_degrade_residence(self) -> None:
         with pytest.raises(ValueError):
             LazyOffloadPolicyConfig(degrade_l1_residence_secs=-1.0)
+
+    def test_danger_floor_is_disabled_by_default(self) -> None:
+        assert LazyOffloadPolicyConfig().danger_floor_max_blocks == 0
+
+    def test_rejects_negative_danger_floor_cap(self) -> None:
+        with pytest.raises(ValueError):
+            LazyOffloadPolicyConfig(danger_floor_max_blocks=-1)
 
 
 class TestAdmission:
@@ -2520,3 +2529,169 @@ class TestAnnouncedBursts:
         _, queue = self._quiet_queue_with_deep_op()
         with pytest.raises(ValueError):
             queue.announce_allocation("hit", num_blocks=0)
+
+
+class TestDangerFloor:
+    """danger_floor_max_blocks: a drain interval that loses operations to
+    eviction widens the danger window to the recent peak step allocation
+    (at least doubling on consecutive losses), and loss-free intervals
+    decay the widening back to the rate model."""
+
+    @staticmethod
+    def _lose_one_op_after_a_burst(
+        danger_floor_max_blocks: int,
+    ) -> tuple[FakePoolView, EvictionAwareStoreQueue]:
+        """Drive one op into eviction loss with a 30-block burst on record.
+
+        Leaves the queue one drain past the loss discovery (the drop is
+        counted, the floor not yet settled) with the EMA at 21 blocks/step
+        and the recent-allocation peak at 30.
+        """
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(1, 41)), free=True)
+        queue = make_queue(
+            pool,
+            horizon_steps=1.0,
+            danger_floor_max_blocks=danger_floor_max_blocks,
+        )
+        queue.admit(make_op("victim", [39, 40], pool, prefix_end_tokens=256))
+        # The burst: deep ranks (38, 39) stay outside the 30-deep window.
+        queue.observe_step(new_blocks_allocated=30, est_next_step_blocks=0)
+        assert queue.collect_due().to_store == []
+        pool.evict(39)
+        pool.evict(40)
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.dropped_evicted) == 1
+        return pool, queue
+
+    def test_loss_widens_the_window_to_the_recent_peak(self) -> None:
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=64)
+        # Ranks 19-20: outside the decayed rate depth (15), inside the
+        # floor raised to the 30-block burst.
+        queue.admit(make_op("deep", [20, 21], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["deep"]
+        assert queue.stats().danger_floor_raises == 1
+
+    def test_disabled_by_default_the_same_loss_stays_deferred(self) -> None:
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=0)
+        queue.admit(make_op("deep", [20, 21], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert result.to_store == []
+        assert queue.num_pending_ops() == 1
+        assert queue.stats().danger_floor_raises == 0
+
+    def test_cap_bounds_the_raise(self) -> None:
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=10)
+        queue.admit(make_op("deep", [20, 21], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        # Floor capped at 10 < rank 19: the raise happened but cannot reach.
+        assert result.to_store == []
+        assert queue.num_pending_ops() == 1
+        assert queue.stats().danger_floor_raises == 1
+
+    def test_consecutive_losses_double_the_floor(self) -> None:
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=200)
+        # Settle the first raise (floor 30) on an empty queue.
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        queue.collect_due()
+        assert queue.stats().danger_floor_raises == 1
+        # A second loss: ranks 34-35 sit beyond the raised floor (30) and
+        # beyond the peak sample (30), so only the doubling reaches them.
+        queue.admit(make_op("survivor", [35, 36], pool, prefix_end_tokens=256))
+        queue.admit(make_op("victim-2", [37, 38], pool, prefix_end_tokens=256))
+        pool.evict(37)
+        pool.evict(38)
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert len(result.dropped_evicted) == 1
+        assert result.to_store == []
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["survivor"]
+        assert queue.stats().danger_floor_raises == 2
+
+    def test_floor_below_cap_stands_the_loss_gate_down(self) -> None:
+        """The same material loss that opens a trial with the floor off
+        (see TestAdaptiveDegradation) only raises the floor while it has
+        headroom: the graduated response goes first, and the run stays
+        deferred instead of flipping to immediate emission."""
+        pool = FakePoolView()
+        queue = make_queue(pool, danger_floor_max_blocks=64)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        evicted = 0
+        for tick in range(1, 7):
+            evicted += 2_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        for index in range(4):
+            seed_blocks(pool, [index + 1], free=index < 3)
+            queue.admit(make_op(f"r{index}", [index + 1], pool, prefix_end_tokens=256))
+        for block in (1, 2, 3):
+            pool.evict(block)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1, 2, 3},
+        )
+        queue.collect_due()
+        assert queue.stats().dropped_evicted == 3
+        # Settle the raise, then deliver the heartbeat that would have
+        # opened the trial.
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        queue.collect_due()
+        evicted += 2_000
+        queue.observe_l1_pressure(70.0, CAPACITY, evicted)
+        assert not queue.degraded
+        stats = queue.stats()
+        assert stats.degrade_trials == 0
+        assert stats.danger_floor_raises == 1
+
+    def test_floor_at_cap_lets_the_loss_gate_open_a_trial(self) -> None:
+        """Losses the cap cannot absorb reach the last resort: with the
+        floor saturated, the always-live loss gate opens its trial exactly
+        as it does with the floor disabled."""
+        pool = FakePoolView()
+        queue = make_queue(pool, danger_floor_max_blocks=2)
+        queue.observe_l1_pressure(0.0, CAPACITY, 0)
+        evicted = 0
+        for tick in range(1, 7):
+            evicted += 2_000
+            queue.observe_l1_pressure(tick * 10.0, CAPACITY, evicted)
+        for index in range(4):
+            seed_blocks(pool, [index + 1], free=index < 3)
+            queue.admit(make_op(f"r{index}", [index + 1], pool, prefix_end_tokens=256))
+        for block in (1, 2, 3):
+            pool.evict(block)
+        queue.observe_step(
+            new_blocks_allocated=1,
+            est_next_step_blocks=0,
+            allocated_block_ids={1, 2, 3},
+        )
+        queue.collect_due()
+        # Settle the raise: clipped to the cap of 2, so the floor is
+        # saturated when the heartbeat arrives.
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        queue.collect_due()
+        evicted += 2_000
+        queue.observe_l1_pressure(70.0, CAPACITY, evicted)
+        assert queue.degraded
+        assert queue.stats().degrade_trials == 1
+
+    def test_loss_free_drains_decay_the_floor_away(self) -> None:
+        pool, queue = self._lose_one_op_after_a_burst(danger_floor_max_blocks=64)
+        # Settle the raise, then decay it: 30 * 0.999^n < 1 within 4000
+        # loss-free drains.
+        for _ in range(4000):
+            queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+            queue.collect_due()
+        assert queue.stats().danger_floor_raises == 1
+        # Rank 0-1 with a zero rate model and a fully decayed floor: the
+        # depth is back to 0 and nothing is due, exactly as before the loss.
+        queue.admit(make_op("late", [1, 2], pool, prefix_end_tokens=256))
+        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+        assert queue.collect_due().to_store == []
+        assert queue.num_pending_ops() == 1
