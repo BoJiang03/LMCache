@@ -320,6 +320,12 @@ class PendingStoreOp:
         cache_salt: The request's cache salt, part of the operation's
             content identity for deduplication (two requests with the same
             block hashes but different salts store under different keys).
+        admitted_at_drain: Value of the drain counter when the queue
+            admitted this operation, stamped by
+            :meth:`EvictionAwareStoreQueue.admit`. Its distance from the
+            drain counter at emission is how long deferral actually held
+            the operation -- the quantity the whole policy exists to buy,
+            and the one a caller cannot reconstruct from any other counter.
     """
 
     request_id: str
@@ -329,6 +335,7 @@ class PendingStoreOp:
     prefix_end_tokens: int
     epoch: int = 0
     cache_salt: str = ""
+    admitted_at_drain: int = 0
 
 
 def _token_span(ops: list[PendingStoreOp]) -> int:
@@ -476,6 +483,20 @@ class LazyOffloadCounters:
     the unit the cache is actually sized in. Like
     ``covered_prefix_tokens_skipped`` it is a weight, not an outcome, and
     stands outside the admission ledger's arithmetic.
+    ``emitted_deferral_drains`` and ``dropped_deferral_drains`` sum, over
+    the operations that left the pending machine each way, the drains each
+    one waited since admission. Divided by ``emitted`` and
+    ``dropped_evicted`` they give the mean deferral -- in drains, which a
+    reader converts to wall clock with ``drain_steps`` over the run's
+    duration. The emitted mean is the *only* direct measure of what the
+    policy buys: an entry written that much later stays live in the cache
+    below that much longer, which is the whole mechanism, and every other
+    counter measures a side effect of it. The dropped mean says whether
+    losses are chains that waited too long (a policy failure the danger
+    window can address) or ones that died young (blocks recycled before
+    any drain could see them, which no window can address). Both are
+    weights, not outcomes, and stand outside the admission ledger.
+
     ``rejected_short_prefix`` counts gate-3 rejections: held operations whose
     request finished below the break-even prefix length, plus chains that
     eviction truncated back below it before emission.
@@ -533,8 +554,10 @@ class LazyOffloadCounters:
 
     admitted: int = 0
     emitted: int = 0
+    emitted_deferral_drains: int = 0
     dropped_evicted: int = 0
     dropped_evicted_tokens: int = 0
+    dropped_deferral_drains: int = 0
     rejected_short_prefix: int = 0
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
@@ -568,8 +591,10 @@ class LazyOffloadCounters:
         return (
             self.admitted,
             self.emitted,
+            self.emitted_deferral_drains,
             self.dropped_evicted,
             self.dropped_evicted_tokens,
+            self.dropped_deferral_drains,
             self.rejected_short_prefix,
             self.rejected_unhashed,
             self.rejected_prefix_broken,
@@ -1026,6 +1051,7 @@ class EvictionAwareStoreQueue:
             self._broken_prefixes.add(op.request_id)
             self._counters.rejected_unhashed += 1
             return AdmitResult.REJECTED_UNHASHED_BLOCK
+        op.admitted_at_drain = self._counters.drain_steps
         if op.prefix_end_tokens < self._config.min_prefix_tokens:
             # Gate 3 (economy): the chain is below break-even. Hold it out
             # of the pending machine until the request grows past the
@@ -1092,6 +1118,9 @@ class EvictionAwareStoreQueue:
             self._counters.rejected_short_prefix += first_lost
             self._counters.dropped_evicted += len(held) - first_lost
             self._counters.dropped_evicted_tokens += _token_span(held[first_lost:])
+            self._counters.dropped_deferral_drains += self._deferral_drains(
+                held[first_lost:]
+            )
             self._broken_prefixes.add(request_id)
             logger.info(
                 "Lazy offload: dropped %d held store op(s) of request %s: "
@@ -1448,6 +1477,7 @@ class EvictionAwareStoreQueue:
             result.ops_held_back += len(due_ops) - len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
+            self._counters.emitted_deferral_drains += self._deferral_drains(emitted)
             newly_pinned = {
                 block_id
                 for op in emitted
@@ -1557,6 +1587,20 @@ class EvictionAwareStoreQueue:
         if self._danger_floor_blocks < 1.0:
             self._danger_floor_blocks = 0.0
 
+    def _deferral_drains(self, ops: list[PendingStoreOp]) -> int:
+        """Total drains these operations spent between admission and now.
+
+        Args:
+            ops: Operations leaving the pending machine this drain, by
+                emission or by drop.
+
+        Returns:
+            The sum over the operations of the drains elapsed since each
+            was admitted.
+        """
+        now = self._counters.drain_steps
+        return sum(now - op.admitted_at_drain for op in ops)
+
     def _drop_evicted_suffix(
         self,
         request_id: str,
@@ -1581,6 +1625,7 @@ class EvictionAwareStoreQueue:
         result.dropped_evicted.extend(dropped)
         self._counters.dropped_evicted += len(dropped)
         self._counters.dropped_evicted_tokens += _token_span(dropped)
+        self._counters.dropped_deferral_drains += self._deferral_drains(dropped)
         self._broken_prefixes.add(request_id)
         surviving = ops[:first_lost]
         self._replace_pending(request_id, dropped, surviving, result)

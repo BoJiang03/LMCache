@@ -396,6 +396,13 @@ what says whether a drop rate is a tail of short suffixes or a few destroyed
 full-length chains — ops span anything from one chunk to a whole context.
 Like `covered_prefix_tokens_skipped` it is a weight, not an outcome, so it is
 not a term in the ledger equation below;
+`emitted_deferral_drains / emitted` is the mean deferral in drains — the
+direct measure of what the policy buys, since an entry written that much
+later stays live in the cache below that much longer, and every other
+number here is a side effect of it; `dropped_deferral_drains /
+dropped_evicted` separates losses that waited too long (addressable by a
+wider danger window) from ones that died young (blocks recycled before any
+drain saw them, addressable by nothing);
 `emitted / admitted` is store precision's denominator;
 `rejected_short_prefix` audits gate 3; `danger_floor_raises` counts the
 loss-driven widenings of the danger window (events, not operations, like

@@ -318,6 +318,24 @@ class TestPrefixClosure:
         assert queue.stats().dropped_evicted == 2
         assert queue.stats().dropped_evicted_tokens == 512  # two 256-token ops
 
+    def test_deferral_is_measured_in_drains_waited(self) -> None:
+        """The mean emitted deferral is what the policy buys, so it must
+        count the drains an op actually waited, not the drains that ran."""
+        pool = FakePoolView()
+        seed_blocks(pool, [1], free=False)  # in use: not at risk yet
+        queue = make_queue(pool)
+        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
+        for _ in range(4):
+            queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
+            queue.collect_due()
+        pool.free_queue.append(1)  # now in the free queue, and due
+        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=8)
+        assert len(queue.collect_due().to_store) == 1
+        stats = queue.stats()
+        assert stats.emitted == 1
+        assert stats.emitted_deferral_drains == 5  # admitted before drain 1
+        assert stats.dropped_deferral_drains == 0
+
     def test_drop_counter_weighs_lost_tokens_not_ops(self) -> None:
         """Ops differ by orders of magnitude in range, so the drop count
         alone cannot say what a loss cost; the token weight can."""
