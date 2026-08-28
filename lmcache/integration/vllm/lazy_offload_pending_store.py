@@ -159,8 +159,6 @@ class LazyOffloadPendingStore:
                 ``lmcache.mp.lazy_offload_idle_drain_max_ops`` (int, 0
                 disables idle draining),
                 ``lmcache.mp.lazy_offload_idle_threshold_blocks`` (float),
-                ``lmcache.mp.lazy_offload_degrade_l1_residence_secs``
-                (float, 0 disables adaptive degradation),
                 and the
                 FIFO-only ``lmcache.mp.lazy_offload_threshold`` /
                 ``lmcache.mp.lazy_offload_select_count``.
@@ -243,14 +241,6 @@ class LazyOffloadPendingStore:
                 cast(
                     str | int | float,
                     configs.get("lmcache.mp.lazy_offload_idle_threshold_blocks", 1.0),
-                )
-            ),
-            degrade_l1_residence_secs=float(
-                cast(
-                    str | int | float,
-                    configs.get(
-                        "lmcache.mp.lazy_offload_degrade_l1_residence_secs", 0.0
-                    ),
                 )
             ),
         )
@@ -462,39 +452,6 @@ class LazyOffloadPendingStore:
         """
         if self._eviction_queue is not None:
             self._eviction_queue.retract_allocation(request_id)
-
-    def wants_l1_pressure(self) -> bool:
-        """Whether the caller should feed L1 pressure snapshots.
-
-        True for the eviction-aware policy, whose degradation controller
-        runs on this heartbeat: its loss trigger guards volume neutrality
-        unconditionally, so the samples are never ignored. False in FIFO
-        mode, which has no controller.
-        """
-        return self._mode is LazyOffloadMode.EVICTION_AWARE
-
-    def observe_l1_pressure(
-        self,
-        monotonic_time: float,
-        capacity_bytes: int,
-        evicted_bytes_total: int,
-    ) -> None:
-        """Forward one L1 pressure snapshot to the policy.
-
-        No-op in FIFO mode. Callers may repeat the latest snapshot every
-        step; the policy only advances on a strictly newer timestamp.
-
-        Args:
-            monotonic_time: When the snapshot was taken, on the caller's
-                monotonic clock.
-            capacity_bytes: The server's L1 capacity in bytes.
-            evicted_bytes_total: The server's cumulative deleted-bytes
-                counter at that time.
-        """
-        if self._eviction_queue is not None:
-            self._eviction_queue.observe_l1_pressure(
-                monotonic_time, capacity_bytes, evicted_bytes_total
-            )
 
     def _collect_due(
         self,

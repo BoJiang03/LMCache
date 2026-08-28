@@ -109,12 +109,6 @@ logger = lmcache_init_logger(__name__)
 
 
 # Helper functions
-# How often the scheduler polls the servers' L1 pressure endpoint when the
-# lazy-offload policy runs with adaptive degradation. The signal moves on
-# the scale of L1 residence (minutes), so a heartbeat-paced poll is plenty.
-_L1_PRESSURE_POLL_INTERVAL_SECS = 10.0
-
-
 def _has_preemption_reqs(scheduler_output: SchedulerOutput) -> bool:
     """Return whether the scheduler output contains preemption-related requests.
 
@@ -992,16 +986,6 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         self._process_cached_requests(scheduler_output, metadata)
 
         if self.lazy_offload:
-            if self._lazy_offload_manager.wants_l1_pressure():
-                sample = self.scheduler_adapter.poll_l1_pressure(
-                    _L1_PRESSURE_POLL_INTERVAL_SECS
-                )
-                if sample is not None:
-                    self._lazy_offload_manager.on_l1_pressure(
-                        sample.monotonic_time,
-                        sample.total_bytes,
-                        sample.evicted_bytes_total,
-                    )
             actions = self._lazy_offload_manager.on_scheduler_step(scheduler_output)
             for store_metadata in actions.stores_to_submit:
                 metadata.add_request_metadata(store_metadata)

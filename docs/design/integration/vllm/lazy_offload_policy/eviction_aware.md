@@ -235,12 +235,9 @@ vLLM hit instead of 0 on a lookup miss.
   the cadence it answers, not the workload. The effective depth is
   `max(rate model, floor, announced)`. `0` (the default) disables it.
 
-  The floor is the graduated response between "eat the loss" and the
-  degradation controller's regime flip: it widens *timing* within the
-  deferred regime instead of abandoning deferral, and because drops go
-  quiet while the floor holds, the always-on loss gate below stops seeing
-  material loss — degradation remains the last resort for workloads whose
-  bursts exceed the cap. Sensors: `danger_floor_raises` alongside
+  The floor is the graduated response to measured loss: it widens
+  *timing* within the deferred regime instead of abandoning deferral.
+  Sensors: `danger_floor_raises` alongside
   `dropped_evicted` (raises followed by quiet drops = the floor is
   absorbing the bursts; drops continuing at the cap = the cap sits below
   the workload's burst size).
@@ -442,119 +439,6 @@ vLLM hit instead of 0 on a lookup miss.
   next activity — nothing leaks permanently, by design. An engine that is
   not stepping runs no drains at all; the idle drain above runs *within* a
   low-allocation step, so it never changes this.
-
-## Adaptive degradation
-
-Deferral has two separable effects. It can *filter* stores -- operations
-die or shrink while pending because a later request covers them or their
-content never needs L1 at all -- and it *re-times* the stores that do
-happen, moving them from "while the request runs" to "when the blocks
-approach eviction". Under L1 churn the re-timing is a pure cost: the
-free-queue pressure that triggers a deferred emission is the same
-pressure the allocator is under, so the emission's pins collide with
-allocation bursts by construction. Whether deferral is worth that cost
-depends entirely on whether it is filtering: measured on an
-agent-shaped workload deferral filters nothing (lazy and eager store
-the same bytes) and degrading to immediate emission recovers the whole
-gap, while on a hot/cold document workload deferral withholds the hot
-set's useless stores and that filtering is precisely what keeps the
-cold set alive in L1 -- degrading there destroys the win and, worse,
-the extra volume creates the very churn that a churn-only signal reads
-as justification. No fixed residence threshold separates the two cases.
-
-The policy therefore enforces one invariant -- **degrading may change
-the timing of stores, never their volume** -- and, because the volume a
-regime *would* produce is a counterfactual no passive signal can see,
-it measures both sides by briefly running them:
-
-- **Signal**: the caller feeds `observe_l1_pressure()` snapshots of the
-  server's cumulative evicted-bytes counter and L1 capacity (see
-  `docs/design/v1/multiprocess/l1_pressure_stats.md`). Rates are read
-  off a sliding window of these snapshots -- never a per-sample EMA:
-  eviction arrives in watermark bursts tens of seconds apart, and
-  per-sample smoothing decays between bursts and flaps across any
-  threshold. Residence is `capacity / windowed rate`, infinite while
-  nothing evicts. Volume is the policy's own ledger of blocks that left
-  the backlog -- emitted **plus** lost to eviction -- snapshotted on the
-  same heartbeat, so trials and probes need no server-side
-  counterfactual. Charging the losses is what makes the ledger a volume
-  measure rather than an emission measure: deferral that stores less
-  because a later operation superseded an earlier one is filtering
-  volume, deferral that stores less because its backlog was evicted is
-  destroying it, and the two are indistinguishable in the emission
-  count alone.
-- **Churn gate**: residence below `degrade_l1_residence_secs` says the
-  re-timing cost is being paid and opens a *trial*; it never degrades
-  by itself. Whether short residence *should* degrade is
-  workload-dependent -- on agentic multi-turn replay the polarity runs
-  the other way, deferral earning its keep at short residence and
-  costing at long -- so `0` (the default) leaves this gate off and
-  measurement decides per workload.
-- **Loss gate**: the windowed residence estimate needs a couple of burst
-  cycles to cross, and at churn onset that latency is paid by the
-  pending backlog -- the first eviction wave harvests exactly the
-  oldest deferred stores. The policy's own loss ledger is the faster
-  and sharper signal: deferral losing a material share of its windowed
-  intake to eviction (`dropped_evicted` reaching the neutrality margin
-  of windowed admissions, over one trial-length window) also opens a
-  trial. Incidental drops stay silent: on workloads where the losses
-  are the tail-release economy's expected cost (a few percent of
-  intake), the share never reaches the material line. The trigger may
-  be eager because a trial bounds the cost of a false alarm. This gate
-  needs no configuration and is always live: losing intake is the one
-  way deferral can be strictly worse than storing eagerly, so it is
-  guarded by default. One exception: while the adaptive danger floor is
-  enabled and below its cap, the gate stands down — the floor is the
-  graduated response to the same loss, and a trial opened on the loss
-  that raised the floor would flip the run to immediate emission before
-  the response it triggered has been measured. Losses continuing once
-  the floor is at its cap open the trial as before; with the floor
-  disabled (the default) the gate is unconditional.
-- **Trial**: a bounded window of immediate emission. At its end the
-  trial's ledger rate is compared against the deferred baseline
-  (the trailing window before the trial): within the neutrality factor
-  it commits to DEGRADED -- deferral was only re-timing -- and beyond
-  it the trial reverts and enters a cooldown, because the volume jump
-  means deferral was filtering stores out.
-- **Recovery**: only through a *probe* -- a bounded deferred window,
-  after which the controller returns to NORMAL when the probe's ledger
-  rate drops below the degraded baseline by the neutrality factor.
-  Probes run periodically, and residence recovering past the
-  hysteresis factor arms one early (subject to a minimum retry
-  spacing, so a failed probe is respected as evidence). Every probe
-  re-defers, so each consecutive failure backs the spacing off
-  geometrically to a cap: a workload that is permanently unfavourable
-  pays a bounded total for asking, and one that changes can still
-  recover. The residence
-  estimate alone never lifts a committed degradation: bursts spacing
-  out past the rate window read as infinite residence -- a lull is
-  indistinguishable from genuine recovery -- and lifting on that
-  estimate hands the re-deferred backlog to the next burst. Immediate
-  emission also forfeits the filtering window, so filtering value
-  returning is invisible from inside the regime; the probe measures
-  both questions at once.
-- **DEGRADED semantics** (also during a trial): every drain call emits
-  all pending operations in admission order -- the backlog-drain walk
-  with an unbounded allowance -- subject to the same validation, prefix
-  closure, dedup-hole cut, one-in-flight batch per request, and the
-  shared per-step budget. Admission gates are unchanged. The effect is
-  emission on the first step after admission: the store happens while
-  the request is still running, so its blocks are not yet in the free
-  queue and the pins that protect the copy are inert bookkeeping.
-- **Constants**: all controller constants are properties of the
-  measurement, not workload tunables -- the rate window spans at least
-  two eviction burst cycles, the trial/probe length spans several store
-  cycles, the neutrality factor covers the sampling noise of comparing
-  two short windows, and the probe interval and revert cooldown bound
-  the counterfactual-measurement duty cycle to under ~10%.
-- **Counters**: `degraded_emitted`/`degraded_drain_steps` (immediate
-  emissions and the drains that made them), `degrade_transitions`
-  (behavior flips between deferred and immediate), and the decision
-  ledger `degrade_trials`, `degrade_commits`, `degrade_reverts`,
-  `degrade_probes`, `degrade_probe_recoveries`. Reverts ticking once
-  per cooldown is the signature of a workload whose deferral filters;
-  a commit with no probe recoveries is one whose deferral only
-  re-times.
 
 ## Scheduler-path complexity
 

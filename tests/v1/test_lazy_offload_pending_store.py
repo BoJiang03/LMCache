@@ -367,40 +367,6 @@ class TestEvictionAwareMode:
         assert len(result.items) == 1
         assert store.stats().throttled_drains == 1
 
-    def test_degradation_reaches_the_policy(self) -> None:
-        """The residence knob flips the store to immediate emission: with
-        no eviction pressure and no idle allowance, a pinned op still
-        drains once churn snapshots put residence under the threshold."""
-        store, _ = self._setup(
-            {"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
-        )
-        assert store.wants_l1_pressure()
-        store.observe_l1_pressure(0.0, 1_000_000, 0)
-        for tick in range(1, 12):  # trial opens at t=60, commits at t=110
-            store.observe_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
-        store.add(_make_meta("req-0", num_blocks=1, end=256))
-
-        result = _drain_store(store, 0, 0)
-
-        assert len(result.items) == 1
-        assert store.stats().degraded_emitted == 1
-        assert store.stats().degrade_transitions == 1
-        assert store.stats().degrade_commits == 1
-
-    def test_residence_degradation_is_off_by_default(self) -> None:
-        """Churn alone degrades nothing without the residence threshold:
-        the heartbeat is still wanted (the loss trigger reads it), but
-        with no intake lost there is nothing for it to act on."""
-        store, _ = self._setup()
-        assert store.wants_l1_pressure()
-        store.observe_l1_pressure(0.0, 1_000_000, 0)
-        for tick in range(1, 12):
-            store.observe_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
-        store.add(_make_meta("req-0", num_blocks=1, end=256))
-
-        assert _drain_store(store, 0, 0).items == []
-        assert store.stats().degraded_emitted == 0
-
     def test_drain_reports_policy_neutral_emptied_request(self) -> None:
         store, _ = self._setup({"lmcache.mp.lazy_offload_horizon_steps": 1.0})
         store.add(_make_meta("req-0", num_blocks=1))

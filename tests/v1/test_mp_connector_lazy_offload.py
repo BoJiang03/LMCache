@@ -37,7 +37,6 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
     LMCacheMPWorkerMetadata,
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
-    L1PressureSample,
     LoadStoreOp,
 )
 import lmcache.integration.vllm.lmcache_mp_connector as mp_connector_module  # noqa: E402
@@ -63,25 +62,10 @@ class _RecordingManager:
     final_log_calls: int = 0
     covered_prefix_queries: list[tuple[str, int]] = field(default_factory=list)
     covered_prefix_answer: int = 0
-    wants_pressure: bool = False
-    pressure_samples: list[tuple[float, int, int]] = field(default_factory=list)
     hit_announcements: list[tuple[str, int]] = field(default_factory=list)
-
-    def wants_l1_pressure(self) -> bool:
-        return self.wants_pressure
 
     def announce_hit_load(self, request_id: str, num_tokens: int) -> None:
         self.hit_announcements.append((request_id, num_tokens))
-
-    def on_l1_pressure(
-        self,
-        monotonic_time: float,
-        capacity_bytes: int,
-        evicted_bytes_total: int,
-    ) -> None:
-        self.pressure_samples.append(
-            (monotonic_time, capacity_bytes, evicted_bytes_total)
-        )
 
     def covered_prefix_tokens(
         self,
@@ -131,12 +115,6 @@ class _FakeSchedulerAdapter:
         self.shutdown_calls = 0
         self.lookup_result: int | None = 0
         self.lmcache_tokens_per_chunk = TOKENS_PER_BLOCK
-        self.pressure_polls: list[float] = []
-        self.pressure_sample: L1PressureSample | None = None
-
-    def poll_l1_pressure(self, min_interval: float) -> L1PressureSample | None:
-        self.pressure_polls.append(min_interval)
-        return self.pressure_sample
 
     def end_session(self, request_id: str) -> None:
         self.ended_sessions.append(request_id)
@@ -325,46 +303,6 @@ def test_build_connector_meta_forwards_step_and_applies_actions() -> None:
     assert harness.manager.scheduler_steps == [output]
     assert metadata.requests == [store]
     assert harness.adapter.ended_sessions == ["finished"]
-
-
-def test_build_connector_meta_skips_pressure_poll_when_policy_ignores_it() -> None:
-    """Degradation off means the L1 pressure endpoint is never polled."""
-    harness = _make_connector()
-    _stub_regular_step_processing(harness.connector)
-
-    harness.connector.build_connector_meta(_scheduler_output())
-
-    assert harness.adapter.pressure_polls == []
-    assert harness.manager.pressure_samples == []
-
-
-def test_build_connector_meta_forwards_the_latest_pressure_sample() -> None:
-    harness = _make_connector()
-    _stub_regular_step_processing(harness.connector)
-    harness.manager.wants_pressure = True
-    harness.adapter.pressure_sample = L1PressureSample(
-        monotonic_time=12.0,
-        total_bytes=1_000_000,
-        used_bytes=900_000,
-        evicted_bytes_total=200_000,
-        evicted_chunks_total=3,
-    )
-
-    harness.connector.build_connector_meta(_scheduler_output())
-
-    assert len(harness.adapter.pressure_polls) == 1
-    assert harness.manager.pressure_samples == [(12.0, 1_000_000, 200_000)]
-
-
-def test_build_connector_meta_tolerates_no_pressure_sample_yet() -> None:
-    harness = _make_connector()
-    _stub_regular_step_processing(harness.connector)
-    harness.manager.wants_pressure = True
-
-    harness.connector.build_connector_meta(_scheduler_output())
-
-    assert len(harness.adapter.pressure_polls) == 1
-    assert harness.manager.pressure_samples == []
 
 
 def test_build_connector_meta_forwards_zero_token_step_to_manager() -> None:

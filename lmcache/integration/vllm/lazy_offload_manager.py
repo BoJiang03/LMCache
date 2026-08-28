@@ -385,37 +385,6 @@ class LazyOffloadManager:
         )
         self._pending_store.announce_allocation(request_id, blocks)
 
-    def wants_l1_pressure(self) -> bool:
-        """Whether the caller should feed L1 pressure snapshots.
-
-        True only when the policy runs with adaptive degradation enabled,
-        so the connector can skip polling the server entirely when the
-        signal would be ignored.
-        """
-        return self._pending_store.wants_l1_pressure()
-
-    def on_l1_pressure(
-        self,
-        monotonic_time: float,
-        capacity_bytes: int,
-        evicted_bytes_total: int,
-    ) -> None:
-        """Forward one L1 pressure snapshot to the drain policy.
-
-        Callers may repeat the latest snapshot every step; the policy only
-        advances on a strictly newer timestamp.
-
-        Args:
-            monotonic_time: When the snapshot was taken, on the caller's
-                monotonic clock.
-            capacity_bytes: The server's L1 capacity in bytes.
-            evicted_bytes_total: The server's cumulative deleted-bytes
-                counter at that time.
-        """
-        self._pending_store.observe_l1_pressure(
-            monotonic_time, capacity_bytes, evicted_bytes_total
-        )
-
     def on_store_results(
         self,
         failed_request_ids: set[str],

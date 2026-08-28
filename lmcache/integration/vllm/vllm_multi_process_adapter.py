@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol
 import enum
 import os
 import threading
-import time
 import uuid
 
 # Third Party
@@ -30,7 +29,6 @@ from lmcache.v1.multiprocess.group_view import (
 )
 from lmcache.v1.multiprocess.mq import MessageQueueClient, MessagingFuture
 from lmcache.v1.multiprocess.protocol import RequestType, get_response_class
-from lmcache.v1.multiprocess.protocols.controller import L1PressureStats
 from lmcache.v1.multiprocess.transfer_context import (
     EngineDrivenTransferContext,
     TransferContext,
@@ -481,32 +479,6 @@ class HeartbeatThread(PeriodicThread):
 
 
 @dataclass
-class L1PressureSample:
-    """Aggregate GET_L1_PRESSURE snapshot across all backing servers.
-
-    Field totals are sums over every server; a fleet-level eviction rate over
-    a fleet-level capacity is the fleet residence time, which is what the
-    lazy-offload degradation signal consumes (L1 shards see symmetric
-    traffic, so a per-server breakdown adds nothing the policy would use).
-    """
-
-    monotonic_time: float
-    """``time.monotonic()`` at aggregation, for rate computation."""
-
-    total_bytes: int
-    """Summed L1 capacity in bytes."""
-
-    used_bytes: int
-    """Summed bytes currently resident."""
-
-    evicted_bytes_total: int
-    """Summed cumulative bytes freed by key deletion since server start."""
-
-    evicted_chunks_total: int
-    """Summed cumulative objects freed by key deletion since server start."""
-
-
-@dataclass
 class LoadStoreOp:
     token_ids: list[int]
     """Token IDs for the load/store operation"""
@@ -667,14 +639,6 @@ class LMCacheMPSchedulerAdapter:
         self._expected_worker_count = parallel_strategy.vllm_world_size
         self._store_request_pending_counts: dict[str, int] = {}
 
-        # Threadless GET_L1_PRESSURE poll state (see poll_l1_pressure):
-        # in-flight futures per server, per-server results of the current
-        # cycle, the last completed aggregate, and the last submit time.
-        self._l1_pressure_futures: dict[str, MessagingFuture[Any]] = {}
-        self._l1_pressure_partial: dict[str, L1PressureStats] = {}
-        self._l1_pressure_sample: L1PressureSample | None = None
-        self._l1_pressure_last_submit: float = 0.0
-
     @property
     def world_size(self) -> int:
         """Get the kv world size."""
@@ -689,77 +653,6 @@ class LMCacheMPSchedulerAdapter:
     def is_healthy(self) -> bool:
         """True iff every backing LMCache server is healthy."""
         return all(ev.is_set() for ev in self._health_events.values())
-
-    def poll_l1_pressure(self, min_interval: float) -> L1PressureSample | None:
-        """Advance the threadless L1 pressure poll; return the latest sample.
-
-        Called from the scheduler step path, so every call is non-blocking:
-        it folds finished per-server responses into the current poll cycle,
-        completes the aggregate once every server has answered, and submits
-        the next cycle when ``min_interval`` has elapsed since the previous
-        submission. No cycle is submitted while any server is unhealthy, a
-        failed response discards the whole cycle (a partial aggregate would
-        bias the eviction rate), and a cycle older than the MQ timeout is
-        abandoned so a silent server cannot stall polling forever.
-
-        Args:
-            min_interval: Minimum seconds between poll cycle submissions.
-
-        Returns:
-            The most recently completed aggregate sample, or None before
-            the first cycle completes.
-
-        Raises:
-            ValueError: If ``min_interval`` is not positive.
-        """
-        if min_interval <= 0:
-            raise ValueError(f"min_interval must be positive, got {min_interval}")
-        now = time.monotonic()
-        if (
-            self._l1_pressure_futures
-            and now - self._l1_pressure_last_submit > self._mq_timeout + min_interval
-        ):
-            logger.warning("GET_L1_PRESSURE poll cycle timed out; abandoning it")
-            self._l1_pressure_futures.clear()
-            self._l1_pressure_partial.clear()
-        for url in list(self._l1_pressure_futures):
-            future = self._l1_pressure_futures[url]
-            if not future.query():
-                continue
-            del self._l1_pressure_futures[url]
-            try:
-                self._l1_pressure_partial[url] = future.result(timeout=self._mq_timeout)
-            except Exception:
-                logger.warning(
-                    "GET_L1_PRESSURE to %s failed; dropping this poll cycle",
-                    url,
-                    exc_info=True,
-                )
-                self._l1_pressure_futures.clear()
-                self._l1_pressure_partial.clear()
-                break
-        if not self._l1_pressure_futures and self._l1_pressure_partial:
-            if len(self._l1_pressure_partial) == len(self._server_urls):
-                parts = list(self._l1_pressure_partial.values())
-                self._l1_pressure_sample = L1PressureSample(
-                    monotonic_time=now,
-                    total_bytes=sum(p.total_bytes for p in parts),
-                    used_bytes=sum(p.used_bytes for p in parts),
-                    evicted_bytes_total=sum(p.evicted_bytes_total for p in parts),
-                    evicted_chunks_total=sum(p.evicted_chunks_total for p in parts),
-                )
-            self._l1_pressure_partial.clear()
-        if (
-            not self._l1_pressure_futures
-            and self.is_healthy
-            and now - self._l1_pressure_last_submit >= min_interval
-        ):
-            self._l1_pressure_last_submit = now
-            for url, client in self.mq_clients.items():
-                self._l1_pressure_futures[url] = send_lmcache_request(
-                    client, RequestType.GET_L1_PRESSURE, []
-                )
-        return self._l1_pressure_sample
 
     def _ensure_heartbeat_started(self) -> None:
         """Lazily start the heartbeat thread on first use."""

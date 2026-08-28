@@ -4,13 +4,13 @@ Status: implemented (`GET_L1_PRESSURE`).
 
 ## Problem
 
-The vLLM-side lazy-offload policy needs to know whether the server's L1
-is churning: when stored content is evicted faster than the workload
-re-uses it, deferring stores has no coverage dividend and the policy
-should degrade to immediate emission (see
-`docs/design/integration/vllm/lazy_offload_policy/eviction_aware.md`,
-"Adaptive degradation"). The scheduler process has no view of L1 today;
-capacity and eviction live entirely in the MP server.
+Whether the server's L1 is churning -- stored content evicted faster
+than the workload re-uses it -- is invisible outside the MP server:
+capacity and eviction live entirely there. This endpoint exposes a
+snapshot a client can turn into an eviction rate and a residence
+estimate. (Its original consumer, the lazy-offload adaptive-degradation
+controller, has been removed; the endpoint stays as a generic
+observability probe.)
 
 ## Interface
 
@@ -50,17 +50,3 @@ The handler lives in the management module next to `GET_CHUNK_SIZE`
 and pairs the totals with `StorageManager.get_l1_usage()`; the two
 reads are not under a common lock, so a response's usage and totals
 can be one deletion apart -- fine for a rate estimator.
-
-## Scheduler-side polling
-
-`VLLMSchedulerAdapter.poll_l1_pressure(min_interval)` drives a
-threadless poll from the step path: each call checks an in-flight
-`MessagingFuture` per server (non-blocking), folds finished responses
-into the latest aggregate sample, and submits the next request once
-`min_interval` has elapsed since the previous submission. Multi-server
-deployments are aggregated by summing all four fields -- L1 shards see
-symmetric traffic, and a summed rate over summed capacity is the fleet
-residence. Returns the latest `L1PressureSample`
-(`monotonic_time` + the four sums) or `None` before the first response
-or while any server is unhealthy (a stale partial aggregate would bias
-the rate).

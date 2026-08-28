@@ -1449,37 +1449,6 @@ def test_fifo_duplicate_receipt_is_ignored() -> None:
     assert len(harness.pool.freed) == 1
 
 
-class TestL1PressurePlumbing:
-    """The manager forwards L1 pressure snapshots to the drain policy."""
-
-    def test_wants_l1_pressure_follows_the_policy(self) -> None:
-        """The controller's loss trigger guards volume neutrality with no
-        configuration, so the eviction-aware policy always wants the
-        heartbeat; FIFO has no controller to feed."""
-        assert _make_lazy_connector().manager.wants_l1_pressure()
-        assert _make_lazy_connector(
-            extra_config={"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
-        ).manager.wants_l1_pressure()
-        assert not _make_lazy_connector(
-            extra_config={"lmcache.mp.lazy_offload_policy": "FIFO"}
-        ).manager.wants_l1_pressure()
-
-    def test_pressure_snapshots_degrade_the_drain(self) -> None:
-        """With churn snapshots under the residence threshold, a buffered op
-        drains with no eviction pressure at all; without them it waits."""
-        harness = _make_lazy_connector(
-            extra_config={"lmcache.mp.lazy_offload_degrade_l1_residence_secs": 60.0}
-        )
-        _admit_op(harness, "req", [[1]], start=0, end=TOKENS_PER_BLOCK)
-        assert _drain(harness).actions.stores_to_submit == []
-
-        harness.manager.on_l1_pressure(0.0, 1_000_000, 0)
-        for tick in range(1, 12):  # trial opens at t=60, commits at t=110
-            harness.manager.on_l1_pressure(tick * 10.0, 1_000_000, tick * 200_000)
-
-        assert len(_drain(harness).actions.stores_to_submit) == 1
-
-
 class TestAnnouncedHitLoads:
     """announce_hit_load: feedforward for external-hit admission bursts."""
 
