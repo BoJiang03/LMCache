@@ -1,5 +1,15 @@
 # How much is lazy worth at a realistic latency?
 
+> **Superseded by record 10.** Two things here are wrong. (1) Section 2 treats
+> "working set > pool" as a latency constraint; it is not -- it is a cache-miss
+> constraint, which is what an L1 tier exists to absorb, so the "no comfortable
+> margin" conclusion denies L1 any reason to exist. (2) Option (b) below claims
+> wall time grows the distinct-session count; measured, it does not (32 lanes
+> over 1 492 s touched 27 sessions, over 2 389 s touched 28). The estimate in
+> section 3 is also superseded: the payoff is session capacity, not a few
+> percent of TTFT. Record 10 has the corrected causal chain, the closed-form
+> lane/in-flight relationship, and the measured knee.
+
 Record 8 established that R1-R4 ran past congestion collapse and that the
 corpus's own recorded production TTFT (p50 2.64 s, p90 6.98 s) is the target.
 The obvious next question is what the sweep will show once it is re-run there.
@@ -65,12 +75,12 @@ all would also meet it.
 ~1.5x the pool and both conditions hold at once. This is the good case and
 `calib2` at 14 vs 20 is testing exactly it.
 
-**(b) Longer runs.** Lanes control latency; **wall time controls how many
-distinct sessions rotate through**. 10 lanes over 986 s touched 11 sessions;
-the same 10 lanes over 3 600 s would touch more, with the latency unchanged.
-This is the only lever that grows the working set without touching the
-operating point. A real node serves hundreds of sessions -- we touch 11-28
-because the window is short, not because the workload is small.
+**(b) Longer runs.** *(Measured and false -- see record 10.)* The idea was
+that wall time would rotate more distinct sessions through at a fixed lane
+count. It does not: 32 lanes over 1 492 s touched 27 sessions, and over
+2 389 s touched 28. A trace averages 145 turns and an arm serves ~90
+requests, so lanes never finish a session and recycle. **Distinct sessions
+~= lane count**, and wall time buys only statistics.
 
 **(c) A smaller pool.** If neither of the above works, the GPU cache on this
 node is simply larger than its own workload needs, and studying an L1 tier
