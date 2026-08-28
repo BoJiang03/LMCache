@@ -79,6 +79,11 @@ steps:
           # including the torch.compile cache and the P2P-access probe
           # results -- for the sake of one subdirectory.
           DG_JIT_CACHE_DIR: /root/.cache/deep_gemm
+          # Same for Triton and TileLang, which also default under
+          # $HOME and would otherwise recompile into the pod's
+          # ephemeral filesystem.
+          TRITON_CACHE_DIR: /root/.cache/triton
+          TILELANG_CACHE_DIR: /root/.cache/tilelang
         agents: { queue: "k8s" }
         plugins:
           - kubernetes:
@@ -91,6 +96,9 @@ steps:
                     volumeMounts:
                       - { name: hf-cache, mountPath: /root/.cache/huggingface }
                       - { name: deepgemm-jit, mountPath: /root/.cache/deep_gemm }
+                      - { name: flashinfer-jit, mountPath: /root/.cache/flashinfer }
+                      - { name: triton-jit, mountPath: /root/.cache/triton }
+                      - { name: tilelang-jit, mountPath: /root/.cache/tilelang }
                       - { name: dshm, mountPath: /dev/shm }
                 volumes:
                   - { name: hf-cache, hostPath: { path: /data/huggingface, type: DirectoryOrCreate } }
@@ -109,6 +117,31 @@ steps:
                   # already how DeepGEMM tolerates concurrent ranks on one
                   # cache, so concurrent builds on a node are fine too.
                   - { name: deepgemm-jit, hostPath: { path: /data/deep_gemm_jit, type: DirectoryOrCreate } }
+                  # FlashInfer's JIT cache, for the same reason. DeepGEMM is
+                  # not the only thing compiling here: the sampler and the
+                  # sm90 fp8 blockscale GEMM are built with nvcc on first use
+                  # too, and on a local run with the DeepGEMM cache fully warm
+                  # they still accounted for 137s of a 301s vLLM startup.
+                  # FlashInfer resolves this path itself as
+                  # $HOME/.cache/flashinfer/<version>/<arch>/cached_ops, so
+                  # mounting the directory is enough and no env var is needed,
+                  # and the version and arch in the path give the same
+                  # key-on-a-new-pin property the DeepGEMM cache has.
+                  # Unlike DeepGEMM it builds in place rather than renaming
+                  # into position, serialising concurrent builders on a
+                  # per-module filelock; a build killed mid-link leaves ninja
+                  # to redo it on the next run.
+                  - { name: flashinfer-jit, hostPath: { path: /data/flashinfer_jit, type: DirectoryOrCreate } }
+                  # Triton and TileLang, the last two compilers in this
+                  # startup path. Smaller than the other two -- worth about
+                  # 87s of the measured cold start against DeepGEMM's 400s
+                  # and FlashInfer's 198s -- but the same one-line fix.
+                  # Both key safely: Triton's cache key hashes its own
+                  # compiler and backend sources along with the kernel, the
+                  # backend options and the env, and TileLang namespaces the
+                  # cache by its own version and the torch version.
+                  - { name: triton-jit, hostPath: { path: /data/triton_jit, type: DirectoryOrCreate } }
+                  - { name: tilelang-jit, hostPath: { path: /data/tilelang_jit, type: DirectoryOrCreate } }
                   # TP=4 NCCL + vLLM shared memory; the 1Gi used by the
                   # smaller pods is too tight for four ranks.
                   - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }

@@ -120,6 +120,129 @@ zero JIT. CI's first run pays the download plus 324 nvcc compiles on top of
 that floor, which is where the 40+ minutes goes and what the mount removes from
 every subsequent run.
 
+## Half the startup was FlashInfer nvcc, not model work
+
+The 301s startup was opened up from the vLLM log. Weight loading is 63s and
+process/NCCL init another 45s, but the two long silent stretches -- 77s for
+"profile" and 102s for "warmup model" -- turned out not to be forward passes.
+Timestamps under `~/.cache/flashinfer` place two nvcc builds exactly inside
+them: the `sampling` module, 13:56:40 to 13:57:42 (62s), and
+`fp8_blockscale_gemm_90`, 13:57:59 to 13:59:14 (75s). 137s of the 301s, with
+the DeepGEMM cache fully warm. The actual dummy forwards were ~15s and ~18s.
+
+So `DG_JIT_CACHE_DIR` fixed one JIT framework and left another one, larger,
+untouched.
+
+### The A/B
+
+The first run left those two modules in `~/.cache/flashinfer`, so re-running
+the script unchanged is the warm-cache arm:
+
+| phase | cold flashinfer | warm flashinfer |
+|---|---|---|
+| lmcache_server | 10s | 10s |
+| vllm_startup | 301s | **103s** |
+| cold_run | 23s | 20s |
+| store_drain | 20s | 20s |
+| retrieve_run | 21s | 20s |
+| **total** | **375s** | **173s** |
+
+Both runs PASS, both `cmp`-clean on 628-char outputs, both `retrieves 0 -> 4`.
+The warm run wrote **zero** files to `~/.cache/flashinfer`, `~/.cache/vllm`,
+`~/.triton` and `~/.tilelang`, so nothing compiled anywhere.
+
+Attributing the 198s, honestly, needs two buckets and only one of them
+transfers to CI:
+
+- **`init engine` 186.4s -> 24.0s (162s).** This is the FlashInfer cache. 137s
+  of it is directly accounted for by the two `.so` timestamps above; the rest
+  is the ninja/filelock/probe work around them.
+- **weight loading 59.9s -> 22.1s (38s).** This is the OS page cache -- 149GB
+  of weights still resident from a run 35 minutes earlier on a 1.3TB box. It is
+  not a property of the change and will not reliably repeat in CI.
+
+So the CI-transferable prediction is ~150s off the step per run, not ~200s.
+
+### The change
+
+`pipeline.yml` mounts `/data/flashinfer_jit` at `/root/.cache/flashinfer` on
+the dsv4 step, alongside the DeepGEMM mount. No env var: FlashInfer resolves
+`$FLASHINFER_WORKSPACE_BASE/.cache/flashinfer/<version>/<arch>/cached_ops` and
+the base defaults to `$HOME`, so mounting the directory is the whole change.
+Locally that path is `0.6.15.post1/90a`, which is the same key-on-a-new-pin
+property the DeepGEMM cache argument rests on.
+
+One difference from DeepGEMM worth stating in review: FlashInfer builds in
+place under `cached_ops/<name>/` and serialises concurrent builders on a
+per-module `filelock`, rather than compiling into a temp dir and renaming. Two
+consequences on a shared hostPath: concurrent builds on one node wait instead
+of each compiling (cheaper than recompiling, but it is serialisation), and a
+pod killed mid-link can leave a partial build for ninja to redo on the next
+run.
+
+Still on the table and not done here: `~/.triton` and `~/.tilelang`. The
+`jit_monitor` lines show five kernels (CuTeDSL, TileLang, Triton) compiling at
+the *first request*, i.e. inside `cold_run`, not startup. Both caches were warm
+on this box so the 20s cold_run does not show what CI pays for them.
+
+## The cold run: 788s, and where it goes
+
+A third run with every JIT cache cold. Nothing was deleted -- the five cache
+roots were redirected at an empty scratch dir instead, which is both
+non-destructive on a shared box and a closer match to CI's empty pod:
+
+```
+DG_JIT_CACHE_DIR  FLASHINFER_WORKSPACE_BASE  TRITON_CACHE_DIR
+TILELANG_CACHE_DIR  VLLM_CACHE_ROOT   ->  <scratch>/coldcache/*
+```
+
+`vllm_startup: 788s`. The run then died in `cold_run` and never reached a PASS
+(see below), but the startup number is the one that was wanted and it is clean.
+
+Three points now:
+
+| DeepGEMM | FlashInfer | Triton/TileLang | vllm_startup |
+|---|---|---|---|
+| warm | warm | warm | 103s |
+| warm | cold | warm | 301s |
+| cold | cold | cold | 788s |
+
+The DeepGEMM share is directly measured rather than inferred -- its warmup
+prints a progress bar: `1281/1281 [06:40]` cold, `[00:00, 8629it/s]` and
+`[00:00, 15183it/s]` on the two warm runs. So **DeepGEMM ~400s, FlashInfer
+~198s, Triton + TileLang + the rest ~87s** (that last one is a residual, not a
+measurement, and absorbs any other cold-start variance).
+
+Two things I had said earlier and got wrong, corrected here:
+
+- "DeepGEMM first compile is ~487s" -- no. 788 - 301 = 487s also contains
+  Triton and TileLang being cold. The progress bar splits it: 400s.
+- "CuTeDSL/TileLang/Triton compile at the first request" -- that was read off
+  `jit_monitor`, which only reports a handful of kernels. Bucketing the cold
+  cache's file mtimes by the phase boundary shows the bulk lands in startup:
+
+| cache | files written in startup | after cold_run began |
+|---|---|---|
+| deep_gemm | 240 | 6 |
+| flashinfer | 22 | 0 |
+| triton | 665 | 40 |
+| tilelang | 45 | 15 |
+| VLLM_CACHE_ROOT | 1 | 0 |
+
+All four are now mounted in `pipeline.yml`. The whole set of caches the cold
+run filled is 35MB.
+
+### Why the cold run has no PASS
+
+It reached `cold_run`, stored 8192 + 768 tokens successfully, and then at
+15:50:50 the `lmcache server` was SIGKILLed and vLLM's EngineCore died with it
+(ranks 2/3 reporting TCPStore broken pipe); the completion request returned
+HTTP 500. Not a defect in anything under test: the `vllm-lazy` work line
+restarted five seconds later, at 15:50:55, and its startup sweep takes out
+processes matching `lmcache server`. Worth remembering when running anything
+here alongside that line. `cold_run: 54s` and the 852s total from that run are
+both meaningless.
+
 ## What this run does *not* prove
 
 1. **vLLM version.** Local is `0.26.1rc1.dev306+gcb8104839`; the CI pin
@@ -138,19 +261,33 @@ every subsequent run.
 So the manual `RUN_DSV4_TEST=true` build before merge is still worth doing --
 now not to answer "does the test still pass" but to answer "does it pass on
 SM120 against the pinned nightly, and does `/data/deep_gemm_jit` actually
-land". The tell for the mount is the second run's `vllm_startup`: if it does
-not drop toward the ~300s floor measured here, the cache is not persisting.
+land". The tell for the mounts is the second build's `vllm_startup`: with both
+JIT caches persisting it should land near the 103s measured here, and anything
+near 300s means the hostPaths are not sticking.
 
 ## Cleanup
 
-Killed the two PIDs from `/tmp/lmcache_mp_pids_local_dsv4_135426` (the
-`lmcache server` needed `-9`), then confirmed GPUs 1/2/3/6 back to ~6MiB.
+Killed the two PIDs from each run's `/tmp/lmcache_mp_pids_local_dsv4_*` (the
+`lmcache server` needed `-9` the first time), then confirmed GPUs 1/2/3/6 back
+to ~6MiB. Both times the script's EXIT trap printed the timing summary but did
+not reap the servers -- that is a property of invoking the script directly, not
+a CI bug: `run-single-test.sh:93` sets `trap cleanup.sh EXIT` above it, and the
+script's own header says it leaves teardown to the dispatcher's PID_FILE.
+
+One thing that is a real CI cost, found when a cold-run attempt lost a GPU to
+another process mid-load: `wait_for_server` (`common_scripts/helpers.sh:155`)
+only polls `curl /v1/models`. It never checks whether the vLLM PID is still
+alive, so a crashed startup is indistinguishable from a slow one and the step
+sits out the whole `VLLM_READY_TIMEOUT` -- 2700s, holding four GPUs -- before
+reporting failure. Not touched here; it is shared helper code and a separate
+change.
 Left alone: the `vllm-lazy` venv processes on other GPUs and the `/opt/venv` /
 `/workspace` servers, which belong to other work lines and other people.
 
 ## Branch state
 
-- `dsv4_ci_cost_pr` @ `852cbc6c` -- `[CI][MP] Take dsv4_flash_tp off the
+- `dsv4_ci_cost_pr` @ `0be2cd0b` (`852cbc6c` before the four JIT-cache
+  mounts and the DCO sign-off were folded in) -- `[CI][MP] Take dsv4_flash_tp off the
   default multiprocess run`. One commit, ahead 1 / behind 0 of `origin/dev`.
   Pushed to `fork` earlier and unchanged since.
 - `dsv4_ci_cost_dev` -- `852cbc6c` + this session's records commit. Pushed with
@@ -170,4 +307,8 @@ A PR title/body draft was handed over in chat and is not repeated here.
    `dev`, `0 4 * * *`, no env vars; must be a *new* schedule, since the
    `VERIFY_AND_PIN_VLLM` clause deliberately keeps this group out of the pin
    canary), and to route nightly failures somewhere a person reads.
-3. Confirm `/data/deep_gemm_jit` is writable on the agent nodes.
+3. Confirm the four hostPaths (`/data/deep_gemm_jit`, `/data/flashinfer_jit`,
+   `/data/triton_jit`, `/data/tilelang_jit`) are writable on the agent nodes.
+4. A cold run that actually reaches PASS. The one measured here was killed in
+   `cold_run` by the `vllm-lazy` line's restart sweep, so the cold total is
+   still unknown; only `vllm_startup` survived.
