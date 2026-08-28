@@ -154,9 +154,6 @@ class LazyOffloadPendingStore:
                 ``lmcache.mp.lazy_offload_max_drain_per_step`` (int),
                 ``lmcache.mp.lazy_offload_max_drain_blocks_per_step`` (int,
                 0 leaves the per-step block volume unbounded),
-                ``lmcache.mp.lazy_offload_idle_drain_max_ops`` (int, 0
-                disables idle draining),
-                ``lmcache.mp.lazy_offload_idle_threshold_blocks`` (float),
                 and the
                 FIFO-only ``lmcache.mp.lazy_offload_threshold`` /
                 ``lmcache.mp.lazy_offload_select_count``.
@@ -221,18 +218,6 @@ class LazyOffloadPendingStore:
                 cast(
                     str | int | float,
                     configs.get("lmcache.mp.lazy_offload_max_drain_blocks_per_step", 0),
-                )
-            ),
-            idle_drain_max_ops=int(
-                cast(
-                    str | int | float,
-                    configs.get("lmcache.mp.lazy_offload_idle_drain_max_ops", 0),
-                )
-            ),
-            idle_threshold_blocks=float(
-                cast(
-                    str | int | float,
-                    configs.get("lmcache.mp.lazy_offload_idle_threshold_blocks", 1.0),
                 )
             ),
         )

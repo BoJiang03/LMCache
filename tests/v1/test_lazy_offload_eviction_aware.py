@@ -113,8 +113,6 @@ def make_queue(
     min_prefix_tokens: int = 0,
     max_drain_per_step: int = 64,
     max_drain_blocks_per_step: int = 0,
-    idle_drain_max_ops: int = 0,
-    idle_threshold_blocks: float = 1.0,
 ) -> EvictionAwareStoreQueue:
     config = LazyOffloadPolicyConfig(
         horizon_steps=horizon_steps,
@@ -122,8 +120,6 @@ def make_queue(
         min_prefix_tokens=min_prefix_tokens,
         max_drain_per_step=max_drain_per_step,
         max_drain_blocks_per_step=max_drain_blocks_per_step,
-        idle_drain_max_ops=idle_drain_max_ops,
-        idle_threshold_blocks=idle_threshold_blocks,
     )
     return EvictionAwareStoreQueue(config, pool)
 
@@ -150,17 +146,6 @@ class TestConfigValidation:
     def test_rejects_negative_block_volume_cap(self) -> None:
         with pytest.raises(ValueError):
             LazyOffloadPolicyConfig(max_drain_blocks_per_step=-1)
-
-    def test_idle_drain_is_disabled_by_default(self) -> None:
-        assert LazyOffloadPolicyConfig().idle_drain_max_ops == 0
-
-    def test_rejects_negative_idle_allowance(self) -> None:
-        with pytest.raises(ValueError):
-            LazyOffloadPolicyConfig(idle_drain_max_ops=-1)
-
-    def test_rejects_non_positive_idle_threshold(self) -> None:
-        with pytest.raises(ValueError):
-            LazyOffloadPolicyConfig(idle_threshold_blocks=0)
 
     def test_danger_floor_is_disabled_by_default(self) -> None:
         assert LazyOffloadPolicyConfig().danger_floor_max_blocks == 0
@@ -1335,207 +1320,6 @@ class TestCoveredPrefix:
             queue.covered_prefix_tokens("", {0: [1]}, [16], 32, -1)
 
 
-class TestIdleDrain:
-    """``idle_drain_max_ops``: work the backlog off in the gaps.
-
-    Pressure times an emission to the moment its blocks are about to be
-    reallocated, which is exactly when a prefill burst is allocating, so
-    the copy lands in phase with the burst. These tests cover the
-    complementary trigger: a step whose allocation rate is at or below
-    ``idle_threshold_blocks`` emits the oldest waiting operations instead.
-    """
-
-    def _pinned_backlog(
-        self,
-        ops_per_request: dict[str, int],
-        idle_drain_max_ops: int,
-        **queue_kwargs: float,
-    ) -> tuple[FakePoolView, EvictionAwareStoreQueue]:
-        """Admit per-request chains whose blocks are all in use.
-
-        No block enters the free queue, so eviction pressure never fires
-        and only the idle path can emit.
-        """
-        pool = FakePoolView()
-        queue = make_queue(
-            pool,
-            idle_drain_max_ops=idle_drain_max_ops,
-            **queue_kwargs,  # type: ignore[arg-type]
-        )
-        next_block = 1
-        for request_id, count in ops_per_request.items():
-            for index in range(count):
-                seed_blocks(pool, [next_block], free=False)
-                queue.admit(
-                    make_op(
-                        request_id,
-                        [next_block],
-                        pool,
-                        prefix_end_tokens=256 * (index + 1),
-                    )
-                )
-                next_block += 1
-        return pool, queue
-
-    def test_idle_step_emits_the_oldest_request_first(self) -> None:
-        _, queue = self._pinned_backlog({"old": 1, "young": 1}, idle_drain_max_ops=1)
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.request_id for op in result.to_store] == ["old"]
-        stats = queue.stats()
-        assert stats.idle_emitted == 1
-        assert stats.idle_drain_steps == 1
-        assert stats.emitted == 1
-
-    def test_disabled_by_default_an_idle_step_emits_nothing(self) -> None:
-        _, queue = self._pinned_backlog({"req": 2}, idle_drain_max_ops=0)
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert queue.num_pending_ops() == 2
-        assert queue.stats().idle_emitted == 0
-
-    def test_busy_step_emits_nothing(self) -> None:
-        _, queue = self._pinned_backlog({"req": 2}, idle_drain_max_ops=8)
-        queue.observe_step(new_blocks_allocated=8, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert queue.stats().idle_drain_steps == 0
-
-    def test_next_step_estimate_vetoes_the_first_step_of_a_burst(self) -> None:
-        """A prefill about to allocate is visible in the estimate before the
-        EMA has seen a single busy step; that step must not count as idle."""
-        _, queue = self._pinned_backlog({"req": 2}, idle_drain_max_ops=8)
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=50)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert queue.stats().idle_drain_steps == 0
-
-    def test_ema_vetoes_the_trailing_steps_of_a_burst(self) -> None:
-        """Right after a burst the smoothed rate is still high, so the step
-        is not idle; the rate decays back under the threshold eventually."""
-        _, queue = self._pinned_backlog({"req": 1}, idle_drain_max_ops=8)
-        queue.observe_step(new_blocks_allocated=100, est_next_step_blocks=0)
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        assert queue.collect_due().to_store == []
-
-        emitted_after = 0
-        for step in range(2, 30):
-            queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-            if queue.collect_due().to_store:
-                emitted_after = step
-                break
-        assert emitted_after > 2
-        assert queue.num_pending_ops() == 0
-
-    def test_allowance_bounds_each_idle_step(self) -> None:
-        _, queue = self._pinned_backlog({"req": 5}, idle_drain_max_ops=2)
-
-        emissions: list[int] = []
-        for _ in range(3):
-            queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-            emissions.append(len(queue.collect_due().to_store))
-
-        assert emissions == [2, 2, 1]
-        stats = queue.stats()
-        assert stats.idle_emitted == 5
-        assert stats.idle_drain_steps == 3
-        assert queue.num_pending_ops() == 0
-
-    def test_blocked_request_stays_pending(self) -> None:
-        """One in-flight batch per request: an idle emission must not put a
-        second one in flight, and the next-oldest request goes instead."""
-        _, queue = self._pinned_backlog(
-            {"in-flight": 1, "waiting": 1}, idle_drain_max_ops=1
-        )
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due(blocked_request_ids={"in-flight"})
-
-        assert [op.request_id for op in result.to_store] == ["waiting"]
-        assert queue.num_pending_ops() == 1
-
-    def test_emission_stops_at_a_deduplication_hole(self) -> None:
-        """An idle batch is coalesced like any other: it must not span a
-        hole left by deduplication, whatever the allowance."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2], free=False)
-        queue = make_queue(pool, idle_drain_max_ops=8)
-        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
-        queue.admit(
-            make_op(
-                "req",
-                [2],
-                pool,
-                prefix_end_tokens=1024,
-                prefix_start_tokens=768,
-            )
-        )
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in result.to_store] == [256]
-        assert queue.num_pending_ops() == 1
-
-    def test_stale_snapshot_is_dropped_not_emitted(self) -> None:
-        """The idle path validates like the others: content whose block was
-        evicted and reallocated must never be stored."""
-        pool, queue = self._pinned_backlog({"req": 1}, idle_drain_max_ops=8)
-        pool.hashes[1] = b"reallocated"
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert result.to_store == []
-        assert len(result.dropped_evicted) == 1
-        assert queue.stats().idle_emitted == 0
-
-    def test_pressure_emission_is_not_doubled_by_the_idle_path(self) -> None:
-        """A slow trickle can be under the idle threshold and still produce
-        a positive danger depth; a request the pressure pass emitted must
-        not emit a second batch from the idle pass in the same drain."""
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2], free=True)
-        queue = make_queue(pool, horizon_steps=1.0, idle_drain_max_ops=8)
-        queue.admit(make_op("req", [1], pool, prefix_end_tokens=256))
-        queue.admit(make_op("req", [2], pool, prefix_end_tokens=512))
-        queue.observe_step(new_blocks_allocated=1, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        # Rank 0 is due under pressure (danger depth 1). The request now has
-        # a batch in flight, so the idle pass must leave its second op
-        # pending rather than submit a second batch.
-        assert [op.prefix_end_tokens for op in result.to_store] == [256]
-        assert queue.num_pending_ops() == 1
-        stats = queue.stats()
-        assert stats.emitted == 1
-        assert stats.idle_emitted == 0
-
-    def test_idle_emitted_is_a_subset_of_emitted(self) -> None:
-        """The ledger equation must close: idle emission times a store, it
-        is not a new way for an op to leave the queue."""
-        _, queue = self._pinned_backlog({"req": 3}, idle_drain_max_ops=8)
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        queue.collect_due()
-
-        stats = queue.stats()
-        assert stats.emitted == 3
-        assert stats.idle_emitted == 3
-        assert stats.admitted == stats.emitted + queue.num_pending_ops()
-
-
 class TestBlockVolumeCap:
     """``max_drain_blocks_per_step``: bound the D2H burst in bytes.
 
@@ -1583,26 +1367,6 @@ class TestBlockVolumeCap:
 
         assert [op.prefix_end_tokens for op in result.to_store] == [256]
         assert result.ops_held_back == 1
-
-    def test_cap_is_shared_with_the_idle_drain(self) -> None:
-        pool = FakePoolView()
-        seed_blocks(pool, [1, 2, 3], free=False)
-        queue = make_queue(
-            pool,
-            idle_drain_max_ops=8,
-            max_drain_blocks_per_step=2,
-        )
-        for index, block in enumerate([1, 2, 3]):
-            queue.admit(
-                make_op("req", [block], pool, prefix_end_tokens=256 * (index + 1))
-            )
-        queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
-
-        result = queue.collect_due()
-
-        assert [op.prefix_end_tokens for op in result.to_store] == [256, 512]
-        assert queue.stats().idle_emitted == 2
-        assert queue.num_pending_ops() == 1
 
 
 class TestAnnouncedBursts:

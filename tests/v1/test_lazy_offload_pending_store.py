@@ -309,24 +309,6 @@ class TestEvictionAwareMode:
         store.add(_make_meta("req-0", num_blocks=2))
         assert _drain_store(store, 0, 0).items == []
 
-    def test_idle_drain_reaches_the_policy(self) -> None:
-        """The idle allowance emits with no eviction pressure at all, on a
-        step whose allocation rate is under the idle threshold."""
-        store, _ = self._setup({"lmcache.mp.lazy_offload_idle_drain_max_ops": 1})
-        store.add(_make_meta("req-0", num_blocks=1, end=256))
-
-        result = _drain_store(store, 0, 0)
-
-        assert len(result.items) == 1
-        assert store.stats().idle_emitted == 1
-
-    def test_idle_drain_is_off_by_default(self) -> None:
-        store, _ = self._setup()
-        store.add(_make_meta("req-0", num_blocks=1, end=256))
-
-        assert _drain_store(store, 0, 0).items == []
-        assert store.stats().idle_emitted == 0
-
     def test_block_volume_cap_reaches_the_policy(self) -> None:
         """The block cap truncates a due segment at an op boundary."""
         store, _ = self._setup(
