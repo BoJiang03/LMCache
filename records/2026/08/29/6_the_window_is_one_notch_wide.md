@@ -131,8 +131,62 @@ lower ratio is wanted for its own sake.
 
 ## 7. Open
 
-1. The two arms in section 5.
+1. Done, see section 8. Both arms scored; the search stopped as pre-committed.
 2. `max_deferral_seconds` still deserves its own PR. Unchanged from record 4.
 3. Not attempted, and named so it is not silently dropped: nothing here
    measures the exclusive move-not-copy retrieve path, which is the second
    half of the method. Every arm to date still copies L1 to L0.
+
+## 8. Both arms are in. The roof holds, and the search stops
+
+All three rows are the same working point, CONC=72 on fp8 + 256k at native
+context, one variable each against `f8k256c72`.
+
+| arm | pool tok | inflight | tpot p50 | agg decode | lat p50 | TTFT p50 | TTFT p90 | waiting | preempt | compute | local | ext |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| c72 | 4,077,968 | 30.22 | 81.6 ms | 370 tok/s | 46.90 s | 9.23 s | 36.86 s | 3.32 | 7 | 11.8% | 40.6% | 47.6% |
+| c72fic | 4,090,176 | 30.16 | 83.4 ms | 362 tok/s | 49.34 s | 6.43 s | 40.65 s | 3.03 | 10 | 12.5% | 41.1% | 46.3% |
+| c72b64 | 4,072,256 | 30.11 | 74.6 ms | 404 tok/s | 45.12 s | 8.50 s | 35.58 s | 3.13 | 7 | 12.1% | 40.9% | 47.1% |
+
+`flashinfer_cutlass` does nothing. The backend switch is confirmed in the log
+(`Using FlashInfer CUTLASS Unquantized MoE backend`), and tpot went from
+81.6 ms to 83.4 ms, i.e. nowhere. P15 and P16 falsified. The Triton MoE
+kernel was not the missing 3x.
+
+`--block-size 64` is real but small. tpot 81.6 to 74.6 ms, aggregate decode
+370 to 404 tok/s, +9%. P20 asked for under 70 ms and did not get it, so it is
+falsified as stated while moving in the predicted direction. P21 confirmed:
+pool moved -0.14% and local 40.6% to 40.9%, both inside a point, so the
+coarser allocation granularity costs nothing at these lengths.
+
+The useful by-product is a noise floor. c72 and c72fic have the same decode
+path, since the MoE backend turned out to be a no-op, so their 2.2% tpot gap
+is run-to-run variance. b64's 8.6% is about four times that and is a real
+effect.
+
+TTFT p50 is not. Three runs at the same working point gave 9.23, 6.43 and
+8.50 s while `waiting_mean` moved only 3.32, 3.03, 3.13. A 30% spread on the
+statistic against a 9% spread on the queue that produces it means TTFT p50
+here has a wide confidence interval, and c72fic's 6.43 s must not be read as
+a lever working. Nothing in this pair improved TTFT.
+
+P22's trigger was "if both leave tpot flat". Only one did. Reporting it
+straight: the 3x gap in the decode path is not the MoE kernel at all, and the
+block table accounts for about 9% of it. The remainder is long-context paged
+attention at 4 KV heads with TP=2, which is TP=4 territory and out of scope.
+Per the pre-commitment, the search for a TTFT knob stops here and c72 is the
+operating point.
+
+Two things worth keeping:
+
+- `BLOCK=64 FLOOR=2048` is free and strictly better on every axis that moved
+  (tpot, aggregate decode, `lat_p50`, TTFT p90). It should be the default for
+  subsequent arms even though it does not change the verdict.
+- The working point reproduces. Three independent 1800 s runs gave local
+  40.6 / 41.1 / 40.9% and ext 47.6 / 46.3 / 47.1%. Against the target of
+  local 40-60% and ext >25%, that is a stable configuration, not a lucky run.
+
+The honest summary of the target `local 40-60%, ext >25%, TTFT p50 <10 s`:
+it is met, reproducibly, at CONC=72 on fp8 + 256k + native 262,144 + L1
+320 GiB, and TTFT sits at 8.5-9.2 s with no margin to spare and no available
+knob to buy more.
