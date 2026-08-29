@@ -326,6 +326,17 @@ class PendingStoreOp:
             drain counter at emission is how long deferral actually held
             the operation -- the quantity the whole policy exists to buy,
             and the one a caller cannot reconstruct from any other counter.
+        admitted_at_time: Wall clock, in seconds from an arbitrary origin,
+            of the step that admitted this operation, taken from the last
+            timestamp the caller supplied to
+            :meth:`EvictionAwareStoreQueue.observe_step`. Drains are the
+            policy's own clock, but their rate is a property of the engine
+            (it varied 8.9 to 15.1 per second between two arms of the same
+            workload), so a deadline expressed in drains means a different
+            wall-clock deadline at every operating point. The reuse
+            interval a store has to beat is wall clock, so
+            ``LazyOffloadPolicyConfig.max_deferral_seconds`` is compared
+            against this.
     """
 
     request_id: str
@@ -336,6 +347,7 @@ class PendingStoreOp:
     epoch: int = 0
     cache_salt: str = ""
     admitted_at_drain: int = 0
+    admitted_at_time: float = 0.0
 
 
 def _token_span(ops: list[PendingStoreOp]) -> int:
@@ -378,6 +390,13 @@ def _contiguous_front_run(ops: list[PendingStoreOp]) -> list[PendingStoreOp]:
 
 
 DEFAULT_HORIZON_STEPS = 2.5
+
+# Rank given to a request released by the deferral deadline rather than by
+# proximity to the free-queue head. It sorts ahead of every real rank (which
+# are free-queue positions, so never negative) and is always below the
+# emission threshold, so an overdue request is decided first and is due even
+# on a step whose danger depth is zero.
+_OVERDUE_RANK = -1
 
 
 @dataclass(frozen=True)
@@ -433,6 +452,23 @@ class LazyOffloadPolicyConfig:
             for the next step. 0 leaves the volume unbounded. The sizing
             sensor is ``LazyOffloadCounters.throttled_drains``, shared
             with the op-count cap.
+        max_deferral_seconds: Upper bound on how long an operation may wait
+            between admission and emission; 0.0 (the default) disables it
+            and leaves emission entirely to the danger window. Every other
+            knob is a *spatial* signal -- how close a block sits to the
+            free-queue head -- which answers when the block dies on the
+            GPU, not when the conversation comes back. Those two clocks
+            are independent, and when the reuse interval is the shorter of
+            the two the danger window emits after the entry was already
+            needed: the store lands, but too late to be found. This bound
+            makes the deadline explicit. Set it below the reuse interval
+            the workload has to beat (previous turn's end to the next
+            turn's *scheduling*, which includes the waiting-queue delay).
+            Sizing sensors: ``LazyOffloadCounters.emitted_overdue`` against
+            ``emitted`` says how much of the traffic the deadline rather
+            than the window released, and ``emitted_deferral_drains`` over
+            ``emitted`` divided by ``drain_steps`` over the run's duration
+            gives the mean deferral the bound actually produced.
     """
 
     horizon_steps: float = DEFAULT_HORIZON_STEPS
@@ -440,6 +476,7 @@ class LazyOffloadPolicyConfig:
     min_prefix_tokens: int = 0
     max_drain_per_step: int = 64
     max_drain_blocks_per_step: int = 0
+    max_deferral_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate field ranges.
@@ -467,6 +504,10 @@ class LazyOffloadPolicyConfig:
                 "max_drain_blocks_per_step must be >= 0, got "
                 f"{self.max_drain_blocks_per_step}"
             )
+        if self.max_deferral_seconds < 0.0:
+            raise ValueError(
+                f"max_deferral_seconds must be >= 0.0, got {self.max_deferral_seconds}"
+            )
 
 
 @dataclass
@@ -483,6 +524,14 @@ class LazyOffloadCounters:
     the unit the cache is actually sized in. Like
     ``covered_prefix_tokens_skipped`` it is a weight, not an outcome, and
     stands outside the admission ledger's arithmetic.
+    ``emitted_overdue`` counts the operations released because they hit
+    ``LazyOffloadPolicyConfig.max_deferral_seconds`` rather than because a
+    block came due. Read against ``emitted`` it says which of the two
+    clocks is binding: near zero means the danger window is already firing
+    inside the deadline and the bound costs nothing, while a majority
+    means the free queue drains far slower than the workload reuses and
+    the spatial signal alone would have been late on most of the traffic.
+
     ``emitted_deferral_drains`` and ``dropped_deferral_drains`` sum, over
     the operations that left the pending machine each way, the drains each
     one waited since admission. Divided by ``emitted`` and
@@ -554,6 +603,7 @@ class LazyOffloadCounters:
 
     admitted: int = 0
     emitted: int = 0
+    emitted_overdue: int = 0
     emitted_deferral_drains: int = 0
     dropped_evicted: int = 0
     dropped_evicted_tokens: int = 0
@@ -591,6 +641,7 @@ class LazyOffloadCounters:
         return (
             self.admitted,
             self.emitted,
+            self.emitted_overdue,
             self.emitted_deferral_drains,
             self.dropped_evicted,
             self.dropped_evicted_tokens,
@@ -852,6 +903,30 @@ class _PendingOperations:
     def admission_order(self, request_id: str) -> int:
         return self._request_order[request_id]
 
+    def overdue_requests(self, now: float, max_age: float) -> set[str]:
+        """Requests whose oldest pending operation has passed the deadline.
+
+        Emission always takes from the front of a request's list, so the
+        front operation's age is the deferral the request is actually
+        serving. Every pending request is examined: a request admitted
+        early can have had its old front emitted already, so the scan
+        cannot stop at the first one still inside the deadline.
+
+        Args:
+            now: Current time in the caller's clock, in seconds.
+            max_age: Deadline in seconds. Must be > 0; the caller checks
+                that the bound is enabled before calling.
+
+        Returns:
+            The ids of the requests at or past the deadline.
+        """
+        cutoff = now - max_age
+        return {
+            request_id
+            for request_id, ops in self._by_request.items()
+            if ops and ops[0].admitted_at_time <= cutoff
+        }
+
 
 class EvictionAwareStoreQueue:
     """Buffers store operations and releases them by eviction imminence.
@@ -920,6 +995,11 @@ class EvictionAwareStoreQueue:
         self._blocks_per_step_ema: float = 0.0
         self._ema_initialized = False
         self._next_step_estimate = 0
+        # Last timestamp the caller supplied to observe_step, used to stamp
+        # admissions. The policy performs no I/O, so it never reads a clock
+        # itself; 0.0 until the first step is observed, which only matters
+        # when max_deferral_seconds is enabled.
+        self._now = 0.0
         # Announced imminent allocations, request id -> expected blocks.
         # While non-empty, the danger depth floors at their sum.
         self._announced_blocks: dict[str, int] = {}
@@ -1052,6 +1132,7 @@ class EvictionAwareStoreQueue:
             self._counters.rejected_unhashed += 1
             return AdmitResult.REJECTED_UNHASHED_BLOCK
         op.admitted_at_drain = self._counters.drain_steps
+        op.admitted_at_time = self._now
         if op.prefix_end_tokens < self._config.min_prefix_tokens:
             # Gate 3 (economy): the chain is below break-even. Hold it out
             # of the pending machine until the request grows past the
@@ -1139,6 +1220,7 @@ class EvictionAwareStoreQueue:
         new_blocks_allocated: int,
         est_next_step_blocks: int,
         allocated_block_ids: set[int] | None = None,
+        now_seconds: float = 0.0,
     ) -> None:
         """Record one scheduler step's block-consumption signals.
 
@@ -1154,7 +1236,13 @@ class EvictionAwareStoreQueue:
                 step. Requests indexed by these ids are revalidated during
                 the drain. None asks for a full validation pass and is kept
                 for callers that cannot provide the incremental signal.
+            now_seconds: This step's time, in seconds from any fixed
+                origin, from the caller's clock. The policy reads no clock
+                of its own; this is what stamps admissions and what
+                ``LazyOffloadPolicyConfig.max_deferral_seconds`` is
+                measured against. Ignored while that bound is 0.0.
         """
+        self._now = now_seconds
         self._pending_ops.observe_allocations(allocated_block_ids)
         self._recent_step_allocs.append(new_blocks_allocated)
         if self._ema_initialized:
@@ -1307,6 +1395,14 @@ class EvictionAwareStoreQueue:
         the pool directly, not of the window, so a pin deeper than the
         window still counts and the widening cannot stall behind itself.
 
+        A request whose oldest pending operation has waited longer than
+        ``max_deferral_seconds`` is due independently of all of the above,
+        and is decided before the window-driven candidates. Its whole
+        surviving front is released (still cut at the first deduplication
+        hole, still subject to gate 3 and the drain budget), because the
+        deadline is a statement about the content being needed again, not
+        about any one block's position.
+
         The drain spends from one budget, capped in operations
         (``max_drain_per_step``) and, when configured, in blocks
         (``max_drain_blocks_per_step``).
@@ -1349,6 +1445,17 @@ class EvictionAwareStoreQueue:
         if not self._pending_ops:
             return result
         self._counters.drain_steps += 1
+
+        # Requests past the deferral deadline are due regardless of where
+        # their blocks sit in the free queue: the deadline tracks when the
+        # content is needed again, the danger depth when the block dies.
+        overdue: set[str] = (
+            self._pending_ops.overdue_requests(
+                self._now, self._config.max_deferral_seconds
+            )
+            if self._config.max_deferral_seconds > 0.0
+            else set()
+        )
 
         danger_depth = self._danger_depth()
         # A zero danger depth makes nothing due, so the free queue is not
@@ -1407,10 +1514,21 @@ class EvictionAwareStoreQueue:
                     if (rank := window.ranks.get(block_id)) is not None
                 ]
                 if not op_ranks:
-                    # No block inside the window: the request cannot be due
-                    # yet. A later widening can still bring one into view.
+                    if request_id not in overdue:
+                        # No block inside the window: the request cannot be
+                        # due yet. A later widening can still bring one
+                        # into view.
+                        continue
+                    fresh.append((_OVERDUE_RANK, request_id, surviving))
+                    candidate_ids.add(request_id)
                     continue
-                fresh.append((min(op_ranks), request_id, surviving))
+                fresh.append(
+                    (
+                        _OVERDUE_RANK if request_id in overdue else min(op_ranks),
+                        request_id,
+                        surviving,
+                    )
+                )
                 candidate_ids.add(request_id)
             if not fresh:
                 return
@@ -1428,7 +1546,7 @@ class EvictionAwareStoreQueue:
         # Only requests touched by this step's allocations or represented in
         # the window can have changed outcome. The reverse index avoids a
         # full pending-queue scan on every scheduler step.
-        discover(self._pending_ops.requests_to_check(window.ranks))
+        discover(self._pending_ops.requests_to_check(window.ranks) | overdue)
 
         budget = _DrainBudget(
             self._config.max_drain_per_step,
@@ -1454,10 +1572,18 @@ class EvictionAwareStoreQueue:
                 # with emissions, so no later candidate can be due either.
                 break
             cursor += 1
-            segment = self._due_front_segment(surviving, window.ranks, threshold)
-            if segment is None:
-                continue
-            _, due_ops = segment
+            if min_rank == _OVERDUE_RANK:
+                # Past the deadline: the whole surviving front is due, with
+                # no reference to the window. The contiguity cut below and
+                # gate 3 still apply, and the drain budget still bounds the
+                # burst -- an expired backlog is spread over steps, not
+                # dumped in one.
+                due_ops = surviving
+            else:
+                segment = self._due_front_segment(surviving, window.ranks, threshold)
+                if segment is None:
+                    continue
+                _, due_ops = segment
             # Never emit across a deduplication hole: the batch is coalesced
             # into one contiguous store. The request keeps its due urgency;
             # the post-hole ops follow in a later batch.
@@ -1477,6 +1603,8 @@ class EvictionAwareStoreQueue:
             result.ops_held_back += len(due_ops) - len(emitted)
             result.to_store.extend(emitted)
             self._counters.emitted += len(emitted)
+            if min_rank == _OVERDUE_RANK:
+                self._counters.emitted_overdue += len(emitted)
             self._counters.emitted_deferral_drains += self._deferral_drains(emitted)
             newly_pinned = {
                 block_id

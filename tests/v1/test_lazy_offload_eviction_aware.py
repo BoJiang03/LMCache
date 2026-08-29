@@ -113,6 +113,7 @@ def make_queue(
     min_prefix_tokens: int = 0,
     max_drain_per_step: int = 64,
     max_drain_blocks_per_step: int = 0,
+    max_deferral_seconds: float = 0.0,
 ) -> EvictionAwareStoreQueue:
     config = LazyOffloadPolicyConfig(
         horizon_steps=horizon_steps,
@@ -120,6 +121,7 @@ def make_queue(
         min_prefix_tokens=min_prefix_tokens,
         max_drain_per_step=max_drain_per_step,
         max_drain_blocks_per_step=max_drain_blocks_per_step,
+        max_deferral_seconds=max_deferral_seconds,
     )
     return EvictionAwareStoreQueue(config, pool)
 
@@ -1604,3 +1606,152 @@ class TestDangerFloor:
         queue.observe_step(new_blocks_allocated=0, est_next_step_blocks=0)
         assert queue.collect_due().to_store == []
         assert queue.num_pending_ops() == 1
+
+
+class TestDeferralDeadline:
+    """The wall-clock bound on how long an operation may wait.
+
+    The danger window answers when a block dies on the GPU; the deadline
+    answers when the content is needed again. These tests pin the second
+    clock's behaviour, including the cases where it must not fire.
+    """
+
+    def test_disabled_by_default_leaves_a_far_block_pending(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0)
+        queue.observe_step(1, 1, None, 0.0)
+        assert queue.admit(make_op("r1", [99], pool, 256)) is AdmitResult.ADMITTED
+        queue.observe_step(1, 1, None, 10_000.0)
+        result = queue.collect_due()
+        assert result.to_store == []
+        assert queue.stats().emitted_overdue == 0
+
+    def test_emits_when_the_bound_is_passed(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(1, 1, None, 100.0)
+        assert queue.admit(make_op("r1", [99], pool, 256)) is AdmitResult.ADMITTED
+        # Deep in the free queue: the danger window cannot make it due.
+        queue.observe_step(1, 1, None, 125.0)
+        assert queue.collect_due().to_store == []
+        queue.observe_step(1, 1, None, 131.0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["r1"]
+        assert queue.stats().emitted_overdue == 1
+        assert queue.stats().emitted == 1
+
+    def test_window_emission_is_not_counted_as_overdue(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, [7], free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(4, 4, None, 100.0)
+        assert queue.admit(make_op("r1", [7], pool, 256)) is AdmitResult.ADMITTED
+        queue.observe_step(4, 4, None, 101.0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["r1"]
+        assert queue.stats().emitted_overdue == 0
+
+    def test_overdue_emits_with_a_zero_danger_depth(self) -> None:
+        """An idle engine never opens the window; the deadline still fires."""
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(0, 0, None, 100.0)
+        assert queue.admit(make_op("r1", [99], pool, 256)) is AdmitResult.ADMITTED
+        queue.observe_step(0, 0, None, 200.0)
+        result = queue.collect_due()
+        assert [op.request_id for op in result.to_store] == ["r1"]
+        assert queue.stats().emitted_overdue == 1
+        assert pool.blocks_walked == 0
+
+    def test_overdue_release_stops_at_a_deduplication_hole(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(0, 0, None, 100.0)
+        queue.admit(make_op("r1", [97], pool, 256))
+        queue.admit(make_op("r1", [98], pool, 512))
+        # Starts at 768, not 512: the 512-768 chunk is buffered elsewhere.
+        queue.admit(
+            make_op("r1", [99], pool, 1024, prefix_start_tokens=768),
+        )
+        queue.observe_step(0, 0, None, 200.0)
+        result = queue.collect_due()
+        assert [op.prefix_end_tokens for op in result.to_store] == [256, 512]
+        assert queue.stats().emitted_overdue == 2
+
+    def test_overdue_respects_the_drain_budget(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(
+            pool,
+            horizon_steps=1.0,
+            max_deferral_seconds=30.0,
+            max_drain_per_step=1,
+        )
+        queue.observe_step(0, 0, None, 100.0)
+        queue.admit(make_op("r1", [97], pool, 256))
+        queue.admit(make_op("r1", [98], pool, 512))
+        queue.observe_step(0, 0, None, 200.0)
+        first = queue.collect_due()
+        assert [op.prefix_end_tokens for op in first.to_store] == [256]
+        assert first.ops_held_back == 1
+        queue.observe_step(0, 0, None, 201.0)
+        second = queue.collect_due()
+        assert [op.prefix_end_tokens for op in second.to_store] == [512]
+
+    def test_overdue_still_drops_an_evicted_chain(self) -> None:
+        """The deadline releases survivors, never data the pool has lost."""
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(0, 0, None, 100.0)
+        queue.admit(make_op("r1", [97], pool, 256))
+        queue.admit(make_op("r1", [98], pool, 512))
+        pool.evict(97)
+        queue.observe_step(0, 0, None, 200.0)
+        result = queue.collect_due()
+        assert result.to_store == []
+        assert queue.stats().dropped_evicted == 2
+
+    def test_overdue_obeys_the_economy_gate(self) -> None:
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(
+            pool,
+            horizon_steps=1.0,
+            max_deferral_seconds=30.0,
+            min_prefix_tokens=64,
+        )
+        queue.observe_step(0, 0, None, 100.0)
+        # Above the admission threshold, so it enters the pending machine.
+        queue.admit(make_op("r1", [99], pool, 128))
+        queue.observe_step(0, 0, None, 200.0)
+        assert [op.request_id for op in queue.collect_due().to_store] == ["r1"]
+
+    def test_deadline_measures_the_front_op_not_the_request(self) -> None:
+        """A request keeps its urgency from its oldest surviving op."""
+        pool = FakePoolView()
+        seed_blocks(pool, list(range(100)), free=True)
+        queue = make_queue(pool, horizon_steps=1.0, max_deferral_seconds=30.0)
+        queue.observe_step(0, 0, None, 100.0)
+        queue.admit(make_op("r1", [99], pool, 256))
+        queue.observe_step(0, 0, None, 200.0)
+        assert len(queue.collect_due().to_store) == 1
+        # Fresh op on the same request: the deadline restarts from its own
+        # admission, so the next drain leaves it pending.
+        queue.observe_step(0, 0, None, 201.0)
+        queue.admit(make_op("r1", [98], pool, 512))
+        queue.observe_step(0, 0, None, 210.0)
+        assert queue.collect_due().to_store == []
+
+
+class TestDeferralDeadlineConfig:
+    def test_defaults_to_disabled(self) -> None:
+        assert LazyOffloadPolicyConfig().max_deferral_seconds == 0.0
+
+    def test_rejects_a_negative_bound(self) -> None:
+        with pytest.raises(ValueError, match="max_deferral_seconds"):
+            LazyOffloadPolicyConfig(max_deferral_seconds=-1.0)

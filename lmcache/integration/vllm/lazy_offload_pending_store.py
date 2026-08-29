@@ -223,6 +223,12 @@ class LazyOffloadPendingStore:
                     configs.get("lmcache.mp.lazy_offload_max_drain_blocks_per_step", 0),
                 )
             ),
+            max_deferral_seconds=float(
+                cast(
+                    str | int | float,
+                    configs.get("lmcache.mp.lazy_offload_max_deferral_seconds", 0.0),
+                )
+            ),
         )
         if self._mode is LazyOffloadMode.FIFO:
             self._fifo_policy = FIFOOffloadPolicy(configs)
@@ -405,6 +411,7 @@ class LazyOffloadPendingStore:
                 new_blocks_allocated,
                 est_next_step_blocks,
                 allocated_block_ids,
+                time.monotonic(),
             )
 
     def announce_allocation(self, request_id: str, num_blocks: int) -> None:

@@ -1,5 +1,17 @@
 # The engine stalls half the window
 
+**Retracted in full on 2026-08-29. See record 4 section 1.** There is no stall.
+The intervals this record calls stalled are chunked prefill: vLLM credits a
+request's prompt tokens only on the iteration that produces its first token
+(`output_processor.py:628` flips `is_prefilling`, `loggers.py:145` sums
+`prompt_token_stats.computed`), so a multi-step prefill reports zero prompt
+throughput for its whole duration and then the entire prompt in one interval.
+GPU telemetry split by the stall detector shows 100 % utilisation, 690 W and
+16 % memory activity during the "stall" against 99 % / 654 W / 60 % outside it,
+which is compute-bound prefill against memory-bound decode. Sections 2 to 8
+below rest on the stall being real and do not survive it; section 1 (no
+synchronised release) and the arrival measurements do.
+
 Continues record 2026/08/28/15. Two more of its conclusions fall here, and the
 thing that replaces them is not a configuration or a policy.
 
