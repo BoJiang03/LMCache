@@ -101,47 +101,20 @@ paged decode indexes all of them every step. Block size 64 cuts that by four.
 same 131,072 tokens and leaves the policy unchanged; LMCache's 256-token chunk
 divides evenly by 64.
 
-Arms run at c72, one variable each, predictions P15-P22 pre-stated. Neither
-lever moved the roof.
+Arms in flight at c72, one variable each, predictions P15-P22 pre-stated:
 
-| arm | MoE / block | inflight | tpot | agg decode | TTFT p50 | p90 | local | ext |
-|---|---|---|---|---|---|---|---|---|
-| c72 | triton / 16 | 30.22 | 81.6 ms | 370 tok/s | 9.23 s | 36.86 s | 40.6% | 47.6% |
-| c72b64 | triton / 64 | 30.11 | 74.6 ms | 404 tok/s | 8.50 s | 35.58 s | 40.9% | 47.1% |
-| c72fic | fi-cutlass / 16 | 30.16 | 83.4 ms | 362 tok/s | 6.43 s | 40.65 s | 41.1% | 46.3% |
-
-FlashInfer CUTLASS moved aggregate decode from 370 to 362 tok/s, which is
-noise and on the wrong side of it. Block size 64 bought 8.6% of tpot, real
-but two orders short of the 3x on the table. P22 fires: the roof is neither
-the MoE kernel nor the block table, and what is left is long-context paged
-attention at 4 KV heads with TP=2. That is TP=4 territory and out of scope,
-so c72 is the operating point and there is no third knob.
+- `f8k256c72fic`  MOE_BACKEND=flashinfer_cutlass
+- `f8k256c72b64`  BLOCK=64 FLOOR=2048
 
 `f8k256c72fit` (flashinfer_trtllm) failed bringup and scores nothing:
 `Unquantized MoE backend FlashInfer TRTLLM does not support the deployment
 configuration since kernel does not support current device cuda`.
 
-## 6. Three replicates, and which numbers actually reproduce
+If both leave tpot flat, the roof is structural for TP=2 at 4 KV heads, which
+is TP=4 territory and out of scope. Then c72 is the operating point and there
+is no third knob to reach for.
 
-The failed lever hunt left something more useful: three runs of the same
-working point, differing only in a knob that did not work.
-
-    local     40.6%   40.9%   41.1%      spread 0.5 points
-    ext       47.6%   47.1%   46.3%      spread 1.3 points
-    TTFT p50   9.23 s  8.50 s  6.43 s    spread 2.8 s
-    TTFT p90  36.86 s 35.58 s 40.65 s    spread 5.1 s
-
-The tier numbers are tight. TTFT p50 is not, and its run-to-run spread is
-larger than either lever's claimed effect, which is why neither p50 gain
-above is attributable. The defensible statement about this working point is
-that it delivers local ~41%, ext ~47%, and TTFT p50 in the 6-9 s band, under
-the 10 s target in 3 of 3 runs, with p90 in the 36-41 s band.
-
-That also revises record 5 section 6, which called c72's p50 target "met
-without margin" off a single run. Three runs say the margin is real but thin,
-and that p90 is where this working point is genuinely uncomfortable.
-
-## 7. L1 over L0 is already in range
+## 6. L1 over L0 is already in range
 
 Asked for `[1,3]`. It is 1.71 and needs no change.
 
@@ -156,12 +129,133 @@ give a ratio of 1.37 but puts the 0.80 watermark at 204.8 GiB, below the
 measured working set, and would cost ext hit. Worth measuring only if the
 lower ratio is wanted for its own sake.
 
-## 8. Open
+## 7. Open
 
-1. `max_deferral_seconds` still deserves its own PR. Unchanged from record 4.
-2. Not attempted, and named so it is not silently dropped: nothing here
+1. Done, see section 8. Both arms scored; the search stopped as pre-committed.
+2. `max_deferral_seconds` still deserves its own PR. Unchanged from record 4.
+3. Not attempted, and named so it is not silently dropped: nothing here
    measures the exclusive move-not-copy retrieve path, which is the second
    half of the method. Every arm to date still copies L1 to L0.
-3. A harness note, in case it misleads a later reading: miss.py crashed on
-   both round-3 arms. It was not the block size. It reads the arm banner from
-   `<tag>.log` and round 3 wrote `<tag>.launch.log`.
+
+## 8. Both arms are in. The roof holds, and the search stops
+
+All three rows are the same working point, CONC=72 on fp8 + 256k at native
+context, one variable each against `f8k256c72`.
+
+| arm | pool tok | inflight | tpot p50 | agg decode | lat p50 | TTFT p50 | TTFT p90 | waiting | preempt | compute | local | ext |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| c72 | 4,077,968 | 30.22 | 81.6 ms | 370 tok/s | 46.90 s | 9.23 s | 36.86 s | 3.32 | 7 | 11.8% | 40.6% | 47.6% |
+| c72fic | 4,090,176 | 30.16 | 83.4 ms | 362 tok/s | 49.34 s | 6.43 s | 40.65 s | 3.03 | 10 | 12.5% | 41.1% | 46.3% |
+| c72b64 | 4,072,256 | 30.11 | 74.6 ms | 404 tok/s | 45.12 s | 8.50 s | 35.58 s | 3.13 | 7 | 12.1% | 40.9% | 47.1% |
+
+`flashinfer_cutlass` does nothing. The backend switch is confirmed in the log
+(`Using FlashInfer CUTLASS Unquantized MoE backend`), and tpot went from
+81.6 ms to 83.4 ms, i.e. nowhere. P15 and P16 falsified. The Triton MoE
+kernel was not the missing 3x.
+
+`--block-size 64` is real but small. tpot 81.6 to 74.6 ms, aggregate decode
+370 to 404 tok/s, +9%. P20 asked for under 70 ms and did not get it, so it is
+falsified as stated while moving in the predicted direction. P21 confirmed:
+pool moved -0.14% and local 40.6% to 40.9%, both inside a point, so the
+coarser allocation granularity costs nothing at these lengths.
+
+The useful by-product is a noise floor. c72 and c72fic have the same decode
+path, since the MoE backend turned out to be a no-op, so their 2.2% tpot gap
+is run-to-run variance. b64's 8.6% is about four times that and is a real
+effect.
+
+TTFT p50 is not. Three runs at the same working point gave 9.23, 6.43 and
+8.50 s while `waiting_mean` moved only 3.32, 3.03, 3.13. A 30% spread on the
+statistic against a 9% spread on the queue that produces it means TTFT p50
+here has a wide confidence interval, and c72fic's 6.43 s must not be read as
+a lever working. Nothing in this pair improved TTFT.
+
+P22's trigger was "if both leave tpot flat". Only one did. Reporting it
+straight: the 3x gap in the decode path is not the MoE kernel at all, and the
+block table accounts for about 9% of it. The remainder is long-context paged
+attention at 4 KV heads with TP=2, which is TP=4 territory and out of scope.
+Per the pre-commitment, the search for a TTFT knob stops here and c72 is the
+operating point.
+
+Two things worth keeping:
+
+- `BLOCK=64 FLOOR=2048` is free and strictly better on every axis that moved
+  (tpot, aggregate decode, `lat_p50`, TTFT p90). It should be the default for
+  subsequent arms even though it does not change the verdict.
+- The working point reproduces. Three independent 1800 s runs gave local
+  40.6 / 41.1 / 40.9% and ext 47.6 / 46.3 / 47.1%. Against the target of
+  local 40-60% and ext >25%, that is a stable configuration, not a lucky run.
+
+The honest summary of the target `local 40-60%, ext >25%, TTFT p50 <10 s`:
+it is met, reproducibly, at CONC=72 on fp8 + 256k + native 262,144 + L1
+320 GiB, and TTFT sits at 8.5-9.2 s with no margin to spare and no available
+knob to buy more.
+
+## Appendix. Reproducing sections 5 and 8
+
+Harness lives in the session scratchpad, not the repo, so the two knobs the
+new arms needed are recorded here rather than committed. Both are additive
+and default to the previous behaviour, so every arm before `f8k256c72fic`
+reproduces unchanged.
+
+`up.sh`, two optional passthroughs (backups `up.sh.bak7`, `up.sh.bak8`):
+
+```sh
+BATCH_ARGS=()
+if [ -n "${MAX_BATCHED:-}" ]; then
+  BATCH_ARGS=(--max-num-batched-tokens "$MAX_BATCHED")
+fi
+...
+  --block-size ${BLOCK:-16} \
+  ...
+  "${BATCH_ARGS[@]}" \
+```
+
+`MAX_BATCHED` was added for the step-budget lever and then never used, since
+section 4 killed that lever before it ran. It is left in place unset.
+`BLOCK` replaces the hardcoded `--block-size 16`. The banner and the snapshot
+header carry `batched=` and `block=` so an arm's dtype, context, dataset,
+MoE backend and block size are all recoverable from its own `snapshot.txt`.
+
+`arm.sh` needed no change: it already forwards trailing assignments via
+`env "$@"` and records them verbatim as `env='...'` in the snapshot header.
+
+The three arms, each `setsid`-detached (see record 5's appendix for why):
+
+```sh
+SLOT=1 CONC=72 DATASET=semianalysis-cc-traces-weka-062126-256k \
+  arm.sh lazy f8k256c72fic KV_DTYPE=fp8 MAX_MODEL_LEN=262144 ROPE_OVERRIDE='{}' \
+  L1_GB=320 DEFER_SECS=30 FLOOR=8192 MOE_BACKEND=flashinfer_cutlass
+
+SLOT=2 CONC=72 ... f8k256c72fit ... MOE_BACKEND=flashinfer_trtllm     # failed bringup
+
+SLOT=2 CONC=72 DATASET=semianalysis-cc-traces-weka-062126-256k \
+  arm.sh lazy f8k256c72b64 KV_DTYPE=fp8 MAX_MODEL_LEN=262144 ROPE_OVERRIDE='{}' \
+  L1_GB=320 DEFER_SECS=30 FLOOR=2048 BLOCK=64
+```
+
+`FLOOR=2048` is not an independent change. The danger floor is counted in
+blocks, so 2048 at block size 64 is the same 131,072 tokens as 8192 at 16.
+Pairing them is what keeps `BLOCK` a single variable.
+
+Mid-run sampling that produced the early read, before either snapshot landed:
+two scrapes of `/metrics` 60 s apart on `vllm:inter_token_latency_seconds_{sum,count}`
+at ports 27212 and 27222. It pointed the right way for `fic` and the wrong way
+for `b64` (114.2 ms interval ITL against a 74.6 ms full-window `tpot_p50`),
+because the instantaneous in-flight count during the sample was 36 against a
+window mean of 30.1. Interval ITL is not comparable to `tpot_p50` and should
+not be used to call an arm early.
+
+The MoE backend is verifiable from the arm's own log rather than from the
+flag, which matters because `auto` silently picks Triton:
+
+```
+Using FlashInfer CUTLASS Unquantized MoE backend out of potential backends:
+['TRITON', 'BATCHED_TRITON', 'FlashInfer TRTLLM', 'FlashInfer CUTLASS']
+```
+
+miss.py crashed on both new arms and it was not the block size: it reads the
+arm banner from `<tag>.log`, and these two were launched writing
+`<tag>.launch.log`. Symlinking `<tag>.log` to it made the reuse-clock section
+print normally. The token split above `presented ... = compute + local +
+external` prints before that point, so those numbers were never affected.
