@@ -190,3 +190,66 @@ The honest summary of the target `local 40-60%, ext >25%, TTFT p50 <10 s`:
 it is met, reproducibly, at CONC=72 on fp8 + 256k + native 262,144 + L1
 320 GiB, and TTFT sits at 8.5-9.2 s with no margin to spare and no available
 knob to buy more.
+
+## Appendix. Reproducing sections 5 and 8
+
+Harness lives in the session scratchpad, not the repo, so the two knobs the
+new arms needed are recorded here rather than committed. Both are additive
+and default to the previous behaviour, so every arm before `f8k256c72fic`
+reproduces unchanged.
+
+`up.sh`, two optional passthroughs (backups `up.sh.bak7`, `up.sh.bak8`):
+
+```sh
+BATCH_ARGS=()
+if [ -n "${MAX_BATCHED:-}" ]; then
+  BATCH_ARGS=(--max-num-batched-tokens "$MAX_BATCHED")
+fi
+...
+  --block-size ${BLOCK:-16} \
+  ...
+  "${BATCH_ARGS[@]}" \
+```
+
+`MAX_BATCHED` was added for the step-budget lever and then never used, since
+section 4 killed that lever before it ran. It is left in place unset.
+`BLOCK` replaces the hardcoded `--block-size 16`. The banner and the snapshot
+header carry `batched=` and `block=` so an arm's dtype, context, dataset,
+MoE backend and block size are all recoverable from its own `snapshot.txt`.
+
+`arm.sh` needed no change: it already forwards trailing assignments via
+`env "$@"` and records them verbatim as `env='...'` in the snapshot header.
+
+The three arms, each `setsid`-detached (see record 5's appendix for why):
+
+```sh
+SLOT=1 CONC=72 DATASET=semianalysis-cc-traces-weka-062126-256k \
+  arm.sh lazy f8k256c72fic KV_DTYPE=fp8 MAX_MODEL_LEN=262144 ROPE_OVERRIDE='{}' \
+  L1_GB=320 DEFER_SECS=30 FLOOR=8192 MOE_BACKEND=flashinfer_cutlass
+
+SLOT=2 CONC=72 ... f8k256c72fit ... MOE_BACKEND=flashinfer_trtllm     # failed bringup
+
+SLOT=2 CONC=72 DATASET=semianalysis-cc-traces-weka-062126-256k \
+  arm.sh lazy f8k256c72b64 KV_DTYPE=fp8 MAX_MODEL_LEN=262144 ROPE_OVERRIDE='{}' \
+  L1_GB=320 DEFER_SECS=30 FLOOR=2048 BLOCK=64
+```
+
+`FLOOR=2048` is not an independent change. The danger floor is counted in
+blocks, so 2048 at block size 64 is the same 131,072 tokens as 8192 at 16.
+Pairing them is what keeps `BLOCK` a single variable.
+
+Mid-run sampling that produced the early read, before either snapshot landed:
+two scrapes of `/metrics` 60 s apart on `vllm:inter_token_latency_seconds_{sum,count}`
+at ports 27212 and 27222. It pointed the right way for `fic` and the wrong way
+for `b64` (114.2 ms interval ITL against a 74.6 ms full-window `tpot_p50`),
+because the instantaneous in-flight count during the sample was 36 against a
+window mean of 30.1. Interval ITL is not comparable to `tpot_p50` and should
+not be used to call an arm early.
+
+The MoE backend is verifiable from the arm's own log rather than from the
+flag, which matters because `auto` silently picks Triton:
+
+```
+Using FlashInfer CUTLASS Unquantized MoE backend out of potential backends:
+['TRITON', 'BATCHED_TRITON', 'FlashInfer TRTLLM', 'FlashInfer CUTLASS']
+```
