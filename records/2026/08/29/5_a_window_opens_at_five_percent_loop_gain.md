@@ -123,3 +123,62 @@ whether the window is a bounded band between roughly 1.2x and 1.8x.
 A harness bug was fixed in passing: `env.sh` exported `MAX_MODEL_LEN` and
 `ROPE_OVERRIDE` unconditionally, which silently clobbered per-arm overrides
 passed as trailing arguments. Now conditional.
+
+## Appendix: reproducing the arms
+
+The harness lives outside the repo, so the parts needed to reproduce section 5
+are recorded here.
+
+Server, per arm (TP=2 on one GPU pair, one pair per slot):
+
+    vllm serve Qwen/Qwen3-Coder-30B-A3B-Instruct \
+      --tensor-parallel-size 2 --hf-overrides '{}' \
+      --max-model-len 262144 --block-size 16 \
+      --gpu-memory-utilization 0.90 --kv-cache-dtype fp8 \
+      --served-model-name agentx \
+      --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both",
+        "kv_connector_extra_config":{
+          "lmcache.mp.lazy_offload":true,
+          "lmcache.mp.lazy_offload_policy":"EVICTION_AWARE",
+          "lmcache.mp.lazy_offload_horizon_steps":2.5,
+          "lmcache.mp.lazy_offload_store_release":"lru_tail",
+          "lmcache.mp.lazy_offload_max_drain_blocks_per_step":0,
+          "lmcache.mp.lazy_offload_danger_floor_max_blocks":8192,
+          "lmcache.mp.lazy_offload_announce_hits":false,
+          "lmcache.mp.lazy_offload_max_deferral_seconds":30}}'
+
+`--hf-overrides '{}'` is load-bearing: it replaces the YaRN factor-4 override
+used by every earlier arm, returning the model to its native 262,144.
+
+Client:
+
+    aiperf profile --model agentx --endpoint-type chat --streaming \
+      --tokenizer Qwen/Qwen3-Coder-30B-A3B-Instruct \
+      --scenario inferencex-agentx-mvp \
+      --public-dataset semianalysis-cc-traces-weka-062126-256k \
+      --concurrency <48|72> --benchmark-duration 1800 \
+      --benchmark-grace-period 600 --random-seed 1234
+
+Analysis. The headline local/external/compute split is the delta of
+`vllm:prompt_tokens_by_source` between the whole run and the warmup phase,
+by `source` label (`local_cache_hit`, `external_kv_transfer`,
+`local_compute`); the rolling `External prefix cache hit rate` gauge in the
+engine log is a per-interval reading and disagrees with the token ratio, so
+the token ratio is the one quoted.
+
+Any script deriving working set from tokens must read bytes per token from
+config, not hardcode it: bf16 is 98,304 B/token here (2 x 4 KV heads x 128
+head_dim x 2 bytes x 48 layers) and fp8 is 49,152.
+
+Three harness defects found and fixed while producing these arms, all of
+which had silently corrupted or killed a run:
+
+- `env.sh` exported `MAX_MODEL_LEN` and `ROPE_OVERRIDE` unconditionally, so
+  per-arm trailing-argument overrides were clobbered and an arm launched with
+  `MAX_MODEL_LEN=262144` still served at 1,048,576. Now `${VAR:-default}`.
+- The corpus name was hardcoded in the aiperf invocation. Now `$DATASET`, and
+  the resolved value is echoed into each arm's snapshot header.
+- Launching an arm with `nohup ... &` in the same shell as a following `sleep`
+  is unsafe: a timeout on that shell signals the whole process group and
+  `nohup` only masks SIGHUP. One arm was killed mid-bringup this way and left
+  orphaned workers holding 33 GB. Launch with `setsid`.
