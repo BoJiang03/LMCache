@@ -173,7 +173,90 @@ makes `d` a function of load rather than of hardware, which changes what
 speculative-decoding arm is a test of whether drafting several tokens per step
 amortises the batch KV read, not a test of a slow model.
 
-The `ngram` arm was still running when this record was written.
+Three arms were run to try to raise it. All three failed, in two different
+ways.
+
+```
+dp_ngram  echo   decode= 66.3 tok/s  tpot=15.1 ms      acceptance length 1.97
+dp_ngram  echo   decode= 90.2 tok/s  tpot=11.1 ms      draft acceptance 24.3 %
+dp_ngram  novel  decode= 69.4 tok/s  tpot=14.4 ms
+dp_ngram  novel  decode= 90.8 tok/s  tpot=11.0 ms
+
+dp_ngpu   echo   decode= 58.8 tok/s  tpot=17.0 ms      acceptance length 1.41
+dp_ngpu   echo   decode= 78.3 tok/s  tpot=12.8 ms      draft acceptance 10.2 %
+dp_ngpu   novel  decode= 82.7 tok/s  tpot=12.1 ms
+dp_ngpu   novel  decode= 75.8 tok/s  tpot=13.2 ms
+
+dp_fp8    echo   decode=161.2 tok/s  tpot= 6.2 ms      pool 4 076 944 tokens
+dp_fp8    echo   decode=167.5 tok/s  tpot= 6.0 ms
+dp_fp8    novel  decode=168.1 tok/s  tpot= 5.9 ms
+dp_fp8    novel  decode=167.6 tok/s  tpot= 6.0 ms
+```
+
+### Speculative decoding loses because the step cost is linear in tokens
+
+Both `ngram` variants cost roughly half the baseline rate. Moving the draft
+from CPU to GPU did not recover it -- `ngram_gpu` is slower than `ngram` and
+its acceptance is worse (1.41 against 1.97, 10.2 % against 24.3 %), so the
+drafting overhead was never the main term.
+
+Converting TPOT per accepted token back to cost per engine step, with
+`num_speculative_tokens=4` (a 5-token verify batch):
+
+| arm | tokens/step | ms per accepted tok | ms per step | vs baseline step |
+|---|---|---|---|---|
+| baseline | 1.00 | 5.6 | 5.6 | 1.0x |
+| ngram | 1.97 | 11.0-15.1 | 21.7-29.7 | 3.9-5.3x |
+| ngram_gpu | 1.41 | 12.1-17.0 | 17.1-24.0 | 3.1-4.3x |
+
+A 5-token step costs about 4-5x a 1-token step. Step cost is close to linear
+in the number of tokens, so there is nothing for speculation to amortise and
+it can only lose. The reading is MoE expert fan-out: 128 experts, top-8 per
+token, so at batch 1 each additional token in the verify batch pulls in a
+nearly disjoint set of 8 experts and the weight traffic scales with the token
+count rather than staying fixed. On a dense model the same arm would likely
+win; on this one speculative decoding is the wrong lever, and no acceptance
+rate reachable by an n-gram drafter would change that.
+
+### fp8 KV doubles the pool and is a no-op on the identity
+
+LMCache follows `cache_config.cache_dtype`, so `--kv-cache-dtype fp8` carries
+through to the tier with no other change. The pool went 2 038 560 -> 4 076 944
+tokens, exactly 2.00x, which confirms both halves of the path.
+
+Decode did not improve: 177.5 -> 167.6 tok/s, 5.6 -> 6.0 ms, about 5 % worse.
+At batch 1 the KV read is a small part of the step and dequantisation is not
+free. The earlier expectation that fp8 would lower `d` through faster decode
+is therefore wrong.
+
+That leaves fp8 as a scale-invariant transform of the whole problem, for the
+same reason shrinking L0 was:
+
+```
+in-flight    N*d*ISL_mean*b < oversub*L0_bytes    b halves -> N doubles
+lazy window  L1_bytes < N*ISL_med*b               b halves, N doubles -> unchanged
+hierarchy    L1_bytes >= K_MIN*L0_bytes           unchanged
+k_max = oversub*(ISL_med/ISL_mean)/d              b cancels, d did not move
+```
+
+Section 2 already showed `k_max` is invariant under L0. It is invariant under
+bytes-per-token as well. Both of the obvious escapes are no-ops.
+
+### What this settles
+
+`d = R/(R+T)`. `T` is the corpus think time and `OSL` is the corpus output
+length; neither is ours to set under the fidelity standard. `R`'s remaining
+term is decode, and decode has now been probed three ways and cannot be
+raised -- the baseline already sits above the corpus's own 161.7 tok/s p50.
+So `d` is fixed by the corpus, not tunable.
+
+The only quantity in `k_max` still holding an untested range is `oversub`.
+Measured: conc=14 gives 0.31 and passes, conc=16 gives 0.97 and is congested.
+`k = 2` needs `oversub = 2*0.228/0.58 = 0.786`, inside that bracket. But two
+concurrency steps span 0.31 to 0.97, which is a cliff rather than a dial:
+once queueing starts, in-flight inflates and carries oversub past the target
+in one step. Whether a steady state exists at 0.79 is the one open question
+that decides whether the three requirements can hold together at all.
 
 ## 7. eager vs lazy: no valid comparison exists yet
 
