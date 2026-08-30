@@ -6,7 +6,8 @@ session logs and do not supersede it. Status lines are evidence, not
 requirements, and are the only part that should change without the requirement
 owner saying so.
 
-Last updated 2026-08-30.
+Last updated 2026-08-30. R2 gained a numeric band and R7 was added on
+2026-08-30; see those sections.
 
 ## R1. Per request decode must reach about 50 tok/s
 
@@ -29,19 +30,29 @@ than the target. The CONC that produces in-flight 7 is unmeasured: in-flight
 over CONC is 0.19 to 0.26 in the low load arms and 0.39 at CONC=64, and the
 middle has never been run.
 
-## R2. L1 must carry a larger share of reuse
+## R2. L1 must carry a larger share of reuse, and L1/L0 must land in [1, 3]
 
 > 还要把l1重要性提升
+>
+> L1 must carry a larger share of reuse，并且 l1 / l0 in [1,3]
 
 Background: the standing project goal is an adaptive policy that decides per
 step the minimum number of blocks to store to L1, to reduce store pressure on
 L1 and reduce duplication between L0 and L1, held to 少存保持、不丢 block、
 时延优势不回吐.
 
-**Status: not reachable jointly with R1. See "Joint feasibility" below.** L1's
-read share is `P(gap > T(1-f)/f)` with `f = in-flight KV / pool`. At 50 tok/s on
-2xH200 with the full pool this is pinned at about 15 percent, currently measured
-at 14.7 percent (all turns) or 17.1 percent (main agent turns only).
+Operationally: L1 tokens returned over L0 tokens hit, on a common denominator.
+From the engine log that is `E x (1-H) / H` with `H` the local prefix cache hit
+rate and `E` the external one, which vLLM measures on the residual after L0.
+
+**Status: not reachable with Qwen3-Coder-30B. A configuration that reaches it
+is identified but unmeasured.** L1's share is `P(gap > W)` with
+`W = D(1-f)/(f(1-L0))`, so the band [1, 3] is the statement
+`W in [10.5 s, 18.2 s]` on this corpus. Coder30 at 50 tok/s runs at f = 0.345
+(engine measured), giving W = 272 s and L1/L0 = 0.05; reaching 1.0 needs
+Running 28, which is 24 tok/s. Qwen3.5-397B-A17B-FP8 at TP=4 puts R1 and R2
+within about two requests of each other. See
+`records/2026/08/30/8_the_deployment_that_meets_r1_r7.md`.
 
 ## R4. The KV pool may not be shrunk
 
@@ -62,6 +73,22 @@ Stays at 0.9. This is the same constraint as R4 by a different route and is
 listed separately because it was raised separately.
 
 **Status: binding, accepted.**
+
+## R7. TTFT must be under 10 s, preferably under 5 s
+
+> ttft 得< 10s 最好<5s
+
+Operationally: client-side TTFT p50 under 5 s and p90 under 10 s, on the agentic
+workload at its native context length. The corpus's own recorded production
+figures are p50 2.64 s and p90 6.98 s, so this is the market rate, not a
+stretch.
+
+**Status: held whenever the engine is not queueing.** TTFT p50 across the
+archived arms is bimodal and the split is `waiting_mean`: arms with
+`waiting_mean` under 0.5 give TTFT p50 1.02 to 1.16 s at ISL ~102k, arms that
+queue give 190 to 300 s. Prefill is not the binding cost at these context
+lengths. R7 reduces to keeping the free pool able to admit an arrival, which
+means keeping f off the 0.85+ shelf.
 
 ## R6. The corpus must reflect real usage
 
@@ -99,56 +126,67 @@ Not requirements about the deployment, but they bound what can be run.
 
 ## Joint feasibility
 
-R1 and R2 cannot both be satisfied here, and R4 and R5 close the only
-mathematical exit.
+R1 and R2 cannot both be satisfied with Qwen3-Coder-30B, for a reason that also
+says which model would satisfy them.
 
 ```
-window   = T (1-f) / f          T = OSL x tpot,  f = in-flight KV / pool
+W    = D (1-f) / (f (1-L0))            D = request latency, L0 = f_L0(W)
+tpot = (c(B) P_exp + P_dense + f pool) / (b N)
+f    = B ISL kv / pool,  pool = N (HBM u - overhead) - P
 ```
 
-A per token latency SLO fixes tpot. That fixes T, and it fixes the in-flight KV
-budget, which is `(tpot - fixed term) x bandwidth`. With the pool held constant
-by R4 and R5, f is constant, the window is constant, and L1's read share is
-constant. Concurrency and context length trade freely inside the budget and
-nothing moves. Raising f requires shrinking the pool, which R4 and R5 forbid.
+R1 fixes tpot, which caps the bytes read per step. R4 and R5 fix the pool at
+whatever the model leaves. So as the weights go to zero,
 
-Any two of the three are already in hand:
+```
+f_max = tpot x b / (HBM x u - overhead) = 20 x 2.4 / 130.67 = 0.367
+```
 
-| | held | evidence |
-|---|---|---|
-| R1 + long context | yes | the low in-flight arms, 57 to 77 tok/s |
-| long context + R2 | yes | the CONC=64 pair, L1 share 20.7 percent |
-| R1 + R2 | **no solution** | this document |
+and any model small next to HBM sits at f ~= 0.3 at 50 tok/s regardless of GPU
+count. Coder30 lands at 0.305 to 0.33 at TP=2, 4 and 8.
 
-Three escape routes were checked and closed:
+Raising f means raising P: `df/dP > 0` iff `c(B) < tpot b / (HBM u - overhead)`,
+and f = 0.6 needs about 65 GB of weights per GPU with `c(B) <~ 0.2`, hence
+`E/k >= 32`. KV bytes per token cancels out of f; it only sets B, and through B
+it sets c. This is R4-compatible: the pool shrinks because the model is large,
+not because a knob was turned.
 
-- **More GPUs.** f falls, not rises: 0.190 at TP=2 to 0.148 at TP=16, because
-  weights are sharded once while HBM scales linearly.
-- **A different model.** `df/dP > 0` only for `c < 0.234`, where P is resident
-  weight bytes and c the fraction read per step. KV bytes per token cancels
-  entirely. Nothing on the box qualifies: the 122B has four times smaller KV per
-  token so its pool holds more contexts, the 480B does not fit, and
-  DeepSeek-V4-Flash has the right profile but FP4 experts that vLLM only runs on
-  SM100, while these cards are SM90.
+The escape routes, rechecked:
+
+- **More GPUs.** Does not help. f is flat in N for a fixed model, because the
+  pool and the byte budget both scale with N.
+- **A different model.** This is the lever. Qwen3.5-397B-A17B-FP8 at TP=4
+  (406 GB of weights, 512 experts top-10, 117 GB pool) reaches f = 0.518 at
+  50 tok/s with 18 in flight, against coder30's 0.31. R1 and R2 land within two
+  requests of each other. Unmeasured.
+- **Sparse attention.** Breaks `read = stored` and is the only thing that can
+  push f past what bandwidth allows. DeepSeek-V4-Flash has exactly the right
+  shape and is blocked on Hopper (`expert_dtype = fp4`, and
+  `models/deepseek_v4/nvidia/model.py` raises on non-SM100). GLM-5.3-Flash runs
+  but stores 5.6 KB per token, so no achievable batch fills its pool: f = 0.09.
 - **A different corpus.** Worth 2.4 points and forbidden by R6.
 
 ## Consequence for what may be claimed
 
-R2 cannot be delivered as an L1 read share number. What lazy offload actually
-does is on the write path, which is independent of f, because every block is
-stored whether or not it is ever read. Store traffic falls only about a quarter
-going from CONC=64 to in-flight 7, roughly 42k to 32k new prefix tokens per
-second.
+Superseded in part. The earlier reading, that R2 cannot be delivered as an L1
+read share number and the claim has to move to the write path, was based on f
+being pinned near 0.19 by the latency SLO. It is not pinned; it is set by how
+much of HBM the weights occupy, and a large enough sparse MoE moves it. R2 is
+now a model selection question, not an impossibility.
 
-So the claim is stores, stored/isl, L1 watermark, tpot, waiting, with
-cross-replica reuse stated as unmeasurable on a single replica harness rather
-than omitted.
+The write path claim stays as the fallback and stays true either way: lazy's
+effect on stores is independent of f, because every block is stored whether or
+not it is ever read.
 
-**This is a proposal, not an agreed requirement change.** R2 stands as written
-until its owner changes it.
+Whichever way the probe lands, report stores, stored/isl, L1 watermark, tpot,
+waiting, TTFT and the two hit rates, with cross-replica reuse stated as
+unmeasurable on a single replica harness rather than omitted.
 
 ## Undetermined
 
-1. Which CONC yields in-flight 7.
-2. Whether lazy's write path advantage survives at in-flight 7. Untested, and
-   the only thing that would invalidate the consequence above.
+1. Whether Qwen3.5-397B-A17B-FP8 loads at TP=4 and what pool is left after
+   activations and CUDA graphs. Everything in the R2 status hangs on it.
+2. Where the concurrency curve actually crosses, i.e. whether R1 and R2 meet.
+3. Whether lazy's write path advantage survives at Running 18 on that model.
+   Measured only at CONC=64 on coder30, where L1 returned 10.0 percent of input
+   tokens under lazy against 8.1 percent under eager.
