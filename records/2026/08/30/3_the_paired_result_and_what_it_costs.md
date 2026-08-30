@@ -170,6 +170,11 @@ window L1's entire customer base is 23 percent of blocks.
 
 ## 5. Speculative decoding: record 1 killed it without the KV term
 
+> Superseded in part by record 4 section 1. The KV term argument below stands.
+> The attribution of the residual to per layer launch and sync does not:
+> record 14 section 1 had already withdrawn it, having measured cudagraphs on
+> and the fixed term to be MoE expert GEMMs at small M. Read record 4 first.
+
 Record 1 section 1 concluded that spec is dead at this working point and that
 the reason is that spec amortises the weight read while at 107k the weight read
 is not where the time goes. The measurements it rests on stand. The reasoning
