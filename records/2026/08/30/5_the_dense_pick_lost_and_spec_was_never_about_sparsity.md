@@ -222,3 +222,39 @@ percent, goodput up 30.2 percent at a 15 tok/s and 10 s bar.
 - L0 intersect L1 point in time overlap, still unmeasured.
 - `phase.py` compares wall clock times as strings, so an arm crossing midnight
   gets an empty window.
+
+## 10. Addendum: expert coverage saturates, so the MoE penalty is a batch problem
+
+Raised in review: verify activates more experts, so the extra positions cost
+extra expert weight reads. True, and it is self limiting. Qwen3-Coder-30B-A3B
+is 128 experts at top 8, so the distinct experts touched in one step follows a
+coupon collector curve and saturates.
+
+| batch | positions, 0 then 4 drafts | assignments | M | distinct experts | expert weight read |
+|---|---|---|---|---|---|
+| 1 | 1 to 5 | 8 to 40 | 1.03 to 1.16 | 7.8 to 34.5 | 4.43x |
+| 8 | 8 to 40 | 64 to 320 | 1.27 to 2.72 | 50.5 to 117.6 | 2.33x |
+| 24 | 24 to 120 | 192 to 960 | 1.93 to 7.50 | 99.6 to 127.9 | 1.28x |
+| 64 | 64 to 320 | 512 to 2560 | 4.07 to 20.0 | 125.7 to 128.0 | 1.02x |
+
+99 percent of the 128 experts are touched by 74 positions. At batch 24 with no
+spec, 99.6 are already touched, so five times the positions buys only 28 more
+experts.
+
+This retrodicts record 13. That spec probe ran at batch 1, where the model
+predicts a 4.43x expert weight read, and it measured 3.9 to 5.3x. The agreement
+is close enough to take seriously. So the extra expert cost of speculation is a
+small batch effect, not a MoE effect, and it is gone by batch 64.
+
+It also opens a hole in this record's own account. At batch 24 and 8k the
+measured step ratio is 4.65x where coverage explains 1.28x, and ngram's drafter
+runs no model, so all of it is verify. Expert activation is not what is
+expensive at batch 24. The measurement sits at the "cost proportional to
+assignments" end of the range rather than the "cost proportional to distinct
+expert weight read" end, which would mean the Triton MoE backend does not reuse
+an expert's weights across its token group. That is a hypothesis. It is not
+measured, it is the fourth candidate mechanism in this line, and it is probably
+the same thing as the 8 percent of peak bandwidth in section 2.
+
+None of this changes the operating conclusion. The 0.28 per position at 100k in
+section 3 is an end to end measurement with expert activation already inside it.
