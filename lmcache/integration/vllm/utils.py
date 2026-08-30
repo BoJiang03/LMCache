@@ -36,40 +36,127 @@ def is_false(value: str) -> bool:
     return value.lower() in ("false", "0", "no", "n", "off")
 
 
-def vllm_layout_hints() -> "LayoutHints":
-    """Build layout_hints dict by querying vLLM at runtime."""
+# vLLM 0.28 replaced the two-valued ``NHD``/``HND`` layout with a stride
+# permutation over the logical ``[L, B, H, N, C]`` axes, and dropped
+# ``get_kv_cache_layout``. Only the two block-compact, layer-outermost
+# permutations describe the same memory order as the legacy names; vLLM itself
+# keeps them as aliases (``vllm/config/cache.py::_LAYOUT_COMPAT_ALIASES``).
+_VLLM_LAYOUT_TO_LEGACY: dict[str, Literal["NHD", "HND"]] = {
+    "LBNHC": "NHD",
+    "LBHNC": "HND",
+}
+
+# Resolved once per process, like vLLM's own ``get_kv_cache_layout`` cache.
+# Only the vLLM >= 0.28 path memoizes: on older vLLM the value comes from
+# vLLM's cache, which ``set_kv_cache_layout`` may still invalidate.
+_kv_cache_layout: Literal["NHD", "HND"] | None = None
+_kv_cache_layout_lock = threading.Lock()
+
+
+def vllm_layout_hints(vllm_config: "VllmConfig | None" = None) -> "LayoutHints":
+    """Build layout_hints dict by querying vLLM at runtime.
+
+    Args:
+        vllm_config: The vLLM config to read the resolved layout from on
+            vLLM >= 0.28, where the layout lives on ``CacheConfig`` rather than
+            in a process global. ``None`` at call sites that do not hold one;
+            they reuse the value a previous call resolved.
+
+    Returns:
+        The layout hints for this process. Empty when the layout could not be
+        determined, which leaves the downstream format detector on its default.
+    """
     hints: dict[str, str] = {}
-    kv_layout = try_get_vllm_kv_cache_layout()
+    kv_layout = try_get_vllm_kv_cache_layout(vllm_config)
     if kv_layout is not None:
         hints["kv_layout"] = kv_layout
     return hints  # type: ignore[return-value]
 
 
-def try_get_vllm_kv_cache_layout() -> Literal["NHD", "HND"] | None:
+def try_get_vllm_kv_cache_layout(
+    vllm_config: "VllmConfig | None" = None,
+) -> Literal["NHD", "HND"] | None:
     """Try to query the KV cache layout from vLLM at runtime.
 
-    Returns ``"NHD"`` or ``"HND"`` if vLLM is available and the layout
-    has been configured, otherwise ``None``.
+    Two vLLM generations are supported. Before 0.28 the layout is a process
+    global read through ``get_kv_cache_layout``. From 0.28 that function is
+    gone and the engine core resolves one layout for the whole model, records
+    it on ``CacheConfig.kv_cache_layout`` and ships it to the workers before
+    the KV connector is initialized, so it is read from the config instead and
+    memoized for the call sites that do not hold one.
 
     Please only call this where vllm is available (i.e. not in the MP server)
     We will print an error if we try to get vllm kv layout where vllm
     is not available.
-    """
 
-    # Third Party
+    Args:
+        vllm_config: See :func:`vllm_layout_hints`.
+
+    Returns:
+        ``"NHD"`` or ``"HND"`` if vLLM is available and the layout has been
+        configured, otherwise ``None``.
+    """
     try:
         # Third Party
         from vllm.v1.attention.backends.utils import (  # type: ignore[import-untyped]
             get_kv_cache_layout,
         )
+    except ImportError:
+        return _try_get_vllm_kv_cache_layout_from_config(vllm_config)
 
+    try:
         return get_kv_cache_layout()
     except Exception:
         logger.error(
-            "vLLM is not available but tried to query kv cache "
-            "layout information, cannot get KV cache layout"
+            "vLLM failed to report its KV cache layout, cannot get KV cache layout"
         )
         return None
+
+
+def _try_get_vllm_kv_cache_layout_from_config(
+    vllm_config: "VllmConfig | None",
+) -> Literal["NHD", "HND"] | None:
+    """Read the layout vLLM >= 0.28 resolved onto ``CacheConfig``.
+
+    Args:
+        vllm_config: The config to read, or ``None`` to reuse the value a
+            previous call resolved in this process.
+
+    Returns:
+        The legacy name of the resolved layout, or ``None`` when no config was
+        given and none was resolved earlier, when vLLM has not resolved one
+        yet, or when it resolved to a permutation the legacy names cannot
+        express.
+    """
+    global _kv_cache_layout
+
+    if vllm_config is None:
+        if _kv_cache_layout is None:
+            logger.error(
+                "No vLLM config to read the KV cache layout from and no layout "
+                "resolved earlier in this process, cannot get KV cache layout"
+            )
+        return _kv_cache_layout
+
+    layout_name = getattr(vllm_config.cache_config, "kv_cache_layout", None)
+    if layout_name is None:
+        logger.warning(
+            "vLLM has not resolved a KV cache layout yet, cannot get KV cache layout"
+        )
+        return None
+
+    legacy_name = _VLLM_LAYOUT_TO_LEGACY.get(layout_name)
+    if legacy_name is None:
+        logger.error(
+            "vLLM resolved KV cache layout %s, which LMCache cannot express as "
+            "NHD or HND; cannot get KV cache layout",
+            layout_name,
+        )
+        return None
+
+    with _kv_cache_layout_lock:
+        _kv_cache_layout = legacy_name
+    return legacy_name
 
 
 def lmcache_get_or_create_config() -> LMCacheEngineConfig:
