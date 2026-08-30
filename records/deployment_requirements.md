@@ -124,6 +124,13 @@ Not requirements about the deployment, but they bound what can be run.
   contaminate the result.
 - No experiment is launched before its design has been discussed.
 
+## The candidate deployment
+
+`records/deployment_candidate.md` restates these requirements alongside the one
+configuration on this hardware that may satisfy them jointly
+(Qwen3.5-397B-A17B-FP8, TP=4, vllm-main, LMCache MP connector), with its launch
+configuration and the split between what is measured and what is only computed.
+
 ## Joint feasibility
 
 R1 and R2 cannot both be satisfied with Qwen3-Coder-30B, for a reason that also
