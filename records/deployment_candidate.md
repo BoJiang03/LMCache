@@ -265,16 +265,17 @@ tok/s, TTFT, or hit rate under load.
 1. ~~The fp8 checkpoint failing to load on 0.23.~~ **Cleared 08-30**: loads
    and serves. Two environment requirements surfaced on the way (nvcc PATH,
    full CPATH), both in Part 3.
-2. **SWA is supported by design; sub-risk (b) resolved, (a) still open.**
+2. **SWA is supported by design; both sub-risks now measured.**
    Measured 08-30: the correctness ladder passes across engine restarts
    (Part 5), so the mixed SWA-plus-full transfer path is sound under the
    default (eager-style) store. Sub-risk (b) is answered: storage IS dense,
    122,880 B/token, so the Part 8 L1 sizing scales 4x (~250 GB holds ~2.2M
-   tokens, about 25-40 s of worst-case stream at load; raise toward 500 GB
-   for the sweep if eviction age drops below the window target). Sub-risk
-   (a), lazy x SWA unhashed-block rejection, is untested until the sweep
-   runs the lazy policy: watch `rejected_unhashed` there. Original analysis
-   kept below.
+   tokens; in the 30-min A/B arms L1 topped out at 0.69-0.78 of 250 GB, so
+   no arm hit eviction pressure and the 500 GB question stays open for
+   longer runs only). Sub-risk (a) is answered by the lazy arms of the
+   08-30 evening A/B: `rejected_unhashed` was 57/3597, 63/3523, 39/3636
+   admissions (1.1-1.8%), without `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`
+   set. Real but minor; not a blocker. Original analysis kept below.
    The
    support itself is real, not circumstantial: the connector reads vLLM's
    per-layer `SlidingWindowSpec` and tags each kernel group with its window
@@ -319,7 +320,15 @@ exercised. Zero stack risk; the cost is R2. At 50 tok/s the L1/L0 ceiling is
 ## Part 8. Verification plan
 
 Design discussed and approved 08-30; steps 0-3 executed the same day, all
-passed (results in Part 5). Step 4 not started.
+passed (results in Part 5). Step 4 ran 08-30 evening in a redirected form:
+instead of the three-point R-gauge sweep, a lazy-vs-eager A/B at CONC=48
+and CONC=72 (design delegated, record 2026/08/30/13). Lazy won every
+headline: TTFT avg -21%/-16%, throughput +3.8%/+9.9%, e2e avg -8%/-15%,
+with the gap widening at saturation. tokens_retrieved/isl_sum on the lazy
+arms was 0.42/0.43 -- R2's absolute target (~0.4) is met. Caveat: the A/B
+measures the loaded workload, not the pure-decode tpot gauge, so Part 4's
+predicted table is NOT yet replaced; the R1 50 tok/s check against
+pure-decode samples is still open.
 
 0. Pull the weights: 403.8 GB to `/raid/data/hub` (5.4 TB free). Hours at
    typical HF throughput; run in the background and verify shard count.
