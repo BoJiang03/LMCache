@@ -396,7 +396,7 @@ echo "$VLLM_PID" >> "$PID_FILE"
 export VLLM_PORT="$saved_port"
 echo "vLLM started (PID=$VLLM_PID)"
 
-if ! wait_for_server "$VLLM_PORT" "$VLLM_READY_TIMEOUT" "$VLLM_LOG"; then
+if ! wait_for_server "$VLLM_PORT" "$VLLM_READY_TIMEOUT" "$VLLM_LOG" "$VLLM_PID"; then
     echo "vLLM failed to start."
     exit 1
 fi

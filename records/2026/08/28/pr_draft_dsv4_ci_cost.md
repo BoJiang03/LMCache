@@ -1,7 +1,7 @@
 # PR draft: dsv4_flash_tp CI cost
 
-Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `9520a96e` (one commit, on top of `dev`)
-Files: `.buildkite/k3_tests/multiprocess/{BK_WEB_SETUP.md,pipeline.yml,scripts/run-dsv4-flash-tp.sh}`
+Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `cf9b4b4e` (one commit, on top of `dev`)
+Files: `.buildkite/k3_tests/multiprocess/{BK_WEB_SETUP.md,pipeline.yml,scripts/run-dsv4-flash-tp.sh}`, `.buildkite/k3_tests/common_scripts/helpers.sh`
 
 ## Title
 
@@ -66,6 +66,14 @@ It also reports, before and after the run, what each of the four JIT caches actu
 ```
 
 The `after` pass adds `new_this_run=N` per cache. A mount that fails to take effect is otherwise completely silent -- the step just recompiles and pays the time again -- so this makes it visible: `exists=False` is a missing mount, `writable=False` a read-only one, and `entries=0` on a *second* build means the hostPath is not persisting. FlashInfer's path is read back from the library rather than echoed from the env var, so a base that does not line up with the mount shows as a mismatched path.
+
+### Make `wait_for_server` say what is happening
+
+`wait_for_server` polls `curl` and nothing else, so a server that dies during startup is indistinguishable from one that is still compiling and the caller pays the whole timeout for no information — at this step's 2700s that is 45 minutes of a 4-GPU node spent on a process that is already gone.
+
+It now takes the server's PID as an optional fourth argument and returns as soon as that process is gone, dumping the tail of its log. It also prints a progress line every 60s (`WAIT_FOR_SERVER_HEARTBEAT_SECONDS`) carrying the last line of that log, because the server's own output is redirected to a file rather than to the step, which leaves the step log blank for the entire startup — a slow start and a hung one look identical from the outside.
+
+This is shared helper code, so the heartbeat appears in every step that passes a log file; the PID argument is optional and the other callers are unchanged. Happy to split it into its own PR if reviewers prefer.
 
 ## Test
 

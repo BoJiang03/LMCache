@@ -2,7 +2,7 @@
 
 Date: 2026-08-28 (session 3, continues `2_dsv4_test_restructure.md`)
 Worktree: `/home/bo/LMCache-worktrees/k3_mp_dsv4`
-Branches: `dsv4_ci_cost_pr` @ `9520a96e`, `dsv4_ci_cost_dev` (this record)
+Branches: `dsv4_ci_cost_pr` @ `cf9b4b4e`, `dsv4_ci_cost_dev` (this record)
 
 ## What this session settled
 
@@ -278,14 +278,24 @@ another process mid-load: `wait_for_server` (`common_scripts/helpers.sh:155`)
 only polls `curl /v1/models`. It never checks whether the vLLM PID is still
 alive, so a crashed startup is indistinguishable from a slow one and the step
 sits out the whole `VLLM_READY_TIMEOUT` -- 2700s, holding four GPUs -- before
-reporting failure. Not touched here; it is shared helper code and a separate
-change.
+reporting failure. Fixed in the end, on 2026-08-31, after a CI build sat 30+
+minutes at `Waiting for vLLM on port 8000` with the step log showing nothing
+either way: `wait_for_server` now takes the server PID as an optional fourth
+argument and bails as soon as that process is gone, and prints a progress line
+every 60s carrying the last line of the server's log. The second half matters
+as much as the first -- the server's output is redirected to a file, so the
+step log is blank for the whole startup and a slow start looks exactly like a
+hung one. My earlier advice to "watch the log for a DeepGEMM progress bar" was
+wrong for the same reason: that output never reaches the step log. Tested on
+four cases: server dies (bails at 6s instead of 60s, with the log tail), server
+comes up (exit 0), 3-arg callers (unchanged plus heartbeat), 2-arg callers
+(heartbeat without a log line).
 Left alone: the `vllm-lazy` venv processes on other GPUs and the `/opt/venv` /
 `/workspace` servers, which belong to other work lines and other people.
 
 ## Branch state
 
-- `dsv4_ci_cost_pr` @ `9520a96e` (`852cbc6c` before the four JIT-cache
+- `dsv4_ci_cost_pr` @ `cf9b4b4e` (`852cbc6c` before the four JIT-cache
   mounts and the DCO sign-off were folded in) -- `[CI][MP] Take dsv4_flash_tp off the
   default multiprocess run`. One commit, ahead 1 / behind 0 of `origin/dev`.
   Pushed to `fork` earlier and unchanged since.
