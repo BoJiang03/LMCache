@@ -1,6 +1,6 @@
 # PR draft: dsv4_flash_tp CI cost
 
-Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `cf9b4b4e` (one commit, on top of `dev`)
+Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `d21063e8` (one commit, on top of `dev`)
 Files: `.buildkite/k3_tests/multiprocess/{BK_WEB_SETUP.md,pipeline.yml,scripts/run-dsv4-flash-tp.sh}`, `.buildkite/k3_tests/common_scripts/helpers.sh`
 
 ## Title
@@ -25,9 +25,13 @@ The label follows the `mp`/`full` labels that already gate this pipeline, so a P
 
 That leaves the step with no periodic run: DeepSeek-V4-Flash support is exercised when someone asks for it, not on a timer. A 4-GPU node for 40+ minutes is too expensive to spend on a schedule nobody is watching, but it does mean a regression here surfaces at the next opt-in build rather than the next morning.
 
-### Drop the SM120 DeepGEMM build
+### Keep the SM120 DeepGEMM build, and cache its wheel
 
-vllm#52035 pinned vLLM back to deepseek-ai/DeepGEMM's `nv_dev` tip (`8b1392b9`), which carries the SM120 kernels, and the vLLM revision CI pins today already includes it. The guard never short-circuited either: it probed a top-level `deep_gemm` while the wheel ships `vllm.third_party.deep_gemm`, so SM120 nodes rebuilt it on every run.
+An earlier version of this change deleted the workaround, on the grounds that vllm#52035 pinned vLLM back to deepseek-ai/DeepGEMM's `nv_dev` tip (`8b1392b9`), which does carry the SM120 kernels — 9 `sm120_*.cuh` impls ship in the wheel, and the `arch_major == 12` branches are back in `csrc/apis/layout.hpp`. Measured on an SM120 agent against that exact pin, that is not enough: weight loading dies at the `layout.hpp:60` fallthrough, `DG_HOST_UNREACHABLE("Unknown SF transformation")`, before a single kernel is launched. So the workaround stays, and the delete condition in its comment is now "the bundled DeepGEMM loads this model on an SM120 agent" rather than "the pin carries SM120 kernels".
+
+What is new is that the wheel it builds is cached. Nobody publishes a DeepGEMM wheel — PyPI carries only an unrelated sdist and the upstream repos tag releases with no assets — because it is a JIT library whose installable part still has to be built against the local torch ABI and CUDA, so building it here is unavoidable. Caching it on the same hostPath as the JIT caches means only the first build on a node pays for it. The cache key carries the DeepGEMM ref, the Python tag and the torch and CUDA versions, so a wheel built for a different ABI lands on a new key instead of being reused; a cached wheel that will not install or import is dropped and rebuilt rather than failing the step.
+
+The provisioning step is also timed as a phase of its own — it used to run before the first `begin_phase` and was invisible in the summary.
 
 ### Persist the JIT caches across builds
 

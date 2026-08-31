@@ -2,7 +2,7 @@
 
 Date: 2026-08-28 (session 3, continues `2_dsv4_test_restructure.md`)
 Worktree: `/home/bo/LMCache-worktrees/k3_mp_dsv4`
-Branches: `dsv4_ci_cost_pr` @ `cf9b4b4e`, `dsv4_ci_cost_dev` (this record)
+Branches: `dsv4_ci_cost_pr` @ `d21063e8`, `dsv4_ci_cost_dev` (this record)
 
 ## What this session settled
 
@@ -243,6 +243,39 @@ processes matching `lmcache server`. Worth remembering when running anything
 here alongside that line. `cold_run: 54s` and the 852s total from that run are
 both meaningless.
 
+## The SM120 deletion was wrong, and CI said so in 87 seconds
+
+The first real CI build on an SM120 agent (RTX PRO 6000 Blackwell) failed in
+`process_weights_after_loading`:
+
+```
+RuntimeError: Assertion error (csrc/apis/layout.hpp:60): Unknown SF transformation
+  <- transform_sf_into_required_layout
+  <- deepgemm_post_process_weight_scale_block
+```
+
+Same file and line the deleted workaround's comment already named. What I had
+verified before deleting it was that the pinned DeepGEMM carries SM120
+*kernels* -- 9 `sm120_*.cuh` impls in the wheel, confirmed by unpacking it --
+and that `layout.hpp` has `arch_major == 12` branches, confirmed by reading the
+source at the pinned ref. Both true, and both insufficient: the failure is in
+the host-side scale-factor layout transform, before any kernel launches, and
+the model's `(dtype, gran_mn, gran_k)` matches none of the arch-12 branches.
+Necessary, not sufficient -- and the only check that would have caught it is
+the one this build ran.
+
+So the workaround is restored, with its delete condition rewritten to something
+that can only be settled by measurement: "the bundled DeepGEMM loads this model
+on an SM120 agent". The wheel it builds is now cached on the same hostPath as
+the JIT caches, keyed on ref + Python tag + torch/CUDA version, because nobody
+publishes a DeepGEMM wheel (PyPI has an unrelated sdist; both upstream repos
+tag releases with no assets) and it is a JIT library whose installable part has
+to be built against the local ABI anyway.
+
+The `wait_for_server` fix paid for itself on its first outing: the failure came
+back in 87s total (`vllm_startup: 68s`) instead of the 2700s it would have sat
+there before.
+
 ## What this run does *not* prove
 
 1. **vLLM version.** Local is `0.26.1rc1.dev306+gcb8104839`; the CI pin
@@ -295,7 +328,7 @@ Left alone: the `vllm-lazy` venv processes on other GPUs and the `/opt/venv` /
 
 ## Branch state
 
-- `dsv4_ci_cost_pr` @ `cf9b4b4e` (`852cbc6c` before the four JIT-cache
+- `dsv4_ci_cost_pr` @ `d21063e8` (`852cbc6c` before the four JIT-cache
   mounts and the DCO sign-off were folded in) -- `[CI][MP] Take dsv4_flash_tp off the
   default multiprocess run`. One commit, ahead 1 / behind 0 of `origin/dev`.
   Pushed to `fork` earlier and unchanged since.

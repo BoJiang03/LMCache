@@ -19,13 +19,33 @@
 #   linears, MoE experts, hyper-connection prenorm GEMM and attention o_proj
 #   einsum through DeepGEMM, so the arch must have DeepGEMM kernels.
 #
-#   SM120 used to need a locally built DeepGEMM, because vllm#50000 had
-#   repointed vLLM's pin onto a base that never carried the SM120 kernels.
-#   vllm#52035 (08-12) pinned it back to deepseek-ai/DeepGEMM's nv_dev tip,
-#   which has them, so the wheel's bundled copy is correct on every supported
-#   arch and this script installs nothing.
+#   On SM120 the vLLM wheel's *bundled* DeepGEMM still does not work, which is
+#   why this script provisions one (see "Provision DeepGEMM" below). That is a
+#   workaround for an upstream regression, not a permanent requirement:
 #
-#   If a future pin regresses SM120 again, note that VLLM_USE_DEEP_GEMM=0 is
+#     vllm#47304 (07-02) pinned deepseek-ai/DeepGEMM@a6b593d2, whose
+#       csrc/apis/layout.hpp dispatches on `arch_major == 10 or == 12`.
+#       SM120 worked.
+#     vllm#50000 (07-30) repointed the pin to vllm-project/DeepGEMM@f5a76426,
+#       a fork branch based off DeepGEMM main. SM120 only ever lived on
+#       nv_dev, so the `== 12` branches vanished and weight loading began
+#       aborting at the fallthrough
+#       DG_HOST_UNREACHABLE("Unknown SF transformation"),
+#       csrc/apis/layout.hpp:60.
+#     vllm#52035 (08-12) pinned it back to deepseek-ai/DeepGEMM's nv_dev tip
+#       (8b1392b9), which does carry the SM120 kernels -- 9 sm120_*.cuh impls
+#       ship in the wheel -- and the `arch_major == 12` branches are back in
+#       layout.hpp. That is still not enough: measured on an SM120 agent
+#       against that exact pin, weight loading dies at the same
+#       layout.hpp:60 fallthrough, so whatever (dtype, gran_mn, gran_k) this
+#       model presents matches none of the arch-12 branches.
+#
+#   So the delete condition for this workaround is not "the pin carries SM120
+#   kernels" -- that is true today and insufficient. It is "the bundled
+#   DeepGEMM loads this model on an SM120 agent", which has to be measured,
+#   not read off a commit.
+#
+#   Disabling DeepGEMM instead (VLLM_USE_DEEP_GEMM=0) is not an escape hatch:
 #   not an escape hatch: only the fp8 linear and FP4 MoE call sites consult
 #   is_deep_gemm_supported(), and a run with DeepGEMM disabled dies in
 #   mhc_pre_broadcast_tilelang, which calls DeepGEMM unconditionally.
@@ -102,6 +122,27 @@ fi
 MAX_TOKENS="${MAX_TOKENS:-128}"
 # Seconds to let async LMCache stores drain before the retrieve run.
 STORE_DRAIN_SECONDS="${STORE_DRAIN_SECONDS:-20}"
+
+STORE_DRAIN_SECONDS="${STORE_DRAIN_SECONDS:-20}"
+
+# vllm-project/DeepGEMM@codex/cuda129-fp8-include-5f33a180 (2fd67329).
+#
+# Chosen because it is a strict descendant of vLLM's current pin: `git compare
+# f5a76426...5f33a180` reports ahead_by 96, behind_by 0, so nothing the pinned
+# revision has is lost. It carries the byte-identical one-line commit
+# "[Build] Include CUDA FP8 type in MQA layout header" that produced the pin
+# (e21c821f), on top of nv_dev+situ, which has the SM120 kernels.
+#
+# Not a minimal delta, though: those 96 commits touch 70 files and include
+# SM90 (kv_block=32, next_n=4) and SM100 (paged indexer, MQA logits sync)
+# changes plus an upstream-main sync. That is acceptable here because this
+# install only happens on SM120, where the alternative is not booting at all --
+# but it is why the install is guarded by arch rather than applied everywhere.
+#
+# Its lineage also discharges the TODO vLLM left in deepgemm.cmake,
+# "switch to nv_dev branch after it support situ": nv_dev+situ is exactly that.
+DEEPGEMM_SM120_REF="${DEEPGEMM_SM120_REF:-2fd67329ec2942f65ba35d561256ab6ed3b903cb}"
+DEEPGEMM_REPO="${DEEPGEMM_REPO:-https://github.com/vllm-project/DeepGEMM.git}"
 
 RESULTS_DIR="${RESULTS_DIR:-/tmp/lmcache_ci_results_${BUILD_ID}}"
 TP_DIR="$RESULTS_DIR/dsv4_flash_tp"
@@ -307,6 +348,109 @@ trap print_timing_summary EXIT
 
 jit_cache_report before
 
+# ── 0. Provision DeepGEMM (SM120 only) ──────────────────────
+# vLLM's _import_deep_gemm() prefers a `deep_gemm` in site-packages over the
+# copy bundled in the wheel, so installing one overrides the arch-incomplete
+# bundled build without rebuilding vLLM. Build steps mirror vLLM's own
+# tools/install_deepgemm.sh. No-op on SM90/SM100, where the bundled copy is
+# correct and must be left alone.
+#
+# Nobody publishes a DeepGEMM wheel -- PyPI carries only an unrelated sdist,
+# and the upstream repos tag releases with no assets -- because it is a JIT
+# library whose installable part still has to be built against the local torch
+# ABI and CUDA. So the wheel is built here, and cached on
+# DEEPGEMM_WHEEL_CACHE_DIR (a hostPath in CI) so that only the first build on
+# a node pays for it. The cache key carries the DeepGEMM ref, the Python tag
+# and the torch/CUDA versions, which is everything the wheel is valid
+# against; anything else lands on a new key rather than reusing a wheel built
+# for a different ABI. Unset the variable to disable caching.
+provision_deepgemm_sm120() {
+    local arch_major
+    arch_major=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0 \
+        | tr -d ' ' | cut -d. -f1)
+    if [ "$arch_major" != "12" ]; then
+        echo "=== SM${arch_major}0: using vLLM's bundled DeepGEMM ==="
+        return 0
+    fi
+
+    if python3 -c "import deep_gemm" 2>/dev/null; then
+        echo "=== SM120: deep_gemm already present in site-packages ==="
+        return 0
+    fi
+
+    local key cached=""
+    key=$(python3 - "$DEEPGEMM_SM120_REF" <<'PYEOF'
+import sys
+ref = sys.argv[1][:12]
+tag = "cp%d%d" % (sys.version_info.major, sys.version_info.minor)
+try:
+    import torch
+    abi = "torch%s-cu%s" % (torch.__version__.split("+")[0], torch.version.cuda)
+except Exception:
+    abi = "torch-unknown"
+print("%s-%s-%s" % (ref, tag, abi))
+PYEOF
+    )
+    if [ -n "${DEEPGEMM_WHEEL_CACHE_DIR:-}" ]; then
+        mkdir -p "$DEEPGEMM_WHEEL_CACHE_DIR"
+        cached=$(find "$DEEPGEMM_WHEEL_CACHE_DIR/$key" -name '*.whl' 2>/dev/null | head -1)
+    fi
+
+    if [ -n "$cached" ]; then
+        echo "=== SM120: installing cached DeepGEMM wheel ($key) ==="
+        if { command -v uv >/dev/null 2>&1 && uv pip install "$cached" \
+                || python3 -m pip install "$cached"; } \
+            && python3 -c "import deep_gemm" 2>/dev/null; then
+            echo "DeepGEMM installed from cache: $cached"
+            return 0
+        fi
+        # A cached wheel that will not install or import is worse than none:
+        # drop it and fall through to a fresh build rather than failing here.
+        echo "Cached wheel unusable, rebuilding: $cached"
+        rm -rf "$DEEPGEMM_WHEEL_CACHE_DIR/$key"
+    fi
+
+    echo "=== SM120: building DeepGEMM @ ${DEEPGEMM_SM120_REF:0:12} ==="
+    local build_dir build_log
+    build_dir="$(mktemp -d)"
+    build_log="$TP_DIR/deepgemm_build.log"
+    if ! {
+        git clone --recursive --shallow-submodules \
+            "$DEEPGEMM_REPO" "$build_dir/deepgemm" &&
+        cd "$build_dir/deepgemm" &&
+        git checkout "$DEEPGEMM_SM120_REF" &&
+        python3 setup.py bdist_wheel &&
+        { command -v uv >/dev/null 2>&1 && uv pip install dist/*.whl \
+            || python3 -m pip install dist/*.whl; }
+    } > "$build_log" 2>&1; then
+        cd "$REPO_ROOT"
+        echo "FAILED to build DeepGEMM. Tail of $build_log:"
+        tail -40 "$build_log"
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    # Publish the wheel for the next build on this node. Staged in a temp
+    # directory and renamed into place so a concurrent reader never sees a
+    # half-copied wheel.
+    if [ -n "${DEEPGEMM_WHEEL_CACHE_DIR:-}" ]; then
+        local stage
+        stage="$(mktemp -d -p "$DEEPGEMM_WHEEL_CACHE_DIR")"
+        if cp "$build_dir"/deepgemm/dist/*.whl "$stage/" 2>/dev/null \
+            && mv -T "$stage" "$DEEPGEMM_WHEEL_CACHE_DIR/$key" 2>/dev/null; then
+            echo "Cached DeepGEMM wheel for next run: $DEEPGEMM_WHEEL_CACHE_DIR/$key"
+        else
+            rm -rf "$stage"
+            echo "Could not cache the DeepGEMM wheel (harmless; it rebuilds next run)"
+        fi
+    fi
+
+    cd "$REPO_ROOT"
+    rm -rf "$build_dir"
+    echo "DeepGEMM installed: $(python3 -c 'import deep_gemm; print(deep_gemm.__file__)')"
+}
+begin_phase deepgemm_provision
+provision_deepgemm_sm120
 # ── 1. Launch LMCache MP server with an explicit L1 pool ────
 begin_phase lmcache_server
 echo "=== Launching LMCache MP server (port $LMCACHE_PORT, L1 ${L1_SIZE_GB}GB) ==="

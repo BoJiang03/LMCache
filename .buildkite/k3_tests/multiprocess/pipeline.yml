@@ -85,6 +85,10 @@ steps:
           TRITON_CACHE_DIR: /root/.cache/jit/triton
           TILELANG_CACHE_DIR: /root/.cache/jit/tilelang
           FLASHINFER_WORKSPACE_BASE: /root/.cache/jit/flashinfer
+          # Nobody publishes a DeepGEMM wheel, so the SM120 workaround in
+          # the script builds one; cache it on the same mount so only the
+          # first build on a node pays for it.
+          DEEPGEMM_WHEEL_CACHE_DIR: /root/.cache/jit/deepgemm_wheel
         agents: { queue: "k8s" }
         plugins:
           - kubernetes:
