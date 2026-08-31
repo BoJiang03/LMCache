@@ -48,11 +48,17 @@ blocks the next chain.
 
 Bo added a third strategy: "默认 lazy" = policy FIFO, all defaults. f40
 result: **zero external tokens, zero L1 writes for the whole arm**. Not
-a config error and not a crash — `fifo.py:80` drains only when the
-count of simultaneously finished-but-undrained requests reaches
-lazy_offload_threshold (default 100); this workload's instantaneous
-finished set is single digits, and 381 completions over 50 minutes
-produced not one drain. Design doc calls FIFO the "explicit legacy
+a config error and not a crash. First reading (corrected on 08-31 from
+the engine log, see record 3): the trigger IS reached, and every drain
+it produces is dead on arrival. `fifo.py:80` drains only when 100
+finished-but-undrained requests coexist; that set never shrinks on its
+own, so it climbs to 100 about 11 minutes in (02:20:45) and then
+sawtooths, 10 requests per drain. But lazy offload's
+`request_finished` returns False, so those requests' blocks are back in
+the free queue and get reused long before the drain wakes; the
+manager's hash revalidation (`lazy_offload_manager.py:571`) drops the
+whole request. 330 drained requests in f40, 330 dropped, 0 stores.
+Design doc calls FIFO the "explicit legacy
 fallback"; the prior line's own harness only ever ran it with
 threshold=1 (driver.py:1171), i.e. with the threshold mechanism
 disabled. And on upstream origin/dev, FIFO IS the current default lazy

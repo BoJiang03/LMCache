@@ -152,10 +152,15 @@ queueing takes off between 40 and 48.
 ## FIFO result: the default never offloads (f40 measured)
 
 f40 (lazy_offload=true, policy=FIFO, all defaults): external_kv_transfer
-= 0 for the whole arm; l1_write_chunks_total never incremented. Cause,
-from fifo.py:80: FIFO drains only when the count of simultaneously
-finished-but-undrained requests reaches lazy_offload_threshold (default
-100); this workload never gets near 100, so nothing ever drains. The arm
+= 0 for the whole arm; l1_write_chunks_total never incremented. Cause
+(corrected 08-31 from the engine log, see record 3): fifo.py:80 drains
+only when 100 finished-but-undrained requests coexist. That set never
+shrinks on its own, so it does reach 100, at 02:20:45, ~11 min into the
+load, and then sawtooths at 10 requests per drain. By then the blocks
+are gone: lazy offload's request_finished returns False, the finished
+requests' blocks return to the free queue and are reused, and the
+manager's hash revalidation (lazy_offload_manager.py:571) drops every
+drained request. 330 drained, 330 dropped, 0 stores. The arm
 is effectively a no-L1 baseline: TTFT avg 9,240 ms (vs eager 5,368 at
 the same CONC), thpt 150.9 (vs 224.9), ITL avg 113.8, requests 381,
 sources 0% ext / 24.0% L0 / 76.0% compute. Per Bo: the policy is not
