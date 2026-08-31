@@ -1,6 +1,6 @@
 # PR draft: dsv4_flash_tp CI cost
 
-Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `0be2cd0b` (one commit, on top of `dev`)
+Branch: `BoJiang03/LMCache` `dsv4_ci_cost_pr` @ `c3454869` (one commit, on top of `dev`)
 Files: `.buildkite/k3_tests/multiprocess/{BK_WEB_SETUP.md,pipeline.yml,scripts/run-dsv4-flash-tp.sh}`
 
 ## Title
@@ -48,27 +48,32 @@ SM120 nodes rebuilt it on every run.
 The step compiles through four JIT frameworks on the way up, and the pod's
 filesystem starts empty every run. Locally a fully cold start takes 788s and a
 fully warm one 103s, split roughly as DeepGEMM 400s, FlashInfer 198s, Triton
-and TileLang together about 87s. Back all four with hostPaths:
+and TileLang together about 87s.
 
-| cache | how it is pointed at the mount |
+One hostPath, `/data/jit_cache`, mounted at `/root/.cache/jit`, with each
+framework pointed at a subdirectory of it:
+
+| cache | env var |
 |---|---|
-| DeepGEMM | `DG_JIT_CACHE_DIR=/root/.cache/deep_gemm` |
-| FlashInfer | no env var; it resolves `$HOME/.cache/flashinfer/<version>/<arch>/cached_ops` itself |
-| Triton | `TRITON_CACHE_DIR=/root/.cache/triton` |
-| TileLang | `TILELANG_CACHE_DIR=/root/.cache/tilelang` |
+| DeepGEMM | `DG_JIT_CACHE_DIR=/root/.cache/jit/deep_gemm` |
+| Triton | `TRITON_CACHE_DIR=/root/.cache/jit/triton` |
+| TileLang | `TILELANG_CACHE_DIR=/root/.cache/jit/tilelang` |
+| FlashInfer | `FLASHINFER_WORKSPACE_BASE=/root/.cache/jit/flashinfer` (it appends `.cache/flashinfer/<version>/<arch>/cached_ops` itself) |
 
-DeepGEMM's dir is named explicitly rather than mounting vLLM's default
-`VLLM_CACHE_ROOT/deep_gemm`, so the shared surface stays one cache instead of
-all of `/root/.cache/vllm`.
+All four resolve from an explicit env var rather than from whatever `HOME` is
+inside the image, and one mount instead of four means one directory to
+provision on the agent nodes. DeepGEMM's dir is named rather than left to
+default to `VLLM_CACHE_ROOT/deep_gemm`, which would mean persisting all of
+`/root/.cache/vllm` for the sake of one subdirectory.
 
-Sharing them across builds is safe because all four key on something that
-changes when the toolchain does: DeepGEMM hashes the kernel source, the nvcc
-version and the compile flags (which carry the `-gencode` arch); FlashInfer
-puts its version and arch in the path; Triton's cache key hashes its own
-compiler and backend sources along with the kernel, the backend options and the
-env; TileLang namespaces its cache by its own version and the torch version. A
-new pin, a new CUDA or a different arch lands on new keys rather than reusing
-an old cubin.
+Sharing them across builds is safe because each keys on something that changes
+when the toolchain does: DeepGEMM hashes the kernel source, the nvcc version
+and the compile flags (which carry the `-gencode` arch); FlashInfer puts its
+version and arch in the path; Triton's cache key hashes its own compiler and
+backend sources along with the kernel, the backend options and the env;
+TileLang namespaces its cache by its own version and the torch version. A new
+pin, a new CUDA or a different arch lands on new keys rather than reusing an
+old cubin.
 
 One difference worth flagging in review: unlike DeepGEMM, which compiles into a
 temp dir and renames into place, FlashInfer builds in place and serialises
@@ -78,11 +83,31 @@ ninja to redo on the next run.
 
 The four caches total 35MB once filled.
 
-### Per-phase timing
+### Per-phase timing, and a JIT cache report
 
 The script prints a phase timing summary from an EXIT trap, so a failed or
 timed-out run reports it too, and the step's wall clock can be attributed
 instead of guessed.
+
+It also reports, before and after the run, what each of the four JIT caches
+actually resolved to:
+
+```
+=== JIT caches (before) ===
+  HOME=/root
+  DeepGEMM    entries=1350    exists=True  writable=True  /root/.cache/jit/deep_gemm
+  Triton      entries=6403    exists=True  writable=True  /root/.cache/jit/triton
+  TileLang    entries=180     exists=True  writable=True  /root/.cache/jit/tilelang
+  FlashInfer  entries=607     exists=True  writable=True  /root/.cache/jit/flashinfer/.cache/flashinfer
+```
+
+The `after` pass adds `new_this_run=N` per cache. A mount that fails to take
+effect is otherwise completely silent -- the step just recompiles and pays the
+time again -- so this makes it visible: `exists=False` is a missing mount,
+`writable=False` a read-only one, and `entries=0` on a *second* build means the
+hostPath is not persisting. FlashInfer's path is read back from the library
+rather than echoed from the env var, so a base that does not line up with the
+mount shows as a mismatched path.
 
 ## Test
 

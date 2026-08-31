@@ -2,7 +2,7 @@
 
 Date: 2026-08-28 (session 3, continues `2_dsv4_test_restructure.md`)
 Worktree: `/home/bo/LMCache-worktrees/k3_mp_dsv4`
-Branches: `dsv4_ci_cost_pr` @ `852cbc6c`, `dsv4_ci_cost_dev` (this record)
+Branches: `dsv4_ci_cost_pr` @ `c3454869`, `dsv4_ci_cost_dev` (this record)
 
 ## What this session settled
 
@@ -286,7 +286,7 @@ Left alone: the `vllm-lazy` venv processes on other GPUs and the `/opt/venv` /
 
 ## Branch state
 
-- `dsv4_ci_cost_pr` @ `0be2cd0b` (`852cbc6c` before the four JIT-cache
+- `dsv4_ci_cost_pr` @ `c3454869` (`852cbc6c` before the four JIT-cache
   mounts and the DCO sign-off were folded in) -- `[CI][MP] Take dsv4_flash_tp off the
   default multiprocess run`. One commit, ahead 1 / behind 0 of `origin/dev`.
   Pushed to `fork` earlier and unchanged since.
@@ -307,8 +307,47 @@ A PR title/body draft was handed over in chat and is not repeated here.
    `dev`, `0 4 * * *`, no env vars; must be a *new* schedule, since the
    `VERIFY_AND_PIN_VLLM` clause deliberately keeps this group out of the pin
    canary), and to route nightly failures somewhere a person reads.
-3. Confirm the four hostPaths (`/data/deep_gemm_jit`, `/data/flashinfer_jit`,
-   `/data/triton_jit`, `/data/tilelang_jit`) are writable on the agent nodes.
-4. A cold run that actually reaches PASS. The one measured here was killed in
+3. Confirm one hostPath, `/data/jit_cache`, is writable on the agent nodes
+   (it started as four separate dirs; the user picked a single mount with a
+   subdirectory per framework, which turns four questions for the fleet owner
+   into one),
+   and that the mounts actually take effect. None of the four has ever run in
+   CI -- this branch has never been built. The evidence they will work is
+   layered, and only part of it is measured: the three env vars are known to be
+   honoured (the cold run wrote into redirected dirs), `DG_JIT_CACHE_DIR` is
+   known not to be overridden (`vllm/utils/deep_gemm.py:250` guards with
+   `if not os.environ.get`), and `/data/<x>` + `DirectoryOrCreate` is an
+   established pattern here (`/data/huggingface` is used seven times in this
+   pipeline and across eight others). What is *not* verified is that pattern on
+   the 4-GPU node specifically. That worry did not survive checking: all 17
+   steps in this pipeline share one queue (`k8s`) with no `nodeSelector`,
+   `tolerations` or `affinity`, so there is no separate 4-GPU pool -- the
+   scheduler just picks a node with four free GPUs, and every step mounts
+   `/data/huggingface`. What remains is only that `/data/jit_cache` is a new
+   directory, created by kubelet through `DirectoryOrCreate` exactly as the
+   existing two were. A dead mount would be silent: it just recompiles. The user is asking the CI owner for a real build to confirm
+   the caching. `FLASHINFER_WORKSPACE_BASE=/root` was added so that no cache
+   depends on the image's `HOME`, and the script now reports each cache's
+   resolved path, existence, writability and entry count before and after the
+   run (`new_this_run=N` on the after pass), so two consecutive builds answer
+   the question from their own logs. The report never fails the step -- on a
+   first build every cache legitimately reads `entries=0`. Tested against the
+   real caches and against each failure mode: unset env var -> `<unset>`,
+   missing mount -> `exists=False`, files written between the two passes ->
+   `new_this_run=2`, and a FlashInfer base it cannot use -> `<unresolved: ...>`
+   rather than a crash (flashinfer does `os.makedirs` at import time).
+4. Two consecutive builds, to read the JIT cache report. Neither path to
+   running the 4-GPU group is available to the PR author: the `dsv4` label does
+   not exist in the repo (only `full` and `mp` do) and applying labels needs
+   triage permission, which a fork-based author lacks -- the `full` label on
+   #4804 was applied by a maintainer. What *is* available is the branch itself:
+   Buildkite uploads `pipeline.yml` from the PR branch, so temporarily dropping
+   the group's `if:` to just the `VERIFY_AND_PIN_VLLM` clause runs it, with the
+   commit reverted before merge. The second build has to wait for the first to
+   finish -- the pipeline cancels running branch builds -- and hostPath is per
+   node, so a second build scheduled elsewhere reads cold legitimately
+   (`exists=True writable=True entries=0`, as against `exists=False` for a
+   broken mount).
+5. A cold run that actually reaches PASS. The one measured here was killed in
    `cold_run` by the `vllm-lazy` line's restart sweep, so the cold total is
    still unknown; only `vllm_startup` survived.

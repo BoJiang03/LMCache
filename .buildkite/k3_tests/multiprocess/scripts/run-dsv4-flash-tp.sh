@@ -205,6 +205,94 @@ begin_phase() {
     PHASE_START=$SECONDS
 }
 
+# ── JIT cache report ────────────────────────────────────────
+# Nearly all of this step's startup is nvcc, not model work: on a fully cold
+# cache the four JIT frameworks below account for ~685s of a 788s vLLM
+# startup (DeepGEMM ~400s, FlashInfer ~198s, Triton and TileLang ~87s), which
+# is why pipeline.yml points each one at its own hostPath mount. A mount that
+# silently fails to take effect -- wrong path, read-only, a node without
+# /data -- costs exactly that time again with no error anywhere, so report
+# what each cache actually resolved to, before and after the run.
+#
+# Reading two consecutive builds: on the second one, "entries" should be
+# large and "new this run" near 0 for every cache. An "entries=0" on a second
+# build means that mount is not persisting; "writable=False" means it mounted
+# read-only.
+JIT_CACHE_SNAPSHOT="$TP_DIR/jit_cache_before.json"
+
+jit_cache_report() {
+    local label="$1"
+    echo "=== JIT caches ($label) ==="
+    python3 - "$label" "$JIT_CACHE_SNAPSHOT" <<'PYEOF' || true
+import json
+import os
+import pathlib
+import sys
+
+label, snapshot_path = sys.argv[1], sys.argv[2]
+
+
+def resolve():
+    """Return [(cache name, resolved path)] for the four JIT caches.
+
+    The three env-var caches are reported from the environment, so an unset
+    variable shows up as such. FlashInfer is asked to resolve its own path
+    instead: it takes a *base* and appends the rest itself, so reading it
+    back from the library is the only way to see where it will really write.
+    """
+    out = [
+        ("DeepGEMM", os.environ.get("DG_JIT_CACHE_DIR", "<unset>")),
+        ("Triton", os.environ.get("TRITON_CACHE_DIR", "<unset>")),
+        ("TileLang", os.environ.get("TILELANG_CACHE_DIR", "<unset>")),
+    ]
+    try:
+        from flashinfer.jit import env as fi_env
+
+        out.append(("FlashInfer", str(fi_env.FLASHINFER_CACHE_DIR)))
+    except Exception as exc:
+        out.append(("FlashInfer", "<unresolved: %s>" % exc))
+    return out
+
+
+def count_files(path):
+    p = pathlib.Path(path)
+    if not p.is_dir():
+        return 0
+    return sum(len(files) for _, _, files in os.walk(p))
+
+
+print("  HOME=%s" % os.environ.get("HOME", "<unset>"))
+before = {}
+if label != "before":
+    try:
+        with open(snapshot_path) as f:
+            before = json.load(f)
+    except Exception:
+        before = {}
+
+counts = {}
+for name, path in resolve():
+    n = count_files(path)
+    counts[name] = n
+    exists = pathlib.Path(path).is_dir()
+    writable = os.access(path, os.W_OK) if exists else "n/a"
+    line = "  %-11s entries=%-7d exists=%-5s writable=%-5s" % (
+        name,
+        n,
+        exists,
+        writable,
+    )
+    if name in before:
+        line += " new_this_run=%-6d" % (n - before[name])
+    print("%s %s" % (line, path))
+
+if label == "before":
+    with open(snapshot_path, "w") as f:
+        json.dump(counts, f)
+PYEOF
+    echo ""
+}
+
 print_timing_summary() {
     end_phase
     echo ""
@@ -212,8 +300,12 @@ print_timing_summary() {
     if [ "${#PHASE_TIMINGS[@]}" -gt 0 ]; then
         printf '  %s\n' "${PHASE_TIMINGS[@]}"
     fi
+    echo ""
+    jit_cache_report after
 }
 trap print_timing_summary EXIT
+
+jit_cache_report before
 
 # ── 1. Launch LMCache MP server with an explicit L1 pool ────
 begin_phase lmcache_server

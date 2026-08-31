@@ -73,17 +73,18 @@ steps:
         timeout_in_minutes: 90
         retry: *flaky-retry
         env:
-          # Point DeepGEMM's JIT cache at the dedicated mount below. Left
-          # unset, vLLM defaults it to VLLM_CACHE_ROOT/deep_gemm, and
-          # persisting it would mean sharing all of /root/.cache/vllm --
-          # including the torch.compile cache and the P2P-access probe
-          # results -- for the sake of one subdirectory.
-          DG_JIT_CACHE_DIR: /root/.cache/deep_gemm
-          # Same for Triton and TileLang, which also default under
-          # $HOME and would otherwise recompile into the pod's
-          # ephemeral filesystem.
-          TRITON_CACHE_DIR: /root/.cache/triton
-          TILELANG_CACHE_DIR: /root/.cache/tilelang
+          # Every JIT cache this step fills lives under one mount (see below),
+          # named explicitly so none of them depends on what HOME happens to
+          # be inside the image. DeepGEMM in particular is named rather than
+          # left to default to VLLM_CACHE_ROOT/deep_gemm, which would mean
+          # persisting all of /root/.cache/vllm -- the torch.compile cache and
+          # the P2P-access probe results included -- for one subdirectory.
+          # FlashInfer takes a base rather than a cache dir: it appends
+          # .cache/flashinfer/<version>/<arch>/cached_ops to it itself.
+          DG_JIT_CACHE_DIR: /root/.cache/jit/deep_gemm
+          TRITON_CACHE_DIR: /root/.cache/jit/triton
+          TILELANG_CACHE_DIR: /root/.cache/jit/tilelang
+          FLASHINFER_WORKSPACE_BASE: /root/.cache/jit/flashinfer
         agents: { queue: "k8s" }
         plugins:
           - kubernetes:
@@ -95,53 +96,42 @@ steps:
                     resources: { limits: { "nvidia.com/gpu": "4" } }
                     volumeMounts:
                       - { name: hf-cache, mountPath: /root/.cache/huggingface }
-                      - { name: deepgemm-jit, mountPath: /root/.cache/deep_gemm }
-                      - { name: flashinfer-jit, mountPath: /root/.cache/flashinfer }
-                      - { name: triton-jit, mountPath: /root/.cache/triton }
-                      - { name: tilelang-jit, mountPath: /root/.cache/tilelang }
+                      - { name: jit-cache, mountPath: /root/.cache/jit }
                       - { name: dshm, mountPath: /dev/shm }
                 volumes:
                   - { name: hf-cache, hostPath: { path: /data/huggingface, type: DirectoryOrCreate } }
-                  # DeepGEMM JIT cache, and nothing else. DeepSeek-V4-Flash
-                  # runs its fp8 linears, MoE experts, prenorm GEMM and o_proj
-                  # einsum through DeepGEMM, which compiles each kernel on
-                  # first use with nvcc; on the pod's ephemeral filesystem that
-                  # cache is empty every time, so the step recompiles the whole
-                  # set on every run.
-                  # Sharing it across builds is safe: DeepGEMM keys each entry
-                  # on a hash of the kernel source, the nvcc version and the
-                  # compile flags -- which carry the -gencode arch -- so a new
-                  # DeepGEMM pin, a new CUDA, or a different GPU arch all land
-                  # on new keys rather than reusing the old cubin. Writers
-                  # compile into a temp dir and rename into place, which is
-                  # already how DeepGEMM tolerates concurrent ranks on one
-                  # cache, so concurrent builds on a node are fine too.
-                  - { name: deepgemm-jit, hostPath: { path: /data/deep_gemm_jit, type: DirectoryOrCreate } }
-                  # FlashInfer's JIT cache, for the same reason. DeepGEMM is
-                  # not the only thing compiling here: the sampler and the
-                  # sm90 fp8 blockscale GEMM are built with nvcc on first use
-                  # too, and on a local run with the DeepGEMM cache fully warm
-                  # they still accounted for 137s of a 301s vLLM startup.
-                  # FlashInfer resolves this path itself as
-                  # $HOME/.cache/flashinfer/<version>/<arch>/cached_ops, so
-                  # mounting the directory is enough and no env var is needed,
-                  # and the version and arch in the path give the same
-                  # key-on-a-new-pin property the DeepGEMM cache has.
-                  # Unlike DeepGEMM it builds in place rather than renaming
-                  # into position, serialising concurrent builders on a
-                  # per-module filelock; a build killed mid-link leaves ninja
-                  # to redo it on the next run.
-                  - { name: flashinfer-jit, hostPath: { path: /data/flashinfer_jit, type: DirectoryOrCreate } }
-                  # Triton and TileLang, the last two compilers in this
-                  # startup path. Smaller than the other two -- worth about
-                  # 87s of the measured cold start against DeepGEMM's 400s
-                  # and FlashInfer's 198s -- but the same one-line fix.
-                  # Both key safely: Triton's cache key hashes its own
-                  # compiler and backend sources along with the kernel, the
-                  # backend options and the env, and TileLang namespaces the
-                  # cache by its own version and the torch version.
-                  - { name: triton-jit, hostPath: { path: /data/triton_jit, type: DirectoryOrCreate } }
-                  - { name: tilelang-jit, hostPath: { path: /data/tilelang_jit, type: DirectoryOrCreate } }
+                  # One mount for every JIT cache in this step's startup path,
+                  # with each framework given its own subdirectory of it by the
+                  # env vars above. DeepSeek-V4-Flash compiles through four of
+                  # them -- DeepGEMM for the fp8 linears, MoE experts, prenorm
+                  # GEMM and o_proj einsum, FlashInfer for the sampler and the
+                  # fp8 blockscale GEMM, then Triton and TileLang -- and the
+                  # pod's filesystem starts empty every run, so without this
+                  # the step recompiles the whole set every time: measured
+                  # locally, 685s of a 788s vLLM startup, against 103s with all
+                  # four warm.
+                  # Sharing them across builds is safe because each keys on
+                  # something that changes when the toolchain does. DeepGEMM
+                  # hashes the kernel source, the nvcc version and the compile
+                  # flags, which carry the -gencode arch; FlashInfer puts its
+                  # version and arch in the path; Triton's cache key hashes its
+                  # own compiler and backend sources along with the kernel, the
+                  # backend options and the env; TileLang namespaces its cache
+                  # by its own version and the torch version. A new pin, a new
+                  # CUDA or a different GPU arch lands on new keys rather than
+                  # reusing an old cubin.
+                  # Concurrency differs between them: DeepGEMM compiles into a
+                  # temp dir and renames into place, which is already how it
+                  # tolerates concurrent ranks on one cache, while FlashInfer
+                  # builds in place and serialises concurrent builders on a
+                  # per-module filelock -- they wait rather than each
+                  # recompiling, and a build killed mid-link is left for ninja
+                  # to redo on the next run.
+                  # The script reports each cache's resolved path, writability
+                  # and entry count before and after the run, so a mount that
+                  # silently fails to take effect shows up in the log instead
+                  # of just costing the compile time again.
+                  - { name: jit-cache, hostPath: { path: /data/jit_cache, type: DirectoryOrCreate } }
                   # TP=4 NCCL + vLLM shared memory; the 1Gi used by the
                   # smaller pods is too tight for four ranks.
                   - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }

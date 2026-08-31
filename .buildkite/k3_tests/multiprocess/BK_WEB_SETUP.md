@@ -20,6 +20,11 @@ any of these holds:
   path
 - the build was started with **`RUN_DSV4_TEST=true`** in "New Build" env
 
+The `dsv4` label does not exist in the repo yet — it has to be created once
+(Issues → Labels) before the second path can be used, and applying it needs
+triage permission on LMCache/LMCache, which a PR author working from a fork
+does not have. The `RUN_DSV4_TEST=true` path needs neither.
+
 > Builds whose only changes are docs/`*.md`/`LICENSE`/`.github/**` auto-pass
 > via the [path filter](../README.md#path-based-skip-auto-pass-on-docs-only-changes).
 > Changes under `.buildkite/` always run. Add `force-ci` label to the PR to
