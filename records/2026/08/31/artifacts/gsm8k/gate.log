@@ -1,0 +1,24 @@
+[ac] === A_off_n120_l68_0
+[driver] mp-server ready after 12s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 78s
+[ac] cold: 120 q in 15s strict 0.917 lenient 0.917 ttft p50 76ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] cached: 120 q in 15s strict 0.908 lenient 0.908 ttft p50 75ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_off_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/aa12d55f-c087-43f5-b7de-9e19b1dcd21f/scratchpad/gsm8k/logs/ac_A_off_n120_l68_0.json
+[ac] === A_eager_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 84s
+[ac] cold: 120 q in 17s strict 0.917 lenient 0.917 ttft p50 79ms ext 0.000 apc 0.000 obj 0->5792 l1 0.749 peak / 0.749 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.917 lenient 0.917 ttft p50 80ms ext 0.961 apc 0.000 obj 5792->5816 l1 0.752 peak / 0.752 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_eager_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/aa12d55f-c087-43f5-b7de-9e19b1dcd21f/scratchpad/gsm8k/logs/ac_A_eager_n120_l68_0.json
+[ac] === A_lazy_n120_l68_0
+[driver] mp-server ready after 12s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 78s
+[ac] cold: 120 q in 17s strict 0.917 lenient 0.917 ttft p50 83ms ext 0.000 apc 0.000 obj 0->5584 l1 0.722 peak / 0.722 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.917 lenient 0.917 ttft p50 78ms ext 0.942 apc 0.000 obj 5584->5708 l1 0.738 peak / 0.738 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_lazy_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/aa12d55f-c087-43f5-b7de-9e19b1dcd21f/scratchpad/gsm8k/logs/ac_A_lazy_n120_l68_0.json

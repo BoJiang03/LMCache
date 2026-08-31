@@ -1,0 +1,8 @@
+[chain] arm e48 starting 14:46:26
+[chain] arm e48 engine ready 14:48:52
+[chain] arm e48 done rc=0 15:38:20
+[chain] arm l48 starting 15:38:20
+/tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/aa12d55f-c087-43f5-b7de-9e19b1dcd21f/scratchpad/sweep/ab_chain.sh: line 50: 3947083 Killed                  nohup $PY -m lmcache.v1.multiprocess.http_server --host 127.0.0.1 --port 8971 --http-host 127.0.0.1 --http-port 8972 --l1-size-gb 250 --chunk-size 256 --eviction-policy LRU --separate-object-groups --script-allowed-imports hashlib --max-workers 4 > $W/${1}_mp.log 2>&1
+[chain] arm l48 engine ready 15:43:40
+[chain] arm l48 done rc=0 16:33:04
+[chain] ALL_DONE

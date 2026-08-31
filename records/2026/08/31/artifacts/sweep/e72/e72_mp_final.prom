@@ -1,0 +1,423 @@
+# HELP python_gc_objects_collected_total Objects collected during gc
+# TYPE python_gc_objects_collected_total counter
+python_gc_objects_collected_total{generation="0"} 8154.0
+python_gc_objects_collected_total{generation="1"} 1488.0
+python_gc_objects_collected_total{generation="2"} 772.0
+# HELP python_gc_objects_uncollectable_total Uncollectable objects found during GC
+# TYPE python_gc_objects_uncollectable_total counter
+python_gc_objects_uncollectable_total{generation="0"} 0.0
+python_gc_objects_uncollectable_total{generation="1"} 0.0
+python_gc_objects_uncollectable_total{generation="2"} 0.0
+# HELP python_gc_collections_total Number of times this generation was collected
+# TYPE python_gc_collections_total counter
+python_gc_collections_total{generation="0"} 23159.0
+python_gc_collections_total{generation="1"} 2105.0
+python_gc_collections_total{generation="2"} 65.0
+# HELP python_info Python platform information
+# TYPE python_info gauge
+python_info{implementation="CPython",major="3",minor="12",patchlevel="13",version="3.12.13"} 1.0
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 4.2683871232e+011
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 2.70220914688e+011
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.78813335244e+09
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 1202.17
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 166.0
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.048576e+06
+# HELP target_info Target metadata
+# TYPE target_info gauge
+target_info{service_instance_id="58b90117-eb53-4e34-b33a-f5189387e875",service_name="unknown_service",telemetry_sdk_language="python",telemetry_sdk_name="opentelemetry",telemetry_sdk_version="1.40.0"} 1.0
+# HELP lmcache_mp_l1_eviction_loop_ticks_total L1 eviction-loop iterations (every cycle)
+# TYPE lmcache_mp_l1_eviction_loop_ticks_total counter
+lmcache_mp_l1_eviction_loop_ticks_total 3366.0
+# HELP lmcache_mp_l1_write_chunks_total Total chunks written to L1
+# TYPE lmcache_mp_l1_write_chunks_total counter
+lmcache_mp_l1_write_chunks_total 1.071707e+06
+# HELP lmcache_mp_l1_evicted_chunks_total Total chunks evicted from L1
+# TYPE lmcache_mp_l1_evicted_chunks_total counter
+lmcache_mp_l1_evicted_chunks_total 1.018643e+06
+# HELP lmcache_mp_l1_chunk_lifetime_seconds Histogram of L1 chunk lifetime from allocation to eviction (seconds).
+# TYPE lmcache_mp_l1_chunk_lifetime_seconds histogram
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="0.0"} 0.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="5.0"} 0.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="10.0"} 0.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="25.0"} 0.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="50.0"} 68.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="75.0"} 1839.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="100.0"} 4778.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="250.0"} 9513.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="500.0"} 9851.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="750.0"} 9930.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="1000.0"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="2500.0"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="5000.0"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="7500.0"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="10000.0"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_bucket{le="+Inf"} 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_count 9939.0
+lmcache_mp_l1_chunk_lifetime_seconds_sum 1.2496759386894703e+06
+# HELP lmcache_mp_l1_chunk_idle_before_evict_seconds Histogram of idle time before L1 chunk eviction (seconds).
+# TYPE lmcache_mp_l1_chunk_idle_before_evict_seconds histogram
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="0.0"} 0.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="5.0"} 99.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="10.0"} 146.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="25.0"} 472.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="50.0"} 1423.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="75.0"} 3606.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="100.0"} 6251.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="250.0"} 9901.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="500.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="750.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="1000.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="2500.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="5000.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="7500.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="10000.0"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_bucket{le="+Inf"} 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_count 9939.0
+lmcache_mp_l1_chunk_idle_before_evict_seconds_sum 958397.6254813671
+# HELP lmcache_mp_l1_eviction_loop_triggered_total L1 eviction-loop iterations where the policy ran
+# TYPE lmcache_mp_l1_eviction_loop_triggered_total counter
+lmcache_mp_l1_eviction_loop_triggered_total 93.0
+# HELP lmcache_mp_l1_chunk_evict_reuse_gap_seconds Histogram of time from L1 chunk eviction to next reuse.  Capped at max_evict_reuse_wait.
+# TYPE lmcache_mp_l1_chunk_evict_reuse_gap_seconds histogram
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="0.0"} 0.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="5.0"} 47.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="10.0"} 160.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="25.0"} 543.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="50.0"} 1269.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="75.0"} 2009.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="100.0"} 2736.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="250.0"} 5125.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="500.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="750.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="1000.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="2500.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="5000.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="7500.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="10000.0"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_bucket{le="+Inf"} 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_count 9939.0
+lmcache_mp_l1_chunk_evict_reuse_gap_seconds_sum 1.9768624664342403e+06
+# HELP lmcache_mp_l1_read_chunks_total Total chunks read from L1
+# TYPE lmcache_mp_l1_read_chunks_total counter
+lmcache_mp_l1_read_chunks_total 504073.0
+# HELP lmcache_mp_l1_chunk_reuse_gap_seconds Histogram of time gaps between consecutive touches (write or read) of the same L1 chunk (seconds).
+# TYPE lmcache_mp_l1_chunk_reuse_gap_seconds histogram
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="0.0"} 0.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="5.0"} 95.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="10.0"} 251.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="25.0"} 814.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="50.0"} 2201.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="75.0"} 3815.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="100.0"} 4598.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="250.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="500.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="750.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="1000.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="2500.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="5000.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="7500.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="10000.0"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{le="+Inf"} 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_count 5131.0
+lmcache_mp_l1_chunk_reuse_gap_seconds_sum 291650.0484392643
+# HELP lmcache_mp_event_bus_queue_depth Events currently queued in the EventBus.
+# TYPE lmcache_mp_event_bus_queue_depth gauge
+lmcache_mp_event_bus_queue_depth 0.0
+# HELP lmcache_mp_event_bus_drain_lag_seconds Seconds since the oldest queued event was published; 0.0 when empty.  Rising values mean the drain thread is falling behind.
+# TYPE lmcache_mp_event_bus_drain_lag_seconds gauge
+lmcache_mp_event_bus_drain_lag_seconds 0.0
+# HELP lmcache_mp_event_bus_dropped_events_total Cumulative events dropped because the EventBus queue was at max_queue_size.
+# TYPE lmcache_mp_event_bus_dropped_events_total counter
+lmcache_mp_event_bus_dropped_events_total 0.0
+# HELP lmcache_mp_l1_memory_usage_bytes Bytes currently held in L1 cache
+# TYPE lmcache_mp_l1_memory_usage_bytes gauge
+lmcache_mp_l1_memory_usage_bytes 2.0873478144e+011
+# HELP lmcache_mp_l1_usage_ratio L1 used/total ratio (0.0–1.0)
+# TYPE lmcache_mp_l1_usage_ratio gauge
+lmcache_mp_l1_usage_ratio 0.77759765625
+# HELP lmcache_mp_l2_store_adapters Count of L2 adapters attached to the store controller, tagged by ``state`` (active or draining).
+# TYPE lmcache_mp_l2_store_adapters gauge
+lmcache_mp_l2_store_adapters{state="active"} 0.0
+lmcache_mp_l2_store_adapters{state="draining"} 0.0
+# HELP lmcache_mp_l2_prefetch_adapters Count of L2 adapters attached to the prefetch controller, tagged by ``state`` (active or draining).
+# TYPE lmcache_mp_l2_prefetch_adapters gauge
+lmcache_mp_l2_prefetch_adapters{state="active"} 0.0
+lmcache_mp_l2_prefetch_adapters{state="draining"} 0.0
+# HELP lmcache_mp_active_prefetch_jobs Number of active prefetch jobs
+# TYPE lmcache_mp_active_prefetch_jobs gauge
+lmcache_mp_active_prefetch_jobs 0.0
+# HELP lmcache_mp_active_p2p_lookup_jobs Number of active P2P lookup jobs
+# TYPE lmcache_mp_active_p2p_lookup_jobs gauge
+lmcache_mp_active_p2p_lookup_jobs 0.0
+# HELP lmcache_mp_lookup_requested_tokens_total Total tokens submitted for lookup (denominator of the L1+L2 token-level hit rate). Only chunk-aligned tokens are counted.
+# TYPE lmcache_mp_lookup_requested_tokens_total counter
+lmcache_mp_lookup_requested_tokens_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 5.1889664e+07
+# HELP lmcache_mp_lookup_hit_tokens_total Total tokens found in L1+L2 during lookup (numerator of the L1+L2 token-level hit rate). Counts the contiguous prefix hit only.
+# TYPE lmcache_mp_lookup_hit_tokens_total counter
+lmcache_mp_lookup_hit_tokens_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 1.5772416e+07
+# HELP lmcache_mp_l0_l1_store_throughput_GB_per_second Histogram of L0→L1 (GPU→CPU) store throughput in GB/s, measured per request as total_bytes / (end_ts - start_ts) on the GPU cupy stream.
+# TYPE lmcache_mp_l0_l1_store_throughput_GB_per_second histogram
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6419.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6446.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6548.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_count{device="cuda:3",engine_id="229286511821098109",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_sum{device="cuda:3",engine_id="229286511821098109",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 11205.06227524323
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6404.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6434.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6577.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_count{device="cuda:0",engine_id="2075871146199524438",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6579.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_sum{device="cuda:0",engine_id="2075871146199524438",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 11141.573100818594
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6385.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6534.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6576.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_count{device="cuda:1",engine_id="4402028879255426249",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_sum{device="cuda:1",engine_id="4402028879255426249",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 10624.627674427004
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6406.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6541.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6577.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_count{device="cuda:2",engine_id="4447914107944481716",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6578.0
+lmcache_mp_l0_l1_store_throughput_GB_per_second_sum{device="cuda:2",engine_id="4447914107944481716",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 10517.77701391284
+# HELP lmcache_mp_l0_l1_load_throughput_GB_per_second Histogram of L1→L0 (CPU→GPU) load throughput in GB/s, measured per request as total_bytes / (end_ts - start_ts) on the GPU cupy stream.
+# TYPE lmcache_mp_l0_l1_load_throughput_GB_per_second histogram
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 183.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 185.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 185.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:2",engine_id="4447914107944481716",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_count{device="cuda:2",engine_id="4447914107944481716",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_sum{device="cuda:2",engine_id="4447914107944481716",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 607.3003694093511
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 183.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:3",engine_id="229286511821098109",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_count{device="cuda:3",engine_id="229286511821098109",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_sum{device="cuda:3",engine_id="229286511821098109",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 585.718621631541
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 184.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:1",engine_id="4402028879255426249",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_count{device="cuda:1",engine_id="4402028879255426249",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_sum{device="cuda:1",engine_id="4402028879255426249",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 557.9402567008341
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 184.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{device="cuda:0",engine_id="2075871146199524438",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_count{device="cuda:0",engine_id="2075871146199524438",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 186.0
+lmcache_mp_l0_l1_load_throughput_GB_per_second_sum{device="cuda:0",engine_id="2075871146199524438",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 584.9695690101964
+# HELP lmcache_mp_l0_block_lifetime_seconds Histogram of GPU KV cache block lifetime from allocation to eviction (seconds).
+# TYPE lmcache_mp_l0_block_lifetime_seconds histogram
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 3357.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 4885.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6469.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 8181.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 9616.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 10627.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 15022.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 17974.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 19310.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 19820.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_bucket{instance_id="4059597",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_count{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_lifetime_seconds_sum{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 4.076461884302616e+06
+# HELP lmcache_mp_l0_block_idle_before_evict_seconds Histogram of idle time before GPU KV cache block eviction (seconds).
+# TYPE lmcache_mp_l0_block_idle_before_evict_seconds histogram
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 3357.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 4885.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 6470.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 8184.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 9622.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 10633.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 15022.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 17975.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 19311.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 19820.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_bucket{instance_id="4059597",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_count{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 20412.0
+lmcache_mp_l0_block_idle_before_evict_seconds_sum{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 4.0752586625697613e+06
+# HELP lmcache_mp_l0_block_reuse_gap_seconds Histogram of time gaps between consecutive GPU KV cache block accesses (seconds).
+# TYPE lmcache_mp_l0_block_reuse_gap_seconds histogram
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="0.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="5.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="10.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 0.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="25.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="50.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="75.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="100.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="250.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="750.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="1000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="2500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="5000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="7500.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="10000.0",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_bucket{instance_id="4059597",le="+Inf",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_count{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 2.0
+lmcache_mp_l0_block_reuse_gap_seconds_sum{instance_id="4059597",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318"} 33.30860471725464
+# HELP lmcache_mp_real_reuse_gap_seconds Gap between a chunk's last access (read or write) and next read.  Storage cost.  Tagged with cache_salt.
+# TYPE lmcache_mp_real_reuse_gap_seconds histogram
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="0.0"} 0.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="5.0"} 1735.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="10.0"} 1752.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="25.0"} 1812.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="50.0"} 1996.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="75.0"} 2214.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="100.0"} 2290.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="250.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="500.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="750.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="1000.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="2500.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="5000.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="7500.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="10000.0"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_bucket{cache_salt="",le="+Inf"} 2362.0
+lmcache_mp_real_reuse_gap_seconds_count{cache_salt=""} 2362.0
+lmcache_mp_real_reuse_gap_seconds_sum{cache_salt=""} 36788.910599946976
+# HELP lmcache_mp_real_reuse_gap_objects Per-cache_salt access-counter gap between two reads of the same chunk.  Storage volume.  Tagged with cache_salt.
+# TYPE lmcache_mp_real_reuse_gap_objects histogram
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="0.0"} 0.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="5.0"} 0.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="10.0"} 0.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="25.0"} 0.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="50.0"} 34.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="75.0"} 60.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="100.0"} 60.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="250.0"} 252.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="500.0"} 1327.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="750.0"} 1612.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="1000.0"} 1731.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="2500.0"} 1745.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="5000.0"} 1774.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="7500.0"} 1795.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="10000.0"} 1826.0
+lmcache_mp_real_reuse_gap_objects_bucket{cache_salt="",le="+Inf"} 2362.0
+lmcache_mp_real_reuse_gap_objects_count{cache_salt=""} 2362.0
+lmcache_mp_real_reuse_gap_objects_sum{cache_salt=""} 1.4001081e+07
+# HELP lmcache_mp_num_chunks_loaded_total Total number of LMCache chunks loaded into the engine (summed across all retrieve operations).
+# TYPE lmcache_mp_num_chunks_loaded_total counter
+lmcache_mp_num_chunks_loaded_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318",worker_id="4447914107944481716"} 58885.0
+lmcache_mp_num_chunks_loaded_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318",worker_id="229286511821098109"} 58885.0
+lmcache_mp_num_chunks_loaded_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318",worker_id="4402028879255426249"} 58885.0
+lmcache_mp_num_chunks_loaded_total{cache_salt="",model_name="/raid/data/hub/models--arcee-ai--Trinity-Large-Thinking-FP8-Block/snapshots/6412c1ad1588c664977b0f830b80a20273173318",worker_id="2075871146199524438"} 58885.0
