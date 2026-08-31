@@ -2,7 +2,7 @@
 
 Date: 2026-08-28 (session 3, continues `2_dsv4_test_restructure.md`)
 Worktree: `/home/bo/LMCache-worktrees/k3_mp_dsv4`
-Branches: `dsv4_ci_cost_pr` @ `c3454869`, `dsv4_ci_cost_dev` (this record)
+Branches: `dsv4_ci_cost_pr` @ `9520a96e`, `dsv4_ci_cost_dev` (this record)
 
 ## What this session settled
 
@@ -260,8 +260,7 @@ both meaningless.
 
 So the manual `RUN_DSV4_TEST=true` build before merge is still worth doing --
 now not to answer "does the test still pass" but to answer "does it pass on
-SM120 against the pinned nightly, and does `/data/deep_gemm_jit` actually
-land". The tell for the mounts is the second build's `vllm_startup`: with both
+SM120 against the pinned nightly, and does `/data/jit_cache` actually land". The tell for the mounts is the second build's `vllm_startup`: with both
 JIT caches persisting it should land near the 103s measured here, and anything
 near 300s means the hostPaths are not sticking.
 
@@ -286,7 +285,7 @@ Left alone: the `vllm-lazy` venv processes on other GPUs and the `/opt/venv` /
 
 ## Branch state
 
-- `dsv4_ci_cost_pr` @ `c3454869` (`852cbc6c` before the four JIT-cache
+- `dsv4_ci_cost_pr` @ `9520a96e` (`852cbc6c` before the four JIT-cache
   mounts and the DCO sign-off were folded in) -- `[CI][MP] Take dsv4_flash_tp off the
   default multiprocess run`. One commit, ahead 1 / behind 0 of `origin/dev`.
   Pushed to `fork` earlier and unchanged since.
@@ -303,10 +302,12 @@ A PR title/body draft was handed over in chat and is not repeated here.
    `mp`/`full` **and** `dsv4` on the PR (the `mp`/`full` filter gates the
    pipeline upload; `dsv4` gates the 4-GPU group), plus GitHub triage
    permission to self-label. The env-var path needs neither.
-2. A human with Buildkite access to create the nightly Scheduled Build (branch
-   `dev`, `0 4 * * *`, no env vars; must be a *new* schedule, since the
-   `VERIFY_AND_PIN_VLLM` clause deliberately keeps this group out of the pin
-   canary), and to route nightly failures somewhere a person reads.
+2. The `dsv4` label has to be created in the repo before the label path works.
+   (The nightly Scheduled Build that earlier versions of this work depended on
+   was dropped on 2026-08-31: the user decided the step gets no periodic run at
+   all, so DSv4-Flash support is exercised on opt-in only. The
+   `VERIFY_AND_PIN_VLLM` clause went with it -- with no schedule source left,
+   the pin canary cannot reach this group anyway.)
 3. Confirm one hostPath, `/data/jit_cache`, is writable on the agent nodes
    (it started as four separate dirs; the user picked a single mount with a
    subdirectory per framework, which turns four questions for the fleet owner

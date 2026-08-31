@@ -33,8 +33,8 @@ x-pod-1gpu: &pod-1gpu
     - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 1Gi } }
 
 steps:
-  # 4-GPU group. Runs on scheduled builds, on a PR labelled "dsv4", or on any
-  # build started with RUN_DSV4_TEST=true.
+  # 4-GPU group. Runs on a PR labelled "dsv4", or on any build started with
+  # RUN_DSV4_TEST=true.
   #
   # This is the only 4-GPU step in the suite -- every other step here takes one
   # or two -- and it runs 40+ min, so on a fleet whose nodes carry four GPUs it
@@ -43,20 +43,20 @@ steps:
   # build queue behind it. Unconditional, it paid that toll on every
   # "mp"/"full"-labelled PR build and every dev push and became the suite's
   # head-of-line blocker. The conditions below move it to where the wait is
-  # nobody else's problem. Naming the schedule as a source in its own right
-  # means coverage does not depend on an env var staying configured somewhere,
-  # and the "dsv4" label is how a PR touching the hybrid-KV-group /
-  # slot-compression path opts in -- the same shape as the "mp"/"full" labels
-  # that gate this pipeline, and it needs nothing but GitHub write access.
-  # (Those labels still gate the build itself, so such a PR carries "dsv4"
-  # alongside "mp".)
+  # nobody else's problem: the "dsv4" label is how a PR touching the
+  # hybrid-KV-group / slot-compression path opts in -- the same shape as the
+  # "mp"/"full" labels that gate this pipeline, and it needs nothing but
+  # GitHub write access. (Those labels still gate the build itself, so such a
+  # PR carries "dsv4" alongside "mp".) RUN_DSV4_TEST=true is the same opt-in
+  # for a manual build, where there is no PR to label.
   #
-  # The pin canary is a scheduled build too, so the VERIFY_AND_PIN_VLLM clause
-  # has to keep excluding this group there -- that build installs a candidate
-  # vLLM and runs one 2-GPU smoke step, and a 4-GPU model test is not part of
-  # the question it answers.
+  # This leaves the step with no periodic run of its own: DeepSeek-V4-Flash
+  # support is exercised when someone asks for it, not on a timer. That is
+  # deliberate -- a 4-GPU node for 40+ minutes is too expensive to spend on a
+  # schedule nobody is watching -- but it does mean a regression here surfaces
+  # at the next opt-in build rather than the next morning.
   - group: ":compression: Multiprocess (4-GPU)"
-    if: build.env("VERIFY_AND_PIN_VLLM") !~ /true/ && (build.source == "schedule" || build.pull_request.labels includes "dsv4" || build.env("RUN_DSV4_TEST") == "true")
+    if: build.pull_request.labels includes "dsv4" || build.env("RUN_DSV4_TEST") == "true"
     steps:
       # L1 + slot-compression KV correctness for DeepSeek-V4-Flash (sparse-MLA
       # + fp8, TP=4). The model's KV cache groups mix block geometries
