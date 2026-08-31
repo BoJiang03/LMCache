@@ -11,52 +11,47 @@ Five commits: policy core, connector wiring, MP pressure stats, tests, docs.
 
 **What this PR does / why we need it**:
 
-Lazy offload today (`lmcache.mp.lazy_offload=true`) drains buffered stores
-with a FIFO policy that triggers only when 100 finished requests are
-buffered at once. Under a realistic serving workload that count is never
-reached, so no store is ever submitted: in our agentic-corpus replay the
-FIFO arm wrote zero chunks to L1 over a 30 minute run at every tested
-concurrency.
+Lazy offload (`lmcache.mp.lazy_offload=true`) currently drains buffered stores with a count-triggered FIFO policy: a drain runs once enough finished requests (default 100) are buffered at the same time. That trigger suits workloads where finished requests accumulate between drains; under a steady serving workload the buffer stays far below the threshold, so buffered stores can wait indefinitely. In our agentic-corpus replay the FIFO arm did not reach the trigger over a 30 minute run at any tested concurrency.
 
-This PR adds an EVICTION_AWARE drain policy and makes it the default for
-lazy offload. It watches the GPU block pool's free queue and submits a
-buffered store only when its blocks approach the eviction head, so KV that
-is about to be lost is offloaded and KV that stays resident is not. A
-deferral deadline, an adaptive danger floor, and per-step drain caps bound
-the worst case. The scheduler-side pending store is reworked around an
-explicit request state machine (`lazy_offload_state.py`) with a counter
-ledger that closes exactly (admitted = emitted + pending + dropped).
+This PR adds an EVICTION_AWARE drain policy and makes it the default for lazy offload. It watches the GPU block pool's free queue and submits a buffered store only when its blocks approach the eviction head, so KV that is about to be lost is offloaded and KV that stays resident is not. A deferral deadline, an adaptive danger floor, and per-step drain caps bound the worst case. The scheduler-side pending store is reworked around an explicit request state machine (`lazy_offload_state.py`) with a counter ledger that closes exactly (admitted = emitted + pending + dropped).
 
-Measured on a 4xH200, TP=4, fp8 KV, agentic-corpus replay (aiperf,
-30 min + 10 min grace per arm, cold caches, identical seeds), against
-eager (store at compute, the current default) at four concurrency levels:
+Results TL;DR, eviction-aware lazy vs the current eager default, same engine and cache config, only the policy differs:
 
-| CONC | TTFT avg | output tok/s | requests completed |
-|---|---|---|---|
-| 32 | -15% | +2.5% | +6% |
-| 40 | -4.5% | +3.1% | +0.4% |
-| 48 | -21% | +3.8% | +4% |
-| 72 | -16% | +9.9% | +13% |
+- TTFT avg drops at every tested concurrency (-4.5% to -21%), and the gain grows with load: at CONC=72, e2e -14%, throughput +9.9%, and 13% more requests complete in the same 30 minutes.
+- ITL and per-request decode speed improve at every level. One tail regression, detailed below: TTFT p99 at CONC=48.
+- Why: lazy stores only what the GPU pool is about to evict, ~1/3 of eager's write volume into the same 250 GB L1, so L1 turns over ~3x slower -- effectively a larger cache. At saturation the effect is direct: eager's L1 lookup hit rate drops to 30% (entries evicted before their reuse arrives) while lazy holds 41%, and the served external share follows (32% vs 43%).
+- GSM8K accuracy through the lazy path matches the no-cache baseline, and the store ledger closes exactly.
 
-ITL p99 improves 25-45%. The gap grows with load: lazy writes ~1/3 of
-eager's L1 volume, and at saturation the saved store bandwidth keeps the
-external hit rate up (43% vs 32%) where eager's collapses. GSM8K accuracy
-through the lazy path is identical to the no-cache baseline (0.917, 120
-questions, 94% of pass-2 prefill retrieved from L1).
+Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_danger_floor_max_blocks=8192 and lazy_offload_max_deferral_seconds=30. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
+
+| CONC | TTFT avg (s) | e2e latency avg (s) | output tok/s | requests completed |
+|---|---|---|---|---|
+| 32 | 3.38 -> 2.88 (-15%) | 41.3 -> 38.6 (-6%) | 243 -> 249 (+2.5%) | 618 -> 656 (+6%) |
+| 40 | 5.37 -> 5.13 (-4.5%) | 72.0 -> 71.8 (-0.4%) | 225 -> 232 (+3.1%) | 506 -> 508 (+0.4%) |
+| 48 | 10.09 -> 8.02 (-21%) | 88.3 -> 81.5 (-8%) | 210 -> 218 (+3.8%) | 478 -> 497 (+4%) |
+| 72 | 47.97 -> 40.47 (-16%) | 166.5 -> 142.4 (-14%) | 197 -> 216 (+9.9%) | 433 -> 488 (+13%) |
+
+output tok/s is the aggregate across all in-flight requests. Per-request decode speed (output_token_throughput_per_user, avg) also improves: 29.2 -> 31.5 tok/s at CONC=32, 22.3 -> 22.7 at 40, 17.4 -> 19.0 at 48, 10.3 -> 11.7 at 72. ITL p99 improves at every level, most in the mid range (212 -> 160 ms at CONC=40, 313 -> 171 ms at 48). One regression to note: at CONC=48 lazy's TTFT p99 is worse (50.6 s vs 38.5 s) while avg/p50/p90 all improve; at 72 the p99 flips back in lazy's favor (105.4 s vs 159.6 s).
+
+Direct policy-effect indicators, same runs (eager -> lazy; prefill shares over the profiling window):
+
+| CONC | L1 chunks written | prefill from L1 | prefill from GPU cache | mean store deferral (drain steps) |
+|---|---|---|---|---|
+| 32 | 563k -> 396k (-30%) | 16.3% -> 14.8% | 54.5% -> 59.1% | 501 |
+| 40 | 704k -> 400k (-43%) | 30.4% -> 34.3% | 32.3% -> 29.2% | 313 |
+| 48 | 1,175k -> 370k (-69%) | 39.3% -> 42.0% | 20.8% -> 23.3% | 269 |
+| 72 | 1,072k -> 435k (-59%) | 32.1% -> 43.1% | 4.6% -> 7.8% | 159 |
+
+The policy stores 30-69% fewer chunks while the combined hit share (L1 + GPU cache) rises at every level. At low load the gain shows up as GPU-cache residence (deferred blocks stay hittable on the GPU); at saturation it shows up as L1 hit share: writing a fraction of the chunks into the same 250 GB slows L1 turnover, so entries survive until their reuse -- at CONC=72 eager's lookup hit rate is 30% (content evicted before reuse) against lazy's 41%, with near-identical rates at CONC=48 where L1 churn is not yet binding. Mean store deferral is how many drain steps a stored op waited between admission and submission; that wait is what converts into residence and saved bandwidth. FIFO arms were run at each concurrency as well; the drain trigger was never reached (see above), so they measure the no-offload path and are left out of the tables. As one reference point, at CONC=40 the FIFO arm reads as a no-L1 baseline: TTFT avg 9.24 s, 150.9 output tok/s, 381 requests completed, external hit share 0% -- which is also what either offloading policy is worth relative to no offload at all.
+
+Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, TP=4): 120 questions, two passes against one engine. Pass 1 runs cold; pass 2 re-sends the identical prompts after the GPU prefix cache has turned over (2048-block pool), so the prefill can only be served from L1. With lazy offload on, 93-94% of pass-2 prefill tokens came back from L1 (vLLM's own prefix-cache hit rate 0), and strict-match accuracy (0.908-0.917) stays inside the no-cache baseline's own cold/cached spread (0.900-0.925). The policy's store ledger closes exactly over the run (admitted = emitted + pending + dropped). Run on both the development branch and this branch. Harness: [repro/pr4499](https://github.com/BoJiang03/LMCache/tree/lazy-offload-policy-repro/repro/pr4499) (entry point accuracy.py; the directory is named after upstream #4499, whose lazy-offload results it was originally built to reproduce).
 
 **Special notes for your reviewers**:
 
-- FIFO remains available unchanged via
-  `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are
-  untouched; the observation above is documented in
-  `docs/design/integration/vllm/lazy_offload.md` and left for a separate
-  discussion.
-- The MP management protocol gains L1 pressure counters
-  (`l1_pressure_stats`) used by the policy's sizing sensors; the wire
-  change is additive.
-- Design docs: `lazy_offload.md` (updated),
-  `lazy_offload_decision_model.md`,
-  `lazy_offload_policy/eviction_aware.md` (new).
+- On the diff size: of the +9.8k lines, 5.2k is tests and 0.7k docs. Production code is +3.7k, split across three independently reviewable commits: the policy core (2.8k, self-contained new files with no vLLM imports), the connector wiring (0.8k), and an additive protocol endpoint (0.1k). Reviewing commit by commit is recommended.
+- FIFO remains available unchanged via `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are untouched; the observation above is documented in `docs/design/integration/vllm/lazy_offload.md` and left for a separate discussion.
+- The MP management protocol gains a GET_L1_PRESSURE endpoint (capacity, usage, cumulative deletion totals). The wire change is additive and nothing in the serving path calls it; it is an observability probe for estimating L1 residence when sizing the policy's deferral horizon.
+- Design docs: `lazy_offload.md` (updated), `lazy_offload_decision_model.md`, `lazy_offload_policy/eviction_aware.md` (new).
 
 **If applicable**:
 
@@ -67,13 +62,24 @@ questions, 94% of pass-2 prefill retrieved from L1).
 
 - [x] gsm8k gate 1 on lazy-offload-dev code: off 0.917 / eager 0.917 /
       lazy 0.917, lazy ext 0.942, ledger closes 191 = 178 + 2 + 11.
-- [ ] BLOCKED on .so decision: PR worktree needs lmcache_native built from
-      upstream-HEAD csrc (new `is_kv_second_tuple` binding and
-      `NL_X_TWO_X_NB_BS_NH_HS` enum member); the merge-base .so from the
-      dev worktree cannot serve it, and the vllm-lazy venv's editable
-      install additionally hijacks `lmcache.*` submodules to the dev
-      worktree (pyguard sitecustomize needed for any engine run from the
-      PR tree). Rebuilding lmcache .so is a standing red line; Bo decides.
-- [ ] unit tests on PR tree (blocked on the same .so).
-- [ ] gsm8k gate 2 on PR tree (blocked on the same .so).
-- [ ] push both branches to BoJiang03/LMCache.
+- [x] .so decision: Bo waived the red line for the PR worktree only.
+      Built in-place with setup.py build_ext (4 extensions: cuda_ops,
+      lmcache_native, lmcache_fs, lmcache_redis; upstream HEAD's CUDA
+      profile no longer builds c_ops/native_storage_ops). The venv's
+      editable-install hijack needed a sitecustomize at the repo root
+      for engine runs (driver.py overwrites PYTHONPATH); removed after
+      the gates.
+- [x] unit tests on PR tree: 354 passed (lazy suites + cache_server +
+      l1_pressure + l1_manager).
+- [x] gsm8k gate 2 on PR tree: off 0.925/0.900, eager 0.908/0.925
+      ext 0.961, lazy 0.917/0.908 ext 0.934; all within the off config's
+      own cold/cached spread, apc 0, no evictions, ledger closes
+      191 = 178 + 2 + 11. Engine verified running PR-tree code by
+      log file:line fingerprints unique to the PR tree.
+- [x] docs pass: eviction_aware.md 462 -> 306 lines, decision_model.md
+      197 -> 159; contracts, config, and the ledger equation kept;
+      measurement narratives cut. Docs commit amended; pre-commit clean after codespell+mypy fixes; head d45edab6.
+- [x] pushed: `lazy_offloading_policy_pr` (head d45edab6; DCO sign-offs
+      verified, pre-commit green locally) and
+      `lazy_offloading_policy_dev` (updated to the session-log head) on
+      BoJiang03/LMCache.

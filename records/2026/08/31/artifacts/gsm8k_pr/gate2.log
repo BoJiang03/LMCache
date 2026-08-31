@@ -1,0 +1,27 @@
+[gate2] === off 05:21:24
+[ac] === A_off_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 72s
+[ac] cold: 120 q in 15s strict 0.925 lenient 0.925 ttft p50 74ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] cached: 120 q in 15s strict 0.900 lenient 0.900 ttft p50 75ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_off_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/50d4856f-54c7-41f7-9ec8-745ca2242d0f/scratchpad/gsm8k_pr/logs/ac_A_off_n120_l68_0.json
+[gate2] === eager 05:23:51
+[ac] === A_eager_n120_l68_0
+[driver] mp-server ready after 12s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 82s
+[ac] cold: 120 q in 17s strict 0.908 lenient 0.908 ttft p50 83ms ext 0.000 apc 0.000 obj 0->5796 l1 0.749 peak / 0.749 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.925 lenient 0.925 ttft p50 83ms ext 0.961 apc 0.000 obj 5796->5824 l1 0.753 peak / 0.753 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_eager_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/50d4856f-54c7-41f7-9ec8-745ca2242d0f/scratchpad/gsm8k_pr/logs/ac_A_eager_n120_l68_0.json
+[gate2] === lazy 05:26:27
+[ac] === A_lazy_n120_l68_0
+[driver] mp-server ready after 12s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 78s
+[ac] cold: 120 q in 17s strict 0.917 lenient 0.917 ttft p50 86ms ext 0.000 apc 0.000 obj 0->5532 l1 0.715 peak / 0.715 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.908 lenient 0.908 ttft p50 83ms ext 0.934 apc 0.000 obj 5532->5704 l1 0.737 peak / 0.737 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_lazy_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/50d4856f-54c7-41f7-9ec8-745ca2242d0f/scratchpad/gsm8k_pr/logs/ac_A_lazy_n120_l68_0.json
