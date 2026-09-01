@@ -1,7 +1,7 @@
 # PR draft: lazy_offloading_policy_pr
 
 Branch: `lazy_offloading_policy_pr` on BoJiang03/LMCache, base `LMCache/LMCache:dev`.
-Five commits: policy core, connector wiring, MP pressure stats, tests, docs.
+Three commits: policy core, connector wiring, docs. Slimmed 2026-08-31 (record 5): six unused policy mechanisms deleted, the L1 pressure-stats commit split out, all tests moved to dev.
 
 ## Title
 
@@ -13,7 +13,7 @@ Five commits: policy core, connector wiring, MP pressure stats, tests, docs.
 
 Lazy offload (`lmcache.mp.lazy_offload=true`) currently drains buffered stores with a count-triggered FIFO policy: a drain runs once `lmcache.mp.lazy_offload_threshold` finished requests (default 100) hold undrained stores at the same time, and each drain submits up to 10 of them. Buffered stores do not hold their blocks: under lazy offload `request_finished` returns False, so a finished request's GPU blocks return to the free queue and can be reallocated while its store waits. The drain revalidates each buffered chunk's admission-time block hash and drops the request's remaining chunks when they no longer match, the buffer-phase reallocation hazard already documented in `lazy_offload.md`. Under a steady serving workload the threshold and that race combine badly. In our agentic-corpus replay at CONC=40 the backlog needed about 11 minutes to reach 100, each drain then released 10 requests, and all 330 drained requests failed revalidation, so the 30 minute run stored nothing at all: final L1 usage 0 bytes, 0 lookup hits over 45M requested tokens. CONC=48 and 72 behave the same. Setting the threshold to 1 drains on the step after a request finishes and avoids the race, but that is close to storing at compute time and gives up most of what deferring is for.
 
-This PR adds an EVICTION_AWARE drain policy and makes it the default for lazy offload. It watches the GPU block pool's free queue and submits a buffered store only when its blocks approach the eviction head, so KV that is about to be lost is offloaded and KV that stays resident is not. A deferral deadline, an adaptive danger floor, and per-step drain caps bound the worst case. The scheduler-side pending store is reworked around an explicit request state machine (`lazy_offload_state.py`) with a counter ledger that closes exactly (admitted = emitted + pending + dropped).
+This PR adds an EVICTION_AWARE drain policy and makes it the default for lazy offload. It watches the GPU block pool's free queue and submits a buffered store only when its blocks approach the eviction head, so KV that is about to be lost is offloaded and KV that stays resident is not. A deferral deadline and a per-step drain cap bound the worst case. The scheduler-side pending store is reworked around an explicit request state machine (`lazy_offload_state.py`) with a counter ledger that closes exactly (admitted = emitted + pending + dropped).
 
 Results TL;DR, eviction-aware lazy vs the current eager default, same engine and cache config, only the policy differs:
 
@@ -22,7 +22,7 @@ Results TL;DR, eviction-aware lazy vs the current eager default, same engine and
 - Why: lazy stores only what the GPU pool is about to evict, ~1/3 of eager's write volume into the same 250 GB L1, so L1 turns over ~3x slower -- effectively a larger cache. At saturation the effect is direct: eager's L1 lookup hit rate drops to 30% (entries evicted before their reuse arrives) while lazy holds 41%, and the served external share follows (32% vs 43%).
 - GSM8K accuracy through the lazy path matches the no-cache baseline, and the store ledger closes exactly.
 
-Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_danger_floor_max_blocks=8192 and lazy_offload_max_deferral_seconds=30. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
+Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_max_deferral_seconds=30 and lazy_offload_store_release=lru_tail. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
 
 | CONC | TTFT avg (s) | e2e latency avg (s) | output tok/s | requests completed |
 |---|---|---|---|---|
@@ -48,15 +48,15 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
 
 **Special notes for your reviewers**:
 
-- On the diff size: of the +9.8k lines, 5.2k is tests and 0.7k docs. Production code is +3.7k, split across three independently reviewable commits: the policy core (2.8k, self-contained new files with no vLLM imports), the connector wiring (0.8k), and an additive protocol endpoint (0.1k). Reviewing commit by commit is recommended.
+- On the diff size: +3.0k lines, of which 0.4k is docs. Production code is +2.4k in two independently reviewable commits: the policy core (1.7k, self-contained new files with no vLLM imports) and the connector wiring (0.7k). Reviewing commit by commit is recommended.
 - FIFO remains available unchanged via `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are untouched; the buffer-phase reallocation hazard behind the observation above is already documented in `docs/design/integration/vllm/lazy_offload.md`, and what to do about the default is left for a separate discussion.
-- The MP management protocol gains a GET_L1_PRESSURE endpoint (capacity, usage, cumulative deletion totals). The wire change is additive and nothing in the serving path calls it; it is an observability probe for estimating L1 residence when sizing the policy's deferral horizon.
-- Design docs: `lazy_offload.md` (updated), `lazy_offload_decision_model.md`, `lazy_offload_policy/eviction_aware.md` (new).
+- The policy ships three knobs: `lazy_offload_horizon_steps`, `lazy_offload_max_drain_per_step`, and `lazy_offload_max_deferral_seconds`, plus `lazy_offload_store_release` on the manager. Everything the development branch carried beyond those (a break-even prefix gate, an allocation-announcement path, content deduplication, a covered-prefix advance, an adaptive danger floor, and a per-step block-volume cap) was removed before this PR: measured over four 33-minute arms and 14,799 admissions, each of those either never fired or moved under 0.1% of the traffic, while the deferral deadline released 57-77% of all emissions.
+- Design docs: `lazy_offload.md` (updated) and `lazy_offload_policy/eviction_aware.md` (new).
 
 **If applicable**:
 
 - [x] this PR contains user facing changes - docs added
-- [x] this PR contains unit tests
+- [ ] this PR contains unit tests
 
 ## Push checklist (before Bo opens the PR)
 
@@ -83,3 +83,39 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       verified, pre-commit green locally) and
       `lazy_offloading_policy_dev` (updated to the session-log head) on
       BoJiang03/LMCache.
+
+## After the slimming (record 5, 2026-08-31)
+
+- [x] six dead mechanisms deleted, L1 pressure stats split out, docstrings
+      brought below the norm of comparable repo modules (0.59 vs 0.64),
+      all tests moved to dev. 9611 -> 2977 insertions, 5 commits -> 3.
+- [x] ruff check clean, ruff format applied. mypy not run (not installed
+      in any venv here; installing it would mutate a shared environment).
+- [x] unit tests on the slimmed PR tree: 201 passed before the tests moved
+      out; 116 passed after (the adapted pending-store suite plus
+      cache_server, l1_manager, vllm_kv_cache_groups).
+- [x] gsm8k gate 3 on the slimmed PR tree: off 0.908/0.908, eager
+      0.908/0.917 ext 0.961, lazy 0.917/0.925 ext 0.961; apc 0 everywhere,
+      l1 peak 0.75 under the 0.8 watermark, 0 evictions, all guards clean.
+      Ledger closes: admitted 189 = emitted 178 + dropped_evicted 8 +
+      pending 3.
+- [ ] **open, needs Bo**: the CONC sweep in the body above was measured
+      with `lazy_offload_danger_floor_max_blocks=8192`, a knob this PR no
+      longer has. The floor raised 1-6 times in 35-58k drain steps per arm,
+      so the numbers should be unchanged, but the body currently reports a
+      config the PR cannot express. Either re-run one lazy arm (CONC=40,
+      ~40 min, the e40 eager reference already exists) with the shipped
+      defaults, or say so explicitly in the body.
+- [x] all tests moved to dev per Bo. The one test file left in the PR,
+      `tests/v1/test_lazy_offload_pending_store.py`, is the pre-existing
+      upstream suite adapted to the interfaces this PR changes -- left
+      untouched it would be red on merge. 217 lines against upstream's
+      275, no new coverage.
+- [ ] **flag for Bo before opening**: the PR adds ~1.3k lines of new
+      production code with no new tests, and the "this PR contains unit
+      tests" box is now unchecked. AGENTS.md and docs/coding_standards.md
+      both ask for tests on new features, so a reviewer will raise it. The
+      1,465 lines of new tests are on
+      `lazy_offloading_policy_dev` under
+      `records/2026/08/31/artifacts/pr_slim/tests_moved_from_pr/slimmed/`
+      and can go back in one commit.

@@ -1,0 +1,159 @@
+# Lazy Offload: The Store Decision Model
+
+Companion to [lazy_offload.md](lazy_offload.md) (the *mechanism*: buffering,
+protection, draining without engine changes). This document defines the
+*policy* -- for a KV chunk whose GPU copy exists, store to LMCache or skip --
+and shows the criterion is logically complete and implementable without
+estimating any probability.
+
+## 1. The rule
+
+> **Store a chunk iff:**
+> 1. **(Eviction)** its GPU copy will be evicted, and
+> 2. **(Reuse)** the chunk will be reused after that eviction, and
+> 3. **(Economy)** serving that reuse from the copy is cheaper than
+>    recomputing it.
+
+Expected-value form (the three gates are its threshold factorization):
+
+```
+store  <=>  P(evict) x P(reuse | evict) x (recompute_cost - fetch_cost)  >  store_cost
+```
+
+## 2. Completeness
+
+A stored copy has value **only when read**, and it is read **only when a
+reuse arrives that the GPU cannot serve itself** (while the GPU copy exists,
+vLLM's prefix cache serves the hit; the LMCache copy is dead weight). The
+future of any chunk therefore partitions exhaustively into:
+
+| Case | Evicted | Reused after | fetch < recompute | Copy's value | Verdict |
+|------|---------|--------------|-------------------|--------------|---------|
+| 1 | no  | --  | --  | 0 (GPU serves every reuse) | skip (gate 1) |
+| 2 | yes | no  | --  | 0 (never read)             | skip (gate 2) |
+| 3 | yes | yes | no  | <= 0 (recompute cheaper)   | skip (gate 3) |
+| 4 | yes | yes | yes | > 0                        | **store**     |
+
+- **Sound**: cases 1-3 have zero/negative value; the rule skips them.
+- **Complete**: case 4 is the only positive-value cell, and it is exactly the
+  conjunction of the three gates. No fifth case exists.
+
+Given oracles for the three predicates, the rule is exactly optimal.
+
+## 3. Amendments for the real system
+
+The proof silently assumes five things that must be repaired. Each amendment
+names one value channel; a policy change that fits none of them is either
+redundant or evidence of a channel this list missed.
+
+| # | Gap | Amendment |
+|---|-----|-----------|
+| A1 | **Prefix closure.** Chunk hashes are rolling; a stored suffix whose prefix was skipped is unreachable (value 0). | Decision unit is a *prefix*, not a chunk; skip decisions cut from the tail. |
+| A2 | **Retention window.** Reuse must arrive before the lower tier evicts the copy. | Gate 2 reads "reused within the destination tier's retention window" -- it is tier-coupled. |
+| A3 | **Displacement.** Storing into a full tier evicts a victim. | `store_cost` = transfer + expected value of the displaced victim (0 when the tier has space). |
+| A4 | **Feasibility != desirability.** By execution time the GPU blocks may be overwritten. | Execute iff data is provably intact (hash snapshot + ref-count protection). A hard veto, never a trade-off -- and never a substitute for gate 1 (§6). |
+| A5 | **Contention.** Per-chunk optimal != global optimal under shared D2H bandwidth / capacity. | Completed by an *ordering*, not a new gate: drain candidates by eviction imminence (free-queue LRU order). |
+
+Non-gaps: multiple reuses and preemption recovery only strengthen the store
+side (a preempted request is a reuse event with P ≈ 1) -- covered as-is.
+
+## 4. Implementation: no gate needs a probability estimate
+
+The predicates are statements about the future, but each gate can be built so
+the probability never has to be estimated:
+
+**Gate 1 -- replace prediction with timing.** Defer the decision until the
+uncertainty collapses: a block near the free-queue head under GPU pressure
+has P(evict) ≈ 1 by construction. Zero-engine-change signals: *eviction ETA*
+(free-queue position ÷ per-step block consumption rate) and *one-step
+allocation feedforward* (the scheduler has already fixed the next step's
+token budget, so next-step consumption is near-deterministic). Step-boundary
+sampling is lossless: all eviction happens inside `schedule()` and the
+connector hook runs at the end of every step, so eviction and observation
+share one clock; the only blind window is intra-step, and the feedforward
+covers it. Passivity is a thread-safety constraint (the block pool is
+unlocked scheduler state), not a lost capability.
+
+The two error rates are asymmetric. *Recall* (no evicted-unsaved) can
+approach 1: the eviction order is fully known (strict LRU queue), only the
+per-step cutoff is uncertain, and pinning at drain turns prediction into
+prevention. *Precision* (no saved-unevicted) is irreducibly < 1: a head
+block can be resurrected by a hit before its eviction, which is
+future-arrival information no eviction-side signal can supply -- the gap is
+naturally small (LRU head = coldest) and each miss costs one cheap write.
+Lazy also pays an *interference* cost eager does not: it pins dead requests'
+blocks for the in-flight copy, shrinking the free pool exactly when pressure
+is high. It is bounded by drain cap x in-flight steps and reversed by
+`free_blocks(prepend=True)`; interference pushes the optimal horizon *up*
+(drain early while slack exists).
+
+*Eviction is recycling, not overflow.* The free queue is not empty space --
+it *is* the GPU prefix cache (freed blocks keep their hashes and serve hits
+until reallocated). Once the pool has been filled once, **every allocation
+evicts a cached block, at any usage level**. So a usage-watermark trigger is
+the wrong signal, lazy offload is a steady-state activity rather than a
+crisis response, and the GPU is itself tier 0 of gate 2's hierarchy with a
+computable retention window (free-queue depth / allocation rate). Lazy
+offload is exactly the copy made in the last moments of that window.
+
+**Gate 2 -- replace prediction with sequential observation.** The storage
+hierarchy *is* the estimator: each tier's retention window is a survival
+test; KV that is not reused demotes tier by tier and is finally dropped.
+P(reuse) is never estimated -- it is observed. This demotes gate 2 from a
+binary store/skip decision (false negative = an unbounded prefill loss) to
+an **entry-tier placement** decision (worst case = the bounded rent
+difference between tiers). The cost -- dead KV pays upper-tier rent before
+reaching the bottom -- is the price of information.
+
+**Gate 3 -- not a probability at all.** `recompute - fetch` is fixed by
+hardware and model constants (KV bytes/token, D2H bandwidth, prefill
+throughput): compute a break-even prefix length offline; runtime is one
+comparison. Because Δ multiplies the probabilities, long prefixes justify
+storing even at tiny P(reuse) -- gate 2 needs discrimination only for
+short/medium prefixes.
+
+**Default under ignorance.** The error costs are asymmetric: a false
+positive is one cheap write; a false negative is one prefill. With unknown
+P(reuse), the regret-optimal action is **store** (given gate 3 passes).
+Knowledge only prunes waste; it is never a prerequisite for running.
+
+## 5. Evaluation order: 3 → 2 → 1 (the reverse of logical order)
+
+| Order | Gate | Evaluated at | Nature |
+|-------|------|--------------|--------|
+| first | 3 Economy | admission (`add()`) | static threshold; cheap, reliable, may be strict |
+| second | 2 Reuse | admission / while pending | placement decision; permissive by default |
+| third | 1 Eviction | drain time | near-factual; controls *when* and *in what order* |
+
+Gate 1 is the only gate undecidable early: it is not an admission filter but
+the **trigger and ordering of the drain**. Deciding it early -- by a timer or
+a request count -- is the anti-pattern below.
+
+## 6. Anti-pattern: ex-post survival checks invert gate 1
+
+An implementation that buffers stores for an arbitrary duration and checks at
+flush time whether the data still survives (hash comparison) has evaluated
+"was not yet evicted" -- the **negation** of gate 1. It drops exactly the
+evicted chunks (the ones gate 1 selects *for* storing) and stores exactly the
+survivors (whose GPU copies are still serving hits): *delayed eager with
+anti-selective drops*. Survival checking is the A4 feasibility veto; using it
+as the desirability gate flips the policy's sign.
+
+## 7. Observability, phasing, verdict
+
+Each gate is independently falsifiable, so regressions localize: gate 1 by
+store precision (stored chunks whose GPU copy was in fact evicted before
+next reuse) and drop rate (evicted before we stored); gates 2 and 3 by the
+post-hoc reuse rate of rejected/below-threshold chunks (≈ 0 expected).
+
+Phase 1 (this implementation) builds gate 1 (pressure trigger, eviction ETA,
+allocation feedforward, free-queue-LRU drain, A4 feasibility gate) and
+gate 3 (static break-even prefix-length threshold at admission). Gate 2 --
+hierarchy demotion as the default estimator, then placement heuristics -- is
+later-phase work.
+
+**Verdict.** The framework has no missing case -- §2 covers the event space,
+§3 closes the real-system gaps -- only imperfect sensors, each engineered to
+avoid probability estimation: gate 1 by timing, gate 2 by hierarchical
+observation, gate 3 by physics. The irreducible residue, intra-step bursts
+(gate 1) and tier rent paid on dead KV (gate 2), is bounded.

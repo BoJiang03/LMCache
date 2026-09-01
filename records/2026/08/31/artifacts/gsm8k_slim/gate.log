@@ -1,0 +1,87 @@
+[ac] === A_off_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 76s
+[ac] cold: 120 q in 15s strict 0.908 lenient 0.908 ttft p50 77ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] cached: 120 q in 15s strict 0.908 lenient 0.908 ttft p50 76ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_off_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/6808830a-35ae-4d68-996a-936d9dff2867/scratchpad/gsm8k_slim/logs/ac_A_off_n120_l68_0.json
+[validate] ac_A_off_n120_l68_0.json: all non-vacuity guards passed
+[ac] === A_eager_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 86s
+[ac] cold: 120 q in 17s strict 0.908 lenient 0.908 ttft p50 85ms ext 0.000 apc 0.000 obj 0->5792 l1 0.749 peak / 0.749 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.917 lenient 0.917 ttft p50 83ms ext 0.961 apc 0.000 obj 5792->5820 l1 0.752 peak / 0.752 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_eager_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/6808830a-35ae-4d68-996a-936d9dff2867/scratchpad/gsm8k_slim/logs/ac_A_eager_n120_l68_0.json
+[validate] ac_A_eager_n120_l68_0.json: all non-vacuity guards passed
+[ac] === A_lazy_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 86s
+[ac] cold: 120 q in 17s strict 0.917 lenient 0.917 ttft p50 90ms ext 0.000 apc 0.000 obj 0->5532 l1 0.715 peak / 0.715 end, 0 evictions
+[ac] cached: 120 q in 14s strict 0.925 lenient 0.925 ttft p50 92ms ext 0.961 apc 0.000 obj 5532->5808 l1 0.751 peak / 0.751 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_lazy_n120_l68_0: wrote /tmp/claude-1016/-home-bo-LMCache-worktrees-lazy-offloading/6808830a-35ae-4d68-996a-936d9dff2867/scratchpad/gsm8k_slim/logs/ac_A_lazy_n120_l68_0.json
+[validate] ac_A_lazy_n120_l68_0.json: all non-vacuity guards passed
+
+GSM8K 20-shot, greedy. `cold` computes every prefill; `cached` resends the same
+prompts once the GPU pool has turned over, so its prefill comes from L1.
+
+tag                        pass     strict  lenient  ttft p50    ext    apc  covered  objects  l1 end  no ####
+A_eager_n120_l68_0         cold      0.908    0.908      84.6  0.000  0.000    0.000     5792   0.749        0
+A_eager_n120_l68_0         cached    0.917    0.917      83.3  0.961  0.000    0.961     5820   0.752        0
+A_lazy_n120_l68_0          cold      0.917    0.917      90.2  0.000  0.000    0.000     5532   0.715        0
+A_lazy_n120_l68_0          cached    0.925    0.925      91.6  0.961  0.000    0.961     5808   0.751        0
+A_off_n120_l68_0           cold      0.908    0.908      76.9    nan  0.000    0.000        0   0.000        1
+A_off_n120_l68_0           cached    0.908    0.908      76.2    nan  0.000    0.000        0   0.000        1
+
+L1 over each pass, sampled once a second. Under a budget above the eviction
+watermark the fill sawtooths, so the peak and the trough say more than the end.
+
+tag                        pass      budget   peak    min    end  peak GB  objects  evictions
+A_eager_n120_l68_0         cold         68G  0.749  0.000  0.749     50.9     5792          0
+A_eager_n120_l68_0         cached       68G  0.752  0.749  0.752     51.2     5820          0
+A_lazy_n120_l68_0          cold         68G  0.715  0.000  0.715     48.6     5532          0
+A_lazy_n120_l68_0          cached       68G  0.751  0.715  0.751     51.0     5808          0
+A_off_n120_l68_0           cold         68G  0.000  0.000  0.000      0.0        0          0
+A_off_n120_l68_0           cached       68G  0.000  0.000  0.000      0.0        0          0
+
+TTFT on the `cached` pass, paired by question against the matching `off` run.
+The pairing removes the prompt-length spread, which is far larger than the effect;
+`p` is a two-sided sign test on the 120 paired differences.
+
+tag                        against                     p50 off      p50    d p50   d mean   faster       p
+A_eager_n120_l68_0         A_off_n120_l68_0               76.2     83.3    +6.5ms    +1.5ms   40/120   0.000
+A_lazy_n120_l68_0          A_off_n120_l68_0               76.2     91.4   +12.1ms   +13.7ms   29/120   0.000
+
+Within a config: cached vs cold (same engine, same prompts; the
+only difference is that the KV was fetched instead of computed).
+
+tag                     strict delta   same text  same answer
+A_eager_n120_l68_0            +0.008      80/120      118/120
+A_lazy_n120_l68_0             +0.008      82/120      119/120
+A_off_n120_l68_0              +0.000     100/120      119/120
+
+Across repeats of one config (`cached` pass): the noise floor. Two runs of the
+same config on the same prompts differ only by batch composition and engine
+state, so whatever they disagree on cannot be attributed to a policy.
+
+config n conc                 strict   same text  same answer
+
+Across configs, `cached` pass against the matching `off` run (recompute
+reference). Exact text identity is a diagnostic, not the criterion -- see the
+module docstring.
+
+tag                        against                     strict delta   same text  same answer  divergence p50
+A_eager_n120_l68_0     A_off_n120_l68_0              +0.008      86/120      117/120              67
+A_lazy_n120_l68_0      A_off_n120_l68_0              +0.017      83/120      117/120              60
+
+Store ledgers:
+  A_lazy_n120_l68_0      {'admitted': 189, 'emitted': 178, 'emitted_overdue': 0, 'emitted_deferral_drains': 25146, 'dropped_evicted': 8, 'dropped_evicted_tokens': 2048, 'dropped_deferral_drains': 1605, 'rejected_unhashed': 0, 'rejected_prefix_broken': 0, 'dropped_on_request_drop': 0, 'dropped_failed_store': 0, 'dropped_id_reuse': 0, 'throttled_drains': 0, 'drain_steps': 5504, 'free_queue_blocks_read': 164784, 'requests_validated': 269, 'blocks_validated': 46354, 'pending': 3}
+
+Guards (a violated guard makes that row's score meaningless):
+  A_eager_n120_l68_0     clean
+  A_lazy_n120_l68_0      clean
+  A_off_n120_l68_0       clean

@@ -1,0 +1,421 @@
+From badf19020dfd4db6b7b8f0f3ad8ef6b3784cf81e Mon Sep 17 00:00:00 2001
+From: Bo Jiang <bo.jiang@temple.edu>
+Date: Mon, 31 Aug 2026 05:07:58 -0700
+Subject: [PATCH] [Core] Add L1 pressure stats to the MP management protocol
+
+Signed-off-by: Bo Jiang <bo.jiang@temple.edu>
+---
+ lmcache/v1/distributed/l1_manager.py          | 33 ++++++++++++++++
+ lmcache/v1/distributed/storage_manager.py     | 11 ++++++
+ lmcache/v1/multiprocess/modules/management.py | 25 ++++++++++++
+ lmcache/v1/multiprocess/protocols/base.py     |  5 +++
+ .../v1/multiprocess/protocols/controller.py   | 38 +++++++++++++++++++
+ 5 files changed, 112 insertions(+)
+
+diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
+index 8d03e641..519ab78e 100644
+--- a/lmcache/v1/distributed/l1_manager.py
++++ b/lmcache/v1/distributed/l1_manager.py
+@@ -189,6 +189,12 @@ class L1Manager:
+ 
+         self._objects: dict[ObjectKey, L1ObjectState] = {}
+ 
++        # Cumulative deletion totals for deletion_totals(). Guarded by
++        # self._lock like the object map: every deletion site runs inside
++        # an l1_mgr_synchronized method.
++        self._deleted_bytes_total = 0
++        self._deleted_chunks_total = 0
++
+         # GDS, Device-DAX, and CPU L1 are mutually exclusive tiers. Each tier
+         # owns its backing allocator instead of branching inside the CPU path.
+         self._memory_manager: L1ManagerProtocol
+@@ -416,6 +422,7 @@ class L1Manager:
+             successful_keys.append(key)
+ 
+         freed_meta = [self._object_meta(obj) for obj in need_to_free]
++        self._account_deletions(freed_meta)
+         self._memory_manager.free(need_to_free)
+ 
+         for listener in self._registered_listeners:
+@@ -710,6 +717,7 @@ class L1Manager:
+             successful_keys.append(key)
+ 
+         freed_meta = [self._object_meta(obj) for obj in need_to_free]
++        self._account_deletions(freed_meta)
+         self._memory_manager.free(need_to_free)
+ 
+         for listener in self._registered_listeners:
+@@ -758,6 +766,7 @@ class L1Manager:
+             all_keys = list(self._objects.keys())
+             all_memory_objs = [entry.memory_obj for entry in self._objects.values()]
+             all_meta = [self._object_meta(obj) for obj in all_memory_objs]
++            self._account_deletions(all_meta)
+             self._memory_manager.free(all_memory_objs)
+             self._objects.clear()
+             for listener in self._registered_listeners:
+@@ -789,6 +798,7 @@ class L1Manager:
+             del self._objects[key]
+ 
+         cleared_meta = [self._object_meta(obj) for obj in objs_to_free]
++        self._account_deletions(cleared_meta)
+         self._memory_manager.free(objs_to_free)
+ 
+         if keys_to_clear:
+@@ -919,6 +929,29 @@ class L1Manager:
+         )
+         return mem_check_result
+ 
++    def deletion_totals(self) -> tuple[int, int]:
++        """Return cumulative ``(deleted_bytes, deleted_chunks)`` so far.
++
++        Counts every object freed by key deletion since construction --
++        watermark eviction, temporary-object cleanup, and ``clear`` alike --
++        because any deletion shortens effective L1 residence. Both counters
++        are monotonic.
++        """
++        with self._lock:
++            return self._deleted_bytes_total, self._deleted_chunks_total
++
++    def _account_deletions(self, metas: list[L1ObjectMeta]) -> None:
++        """Fold freed objects into the deletion totals.
++
++        Args:
++            metas: Metadata of the objects just freed.
++
++        The caller must hold ``self._lock`` (all deletion sites are
++        ``l1_mgr_synchronized``); this helper must not re-take it.
++        """
++        self._deleted_bytes_total += sum(meta.size_bytes for meta in metas)
++        self._deleted_chunks_total += len(metas)
++
+     def _object_meta(self, memory_obj: MemoryObj) -> L1ObjectMeta:
+         """Build the listener-facing metadata for one resident object."""
+         return L1ObjectMeta(
+diff --git a/lmcache/v1/distributed/storage_manager.py b/lmcache/v1/distributed/storage_manager.py
+index 1bd26022..3cf497cd 100644
+--- a/lmcache/v1/distributed/storage_manager.py
++++ b/lmcache/v1/distributed/storage_manager.py
+@@ -898,6 +898,17 @@ class StorageManager:
+         """
+         return self._l1_manager.get_memory_usage()
+ 
++    def get_l1_deletion_totals(self) -> tuple[int, int]:
++        """Cumulative L1 deletion totals since construction.
++
++        Backing data for the ``GET_L1_PRESSURE`` endpoint's eviction-rate
++        estimation.
++
++        Returns:
++            Tuple of monotonic ``(deleted_bytes, deleted_chunks)``.
++        """
++        return self._l1_manager.deletion_totals()
++
+     def get_usage_bytes_by_cache_salt(self) -> dict[str, int]:
+         """Aggregate ``cache_salt`` byte usage across every L2 adapter.
+ 
+diff --git a/lmcache/v1/multiprocess/modules/management.py b/lmcache/v1/multiprocess/modules/management.py
+index 00d18216..26f14d3c 100644
+--- a/lmcache/v1/multiprocess/modules/management.py
++++ b/lmcache/v1/multiprocess/modules/management.py
+@@ -16,6 +16,7 @@ from lmcache.v1.multiprocess.engine_module import (
+     ThreadPoolType,
+ )
+ from lmcache.v1.multiprocess.protocols.base import RequestType
++from lmcache.v1.multiprocess.protocols.controller import L1PressureStats
+ from lmcache.v1.periodic_thread import (
+     PeriodicThread,
+     ThreadLevel,
+@@ -101,6 +102,11 @@ class ManagementModule:
+                 self.get_experimental,
+                 ThreadPoolType.SYNC,
+             ),
++            HandlerSpec(
++                RequestType.GET_L1_PRESSURE,
++                self.get_l1_pressure,
++                ThreadPoolType.SYNC,
++            ),
+             HandlerSpec(RequestType.PING, self.ping, ThreadPoolType.NORMAL),
+             HandlerSpec(RequestType.NOOP, self.debug, ThreadPoolType.SYNC),
+             HandlerSpec(
+@@ -177,6 +183,25 @@ class ManagementModule:
+         """
+         return self._ctx.chunk_size
+ 
++    def get_l1_pressure(self) -> L1PressureStats:
++        """Return an L1 capacity/eviction snapshot for rate estimation.
++
++        Returns:
++            The current L1 capacity and usage together with the cumulative
++            deletion totals. Usage and totals are read without a common
++            lock, so the two can be up to one deletion event apart.
++        """
++        used_bytes, total_bytes = self._ctx.storage_manager.get_l1_usage()
++        evicted_bytes, evicted_chunks = (
++            self._ctx.storage_manager.get_l1_deletion_totals()
++        )
++        return L1PressureStats(
++            total_bytes=total_bytes,
++            used_bytes=used_bytes,
++            evicted_bytes_total=evicted_bytes,
++            evicted_chunks_total=evicted_chunks,
++        )
++
+     def get_experimental(self) -> list[str]:
+         """Return the experimental intermediate tensor transfer built in the
+         server.
+diff --git a/lmcache/v1/multiprocess/protocols/base.py b/lmcache/v1/multiprocess/protocols/base.py
+index cb28b7ad..e5c541f9 100644
+--- a/lmcache/v1/multiprocess/protocols/base.py
++++ b/lmcache/v1/multiprocess/protocols/base.py
+@@ -92,6 +92,11 @@ class RequestType(enum.Enum):
+     # Experimental transfer intermediate tensor
+     GET_EXPERIMENTAL = enum.auto()
+ 
++    # Controller operations (appended past their category block: enum values
++    # ride the wire as msgspec ordinals, so members are only ever added at
++    # the end).
++    GET_L1_PRESSURE = enum.auto()
++
+ 
+ @dataclass
+ class ProtocolDefinition:
+diff --git a/lmcache/v1/multiprocess/protocols/controller.py b/lmcache/v1/multiprocess/protocols/controller.py
+index f748a338..1ca72861 100644
+--- a/lmcache/v1/multiprocess/protocols/controller.py
++++ b/lmcache/v1/multiprocess/protocols/controller.py
+@@ -6,17 +6,47 @@ This module defines the protocol for:
+ - CLEAR: Clear all caches in the server
+ - GET_CHUNK_SIZE: Get the chunk size configuration from the server
+ - GET_EXPERIMENTAL: Get the enabled experimental intermediate tensor transfer
++- GET_L1_PRESSURE: Get an L1 capacity/eviction snapshot for rate estimation
+ """
+ 
++# Standard
++from dataclasses import dataclass
++
+ # First Party
+ from lmcache.v1.multiprocess.protocols.base import HandlerType, ProtocolDefinition
+ 
++
++@dataclass
++class L1PressureStats:
++    """Snapshot of L1 capacity and cumulative eviction, for GET_L1_PRESSURE.
++
++    Rate computation is the caller's job: two snapshots and their arrival
++    times give an eviction byte rate, and ``total_bytes`` over that rate is
++    the L1 residence time. The cumulative counters cover every key deletion
++    (watermark eviction, store-failure cleanup, CLEAR), because any deletion
++    shortens effective residence.
++    """
++
++    total_bytes: int
++    """L1 capacity in bytes."""
++
++    used_bytes: int
++    """Bytes currently resident in L1."""
++
++    evicted_bytes_total: int
++    """Cumulative bytes freed by key deletion since server start."""
++
++    evicted_chunks_total: int
++    """Cumulative objects freed by key deletion since server start."""
++
++
+ # Define request names for this protocol group
+ REQUEST_NAMES = [
+     "CLEAR",
+     "GET_CHUNK_SIZE",
+     "GET_EXPERIMENTAL",
+     "PING",
++    "GET_L1_PRESSURE",
+ ]
+ 
+ 
+@@ -65,4 +95,12 @@ def get_protocol_definitions() -> dict[str, ProtocolDefinition]:
+             response_class=list[str],
+             handler_type=HandlerType.SYNC,
+         ),
++        # Get an L1 capacity/eviction snapshot
++        # Payload: None
++        # Returns: L1PressureStats - capacity, usage, cumulative eviction
++        "GET_L1_PRESSURE": ProtocolDefinition(
++            payload_classes=[],
++            response_class=L1PressureStats,
++            handler_type=HandlerType.SYNC,
++        ),
+     }
+-- 
+2.34.1
+
+diff --git a/tests/v1/distributed/test_l1_manager.py b/tests/v1/distributed/test_l1_manager.py
+index d1fdbae9..2e8b11af 100644
+--- a/tests/v1/distributed/test_l1_manager.py
++++ b/tests/v1/distributed/test_l1_manager.py
+@@ -1968,3 +1968,80 @@ class TestIsKeyEvictable:
+         assert manager.is_key_evictable(key) is True
+ 
+         manager.close()
++
++
++# =============================================================================
++# Tests for L1Manager.deletion_totals()
++# =============================================================================
++
++
++class TestDeletionTotals:
++    """
++    Tests for L1Manager.deletion_totals().
++
++    Per the docstring:
++    - Returns cumulative (deleted_bytes, deleted_chunks) since construction.
++    - Counts every object freed by key deletion (delete and clear alike).
++    - Both counters are monotonic.
++    """
++
++    def test_starts_at_zero(self, basic_l1_config):
++        manager = L1Manager(basic_l1_config)
++
++        assert manager.deletion_totals() == (0, 0)
++
++        manager.close()
++
++    def test_delete_accounts_freed_bytes_and_chunks(
++        self, basic_l1_config, basic_layout
++    ):
++        manager = L1Manager(basic_l1_config)
++        keys = [make_object_key(1), make_object_key(2)]
++        manager.reserve_write(keys, [False, False], basic_layout)
++        manager.finish_write(keys)
++        used_before, _ = manager.get_memory_usage()
++
++        result = manager.delete(keys)
++
++        assert all(err == L1Error.SUCCESS for err in result.values())
++        used_after, _ = manager.get_memory_usage()
++        deleted_bytes, deleted_chunks = manager.deletion_totals()
++        assert deleted_chunks == 2
++        assert deleted_bytes == used_before - used_after
++        assert deleted_bytes > 0
++
++        manager.close()
++
++    def test_failed_delete_accounts_nothing(self, basic_l1_config, basic_layout):
++        manager = L1Manager(basic_l1_config)
++        key = make_object_key(1)
++        manager.reserve_write([key], [False], basic_layout)  # still write-locked
++
++        result = manager.delete([key])
++
++        assert result[key] == L1Error.KEY_IS_LOCKED
++        assert manager.deletion_totals() == (0, 0)
++
++        manager.finish_write([key])
++        manager.close()
++
++    def test_clear_accounts_and_totals_are_monotonic(
++        self, basic_l1_config, basic_layout
++    ):
++        manager = L1Manager(basic_l1_config)
++        first = make_object_key(1)
++        manager.reserve_write([first], [False], basic_layout)
++        manager.finish_write([first])
++        manager.delete([first])
++        bytes_after_delete, chunks_after_delete = manager.deletion_totals()
++
++        second = make_object_key(2)
++        manager.reserve_write([second], [False], basic_layout)
++        manager.finish_write([second])
++        manager.clear()
++
++        deleted_bytes, deleted_chunks = manager.deletion_totals()
++        assert deleted_chunks == chunks_after_delete + 1
++        assert deleted_bytes == bytes_after_delete * 2  # same layout, same size
++
++        manager.close()
+diff --git a/tests/v1/multiprocess/test_cache_server.py b/tests/v1/multiprocess/test_cache_server.py
+index 21bbcaa6..9ec58348 100644
+--- a/tests/v1/multiprocess/test_cache_server.py
++++ b/tests/v1/multiprocess/test_cache_server.py
+@@ -733,3 +733,21 @@ def test_get_chunk_size(
+     ).result(timeout=DEFAULT_TIMEOUT)
+ 
+     assert chunk_size == CHUNK_SIZE, f"Chunk size should be {CHUNK_SIZE}"
++
++
++def test_get_l1_pressure(
++    client: MessageQueueClient,
++):
++    """
++    Test retrieving an L1 pressure snapshot from the server.
++    """
++    stats = client.submit_request(
++        RequestType.GET_L1_PRESSURE,
++        [],
++        get_response_class(RequestType.GET_L1_PRESSURE),
++    ).result(timeout=DEFAULT_TIMEOUT)
++
++    assert stats.total_bytes > 0, "L1 capacity should be positive"
++    assert 0 <= stats.used_bytes <= stats.total_bytes
++    assert stats.evicted_bytes_total >= 0
++    assert stats.evicted_chunks_total >= 0
+diff --git a/tests/v1/multiprocess/test_l1_pressure.py b/tests/v1/multiprocess/test_l1_pressure.py
+new file mode 100644
+index 00000000..94a4170c
+--- /dev/null
++++ b/tests/v1/multiprocess/test_l1_pressure.py
+@@ -0,0 +1,55 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the GET_L1_PRESSURE endpoint.
++
++Covers the two layers separately:
++
++1. Protocol registration -- the request type resolves to an empty payload
++   and an ``L1PressureStats`` response.
++2. Server handler -- ``ManagementModule.get_l1_pressure`` pairs the storage
++   manager's usage tuple with its deletion totals.
++"""
++
++# Standard
++from unittest.mock import MagicMock
++
++# First Party
++from lmcache.v1.multiprocess.modules.management import ManagementModule
++from lmcache.v1.multiprocess.protocol import (
++    RequestType,
++    get_payload_classes,
++    get_response_class,
++)
++from lmcache.v1.multiprocess.protocols.controller import L1PressureStats
++
++# ============================================================================
++# Protocol registration
++# ============================================================================
++
++
++def test_protocol_registration():
++    """GET_L1_PRESSURE takes no payload and returns L1PressureStats."""
++    assert get_payload_classes(RequestType.GET_L1_PRESSURE) == []
++    assert get_response_class(RequestType.GET_L1_PRESSURE) is L1PressureStats
++
++
++# ============================================================================
++# Server handler
++# ============================================================================
++
++
++def test_handler_pairs_usage_with_deletion_totals():
++    """The handler snapshots usage and cumulative deletion totals."""
++    module = ManagementModule.__new__(ManagementModule)
++    ctx = MagicMock()
++    ctx.storage_manager.get_l1_usage.return_value = (700, 1000)
++    ctx.storage_manager.get_l1_deletion_totals.return_value = (4096, 3)
++    module._ctx = ctx
++
++    stats = module.get_l1_pressure()
++
++    assert stats == L1PressureStats(
++        total_bytes=1000,
++        used_bytes=700,
++        evicted_bytes_total=4096,
++        evicted_chunks_total=3,
++    )
