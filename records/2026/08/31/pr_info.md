@@ -1,7 +1,7 @@
 # PR draft: lazy_offloading_policy_pr
 
 Branch: `lazy_offloading_policy_pr` on BoJiang03/LMCache, base `LMCache/LMCache:dev`.
-Three commits: policy core, connector wiring, docs. Slimmed 2026-08-31 (record 5): six unused policy mechanisms deleted, the L1 pressure-stats commit split out, all tests moved to dev.
+Three commits: policy core, connector wiring, docs. Slimmed 2026-08-31 (record 5): six unused policy mechanisms deleted, the L1 pressure-stats commit split out, all tests moved to dev. Refactored 2026-08-31 (record 6): the mode-branching pending-store facade replaced by the `OffloadPolicy` interface upstream already had.
 
 ## Title
 
@@ -48,9 +48,10 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
 
 **Special notes for your reviewers**:
 
-- On the diff size: +3.0k lines, of which 0.4k is docs. Production code is +2.4k in two independently reviewable commits: the policy core (1.7k, self-contained new files with no vLLM imports) and the connector wiring (0.7k). Reviewing commit by commit is recommended.
+- On the diff size: +2.7k lines, of which 0.4k is docs. Production code is +2.3k in two independently reviewable commits: the policy core (1.6k, self-contained new files with no vLLM imports) and the connector wiring (0.7k). Reviewing commit by commit is recommended.
 - FIFO remains available unchanged via `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are untouched; the buffer-phase reallocation hazard behind the observation above is already documented in `docs/design/integration/vllm/lazy_offload.md`, and what to do about the default is left for a separate discussion.
 - The policy ships three knobs: `lazy_offload_horizon_steps`, `lazy_offload_max_drain_per_step`, and `lazy_offload_max_deferral_seconds`, plus `lazy_offload_store_release` on the manager. Everything the development branch carried beyond those (a break-even prefix gate, an allocation-announcement path, content deduplication, a covered-prefix advance, an adaptive danger floor, and a per-step block-volume cap) was removed before this PR: measured over four 33-minute arms and 14,799 admissions, each of those either never fired or moved under 0.1% of the traffic, while the deferral deadline released 57-77% of all emissions.
+- Both policies implement one `OffloadPolicy` protocol in `lazy_offload_policy/base.py`, restoring the abstract interface the package already had; `create_offload_policy()` selects between them. `LazyOffloadPendingStore` is removed: after the manager took over the lifecycle its remaining job was branching on the configured mode in every method.
 - Design docs: `lazy_offload.md` (updated) and `lazy_offload_policy/eviction_aware.md` (new).
 
 **If applicable**:
@@ -115,7 +116,31 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       production code with no new tests, and the "this PR contains unit
       tests" box is now unchecked. AGENTS.md and docs/coding_standards.md
       both ask for tests on new features, so a reviewer will raise it. The
-      1,465 lines of new tests are on
+      1,465 lines of new tests (which need porting to the refactored
+      interface first, see record 6) are on
       `lazy_offloading_policy_dev` under
       `records/2026/08/31/artifacts/pr_slim/tests_moved_from_pr/slimmed/`
       and can go back in one commit.
+
+
+## After the refactor (record 6, 2026-08-31)
+
+- [x] `OffloadPolicy` protocol restored in `lazy_offload_policy/base.py`;
+      `LazyOffloadPendingStore` (596 lines, one `if eviction else fifo`
+      per method) deleted in favour of `create_offload_policy()`. Drain
+      arguments bundled into `DrainSignals`; `observe_step` folded into
+      `drain`; `AdmitResult` and `AddOutcome` deleted (the connector
+      discarded the return value); several single-caller helpers and five
+      pieces of dead API removed.
+- [x] 2977 -> 2741 insertions. Lines of code, excluding docstrings,
+      comments and blanks: 1255 -> 1089 (-13%).
+- [x] ruff check + format clean, codespell clean, mypy 1.17.1 clean
+      (run via uvx, no shared environment mutated).
+- [x] unit tests: 253 passed.
+- [x] gsm8k gate 4 on the refactored PR tree: off 0.900/0.908, eager
+      0.908/0.908 ext 0.961, lazy 0.925/0.925 ext 0.935; apc 0 everywhere,
+      l1 peak 0.73 under the 0.8 watermark, 0 evictions, all guards clean.
+      Ledger closes: admitted 190 = emitted 177 + dropped_evicted 10 +
+      pending 3. Lazy accuracy is the highest of the three arms; its pass-2
+      external share sits between the two earlier gates (0.934 / 0.961), the
+      run-to-run spread of this harness.

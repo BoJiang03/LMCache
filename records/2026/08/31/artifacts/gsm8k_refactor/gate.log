@@ -1,0 +1,87 @@
+[ac] === A_off_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 76s
+[ac] cold: 120 q in 15s strict 0.900 lenient 0.900 ttft p50 75ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[ac] cached: 120 q in 15s strict 0.908 lenient 0.908 ttft p50 74ms ext nan apc 0.000 obj 0->0 l1 0.000 peak / 0.000 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_off_n120_l68_0: wrote /home/bo/.claude/jobs/a9b3c1ce/tmp/gsm8k_refactor/logs/ac_A_off_n120_l68_0.json
+[validate] ac_A_off_n120_l68_0.json: all non-vacuity guards passed
+[ac] === A_eager_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 82s
+[ac] cold: 120 q in 17s strict 0.908 lenient 0.908 ttft p50 81ms ext 0.000 apc 0.000 obj 0->5792 l1 0.749 peak / 0.749 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.908 lenient 0.908 ttft p50 80ms ext 0.961 apc 0.000 obj 5792->5820 l1 0.752 peak / 0.752 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_eager_n120_l68_0: wrote /home/bo/.claude/jobs/a9b3c1ce/tmp/gsm8k_refactor/logs/ac_A_eager_n120_l68_0.json
+[validate] ac_A_eager_n120_l68_0.json: all non-vacuity guards passed
+[ac] === A_lazy_n120_l68_0
+[driver] mp-server ready after 14s
+[ac] l1 eviction: {'policy': 'LRU', 'trigger_watermark': 0.8, 'eviction_ratio': 0.2}
+[driver] vllm ready after 84s
+[ac] cold: 120 q in 17s strict 0.925 lenient 0.925 ttft p50 83ms ext 0.000 apc 0.000 obj 0->5536 l1 0.716 peak / 0.716 end, 0 evictions
+[ac] cached: 120 q in 13s strict 0.925 lenient 0.925 ttft p50 80ms ext 0.935 apc 0.000 obj 5536->5660 l1 0.732 peak / 0.732 end, 0 evictions
+[driver] teardown done, exit codes: [0, -2]
+[ac] A_lazy_n120_l68_0: wrote /home/bo/.claude/jobs/a9b3c1ce/tmp/gsm8k_refactor/logs/ac_A_lazy_n120_l68_0.json
+[validate] ac_A_lazy_n120_l68_0.json: all non-vacuity guards passed
+
+GSM8K 20-shot, greedy. `cold` computes every prefill; `cached` resends the same
+prompts once the GPU pool has turned over, so its prefill comes from L1.
+
+tag                        pass     strict  lenient  ttft p50    ext    apc  covered  objects  l1 end  no ####
+A_eager_n120_l68_0         cold      0.908    0.908      80.5  0.000  0.000    0.000     5792   0.749        0
+A_eager_n120_l68_0         cached    0.908    0.908      79.6  0.961  0.000    0.961     5820   0.752        0
+A_lazy_n120_l68_0          cold      0.925    0.925      82.5  0.000  0.000    0.000     5536   0.716        0
+A_lazy_n120_l68_0          cached    0.925    0.925      80.4  0.935  0.000    0.935     5660   0.732        0
+A_off_n120_l68_0           cold      0.900    0.900      74.6    nan  0.000    0.000        0   0.000        1
+A_off_n120_l68_0           cached    0.908    0.908      73.5    nan  0.000    0.000        0   0.000        0
+
+L1 over each pass, sampled once a second. Under a budget above the eviction
+watermark the fill sawtooths, so the peak and the trough say more than the end.
+
+tag                        pass      budget   peak    min    end  peak GB  objects  evictions
+A_eager_n120_l68_0         cold         68G  0.749  0.000  0.749     50.9     5792          0
+A_eager_n120_l68_0         cached       68G  0.752  0.749  0.752     51.2     5820          0
+A_lazy_n120_l68_0          cold         68G  0.716  0.000  0.716     48.7     5536          0
+A_lazy_n120_l68_0          cached       68G  0.732  0.716  0.732     49.7     5660          0
+A_off_n120_l68_0           cold         68G  0.000  0.000  0.000      0.0        0          0
+A_off_n120_l68_0           cached       68G  0.000  0.000  0.000      0.0        0          0
+
+TTFT on the `cached` pass, paired by question against the matching `off` run.
+The pairing removes the prompt-length spread, which is far larger than the effect;
+`p` is a two-sided sign test on the 120 paired differences.
+
+tag                        against                     p50 off      p50    d p50   d mean   faster       p
+A_eager_n120_l68_0         A_off_n120_l68_0               73.5     79.4    +5.7ms    +6.7ms   34/120   0.000
+A_lazy_n120_l68_0          A_off_n120_l68_0               73.5     80.3    +5.9ms    +7.2ms   25/120   0.000
+
+Within a config: cached vs cold (same engine, same prompts; the
+only difference is that the KV was fetched instead of computed).
+
+tag                     strict delta   same text  same answer
+A_eager_n120_l68_0            +0.000      81/120      120/120
+A_lazy_n120_l68_0             +0.000      85/120      120/120
+A_off_n120_l68_0              +0.008      92/120      117/120
+
+Across repeats of one config (`cached` pass): the noise floor. Two runs of the
+same config on the same prompts differ only by batch composition and engine
+state, so whatever they disagree on cannot be attributed to a policy.
+
+config n conc                 strict   same text  same answer
+
+Across configs, `cached` pass against the matching `off` run (recompute
+reference). Exact text identity is a diagnostic, not the criterion -- see the
+module docstring.
+
+tag                        against                     strict delta   same text  same answer  divergence p50
+A_eager_n120_l68_0     A_off_n120_l68_0              +0.000      80/120      118/120              60
+A_lazy_n120_l68_0      A_off_n120_l68_0              +0.017      81/120      118/120              74
+
+Store ledgers:
+  A_lazy_n120_l68_0      {'admitted': 190, 'emitted': 177, 'emitted_overdue': 0, 'emitted_deferral_drains': 24360, 'dropped_evicted': 10, 'dropped_evicted_tokens': 11520, 'dropped_deferral_drains': 2742, 'rejected_unhashed': 0, 'rejected_prefix_broken': 0, 'dropped_on_request_drop': 0, 'dropped_failed_store': 0, 'dropped_id_reuse': 0, 'throttled_drains': 0, 'drain_steps': 5646, 'free_queue_blocks_read': 172859, 'requests_validated': 270, 'blocks_validated': 46229, 'pending': 3}
+
+Guards (a violated guard makes that row's score meaningless):
+  A_eager_n120_l68_0     clean
+  A_lazy_n120_l68_0      clean
+  A_off_n120_l68_0       clean
