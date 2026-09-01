@@ -1,7 +1,7 @@
 # PR draft: lazy_offloading_policy_pr
 
 Branch: `lazy_offloading_policy_pr` on BoJiang03/LMCache, base `LMCache/LMCache:dev`.
-Three commits: policy core, connector wiring, docs. Slimmed 2026-08-31 (record 5): six unused policy mechanisms deleted, the L1 pressure-stats commit split out, all tests moved to dev. Refactored 2026-08-31 (record 6): the mode-branching pending-store facade replaced by the `OffloadPolicy` interface upstream already had.
+Eight commits at f2d0ab5f: policy core, connector wiring, docs, then five reduction passes (2026-08-31 records 5-7, 2026-09-01 records 1-2 and the drain flattening). +1,675/-586 against base 117a0b88; 345 of the insertions are docs. Squash-or-keep before opening is Bo's call.
 
 ## Title
 
@@ -22,7 +22,7 @@ Results TL;DR, eviction-aware lazy vs the current eager default, same engine and
 - Why: lazy stores only what the GPU pool is about to evict, ~1/3 of eager's write volume into the same 250 GB L1, so L1 turns over ~3x slower -- effectively a larger cache. At saturation the effect is direct: eager's L1 lookup hit rate drops to 30% (entries evicted before their reuse arrives) while lazy holds 41%, and the served external share follows (32% vs 43%).
 - GSM8K accuracy through the lazy path matches the no-cache baseline, and the store ledger closes exactly.
 
-Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_max_deferral_seconds=30; store release was left at lru_tail, which is what this PR does unconditionally. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
+Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arms ran the development recipe of this policy: the shipped defaults plus lazy_offload_max_deferral_seconds=30 and an adaptive danger floor (held at 8192 blocks) that the final PR removed; store release was left at lru_tail, which is what this PR does unconditionally. CONC=40 and CONC=72 were re-measured on the shipped code and defaults (deferral 30 s as the only extra key): the shape holds. At 40 TTFT improves at every percentile (p99 -11%) with throughput within 3% of eager; at 72 TTFT p99 -27%, throughput +7.6%, +6.8% requests completed, lookup hit rate 32.5% -> 37.9%. Rerun artifacts: records/2026/09/01/artifacts/agentx_e40_l40 and agentx_e72_l72 on the dev branch. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
 
 | CONC | TTFT avg (s) | e2e latency avg (s) | output tok/s | requests completed |
 |---|---|---|---|---|
@@ -48,7 +48,7 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
 
 **Special notes for your reviewers**:
 
-- On the diff size: +2.6k lines, of which 0.4k is docs. Production code is +2.2k in two independently reviewable commits: the policy core (1.6k, self-contained new files with no vLLM imports) and the connector wiring (0.6k). Reviewing commit by commit is recommended.
+- On the diff size: +1.7k lines, of which 0.3k is docs. Production code is +1.3k in two independently reviewable units: the policy package (self-contained new files with no runtime vLLM imports) and the connector wiring. Reviewing the policy package first is recommended.
 - FIFO remains available unchanged via `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are untouched; the buffer-phase reallocation hazard behind the observation above is already documented in `docs/design/integration/vllm/lazy_offload.md`, and what to do about the default is left for a separate discussion.
 - The policy ships three knobs: `lazy_offload_horizon_steps`, `lazy_offload_max_drain_per_step`, and `lazy_offload_max_deferral_seconds`. Everything the development branch carried beyond those (a break-even prefix gate, an allocation-announcement path, content deduplication, a covered-prefix advance, an adaptive danger floor, and a per-step block-volume cap) was removed before this PR: measured over four 33-minute arms and 14,799 admissions, each of those either never fired or moved under 0.1% of the traffic, while the deferral deadline released 57-77% of all emissions.
 - Both policies implement one `OffloadPolicy` abstract base class in `lazy_offload_policy/base.py`, the abstract interface the package already had; `create_offload_policy()` selects between them. `LazyOffloadPendingStore` is removed: after the manager took over the lifecycle its remaining job was branching on the configured mode in every method.
@@ -100,13 +100,12 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       l1 peak 0.75 under the 0.8 watermark, 0 evictions, all guards clean.
       Ledger closes: admitted 189 = emitted 178 + dropped_evicted 8 +
       pending 3.
-- [ ] **open, needs Bo**: the CONC sweep in the body above was measured
-      with `lazy_offload_danger_floor_max_blocks=8192`, a knob this PR no
-      longer has. The floor raised 1-6 times in 35-58k drain steps per arm,
-      so the numbers should be unchanged, but the body currently reports a
-      config the PR cannot express. Either re-run one lazy arm (CONC=40,
-      ~40 min, the e40 eager reference already exists) with the shipped
-      defaults, or say so explicitly in the body.
+- [x] resolved 2026-09-01: the sweep's danger-floor config is now named in
+      the body's setup paragraph, and CONC=40 and 72 were re-run as full
+      eager/lazy pairs on the shipped code and defaults. 40 is a wash with a
+      TTFT tail win; 72 reproduces the flagship row slightly softer (e2e
+      -8.4%, throughput +7.6%, +6.8% requests, hit rate +5.4 points). Tables
+      kept as measured per Bo; reruns cited beside them.
 - [x] all tests moved to dev per Bo. The one test file left in the PR,
       `tests/v1/test_lazy_offload_pending_store.py`, is the pre-existing
       upstream suite adapted to the interfaces this PR changes -- left
@@ -165,8 +164,35 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       admitted 189 = emitted 178 + dropped_evicted 10 + pending 1, and
       requests_validated/dropped_evicted land where gate 4 put them, which
       is the end-to-end check on the rewritten reverse index.
-- [ ] **open, Bo's call**: `tests/v1/test_lazy_offload_policy.py` is 174 of
-      the 2,594 insertions and the PR's only test. The carve-out that kept it
-      (leaving upstream's file untouched would be red on merge) no longer
-      applies now that `lazy_offload_pending_store.py` is deleted outright.
-      Moving it to dev takes the PR to ~2,420 insertions and zero tests.
+- [x] resolved 2026-09-01 per Bo: moved to dev
+      (records/2026/09/01/artifacts/pr_tests/), PR at zero tests. The flag
+      two sections up still applies; that file restores minimal coverage in
+      one commit if a reviewer insists.
+
+
+## After the third/fourth squeeze and the drain flattening (2026-09-01)
+
+- [x] docstrings and comments cut to repo density (0.64 -> 0.43),
+      `OffloadPolicy` restored as an ABC, `BlockPoolReader` and three sensor
+      counters dropped, eviction-aware design doc rewritten (eight stale
+      claims), last test file moved to dev. 2,594 -> 2,015 insertions
+      (records 2026/09/01 1-2).
+- [x] drain flattened to a single full-scan pass (f2d0ab5f): reverse index,
+      allocation-touched set, pin-cascade window widening, GPUBlockPoolView,
+      DrainResult and _PendingOperations all removed; sensor counters cut to
+      the closing ledger plus emitted_overdue. 2,015 -> 1,675 insertions;
+      eviction_aware.py 1,006 -> 458 lines. Periodic ledger logging kept:
+      SIGINT beats the shutdown hook in practice (all 7 ledger lines of the
+      gate-5 lazy log were periodic).
+- [x] ruff clean; 12 parked policy tests plus 8 new drain behavior smokes
+      pass against the PR tree.
+- [x] gsm8k gate 6 on the flattened tree: guards clean on all three arms,
+      ledger closes 190 = 177 + 11 + 2, decisions match gate 5 (admitted and
+      emitted identical), TTFT deltas unchanged. Artifacts:
+      records/2026/09/01/artifacts/gsm8k_squeeze3.
+- [x] agentx reruns on shipped defaults, PR-tree provenance verified by
+      PYTHONPATH, log line-number fingerprints and the three-field config
+      repr: CONC=40 pair (records/2026/09/01/artifacts/agentx_e40_l40) and
+      CONC=72 pair (agentx_e72_l72). 72's ledger: 67% of emissions from the
+      30 s deadline, 41% of admitted ops dropped to eviction -- the write
+      filter at saturation.
