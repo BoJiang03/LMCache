@@ -1,107 +1,52 @@
 # PR info: multimodal cache keys
 
-Branch `multi_modal_pr`. Draft body below.
+Branch `multi_modal_pr`. Everything below the rule is the paste-ready body,
+one paragraph per line because GitHub renders a single newline as a line
+break. Do not re-wrap it.
+
+Title: `[Bugfix][vLLM] Different images can share the same multimodal cache keys`
 
 ---
 
-## [Bugfix][vLLM] Different images can share the same multimodal cache keys
+**What this PR does / why we need it**:
 
 ### Problem
 
-The multimodal placeholder substitution reduced each image's identifier to
-16 bits and repeated that one value across the whole placeholder span. Once a
-run has seen a few hundred same-shape images, two different images share every
-cache key with roughly even odds, and the second one is served the first one's
-KV. Issue #3301.
-
-Reproduced on Qwen2.5-VL-3B: 6 of 800 distinct images cross-hit, with wrong
-answers.
+LMCache derives cache keys from token ids alone, and vLLM emits the same placeholder token id for every multimodal item, so the connectors substitute an item's placeholder span with values derived from its `mm_hash` before hashing. `hex_hash_to_int16()` reduced that hash to 16 bits and wrote the one value across the whole span. The identifier is a blake3 hexdigest by default, so this keeps only its last four hex characters: a colliding identifier is constructed, not searched for. Two images that collide share every cache key their spans touch, and the second is served the first one's KV. Issue #3301, which the stale bot closed in August without a fix.
 
 ### Fix
 
-`mm_hash_to_token_values()` gives every placeholder position its own 31-bit
-value, derived from the whole identifier with SHA-256 in counter mode. A chunk
-covering k placeholder tokens then carries 31*k bits of image identity, and the
-position inside the item is part of the value, which is what vLLM already does
-with its `(mm_hash, offset)` extra keys. Prefixes stay stable when the save path
-truncates.
+`mm_hash_to_token_values()` gives every placeholder position its own 31-bit value, expanded from the full identifier with SHA-256 in counter mode. Widening the reduction alone would not have been enough: one value repeated across a span carries that value's entropy however long the span is, so a chunk overlapping k placeholder tokens now carries 31*k bits instead of 31. Values are position-dependent, mirroring the `(mm_hash, offset)` extra keys vLLM already appends to its own block hashes, and prefixes stay stable so a span the save path truncates hashes consistently with the full one. 31 bits keeps them positive in a signed int32, the narrowest type token ids pass through downstream. Collision resistance is now bounded by LMCache's 64-bit chunk hash, the same bound text keying has.
 
-No interface change, and both substitution paths are fixed. 384 lines: the key
-derivation in `utils.py`, connector wiring for three vLLM versions, unit tests,
-and a design doc.
+No interface change, both substitution paths are fixed, 398 lines including unit tests and a design doc.
 
 ### Validation
 
-15 models, each run twice on the MP path: the first pass fills the cache, the
-second reads it back. The table counts answers that changed between the two
-passes.
+[`repro/mm_hash_collision_repro.py`](https://github.com/BoJiang03/LMCache/blob/multi_modal_repro/repro/mm_hash_collision_repro.py) runs the MP path end to end: a real cache server subprocess, a vLLM engine on `LMCacheMPConnector`, 800 distinct 448x448 images that differ only in a corner pattern, six dominant colours between them. It records the identifiers the connector actually sees, finds a pair that collides under the old 16-bit reduction, and asks for each image's colour.
 
-Measured with this change based on dev at `09bc14c0`, on vLLM 0.27.1, torch
-2.13.0 and transformers 5.15.1. The counts move from run to run: repeating
-Phi-4-multimodal on the same build gave 12 changed answers instead of 10, with
-the wrong/right split reversed. Read them as magnitudes, not as exact figures.
+On dev at `09bc14c0` it exits 1: images 280 and 513 have identifiers `2a7c4bc5...0590` and `cf0b1a39...0590`, both truncating to `0x0590`, and the yellow one is answered `Purple`. With this change it exits 0 on the same pair, each image answered from its own KV.
 
-| Model | Benchmark | Hit rate | pass 1 vs plain vLLM | pass 2 vs pass 1 | became wrong / right | yes->no / no->yes |
-|---|---|---|---|---|---|---|
-| Qwen/Qwen2.5-VL-3B-Instruct | MME 2374 | 0.984 | 0 | 24 | 13 / 11 | 11 / 13 |
-| zai-org/GLM-4.6V-Flash | MME 2374 | 0.976 | 0 | 18 | 11 / 7 | 11 / 7 |
-| Qwen/Qwen2-VL-2B-Instruct | MME 2374 | 0.984 | 0 | 18 | 10 / 8 | 10 / 8 |
-| moonshotai/Kimi-VL-A3B-Instruct | MME 2374 | 0.989 | 0 | 13 | 8 / 5 | 7 / 6 |
-| deepseek-ai/DeepSeek-OCR | MME 2374 | 0.989 | 0 | 11 | 8 / 3 | 5 / 6 |
-| microsoft/Phi-4-multimodal-instruct | MME 2374 | 0.990 | 0 | 10 | 2 / 8 | 4 / 6 |
-| mistralai/Mistral-Small-3.1-24B-Instruct-2503 | MME 2374 | 0.996 | 5 | 8 | 4 / 4 | 5 / 3 |
-| Qwen/Qwen3-VL-2B-Instruct | MME 2374 | 0.983 | 0 | 8 | 2 / 6 | 3 / 5 |
-| allenai/Molmo2-4B | MME 2374 | 0.992 | 0 | 7 | 2 / 5 | 5 / 2 |
-| OpenGVLab/InternVL3_5-2B-HF | MME 2374 | 0.983 | 1 | 6 | 4 / 2 | 1 / 5 |
-| Qwen/Qwen3.8-27B | MME 2374 | 1.059 | 0 | 4 | 4 / 0 | 4 / 0 |
-| Qwen/Qwen3-Omni-30B-A3B-Instruct | MMAU 1000 | 0.975 | 0 | 2 | 1 / 1 | n/a |
-| Qwen/Qwen3.6-27B | MME 2374 | 1.059 | 0 | 2 | 1 / 1 | 1 / 1 |
-| google/gemma-4-E4B-it | MME 2374 | 1.008 | 0 | 1 | 0 / 1 | 1 / 0 |
-| google/gemma-3-4b-it | MME 2374 | 0.965 | 0 | 0 | 0 / 0 | 0 / 0 |
+The full acceptance suite is about 9500 lines and stays on [`multi_modal_repro`](https://github.com/BoJiang03/LMCache/tree/multi_modal_repro). This PR carries only the unit tests for the key derivation and the connector keying.
 
-A hit rate above 1.0 means vLLM's own prefix cache served part of the request.
+**Special notes for your reviewers**:
 
-`pass 1 vs plain vLLM` is a control: the first pass only writes, so nothing
-LMCache does can change what is computed, and the column should be 0. It is not
-a byte-identical check. The baseline runs in its own process, so raw text
-differs in a few dozen places per model without moving any answer; Mistral's 5
-and InternVL's 1 are that same nondeterminism crossing a parse boundary.
+Multimodal entries cached before this change miss afterwards rather than collide.
 
-Totals across the 14 MME models: 130 changed answers out of 33236 questions
-(0.39%), worst model 24 of 2374 (1.0%), 69 became wrong against 61 became
-right, 68 went yes->no against 62 no->yes. Both splits are close to even, which
-is what an unbiased perturbation looks like rather than a systematic
-corruption.
+`apply_mm_hashes_to_token_ids` must be given the full prompt or a prefix of it, since placeholder offsets are absolute and a suffix would substitute the wrong positions with no error raised. All five call sites satisfy this and the docstring now says so.
 
-The harness that produced this table is about 9500 lines and is deliberately
-kept out of this PR. It is on the [`multi_modal_repro`](https://github.com/BoJiang03/LMCache/tree/multi_modal_repro) branch. This PR carries
-only the unit tests for the key derivation and the connector keying.
+A chunk overlapping only one or two placeholder tokens, at a span boundary, carries 31 or 62 bits rather than 64, and damage there would be confined to that one chunk since its neighbour overlaps many more and diverges.
+
+Routing `mm_hash` through `TokenDatabase._hash_tokens(extra_keys=...)` is the vLLM-aligned design and stays a TODO in the design doc. It needs the lookup protocol, the MP connector metadata and the SDK to carry per-chunk extra keys.
 
 ### Unrelated bugs found while validating
 
-Neither is caused by this change and neither one's code is in this PR. Each is
-one commit on its own branch.
+Neither is caused by this change and neither one's code is in this PR. Each is one commit on its own branch.
 
-**Torch-fallback `lmcache_memcpy_async` is not stream-ordered.** Branch
-[`fix_memcpy_stream_order`](https://github.com/BoJiang03/LMCache/tree/fix_memcpy_stream_order). Silent data corruption. The pointer-mode fallback
-issued a synchronous `cudaMemcpy`, which runs on the legacy default stream and
-is unordered against PyTorch's non-blocking streams. The MP server queues the
-paged-KV gather kernel on the cache context's stream and then copies the
-staging slot to the pinned host object; when the gather was still queued, the
-copy read the slot's previous contents and stored another chunk's KV under this
-chunk's key. The retrieve path has the mirror hazard. Only affects deployments
-where the compiled `lmcache.cuda_ops` extension fails to load. Fixed by
-mirroring the native path: `cudaMemcpyAsync` on the current torch stream, split
-at `cudaHostRegister` boundaries.
+**Torch-fallback `lmcache_memcpy_async` is not stream-ordered.** Branch [`fix_memcpy_stream_order`](https://github.com/BoJiang03/LMCache/tree/fix_memcpy_stream_order). Silent data corruption. The pointer-mode fallback issued a synchronous `cudaMemcpy`, which runs on the legacy default stream and is unordered against PyTorch's non-blocking streams, so the copy of a staging slot could read the slot's previous contents while the gather kernel was still queued, storing another chunk's KV under this chunk's key. The retrieve path has the mirror hazard. Only affects deployments where the compiled `lmcache.cuda_ops` extension fails to load. Fixed by mirroring the native path: `cudaMemcpyAsync` on the current torch stream, split at `cudaHostRegister` boundaries.
 
-**An expired read lock is reported as a write collision.** Branch
-[`fix_l1_read_lock_reason`](https://github.com/BoJiang03/LMCache/tree/fix_l1_read_lock_reason). Diagnostics only, no data effect.
-`read_prefetched_results` labelled `unsafe_read`'s `KEY_NOT_READABLE` as
-`reason="write_locked"`, but `unsafe_read` never consults the write lock. The
-real condition is an expired read lock: `reserve_read` stamps expiry at lookup
-time and only `lock()` refreshes it, so any lookup-to-transfer gap longer than
-`read_ttl_seconds` silently unlocks the entry. The label is the only signal
-separating the two causes and it pointed at a writer that did not exist, which
-cost real debugging time on a 7699-failure incident. Renamed to
-`read_lock_expired` on the l1_retrieve path, plus one aggregate log line naming
-the count and the configured TTL.
+**An expired read lock is reported as a write collision.** Branch [`fix_l1_read_lock_reason`](https://github.com/BoJiang03/LMCache/tree/fix_l1_read_lock_reason). Diagnostics only. `read_prefetched_results` labelled `unsafe_read`'s `KEY_NOT_READABLE` as `reason="write_locked"`, but `unsafe_read` never consults the write lock. The real condition is an expired read lock: `reserve_read` stamps expiry at lookup time and only `lock()` refreshes it, so a lookup-to-transfer gap longer than `read_ttl_seconds` silently unlocks the entry. That label is the only signal separating the two causes and it pointed at a writer that did not exist. Renamed to `read_lock_expired` on the l1_retrieve path, plus one aggregate log line naming the count and the configured TTL.
+
+**If applicable**:
+
+- [x] this PR contains user facing changes - docs added
+- [x] this PR contains unit tests
