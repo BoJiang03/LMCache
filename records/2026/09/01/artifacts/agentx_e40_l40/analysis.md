@@ -3,7 +3,7 @@
 Purpose: the PR body's CONC sweep was measured with the 08/29 recipe keys,
 including lazy_offload_danger_floor_max_blocks=8192, which the shipped PR no
 longer has. This pair reruns CONC=40 on the PR code (lazy_offloading_policy_pr
-@ f2d0ab5f, the 1675-insertion flattened drain) with only shipped keys:
+@ 1f037adc, the 1675-insertion flattened drain) with only shipped keys:
 EVICTION_AWARE, horizon_steps 2.5, max_deferral_seconds 30. Everything else
 matches the original sweep: Trinity-Large-Thinking-FP8-Block TP=4 GPUs 1-4,
 fp8 KV, max len 262144, util 0.90, fresh MP server (250 GB L1, chunk 256,

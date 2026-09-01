@@ -1,7 +1,7 @@
 # Agentx CONC=72 pair rerun on shipped PR defaults (2026-09-01)
 
 Same setup as the CONC=40 rerun (../agentx_e40_l40/analysis.md): PR code
-f2d0ab5f, shipped keys only (EVICTION_AWARE, horizon 2.5, deferral 30 s),
+1f037adc, shipped keys only (EVICTION_AWARE, horizon 2.5, deferral 30 s),
 fresh MP server and engine per arm, aiperf inferencex-agentx-mvp, seed 1234,
 1800 s + 600 s grace. Purpose: verify the sweep's high-load flagship row
 (CONC=72, where the original table showed the largest lazy wins) still

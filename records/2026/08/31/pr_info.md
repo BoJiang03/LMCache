@@ -1,7 +1,7 @@
 # PR draft: lazy_offloading_policy_pr
 
 Branch: `lazy_offloading_policy_pr` on BoJiang03/LMCache, base `LMCache/LMCache:dev`.
-Eight commits at f2d0ab5f: policy core, connector wiring, docs, then five reduction passes (2026-08-31 records 5-7, 2026-09-01 records 1-2 and the drain flattening). +1,675/-586 against base 117a0b88; 345 of the insertions are docs. Squash-or-keep before opening is Bo's call.
+Eight commits at 1f037adc: policy core, connector wiring, docs, then five reduction passes (2026-08-31 records 5-7, 2026-09-01 records 1-2 and the drain flattening). +1,675/-586 against base 117a0b88; 345 of the insertions are docs. Squash-or-keep before opening is Bo's call.
 
 ## Title
 
@@ -177,7 +177,7 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       counters dropped, eviction-aware design doc rewritten (eight stale
       claims), last test file moved to dev. 2,594 -> 2,015 insertions
       (records 2026/09/01 1-2).
-- [x] drain flattened to a single full-scan pass (f2d0ab5f): reverse index,
+- [x] drain flattened to a single full-scan pass (1f037adc): reverse index,
       allocation-touched set, pin-cascade window widening, GPUBlockPoolView,
       DrainResult and _PendingOperations all removed; sensor counters cut to
       the closing ledger plus emitted_overdue. 2,015 -> 1,675 insertions;
