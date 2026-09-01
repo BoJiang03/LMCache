@@ -41,9 +41,14 @@ Prompt token sources over the profiling window (samples delta, _total):
 
 L1 traffic (MP counters, whole arm): writes e48 1,175,091 chunks vs l48
 369,638 chunks (lazy writes 31% of eager's volume); reads e48 2,061,377 vs
-l48 1,070,902. L1 usage at end: 0.73 vs 0.69 of 250 GB -- neither arm
-filled L1, so no eviction pressure this round; the 500 GB question is
-still open for longer runs.
+l48 1,070,902. L1 usage at end: 0.73 vs 0.69 of 250 GB. Corrected
+08-31 (record 4 section 3): that end value is the LRU watermark, not
+headroom. Usage rises to ~0.80 by t+250-400 s in every arm and then
+sawtooths between 0.65 and 0.84 for the rest of the run, so both arms
+evict continuously from about minute 5. The store is dense at 122,880
+B/token, so 250 GiB holds only ~1.7M tokens -- half the GPU pool's
+3,250,930 -- and entries live 276-336 s (lazy) or 164 s (eager). The
+500 GB question is not open, it is the binding constraint.
 
 Lazy ledger (l48): admitted=3523 emitted=2687 dropped_evicted=831
 (6,394,880 tokens) rejected_prefix_broken=1194 rejected_unhashed=63
