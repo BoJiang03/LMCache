@@ -38,6 +38,8 @@ A chunk overlapping only one or two placeholder tokens, at a span boundary, carr
 
 Routing `mm_hash` through `TokenDatabase._hash_tokens(extra_keys=...)` is the vLLM-aligned design and stays a TODO in the design doc. It needs the lookup protocol, the MP connector metadata and the SDK to carry per-chunk extra keys.
 
+The `vllm_v1_adapter.py` hunk is not part of the keying change. `RequestTracker.update` restores a preempted request's `token_ids` from the full token list because, in its own words, "the lookup uses `request.all_token_ids`"; the multimodal branch of `get_num_new_matched_tokens` was the one place that did not, rebuilding the query from `prompt_token_ids` alone. With `save_decode_cache` on the resume then recomputes and re-stores decode chunks the save path had already written. Nothing is served wrong, and under the default `save_decode_cache=False` the decode phase stores nothing and both forms hit the same chunks. [`tests/v1/test_v1_adapter_mm_preemption_lookup.py`](https://github.com/BoJiang03/LMCache/blob/multi_modal/tests/v1/test_v1_adapter_mm_preemption_lookup.py) on the dev branch pins the round trip. Happy to split it into its own PR if you would rather.
+
 ### Unrelated bugs found while validating
 
 Neither is caused by this change and neither one's code is in this PR. Each is one commit on its own branch.
