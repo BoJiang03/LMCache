@@ -1,0 +1,200 @@
+diff --git a/docs/design/integration/vllm/lazy_offload.md b/docs/design/integration/vllm/lazy_offload.md
+index 757f4a98..40ad2272 100644
+--- a/docs/design/integration/vllm/lazy_offload.md
++++ b/docs/design/integration/vllm/lazy_offload.md
+@@ -366,10 +366,10 @@ An old batch retains its submission epoch while a successor becomes active, so
+ its receipt can release pins without ending the successor's shared session.
+ Overlapping emission remains a logic error because worker receipts are keyed
+ only by request id. The completion receipt balances the pins with
+-`free_blocks()`, returning the blocks to vLLM's own placement for a freed
+-cached block. Failed stores are reported alongside completion receipts,
+-allowing the scheduler to break the request's prefix chain before considering
+-later chunks.
++`free_blocks(prepend=True)`: a block that now has a lower-tier copy returns to
++the eviction head. Failed stores are
++reported alongside completion receipts, allowing the scheduler to break the
++request's prefix chain before considering later chunks.
+ 
+ Configuration in `kv_connector_extra_config`:
+ 
+@@ -379,12 +379,25 @@ lmcache.mp.lazy_offload_policy = EVICTION_AWARE        # default
+ lmcache.mp.lazy_offload_horizon_steps = 2.5
+ lmcache.mp.lazy_offload_max_drain_per_step = 64
+ lmcache.mp.lazy_offload_max_deferral_seconds = 0.0     # 0: no deadline
++lmcache.mp.lazy_offload_store_release = lru_tail       # or: eviction_head
+ 
+ # Explicit legacy FIFO mode only
+ lmcache.mp.lazy_offload_threshold = 100
+ lmcache.mp.lazy_offload_select_count = 10
+ ```
+ 
++`lazy_offload_store_release` decides where a completed store batch's blocks
++re-enter vLLM's free queue. A batch pins its blocks out of the queue while the
++store is in flight and has to give the reference back, so the only choice is
++the position: `lru_tail` (the default) uses vLLM's own placement for a freed
++cached block, keeping the just-stored prefix available to the next turn of the
++same session, while `eviction_head` makes the blocks the next allocation
++victims because their content now has a copy below the GPU. On multi-turn
++workloads whose reuse distance is shorter than the pool turnover, the head
++placement evicts exactly the prefix the next turn asks for; it pays only when
++the working set exceeds the pool by enough that stored prefixes would be
++evicted before reuse either way.
++
+ Lazy offload requires vLLM prefix caching. Eviction-aware mode depends on block
+ hashes to prove that buffered data still occupies the same GPU blocks; the
+ connector therefore fails construction when lazy offload is enabled without
+diff --git a/docs/source/mp/configuration.rst b/docs/source/mp/configuration.rst
+index 4811e07e..cbfafb18 100644
+--- a/docs/source/mp/configuration.rst
++++ b/docs/source/mp/configuration.rst
+@@ -765,6 +765,12 @@ All connector-level options are passed through
+        may wait before it is emitted regardless of eviction pressure. Zero
+        leaves emission entirely to the danger window. Set it below the reuse
+        interval the workload has to beat.
++   * - ``lmcache.mp.lazy_offload_store_release``
++     - ``lru_tail``
++     - Where a completed store batch's blocks re-enter vLLM's free queue.
++       ``lru_tail`` keeps the just-stored prefix available to the session's
++       next turn; ``eviction_head`` makes the blocks the next allocation
++       victims because their content now has a copy below the GPU.
+    * - ``lmcache.mp.lazy_offload_threshold``
+      - ``100``
+      - ``FIFO`` only: number of finished buffered requests that triggers a
+diff --git a/lmcache/integration/vllm/lazy_offload_manager.py b/lmcache/integration/vllm/lazy_offload_manager.py
+index 9a6056f0..d7955174 100644
+--- a/lmcache/integration/vllm/lazy_offload_manager.py
++++ b/lmcache/integration/vllm/lazy_offload_manager.py
+@@ -9,7 +9,9 @@ connector only forwards lifecycle events and applies the returned actions.
+ 
+ # Standard
+ from dataclasses import dataclass, field
+-from typing import TYPE_CHECKING, Protocol
++from enum import Enum
++from typing import TYPE_CHECKING, Protocol, cast
++import inspect
+ 
+ # First Party
+ from lmcache.integration.vllm.lazy_offload_policy import create_offload_policy
+@@ -34,6 +36,54 @@ if TYPE_CHECKING:
+ logger = init_logger(__name__)
+ 
+ 
++class StoreReleasePlacement(Enum):
++    """Where a completed store batch's blocks re-enter vLLM's free queue.
++
++    vLLM allocates from the head, so the position decides how long the
++    just-stored prefix keeps its GPU-side prefix-cache entry.
++
++    Attributes:
++        EVICTION_HEAD: Requeue at the head, making the blocks the next
++            allocation victims. Their content has a copy below the GPU, so
++            spending them first spares blocks that do not. Pays only when the
++            working set is far larger than the pool.
++        LRU_TAIL: Requeue at the tail, vLLM's own placement for a freed cached
++            block (the default). In a multi-turn workload the just-stored
++            prefix is what the session's next turn asks for.
++    """
++
++    EVICTION_HEAD = "eviction_head"
++    LRU_TAIL = "lru_tail"
++
++
++def _accepts_prepend(pool_cls: "type[BlockPool]") -> bool:
++    """Whether ``pool_cls.free_blocks`` accepts the ``prepend`` parameter.
++
++    Releases without the parameter place freed blocks themselves (cached
++    ones at the tail), so a configured ``eviction_head`` placement falls
++    back to the tail there -- an eviction-quality degradation, not a
++    correctness one.
++
++    Args:
++        pool_cls: The concrete block-pool class in use.
++
++    Returns:
++        True when ``prepend`` can be passed.
++    """
++    try:
++        supported = "prepend" in inspect.signature(pool_cls.free_blocks).parameters
++    except (TypeError, ValueError):  # pragma: no cover - defensive
++        supported = False
++    if not supported:
++        logger.info(
++            "%s.free_blocks has no 'prepend' parameter; completed-store "
++            "blocks will requeue at the free-queue tail instead of the "
++            "eviction head",
++            pool_cls.__name__,
++        )
++    return supported
++
++
+ class StoreCompletionTracker(Protocol):
+     """Aggregate per-worker completion counts for one submitted store."""
+ 
+@@ -166,19 +216,40 @@ class LazyOffloadManager:
+         """Create an unbound scheduler-side manager.
+ 
+         Args:
+-            configs: vLLM connector extra configuration. The lazy-offload
++            configs: vLLM connector extra configuration. Recognized here:
++                ``lmcache.mp.lazy_offload_store_release``, one of
++                ``"lru_tail"`` (default) or ``"eviction_head"``; see
++                :class:`StoreReleasePlacement`. The remaining lazy-offload
+                 keys are read by the policy, which is built at bind time.
+             group_tokens_per_block: Token capacity for each KV-cache group,
+                 used to estimate the next scheduler step's block pressure.
+             completion_tracker: Scheduler adapter view that aggregates
+                 per-worker completion receipt counts.
++
++        Raises:
++            ValueError: If ``lmcache.mp.lazy_offload_store_release`` names an
++                unknown placement.
+         """
++        placement = cast(
++            str,
++            (configs or {}).get(
++                "lmcache.mp.lazy_offload_store_release",
++                StoreReleasePlacement.LRU_TAIL.value,
++            ),
++        )
++        try:
++            self._store_release = StoreReleasePlacement(placement)
++        except ValueError as e:
++            raise ValueError(
++                f"Unknown lazy-offload store release placement: {placement}"
++            ) from e
+         self._configs = dict(configs or {})
+         self._group_tokens_per_block = list(group_tokens_per_block)
+         self._completion_tracker = completion_tracker
+         # Both are set by bind_block_pool: the policy reads the pool.
+         self._gpu_block_pool: "BlockPool | None" = None
+         self._policy: OffloadPolicy | None = None
++        self._prepend_supported = False
+         self._requests = LazyOffloadRequestRegistry()
+ 
+     def bind_block_pool(self, gpu_block_pool: "BlockPool") -> None:
+@@ -204,6 +275,7 @@ class LazyOffloadManager:
+             )
+         self._gpu_block_pool = gpu_block_pool
+         self._policy = create_offload_policy(self._configs, gpu_block_pool)
++        self._prepend_supported = _accepts_prepend(type(gpu_block_pool))
+ 
+     def add_store_candidate(self, metadata: LMCacheMPRequestMetadata) -> None:
+         """Buffer one store candidate produced by the request tracker.
+@@ -297,7 +369,16 @@ class LazyOffloadManager:
+             ):
+                 continue
+             batch = self._requests.complete_batch(request_id)
+-            pool.free_blocks([pool.blocks[block_id] for block_id in batch.block_ids])
++            batch_blocks = [pool.blocks[block_id] for block_id in batch.block_ids]
++            if (
++                self._store_release is StoreReleasePlacement.EVICTION_HEAD
++                and self._prepend_supported
++            ):
++                # The blocks have a copy below the GPU: requeue them at the
++                # eviction head so they are the next victims.
++                pool.free_blocks(batch_blocks, prepend=True)
++            else:
++                pool.free_blocks(batch_blocks)
+             if not self._require_policy().has_pending_request(
+                 request_id
+             ) and self._requests.can_end_session(request_id):

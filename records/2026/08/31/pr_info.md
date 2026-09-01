@@ -22,7 +22,7 @@ Results TL;DR, eviction-aware lazy vs the current eager default, same engine and
 - Why: lazy stores only what the GPU pool is about to evict, ~1/3 of eager's write volume into the same 250 GB L1, so L1 turns over ~3x slower -- effectively a larger cache. At saturation the effect is direct: eager's L1 lookup hit rate drops to 30% (entries evicted before their reuse arrives) while lazy holds 41%, and the served external share follows (32% vs 43%).
 - GSM8K accuracy through the lazy path matches the no-cache baseline, and the store ledger closes exactly.
 
-Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_max_deferral_seconds=30 and lazy_offload_store_release=lru_tail. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
+Benchmark setup: arcee-ai/Trinity-Large-Thinking-FP8-Block on 4x H200, TP=4, kv-cache-dtype fp8, max-model-len 262144, gpu-memory-utilization 0.90 (GPU KV cache 3.25M tokens, 26.5 GiB per rank); LMCache MP server with 250 GB CPU L1, chunk size 256, LRU. Workload: aiperf replay of a public agentic trace corpus (semianalysis-cc-traces-weka-062126-256k, inferencex-agentx-mvp scenario), 30 min benchmark plus 10 min grace per arm, fixed seed. Every arm starts cold (fresh MP server, fresh engine); the arms differ only in the lazy-offload connector keys. The lazy arm runs this PR's defaults plus lazy_offload_max_deferral_seconds=30; store release was left at lru_tail, which is what this PR does unconditionally. Baseline is the current default store-at-compute path ("eager" below). Driver script and raw per-arm artifacts (aiperf exports, metrics snapshots, store ledgers): [ab_chain.sh](https://github.com/BoJiang03/LMCache/blob/lazy_offloading_policy_dev/records/2026/08/31/artifacts/sweep/ab_chain.sh) and the surrounding [artifacts directory](https://github.com/BoJiang03/LMCache/tree/lazy_offloading_policy_dev/records/2026/08/31/artifacts). Values are eager -> lazy:
 
 | CONC | TTFT avg (s) | e2e latency avg (s) | output tok/s | requests completed |
 |---|---|---|---|---|
@@ -48,9 +48,9 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
 
 **Special notes for your reviewers**:
 
-- On the diff size: +2.7k lines, of which 0.4k is docs. Production code is +2.3k in two independently reviewable commits: the policy core (1.6k, self-contained new files with no vLLM imports) and the connector wiring (0.7k). Reviewing commit by commit is recommended.
+- On the diff size: +2.6k lines, of which 0.4k is docs. Production code is +2.2k in two independently reviewable commits: the policy core (1.6k, self-contained new files with no vLLM imports) and the connector wiring (0.6k). Reviewing commit by commit is recommended.
 - FIFO remains available unchanged via `lmcache.mp.lazy_offload_policy=FIFO`. Its threshold semantics are untouched; the buffer-phase reallocation hazard behind the observation above is already documented in `docs/design/integration/vllm/lazy_offload.md`, and what to do about the default is left for a separate discussion.
-- The policy ships three knobs: `lazy_offload_horizon_steps`, `lazy_offload_max_drain_per_step`, and `lazy_offload_max_deferral_seconds`, plus `lazy_offload_store_release` on the manager. Everything the development branch carried beyond those (a break-even prefix gate, an allocation-announcement path, content deduplication, a covered-prefix advance, an adaptive danger floor, and a per-step block-volume cap) was removed before this PR: measured over four 33-minute arms and 14,799 admissions, each of those either never fired or moved under 0.1% of the traffic, while the deferral deadline released 57-77% of all emissions.
+- The policy ships three knobs: `lazy_offload_horizon_steps`, `lazy_offload_max_drain_per_step`, and `lazy_offload_max_deferral_seconds`. Everything the development branch carried beyond those (a break-even prefix gate, an allocation-announcement path, content deduplication, a covered-prefix advance, an adaptive danger floor, and a per-step block-volume cap) was removed before this PR: measured over four 33-minute arms and 14,799 admissions, each of those either never fired or moved under 0.1% of the traffic, while the deferral deadline released 57-77% of all emissions.
 - Both policies implement one `OffloadPolicy` protocol in `lazy_offload_policy/base.py`, restoring the abstract interface the package already had; `create_offload_policy()` selects between them. `LazyOffloadPendingStore` is removed: after the manager took over the lifecycle its remaining job was branching on the configured mode in every method.
 - Design docs: `lazy_offload.md` (updated) and `lazy_offload_policy/eviction_aware.md` (new).
 
@@ -144,3 +144,29 @@ Correctness was checked end to end with GSM8K (20-shot, greedy, Qwen/Qwen3-8B, T
       pending 3. Lazy accuracy is the highest of the three arms; its pass-2
       external share sits between the two earlier gates (0.934 / 0.961), the
       run-to-run spread of this harness.
+
+
+## After the second squeeze (record 7, 2026-08-31)
+
+- [x] `lazy_offload_store_release` split out of this PR: it answers a
+      different question from the rest of the change, and the benchmark ran
+      its default, so no measured number depends on it. Follow-up PR, re-add
+      patch archived at
+      `records/2026/08/31/artifacts/pr_squeeze/store_release_readd.patch`.
+- [x] `_PendingOperations` lost two indexes (a per-request block refcount and
+      an admission-order counter that dict insertion order already gives).
+      Verified with a scratch driver over five scenarios, archived at
+      `records/2026/08/31/artifacts/pr_squeeze/check_pending_index.py`.
+- [x] 2741 -> 2594 insertions; lines of code 1089 -> 1027.
+- [x] ruff / codespell / mypy clean, 253 unit tests pass.
+- [x] gsm8k gate 5 on the squeezed PR tree: off 0.925/0.917, eager
+      0.917/0.917 ext 0.961, lazy 0.917/0.917 ext 0.942; apc 0, l1 peak 0.74
+      under the watermark, 0 evictions, guards clean. Ledger closes:
+      admitted 189 = emitted 178 + dropped_evicted 10 + pending 1, and
+      requests_validated/dropped_evicted land where gate 4 put them, which
+      is the end-to-end check on the rewritten reverse index.
+- [ ] **open, Bo's call**: `tests/v1/test_lazy_offload_policy.py` is 174 of
+      the 2,594 insertions and the PR's only test. The carve-out that kept it
+      (leaving upstream's file untouched would be red on merge) no longer
+      applies now that `lazy_offload_pending_store.py` is deleted outright.
+      Moving it to dev takes the PR to ~2,420 insertions and zero tests.
