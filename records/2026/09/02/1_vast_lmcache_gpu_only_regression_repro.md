@@ -146,60 +146,40 @@ storing nothing and retrieving nothing -- the connector still costs a constant
 
 ### The c=300 anomaly
 
-At c=300, 1b beat 1c by 24% on the warm pass (118.9s vs 155.6s) and 8% on the
-cold pass (168.1s vs 182.3s), with a byte-identical pool, identical prompts, and
-bench arguments verified equal field by field.  Windowed to the same benchmark
-interval, 1b's vLLM prefix-cache hit rate was 47.0% vs 1c's 24.2%, and mean
-in-engine concurrency 3.2 vs 1.2.
+**Resolved by the control re-run, and the culprit was the opposite of what the
+symptom suggested.**  At c=300, 1b beat 1c by 24% warm and 8% cold with a
+byte-identical pool and bench arguments verified equal field by field.  The
+natural reading was that the connector somehow helps.  It does not -- the
+*original 1c* was simply a bad measurement:
 
-Most likely this is not real.  1c ran at 17:53 on Sep 1, fifteen minutes after
-the OOM incident below, while root's two k8s lmcache pods were restarting and
-re-claiming 200 GB each.  `scripts/phase1_control.sh` re-runs 1c at c=300 and
-c=600 back-to-back with 1b on the same machine state to settle it.
-**Until that lands, the 1.86x pool-halving figure is provisional** -- it is the
-one number here the control could move.
+| c=300 warm | when | p99 TTFT | tok/s |
+|---|---|---|---|
+| 1c original | Sep 1 17:53, 15 min after the OOM incident below | 155.6s | 113,470 |
+| **1c control re-run** | **Sep 2 13:12** | **122.0s** | **143,628** |
+| 1b | Sep 2 11:04 | 118.9s | 148,395 |
 
-## Methodology notes
+Measured on the same machine state, 1c and 1b agree within 3%: **the connector
+costs approximately nothing at c=300.**  The 47.0% vs 24.2% prefix-cache-hit
+gap was a symptom of the perturbed run, not a mechanism.
 
-- **The warm pass at low concurrency is client-bound, not engine-bound.** Server
-  reports `Avg prompt throughput: 0.0-169 tokens/s` during the warm pass while
-  the client sees 23s — the time is API-server tokenization of 60k-token
-  prompts (~256k tok/s). Cold pass IS engine-bound (96,000 tok/s prefill,
-  matches duration). This is why VAST's chart has all 7 curves collapsed
-  below c~400: a shared client-side bottleneck, not equal engine performance.
-  vllm 0.22.1 has `--api-server-count`; adding `-asc 8` would remove it.
-- `--max-num-seqs 256` is a no-op in this workload: one 60k prefill saturates
-  `max_num_batched_tokens`, so the log shows `Running: 1 reqs, Waiting: 70 reqs`.
-- H200 prefill 96k tok/s vs VAST's implied 118k tok/s on MI355X — same
-  ballpark, so the platforms are comparable.
+**This voids the 1.86x pool-halving figure**, and the replacement is *not*
+simply 1a/1c_rerun = 1.47x.  1a was measured Sep 1 15:30.  Having just watched
+this box move one point by 28% between sessions, pairing a Sep 1 number with a
+Sep 2 number is precisely the error that produced the bad figure in the first
+place.  `scripts/phase1_control_1a.sh` re-measures 1a at c=300/600 in the same
+session; until it lands, the pool-halving magnitude is unquantified.  The
+*shape* (a hump, ~1.0x at both ends) and the mechanism are unaffected.
 
-## LMCache bugs found
+The saturation tax is less exposed to this: 1a's c=1000 (96,383, Sep 1 ~16:30)
+and 1c's c=1000 (95,755, Sep 1 ~18:40) agree to 0.7% *across* the OOM incident,
+which suggests the engine-bound plateau is insensitive to host-memory pressure
+-- as one would expect. The 1c control's c=600 point pairs with 1b's c=600 on
+the same day for a direct same-session check.
 
-1. **`LMCacheConnectorV1` lacks `SupportsHMA`** -> silently halves the GPU KV
-   pool on hybrid-attention models. Root cause of finding (1). Fix needs both
-   sides: vLLM's `LMCacheConnectorV1` subclassing `SupportsHMA` and forwarding
-   `request_finished_all_groups`, and LMCache's `vllm_v1_adapter` handling
-   multiple KV cache groups (`kv_cache_groups.py` already exists for MP).
-2. **`max_local_cpu_size <= 0` crashes init.** `storage_backend/__init__.py:181-190`
-   deliberately skips creating `LocalCPUBackend` (logs an INFO — an expected
-   branch), then `storage_manager.py:325` unconditionally does
-   `self.storage_backends["LocalCPUBackend"]` -> `KeyError`. `manager.py:235`
-   swallows it and the engine runs in "degraded mode (recompute)" — **vLLM keeps
-   serving normally and the user is never told**. `LocalCPUBackend` doubles as
-   LMCache's chunk allocator, so a positive value is structurally required even
-   with `local_cpu: false`.
-3. **`local_cpu: false` still allocates `max_local_cpu_size`, per TP rank**, with
-   no warning. Empirically: `free` shared went 8 GB -> 171 GB with
-   `max_local_cpu_size: 20.0` at TP=8. VAST's own IP config (180.0, TP=8) pins
-   **1.44 TB** of host memory; they likely don't know.
-4. **Degraded mode is catastrophically slow rather than free.** With the engine
-   marked init-failed and every store/retrieve short-circuited, c=100 measured
-   19,059 tok/s cold / 22,653 warm vs 88,290 / 256,659 for plain vLLM — 4.6x
-   slower cold, and vLLM's own prefix cache stopped helping (cold->warm speedup
-   1.2x vs 2.9x). Note `vllm_v1_adapter.py` contains **no** `is_healthy` check —
-   the scheduler-side `get_num_new_matched_tokens` / `build_connector_meta` /
-   `request_finished` still run in full against a dead storage manager.
-   (Confirmed specific to the degraded path: healthy 1b at c=100 costs only ~9%.)
+**Harness lesson: interleave configurations within a session** (A/B/A/B) instead
+of running one config to completion and then the next.  The ordering used here
+made a machine-state shift indistinguishable from a treatment effect, and it
+took a day and a re-run to separate them.
 
 ## Incident: I OOM-killed two of someone else's processes
 

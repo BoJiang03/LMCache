@@ -98,17 +98,27 @@ larger the loss.
 Measured cost on gpt-oss-120b, ISL=60k, OSL=1, TP=8, warm pass (P99 TTFT / total
 tok/s), isolating the pool halving from connector overhead:
 
+> **NUMBERS UNDER REVISION -- do not file or send this section yet.**
+> A control re-run showed the original c=300 HMA-off measurement was bad: it was
+> taken 15 minutes after an OOM incident on the box and read 28% slow (155.6s;
+> the re-run gives 122.0s).  The plain-vLLM arm was measured in a different
+> session again, and this box has now demonstrably swung a single point by 28%
+> between sessions, so it cannot be paired with a same-day number either.  Both
+> arms are being re-measured in one session before anything here is quoted.
+> The mechanism, the pool sizes, and the saturation tax below are unaffected --
+> only the magnitude of the throughput cost at the knee.
+
 | concurrency | plain vLLM (25.8M) | HMA off (13.7M) | pool-halving cost |
 |---|---|---|---|
 | 100 | 23.0s / 256,659 | 21.1s / 280,531 | 0.91x |
-| 300 | 81.4s / 211,141 | 155.6s / 113,470 | **1.86x** |
+| 300 | 81.4s / 211,141 | ~~155.6s / 113,470~~ 122.0s / 143,628 | ~~1.86x~~ pending |
 | 600 | 295.9s / 119,206 | 368.9s / 95,303 | 1.25x |
 | 1000 | 612.7s / 96,383 | 616.1s / 95,755 | 1.01x |
 
 The cost is a hump, not a constant: zero at low concurrency (working set fits
 either pool) and zero at high concurrency (fits neither, both queue), peaking
-where the working set straddles the two pool sizes.  Deployments sized near that
-knee lose about half their throughput.
+where the working set straddles the two pool sizes.  The shape is solid; the
+peak height is what the re-measurement will fix.
 
 ### A separate finding in the same measurements
 
@@ -159,9 +169,11 @@ warning currently comes from vLLM and names only the class.
 > just gpt-oss.
 >
 > Two things worth knowing about the shape of the cost. It is a hump, not a
-> constant: we measure 1.86x at concurrency 300 and ~1.0x at 100 and at 1000,
-> because it only bites when the working set fits the larger pool but not the
-> smaller.
+> constant: it is ~1.0x at concurrency 100 and again at 1000, and bites only in
+> the middle, where the working set fits the larger pool but not the smaller.
+> (We are re-measuring the peak height; an earlier figure of ours came from a
+> run perturbed by an unrelated incident on the test box, and we would rather
+> send you a number we trust.)
 >
 > The second is separate from the allocator and may matter more to you at the
 > concurrencies in your matrix. Above concurrency 600 the pool size stops
@@ -217,16 +229,33 @@ warning currently comes from vLLM and names only the class.
 
 ## Open questions in our own data
 
-At c=300 the healthy 1b run (connector attached, no storage tier) came out
-**24% faster** than 1c (plain vLLM, allocator forced off) despite a byte-identical
-13,724,416-token pool, identical prompts, identical seed, and identical bench
-arguments (verified field by field).  Windowed to the same benchmark interval,
-1b's vLLM prefix-cache hit rate was 47.0% against 1c's 24.2%, with mean in-engine
-concurrency 3.2 vs 1.2.
+**Resolved, and it went the other way.**  At c=300, 1b (connector attached, no
+storage tier) came out 24% faster than 1c (allocator forced off) despite a
+byte-identical 13,724,416-token pool and bench arguments verified equal field by
+field.  The control re-run shows the *original 1c* was the bad measurement:
 
-This is unexplained and possibly not real: 1c was measured at 17:53 on Sep 1,
-fifteen minutes after the OOM incident, while root's two k8s lmcache pods were
-restarting and re-claiming 200 GB each.  `scripts/phase1_control.sh` re-runs 1c
-at c=300 and c=600 back-to-back with 1b on the same machine state to settle it.
-**Do not cite the 1.91x figure as final until that control lands** — it is the
-one number in Part A that this could move.
+| c=300 warm | when | p99 TTFT | tok/s |
+|---|---|---|---|
+| 1c original | Sep 1 17:53, 15 min after the OOM incident | 155.6s | 113,470 |
+| 1c control re-run | Sep 2 13:12 | **122.0s** | **143,628** |
+| 1b | Sep 2 11:04 | 118.9s | 148,395 |
+
+1c and 1b agree within 3% once measured on the same machine state, so the
+connector costs approximately nothing at c=300 -- and the 1.86x pool-halving
+figure it fed is void.
+
+The replacement is not simply 1a/1c_rerun = 1.47x, because 1a was measured Sep 1
+15:30.  Having just watched this box move a single point by 28% between
+sessions, pairing a Sep 1 number with a Sep 2 number is exactly the error that
+produced the bad figure.  `scripts/phase1_control_1a.sh` re-measures 1a at
+c=300/600 in the same session as the 1c control.  **Nothing in Part A's Impact
+table gets quoted until both arms come from one session.**
+
+Note this does not touch the saturation tax: 1b, 1c and 1a were each internally
+consistent across c=600/1000/1500 within their own sessions, and the 14.2% gap
+is between 1b (Sep 2 11:00) and 1a/1c whose c=1000 points agree to 0.7% across
+sessions.  Still worth re-confirming once the controls land.
+
+Lesson for the harness: interleave configurations within a session rather than
+running one config to completion and then the next.  A/B/A ordering would have
+caught this inside the run instead of a day later.
