@@ -45,9 +45,16 @@ Measured GPU KV pool (`kv_cache_utils.py:1733`):
 |---|---|---|
 | plain vLLM | **25,798,626** tokens | 196.83x |
 | `--disable-hybrid-kv-cache-manager` | **13,724,416** tokens | 104.71x |
-| plain vLLM **+ LMCacheConnectorV1** | **13,724,160** tokens | 104.71x |
+| plain vLLM **+ LMCacheConnectorV1** | **13,724,416** tokens | 104.71x |
 
-Ratio 1.880x.
+Ratio 1.880x.  The last two rows are byte-identical, which makes 1b/1c a clean
+control pair: same pool, same prompts, same seed, differing only in whether the
+connector is attached.
+
+(Corrected 2026-09-02: this row previously read 13,724,160, a number that came
+from the *discarded* 17:16 1b run -- the one with `max_local_cpu_size: 180.0`
+that the OOM killer took down.  The healthy re-run measures 13,724,416.
+`scripts/phase1_rest.sh:5-6` still carries the stale figure in a comment.)
 
 ## Root cause of finding (1)
 
@@ -92,20 +99,65 @@ no tier at all.
 `vllm bench serve`, random dataset, ISL=60000, OSL=1, `--ignore-eos --seed 42`,
 `num_prompts == max_concurrency`, cold pass then warm pass.
 
-| conc | 1a plain (25.8M) | 1c no-HMA (13.7M) | 1b +LMCache (13.7M) |
-|---|---|---|---|
-| 100 | p99 23.0s / 256,659 tok/s | p99 21.1s / 280,531 | p99 23.1s / 257,513 |
-| 300 | p99 81.4s / 211,141 | p99 155.6s / 113,470 | (running) |
-| 600 | p99 295.9s / 119,206 | p99 368.9s / 95,303 | (running) |
-| 1000 | p99 612.7s / 96,383 | p99 616.1s / 95,755 | (running) |
-| 1500 | p99 928.2s / 95,509 | (engine crashed, missing) | (running) |
+All three pools verified from the startup logs; 1b and 1c are byte-identical
+at 13,724,416 tokens, so they differ only in whether the connector is attached.
 
-Cost of the halved pool alone (1c/1a): 0.92x, **1.91x**, 1.25x, 1.01x, — .
+| conc | 1a plain (25.8M) | 1c no-HMA (13.7M) | 1b +LMCache (13.7M) | pool cost | conn cost |
+|---|---|---|---|---|---|
+| 100 | p99 23.0s / 256,659 tok/s | p99 21.1s / 280,531 | p99 23.1s / 257,513 | 0.91x | 1.09x |
+| 300 | p99 81.4s / 211,141 | p99 155.6s / 113,470 | p99 118.9s / 148,395 | 1.86x | **0.76x** |
+| 600 | p99 295.9s / 119,206 | p99 368.9s / 95,303 | p99 434.6s / 81,477 | 1.25x | 1.17x |
+| 1000 | p99 612.7s / 96,383 | p99 616.1s / 95,755 | p99 713.0s / 82,864 | 1.01x | 1.16x |
+| 1500 | p99 928.2s / 95,509 | (engine crashed, lost) | p99 1072.1s / 82,696 | — | 1.15x* |
+
+\* against 1a, since 1c's c=1500 warm pass was lost.  1a and 1c agree to 0.1%
+on the c=1500 *cold* pass (924.3s vs 925.3s) and to 0.7% at c=1000, so the
+substitution is safe here; it would not be at c=300.
+
+**Cost of the halved pool alone (1c/1a): 0.91x, 1.86x, 1.25x, 1.01x.**
 A clean hump: zero when the working set fits both pools, zero again when it
 fits neither, **peaking where it fits only the big one** (c~300). That window is
 the common production operating point.
 
-Connector overhead alone (1b/1c) at c=100: **~1.09x**. 1b ~= 1a there.
+**Cost of the connector alone (1b/1c): 1.09x, 0.76x, 1.17x, 1.16x, 1.15x.**
+Four of the five points sit in 1.09-1.17x.  c=300 is an outlier in the wrong
+direction (1b *faster* than 1c on both cold and warm despite the identical
+pool), and is not trusted -- see "The c=300 anomaly" below.
+
+### The connector's saturation tax
+
+At c>=600 all three configs are engine-bound and the pool size stops mattering
+entirely -- but the connector's cost does not go away:
+
+| | c=600 | c=1000 | c=1500 | mean |
+|---|---|---|---|---|
+| 1a plain | — | 96,383 | 95,509 | **95,946** tok/s |
+| 1c no-HMA | — | 95,755 | (lost) | **95,755** tok/s |
+| 1b +LMCache | 81,477 | 82,864 | 82,696 | **82,346** tok/s |
+
+1a and 1c converge to within 0.2% -- the 1.88x pool difference buys nothing once
+every config is queueing.  1b sits **14.2% lower**, and flat: the three points
+spread only 1.7%.  So with `local_cpu: false` and no remote backend -- LMCache
+storing nothing and retrieving nothing -- the connector still costs a constant
+~14% of engine throughput.  That is scheduler-side per-request work
+(`get_num_new_matched_tokens`, `build_connector_meta`, `request_finished` in
+`vllm_v1_adapter.py`) running against an empty store.  Independent of the
+`SupportsHMA` bug, and arguably easier to act on: pure overhead, zero benefit.
+
+### The c=300 anomaly
+
+At c=300, 1b beat 1c by 24% on the warm pass (118.9s vs 155.6s) and 8% on the
+cold pass (168.1s vs 182.3s), with a byte-identical pool, identical prompts, and
+bench arguments verified equal field by field.  Windowed to the same benchmark
+interval, 1b's vLLM prefix-cache hit rate was 47.0% vs 1c's 24.2%, and mean
+in-engine concurrency 3.2 vs 1.2.
+
+Most likely this is not real.  1c ran at 17:53 on Sep 1, fifteen minutes after
+the OOM incident below, while root's two k8s lmcache pods were restarting and
+re-claiming 200 GB each.  `scripts/phase1_control.sh` re-runs 1c at c=300 and
+c=600 back-to-back with 1b on the same machine state to settle it.
+**Until that lands, the 1.86x pool-halving figure is provisional** -- it is the
+one number here the control could move.
 
 ## Methodology notes
 
