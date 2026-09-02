@@ -33,6 +33,52 @@ L1_GB="${L1_GB:-496}"          # VAST used 1600. This box has ~1.2 TB free and
 MIN_FREE_GB=$((L1_GB + 250))   # L1 slab + vLLM workers + headroom
 ulimit -n 1048576 2>/dev/null || ulimit -n 65535
 
+# ---- finding (1) completion set runs first, and by default runs ALONE -------
+# The user has parked finding (2) (IP vs MP) to close finding (1) first, so the
+# four arms below are now gated behind RUN_PHASE2=1.  The running queue (q.sh)
+# invokes this script by path and a running bash script must not be edited in
+# place, so the re-scoping lives here.
+#
+# The set: re-measure every cell of finding (1) at c=1000 in one sitting, so the
+# 1.16x stops pairing 1b (Sep 2 11:49) against 1a (Sep 1 15:30) on a box that
+# has swung a single point by 28% between sessions.
+#     1a  25,798,626  no connector   <- already running when this was written
+#     1c  13,724,416  no connector
+#     1b  13,724,416  IP connector   <- the headline
+#     1d  25,798,626  MP connector   <- connector cost with the pool held fixed
+run_step() {   # run_step <name> <marker json> <cmd...>
+  local name="$1" marker="$2"; shift 2
+  if [ -s "$marker" ]; then echo "=== $name already done, skipping ==="; return 0; fi
+  echo "=== $name start $(date +%H:%M:%S) ==="
+  "$@"; local rc=$?
+  echo "=== $name end $(date +%H:%M:%S) rc=$rc ==="
+  sleep 60
+  return $rc
+}
+# c=200 is the highest load at which the KV pool provably cannot bind in ANY
+# arm: vLLM reports "Maximum concurrency for 131,072 tokens per request" as
+# 104.71x with the allocator off, i.e. 228 sequences at ISL=60000, and 196.83x
+# (430 seqs) with it on -- both above 200, and --max-num-seqs is 256.  So a gap
+# at c=200 is connector cost and nothing else.  It is also the regime the
+# NVIDIA blog ran in (50 sequential requests, no concurrency pressure), where
+# the reported effect is a cold-turn write penalty.
+run_step "1b @200,1000" "$REPRO_ROOT/results/phase1/1b_rerun/c1000_warm.json" \
+  env CONC="200 1000" "$REPRO_ROOT/scripts/phase1_control_1b.sh"
+run_step "1d MP @200,600,1000" "$REPRO_ROOT/results/phase1/1d_mp_gpu_only/c1000_warm.json" \
+  env CONC="200 600 1000" "$REPRO_ROOT/scripts/phase1d_mp_gpu_only.sh"
+# 1a and 1c already have c=300/600/1000 from earlier today; add their c=200.
+run_step "1a @200" "$REPRO_ROOT/results/phase1/1a_rerun/c200_warm.json" \
+  env CONC=200 "$REPRO_ROOT/scripts/phase1_control_1a.sh"
+run_step "1c @200" "$REPRO_ROOT/results/phase1/1c_rerun/c200_warm.json" \
+  env CONC=200 "$REPRO_ROOT/scripts/phase1_control.sh"
+
+if [ "${RUN_PHASE2:-0}" != "1" ]; then
+  echo "=== finding (1) set done $(date +%H:%M:%S); phase2 (IP vs MP) gated off."
+  echo "=== re-run with RUN_PHASE2=1 to do the four MP/IP arms. ==="
+  exit 0
+fi
+# -----------------------------------------------------------------------------
+
 avail=$(free -g | awk '/^Mem:/{print $7}')
 if (( avail < MIN_FREE_GB )); then
   echo "ABORT: ${avail}GB available, need ${MIN_FREE_GB}GB for L1_GB=${L1_GB}."
