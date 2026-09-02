@@ -153,10 +153,30 @@ warning currently comes from vLLM and names only the class.
 > Thanks for the detailed writeup and for including the exact configs — being
 > able to run your YAML verbatim is what made this quick to pin down.
 >
-> **Finding (1) reproduces, and the cause is upstream of LMCache's data path.**
-> On vLLM 0.22.1 with gpt-oss-120b, simply attaching `LMCacheConnectorV1` makes
-> vLLM turn off its hybrid KV cache manager, because that connector class does
-> not subclass vLLM's `SupportsHMA` marker. The GPU KV pool goes from 25,798,626
+> **First, a question, because it changes our recommendation.** Which connector
+> mode produced the page-1 chart — in-process (`LMCacheConnectorV1`) or
+> multiprocess (`LMCacheMPConnector`)? The page-1 text and the chart legend do
+> not say, and the "Configurations Used" block appears under item 2. We can
+> explain the regression either way, but the fix is different: in-process needs
+> a code change in LMCache, multiprocess needs you to delete one flag.
+>
+> **Finding (1) reproduces, and the cause is a halved GPU KV cache.**
+> gpt-oss-120b is a hybrid-attention model: 36 layers, exactly 18 sliding-window
+> (window=128) and 18 full-attention. vLLM's hybrid KV cache manager exploits
+> that — the sliding layers only need a 128-token ring buffer instead of a
+> 131072-token reservation — and it roughly doubles the pool. With it off, all
+> 36 layers are provisioned for the full sequence. We measure 25,798,626 tokens
+> vs 13,724,416, a factor of 1.880.
+>
+> Both of your configurations end up with the allocator off, by different routes:
+>
+> - **in-process**: vLLM turns it off *for you*, silently, because
+>   `LMCacheConnectorV1` does not subclass vLLM's `SupportsHMA` marker.
+> - **multiprocess**: your own config passes `--disable-hybrid-kv-cache-manager`.
+>   Worth knowing that you no longer need to — the module you point at,
+>   `lmcache.integration.vllm.lmcache_mp_connector`, subclasses `SupportsHMA`.
+>   Only the legacy `_0201` / `_0180` modules require that flag. **Dropping it
+>   should hand your MP runs the full 25.8M-token pool today, no code change.** The GPU KV pool goes from 25,798,626
 > tokens to 13,724,416 — a 1.88x reduction — before LMCache stores anything. We
 > confirmed it is exactly equivalent to `--disable-hybrid-kv-cache-manager`: the
 > two pool sizes are byte-identical. Your startup log should carry the same
@@ -216,14 +236,22 @@ warning currently comes from vLLM and names only the class.
 
 ### Questions for VAST
 
-1. The `GPU KV cache size: N tokens` line from your startup logs, for at least
+1. **Which connector mode produced the page-1 chart, IP or MP?** Nothing on that
+   page states it, and it decides whether the fix is code or config.
+2. The `GPU KV cache size: N tokens` line from your startup logs, for at least
    one IP run and one MP run. This settles whether you saw the same halving.
-2. Did MP and IP really run with different `--disable-hybrid-kv-cache-manager`
+3. Did MP and IP really run with different `--disable-hybrid-kv-cache-manager`
    settings, or was that flag present in both?
-3. What was `max_local_cpu_size` in every run, and did any run log
+4. What was `max_local_cpu_size` in every run, and did any run log
    `marked as init failed` or `degraded mode`?
-4. Were the MP and IP runs L2-matched? The configs you sent have MP with
+5. Were the MP and IP runs L2-matched? The configs you sent have MP with
    `--l1-size-gb 1600` and IP with `local_cpu: false`.
+6. The NVIDIA link in item 1a is a different experiment: Mistral Medium 3.5 128B
+   on vLLM 0.20.0 and 8x H100, not gpt-oss-120b on 0.22.1 and MI355X. Is Mistral
+   Medium 3.5 a sliding-window or Mamba hybrid? If it is not, the halved-pool
+   explanation cannot cover the NVIDIA case and that regression needs its own
+   root cause -- the constant connector overhead below is the likelier candidate
+   there.
 
 ---
 
