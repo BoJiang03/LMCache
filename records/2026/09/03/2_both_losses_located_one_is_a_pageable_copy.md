@@ -1,3 +1,20 @@
+> **Corrected by record 9 (2026-09-03).** The LOSS 2 section below names the
+> right line and the wrong mechanism.
+>
+> `slot_mapping.to(self.device)` is not an expensive copy. Synchronising the
+> current stream immediately before it -- which changes nothing, because the
+> pageable copy already waits for exactly that -- splits the 33.7 ms into
+> **64.5 ms of draining the forward pass and 0.089 ms of actual DMA** for the
+> 480 KB. The pre-allocated pinned buffer that the source's own TODO asks for,
+> and that this record proposes, is worth **0.089 ms/call**.
+>
+> "The copy costs more than the transfer it prepares" is therefore false: the
+> copy costs 0.089 ms against the transfer's 5.2 ms. What costs is the host
+> BLOCK, not the bytes. Attempt 2's CUDA illegal access is also explained --
+> `VLLMPagedMemGPUConnectorV2.from_gpu` runs its D2H on its own `store_stream`
+> with no `wait_stream(current_stream)`, so today's pageable drain is the only
+> thing ordering it against the forward pass.
+
 # Both losses located: a per-submission stall, and one pageable H2D copy
 
 2026-09-03, overnight, unattended.  A TP=4 lane on GPUs 0-3 with the KV pool

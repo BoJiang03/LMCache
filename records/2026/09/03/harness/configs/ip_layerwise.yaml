@@ -1,0 +1,20 @@
+# lmcache_gpu_only.yaml + use_layerwise.  Everything else is byte-identical so
+# the only variable against tp4_slotprobe is the layerwise store path.
+#
+# WHY: IP's wait_for_save blocks the worker for 64.5 ms/step, and the split
+# (chain26) shows 85% of that is draining the forward pass, not the 480 KB
+# slot_mapping copy (0.089 ms).  Layerwise is LMCache's own answer to that:
+# save_kv_layer runs after each layer's attention, so the D2H of layer i
+# overlaps the compute of layer i+1 and there is no single full-forward drain.
+# vLLM already calls the hooks -- the timers show save_kv_layer firing 79,020
+# times (36 layers x 2,195 steps) even in the non-layerwise arm, where it
+# returns immediately.
+chunk_size: 8192
+save_decode_cache: false
+save_unfull_chunk: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: 20.0
+use_layerwise: true

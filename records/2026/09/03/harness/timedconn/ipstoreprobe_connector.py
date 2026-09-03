@@ -60,6 +60,10 @@ def _install(conn) -> list[str]:
         return []
     done = []
     for attr, key in (("store", "sub_ip_store"),
+                      # store_layer is the layerwise entry point.  Without it
+                      # the layerwise arm reports sub_ip_store=0 calls and the
+                      # store cost vanishes from the timers entirely.
+                      ("store_layer", "sub_ip_store_layer"),
                       ("lookup_unpin", "sub_ip_unpin"),
                       ("lookup", "sub_ip_lookup"),
                       ("retrieve", "sub_ip_retrieve")):

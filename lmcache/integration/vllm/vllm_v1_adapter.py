@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Generator, Optional, Union
 import math
 import os
 import sys
+import time
 
 # Third Party
 from vllm.config import (
@@ -59,6 +60,48 @@ if TYPE_CHECKING:
     from lmcache.v1.lookup_client.abstract_client import LookupClientInterface
 
 logger = init_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# SLOTPROBE -- diagnostic only, env-gated, NOT for the PR branch.
+#
+# `slot_mapping.to(self.device)` in wait_for_save profiled at 33.7 ms/call for
+# a 480 KB int64 tensor.  A pageable H2D copy is stream-ordered AND
+# host-blocking, so that number is the sum of two very different things:
+#
+#     (a) draining the ~80 ms of forward-pass kernels already queued, and
+#     (b) the 480 KB DMA, which should be ~50 us.
+#
+# Whether the fix is "make the copy async" or "stop synchronising here at all"
+# depends entirely on the split.  Synchronising the current stream immediately
+# BEFORE the copy changes no semantics -- the copy already waits for exactly
+# that -- so this probe cannot perturb what it measures.
+# ---------------------------------------------------------------------------
+_SLOTPROBE = os.environ.get("LMC_SLOTPROBE", "0") == "1"
+_SLOTPROBE_EVERY = int(os.environ.get("LMC_SLOTPROBE_EVERY", "200"))
+_SLOTPROBE_LW = [False]
+_slotprobe_state = {
+    "n": 0, "sync": 0.0, "copy": 0.0, "store": 0.0, "reqs": 0, "toks": 0,
+    "n_store": 0,
+}
+
+
+def _slotprobe_report() -> None:
+    s = _slotprobe_state
+    n = s["n"]
+    if not n:
+        return
+    logger.info(
+        "SLOTPROBE%s pid=%d calls=%d sync_ms/call=%.3f copy_ms/call=%.3f "
+        "store_ms/call=%.3f n_store=%d reqs/call=%.2f toks/req=%.0f",
+        "-LAYERWISE" if _SLOTPROBE_LW[0] else "", os.getpid(), n,
+        s["sync"] * 1000.0 / n,
+        s["copy"] * 1000.0 / n,
+        s["store"] * 1000.0 / n,
+        s["n_store"],
+        s["reqs"] / n,
+        s["toks"] / max(s["reqs"], 1),
+    )
+
 
 
 @dataclass
@@ -1053,7 +1096,22 @@ class LMCacheConnectorV1Impl:
                 assert len(slot_mapping) == len(token_ids)
 
                 # TODO: have a pre-allocated buffer to hold the slot_mappings
-                slot_mapping = slot_mapping.to(self.device)
+                if _SLOTPROBE:
+                    _SLOTPROBE_LW[0] = True
+                    _t0 = time.perf_counter()
+                    torch.cuda.current_stream(self.device).synchronize()
+                    _t1 = time.perf_counter()
+                    slot_mapping = slot_mapping.to(self.device)
+                    _t2 = time.perf_counter()
+                    _slotprobe_state["n"] += 1
+                    _slotprobe_state["sync"] += _t1 - _t0
+                    _slotprobe_state["copy"] += _t2 - _t1
+                    _slotprobe_state["reqs"] += 1
+                    _slotprobe_state["toks"] += len(token_ids)
+                    if _slotprobe_state["n"] % _SLOTPROBE_EVERY == 0:
+                        _slotprobe_report()
+                else:
+                    slot_mapping = slot_mapping.to(self.device)
 
                 if self.kv_role == "kv_producer":
                     skip_leading_tokens = 0
@@ -1168,7 +1226,19 @@ class LMCacheConnectorV1Impl:
                 continue
 
             # TODO: have a pre-allocated buffer to hold the slot_mappings
-            slot_mapping = slot_mapping.to(self.device)
+            if _SLOTPROBE:
+                _t0 = time.perf_counter()
+                torch.cuda.current_stream(self.device).synchronize()
+                _t1 = time.perf_counter()
+                slot_mapping = slot_mapping.to(self.device)
+                _t2 = time.perf_counter()
+                _slotprobe_state["n"] += 1
+                _slotprobe_state["sync"] += _t1 - _t0
+                _slotprobe_state["copy"] += _t2 - _t1
+                _slotprobe_state["reqs"] += 1
+                _slotprobe_state["toks"] += len(token_ids)
+            else:
+                slot_mapping = slot_mapping.to(self.device)
 
             skip_leading_tokens = save_spec.skip_leading_tokens
             # shared storage disaggregation will not have a disagg_spec passed in
@@ -1223,6 +1293,7 @@ class LMCacheConnectorV1Impl:
                         e,
                     )
 
+            _ts0 = time.perf_counter() if _SLOTPROBE else 0.0
             self.lmcache_engine.store(
                 token_ids,
                 mask=store_mask,
@@ -1233,6 +1304,11 @@ class LMCacheConnectorV1Impl:
                 request_configs=request.request_configs,
                 req_id=request.req_id,
             )
+            if _SLOTPROBE:
+                _slotprobe_state["store"] += time.perf_counter() - _ts0
+                _slotprobe_state["n_store"] += 1
+                if _slotprobe_state["n"] % _SLOTPROBE_EVERY == 0:
+                    _slotprobe_report()
 
             # Probe decoder cache after store
             if (
