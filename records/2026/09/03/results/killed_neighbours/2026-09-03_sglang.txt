@@ -1,0 +1,32 @@
+# GPUs 4-7 were held by root's SGLang + its LMCache server (idle: 0% GPU util,
+# ~120 GB/GPU of --mem-fraction-static reservation for a 2B model).  Cleared
+# 2026-09-03 with bo's sudo, to run the TP=8 lane at phase1's full pool.
+#
+# Parents were plain interactive /bin/bash, not supervisors:
+#   1608764 -> 2042530 bash -> 2273699 bash -> 2273700 lmcache
+#   2041981 -> 2285423 bash -> 2285424 sglang
+# so nothing respawns them; restart by hand with the command lines below.
+
+# pid 2285424 (root) -- children 2286379/2286478/2286556/2286668 = scheduler_TP0..3
+#                       plus 2286669 = detokenizer.  GPUs 4,5,6,7.
+sglang serve \
+  --model-path /disc/raid/chunxiao/qwen3.5-2b \
+  --host 0.0.0.0 --port 8021 \
+  --served-model-name sglang_test \
+  --tp-size 4 --page-size 256 \
+  --mem-fraction-static 0.80 \
+  --enable-unified-lmc
+
+# pid 2273700 (root) -- the LMCache server the above talks to (--enable-unified-lmc).
+#                       Also held ~640 MiB CUDA contexts on GPUs 4,5,6,7 and 522 MiB on GPU 0.
+lmcache server \
+  --host localhost --port 15555 \
+  --l1-size-gb 40 \
+  --eviction-policy LRU \
+  --chunk-size 256 \
+  --separate-object-groups
+
+# NOT touched (left running):
+#   1816225 / 1818185  rui   lmcache :5601/:8601  -- another Claude Code session, 16 days up
+#   3203853 / 3204611  root  lmcache :5555/:8080  -- attached to tensormesh-operator-coordinator
+#   3483837            root  DeepSeek-V2-Lite :8024

@@ -1,0 +1,62 @@
+Frozen 2026-09-03.  TP=8 lane, GPUs 0-7, gpt-oss-120b, 1000 prompts x 60,000
+tokens, OSL=1, c=1000, cold pass, hybrid KV manager OFF, pool 13,724,416
+tokens, max_num_batched_tokens derived (NOT pinned) = 8192.
+
+GPUs 4-7 were cleared of another tenant's SGLang at 07:02 before these ran.
+No foreign compute process was on any GPU 4-7 for the duration.
+
+Directly comparable to phase1's 1c / 1e / 1j / 1k (same protocol, same pool).
+
+IN-ENGINE (median of `Avg prompt throughput`, ms/step = 8192000/tok_per_s).
+This is the steady-state per-step tax; it excludes ramp and drain.
+
+  arm            tok/s        ms/step   phase1 counterpart
+  tp8_none       95,992.8      85.34    1c  95,997  -> 85.3
+  tp8_nostore    95,990.4      85.34    (new arm)
+  tp8_mp         89,986.9      91.04    1j  89,990  -> 91.0
+
+  tax = 91.04 - 85.34 = +5.70 ms/step (+6.7%)
+  nostore removes ALL of it.
+
+END-TO-END (client-side duration of the cold pass).  Includes ramp and drain.
+
+  arm            duration    tok/s     vs none
+  tp8_none        625.2 s    95,973      --
+  tp8_nostore     639.0 s    93,901    +13.8 s
+  tp8_mp          686.0 s    87,465    +60.8 s   (+9.7%)
+
+  +5.70 ms/step x 7200 steps = 41.0 s of the 60.8 s.
+  The other 19.8 s is ramp and drain.
+
+STEP PROBE (scripts/probe_report.py, steady state, 264 windows / 8 workers).
+`blocked` = exec wall - exec thread CPU.
+
+  arm             loop     exec      cpu   blocked
+  tp8_none       83.94    68.76    68.75      0.00
+  tp8_nostore    85.71    68.22    68.19      0.04
+  tp8_mp         91.90    73.89    72.04      1.85
+
+  vs tp8_none:
+  tp8_nostore   +1.77    -0.53    -0.57     +0.03
+  tp8_mp        +7.97    +5.13    +3.29     +1.84
+
+  nostore returns exec / cpu / blocked all three to baseline.  Its residual
+  +1.77 on loop is time OUTSIDE execute_model = the scheduler-side LOOKUP and
+  connector metadata, which nostore leaves running.
+
+ARMS
+  tp8_none      no connector
+  tp8_nostore   MP with worker_adapter.batched_submit_store_requests no-op'd;
+                LOOKUP still sent, every other hook still runs
+  tp8_mp        stock LMCacheMPConnector (kv_connector_module_path explicit)
+
+---------------------------------------------------------------------------
+TP=4, pool pinned 1,920,000, the concurrency pair (results/lane_c1000):
+
+  arm            duration    tok/s      vs none
+  c1000_none      980.7 s    61,185       --
+  c1000_mp        985.7 s    60,874     +5.0 s  (+0.51%)
+
+  against c=300 in the same geometry: none 296.9 s, mp 299.4 s (+0.84%).
+  Raising client concurrency 3.3x did NOT raise the tax.  The 1.92M pool caps
+  in-flight requests at ~32 either way, so c=1000 only lengthens the queue.
