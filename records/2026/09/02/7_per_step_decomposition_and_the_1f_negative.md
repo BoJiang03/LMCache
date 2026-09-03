@@ -127,18 +127,156 @@ the 8 TP worker processes*, where MP hands the work to a separate process:
 `slot_mapping` tensor per request per step; and all of it contends for the same
 GIL as the worker's own Python. None of this is measured yet.
 
-**1h — py-spy profile of the MP arm at c=1000.** MP is the clean arm for the
-common tax: `Deferred` is 0 in every block, so the async lookup client cannot
-contaminate it, and MP shows +5.7 ms/step at both pool sizes. `--idle` is on
-deliberately, because the 5.7 ms could be a block (CUDA sync, socket wait) rather
-than CPU burn and a one-run budget cannot afford to miss half the hypothesis
-space. The script gates on a sanity check: if the profiled run's own rate is not
-~90,000 tok/s, py-spy distorted it and the profile is discarded.
-Analysis tool is written and smoke-tested: `scripts/analyze_pyspy.py`.
+**1h — py-spy profile of the MP arm. ABANDONED: the instrument is unusable here.**
 
-Reading: connector frames at a few percent of a thread's wall clock => the cost is
-Python-level and named, go read that call. Connector frames at ~0% => the cost is
-native, and the follow-up is `--native` or a no-connector baseline to diff.
+Its own pre-registered sanity gate caught it 27 minutes in. The profiled run was
+sampling at **23,998 tok/s = 341.4 ms/step**, against MP's true 91.0 — a **3.75x
+distortion**, i.e. 73% of the wall clock was py-spy's own overhead. The gate says
+a profile taken under that must be discarded, so it was, and the run was stopped
+at 18:16 rather than burning 30 more minutes producing an uninterpretable file.
+
+**Why it is this expensive, and why lowering the rate does not fix it.** With
+TP=8 the eight workers are lockstepped on NCCL collectives. py-spy PTRACE-stops a
+process to walk its threads, so stopping *any one rank* stalls all eight. The cost
+is not the sum of per-process sampling overhead, it is that overhead multiplied
+through the collective. Dropping `-r` scales the distortion down proportionally
+but never removes the amplification, and thinning the samples to ~1 Hz to get the
+overhead into single digits leaves too few samples to resolve a 6% effect.
+
+**Do not retry py-spy on a TP>1 vLLM.** The finding that py-spy *can* attach
+without sudo (record above) still stands and is still useful for single-process
+targets; it is the TP lockstep, not the ptrace permission, that makes it useless
+for the workers.
+
+`scripts/analyze_pyspy.py` is written and smoke-tested and kept for that case.
+vLLM's in-tree torch profiler (`--profiler-config.profiler=torch` plus the
+`/start_profile` and `/stop_profile` endpoints) is the instrument to reach for
+instead if a profile is needed later: it is in-process, so no ptrace and no TP
+amplification, and it can cover a short window rather than the whole run. Its
+limitation is that it sees the workers only, not the EngineCore scheduler.
+
+---
+
+**1i — a connector that does nothing. Launched 18:18:56, approved 18:17.**
+
+After 1h, stop trying to profile and bisect instead, using the instrument that
+already works to 0.1 ms. `nullconn/null_connector.py` implements every abstract
+method of `KVConnectorBase_V1` and does nothing in all of them. It lives in our
+repo; no LMCache change and no vLLM change. vLLM still walks its entire connector
+code path: `maybe_transfer_kv_layer` wraps all 36 attention layers,
+`build_connector_meta` runs every scheduler step, the worker-side load/save hooks
+fire every forward, the `KVOutputAggregator` is installed, and
+`get_num_new_matched_tokens` is consulted for every waiting request.
+
+Pre-registered:
+
+| 1i lands at | conclusion |
+|---|---|
+| ~91 ms/step (686-700 s) | the +5.7 ms is **vLLM's own connector plumbing**; LMCache is not the thing to fix and this becomes an upstream vLLM finding |
+| ~85 ms/step (620-635 s) | the plumbing is free; the +5.7 ms is **inside LMCache**, in code IP and MP share |
+| 640-680 s | it splits, and the split is read off directly as (1i - 85.3) vs (91.0 - 1i) |
+| > 700 s | the null connector is doing something unintended; discard |
+
+**RESULT: 632.6 s cold, in-engine steady state 95,993 tok/s = 85.3 ms/step.**
+Lands in the 620-635 s band: **the plumbing is free and the +5.7 ms is inside
+LMCache.**
+
+| arm | in-engine ms/step | p50 tok/s | cold dur |
+|---|---|---|---|
+| 1c no connector | 85.3 | 95,997 | 623.0 s |
+| **1i null connector** | **85.3** | **95,993** | **632.6 s** |
+| 1e MP | 91.0 | 89,990 | 686.0 s |
+| 1b / 1g IP | 97.5 | 83,996 / 83,993 | 727.7 / 726.3 s |
+
+Two numbers, and they disagree slightly, so both are reported. The in-engine
+steady-state rates are identical to 4 tok/s, i.e. **+0.0 ms/step**. End to end 1i
+is 1.5% slower than 1c (632.6 vs 623.0), which the steady-state p50 does not see —
+that is startup and drain, not per-step cost. The honest statement is therefore:
+**vLLM's entire connector code path costs at most ~1.5% end to end and is
+indistinguishable from zero in steady state.**
+
+All three assertions passed: 9 NullConnector instantiations (8 workers +
+EngineCore, so both halves of the path are live), pool 13,724,416, and vLLM never
+printed a `Deferred` field at all because this connector never returns None.
+
+### The decomposition this settles
+
+| | ms/step | where the fix would go |
+|---|---|---|
+| vLLM connector plumbing | **+0.0** (<= 1.5% end to end) | nowhere; not the problem |
+| **LMCache, common to IP and MP** | **+5.7** | **LMCache** — this is the ~9% and the objective |
+| LMCache, IP only | +6.5 | LMCache; still unexplained after 1f and 1g |
+
+So "LMCache costs ~10% while doing nothing" is a statement about LMCache's own
+per-step work, not about the cost of vLLM's connector interface. That is the
+opposite of what the pre-registered mechanism predicted, and it puts the fix
+squarely in LMCache.
+
+Confounders held fixed by construction, each verified before launch: no
+`SupportsHMA` so `--disable-hybrid-kv-cache-manager` is required and the pool is
+13,724,416 like 1c/1e/1b/1g; `requires_piecewise_for_cudagraph()` False so the
+cudagraph mode matches; `get_required_kvcache_layout()` inherited and None so the
+attention backend matches; `get_num_new_matched_tokens` returns `(0, False)` and
+never None, so this arm can never defer and `Deferred` must be 0. The script
+asserts the pool, the attach line and the deferred count, and aborts rather than
+producing a result that merely looks interpretable.
+
+### A named mechanism, written down at 18:30 while 1i was still running
+
+Not a post-hoc story: 1i launched 18:22 and lands ~18:44; this was read out of
+vLLM's source in between, and 1i tests it directly.
+
+`vllm/v1/engine/core.py:158`:
+
+```python
+if self.scheduler.connector is not None:
+    self.model_executor.init_kv_output_aggregator(self.scheduler.connector)
+```
+
+The gate is **"is a connector attached"** and nothing else — not what it does, not
+whether it stores anything, not which connector it is. Downstream, in
+`multiproc_executor.py:359`:
+
+```python
+if kv_output_aggregator is not None:
+    output_rank = None                      # collect from ALL ranks
+else:
+    output_rank = unique_reply_rank         # collect from ONE rank
+...
+if output_rank is not None:
+    response_mqs = (response_mqs[output_rank],)
+def get_response():
+    for mq in response_mqs:                 # 8 dequeues instead of 1
+        status, result = mq.dequeue(...)
+```
+
+and `kv_output_aggregator` is passed to **both** `execute_model` and
+`sample_tokens` (`multiproc_executor.py:315` and `:327`). So attaching any
+connector turns 2 message-queue dequeues per step into **16**, and makes the
+engine wait on the slowest of 8 ranks twice per step instead of on one rank.
+
+The aggregation itself is cheap — `KVOutputAggregator.aggregate` is a few set
+operations over mostly-empty outputs — so the cost, if this is it, is the extra
+collection and the straggler wait, not the merge.
+
+Why this fits every constraint the measurement imposes:
+
+| observation | fits? |
+|---|---|
+| flat per-step cost | yes, it is per collective RPC |
+| identical for IP and MP (+5.7 both) | yes, gated only on `connector is not None` |
+| independent of KV pool size | yes, nothing to do with the pool |
+| present when the connector stores nothing | yes |
+| invisible in LMCache's logs | yes, it is entirely vLLM-side |
+| not idle time (duty cycle 0.93-0.99) | yes, it is real work plus a real wait |
+| would scale with TP | yes — TP=8 here, so 8x the collection |
+
+**REFUTED at 18:41.** 1i landed at 85.3 ms/step — identical to no connector at
+all. The null connector trips exactly this gate (`connector is not None` ->
+aggregator installed -> 16 dequeues per step instead of 2, two straggler waits
+per step) and it costs nothing measurable. The mechanism above is wrong, and it
+was written down 17 minutes before the result precisely so it could be wrong on
+the record.
 
 ---
 
