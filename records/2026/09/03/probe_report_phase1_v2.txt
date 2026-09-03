@@ -1,0 +1,14 @@
+arm                     wins procs     loop     exec     cpu  exec-cpu   (ms/step, steady state)
+tp8_none                 264     8    83.94    68.76   68.75      0.00
+tp8_nostore              264     8    85.71    68.22   68.19      0.04
+tp8_tinykey              264     8    88.53    71.19   70.63      0.56
+tp8_mp                   264     8    91.90    73.89   72.04      1.85
+
+against the fastest arm (tp8_none):
+  tp8_none               loop   +0.00  exec   +0.00  cpu   +0.00  blocked   +0.00
+  tp8_nostore            loop   +1.77  exec   -0.53  cpu   -0.57  blocked   +0.03
+  tp8_tinykey            loop   +4.59  exec   +2.44  cpu   +1.88  blocked   +0.55
+  tp8_mp                 loop   +7.97  exec   +5.13  cpu   +3.29  blocked   +1.84
+
+read: `blocked` tracks the loop delta -> the GPU is doing more work;
+      `cpu` tracks it -> the cost is host-side.

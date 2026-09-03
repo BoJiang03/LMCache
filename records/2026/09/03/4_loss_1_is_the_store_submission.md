@@ -1,3 +1,13 @@
+> **CORRECTED by [record 6](6_the_key_is_42_percent_and_the_median_was_lying.md).**
+> Every `ms/step` here derived as `8192000 / median Avg prompt throughput` is
+> not a measurement: that log line has two quantised attractors on this
+> workload, so its median only reports which one an arm sits on. The
+> step-probe and end-to-end numbers in this file stand; the median-derived
+> ones do not. Specifically wrong below: the +5.70 / +6.7% "steady-state tax"
+> (really +7.97 ms/step, which is the +9.7%), the four-significant-figure
+> pool-depth agreement (probe: +7.28 at 1.92M vs +7.97 at 13.7M), and "TP=4
+> shows no steady-state loss at all" (probe: +1.10 ms/step).
+
 # Loss #1 is the store submission, end to end
 
 2026-09-03, TP=8, GPUs 0-7, gpt-oss-120b, 1000 prompts x 60,000 tokens, OSL=1,

@@ -123,6 +123,7 @@ case "$ARM" in
   mp)       CLS=LMCacheMPConnector;   MOD=lmcache.integration.vllm.lmcache_mp_connector; NEEDS_SERVER=1; YAML=mp.yaml ;;
   timed)    CLS=TimedMPConnector;     MOD=timedconn.timed_mp_connector;    NEEDS_SERVER=1; YAML=mp.yaml ;;
   nostore)  CLS=NoStoreMPConnector;   MOD=timedconn.nostore_mp_connector;  NEEDS_SERVER=1; YAML=mp.yaml ;;
+  tinykey)  CLS=TinyKeyMPConnector;   MOD=timedconn.tinykey_mp_connector;  NEEDS_SERVER=1; YAML=mp.yaml ;;
   nolookup) CLS=NoLookupMPConnector;  MOD=timedconn.nolookup_mp_connector; NEEDS_SERVER=1; YAML=mp.yaml ;;
   nowait)   CLS=NoWaitMPConnector;    MOD=timedconn.nowait_mp_connector;   NEEDS_SERVER=1; YAML=mp.yaml ;;
   storeprobe) CLS=StoreProbeMPConnector; MOD=timedconn.storeprobe_mp_connector; NEEDS_SERVER=1; YAML=mp.yaml ;;
@@ -174,7 +175,8 @@ if mod.startswith("timedconn.timed_ip") or mod.startswith("timedconn.") and "ip"
     pass
 if mod in ("timedconn.timed_mp_connector", "timedconn.nostore_mp_connector",
            "timedconn.nolookup_mp_connector", "timedconn.nowait_mp_connector",
-           "timedconn.storeprobe_mp_connector"):
+           "timedconn.storeprobe_mp_connector",
+           "timedconn.tinykey_mp_connector"):
     from lmcache.integration.vllm.lmcache_mp_connector import LMCacheMPConnector
     from timedconn.timed_mp_connector import TimedMPConnector, _wrapped
     from vllm.distributed.kv_transfer.kv_connector.v1 import supports_hma

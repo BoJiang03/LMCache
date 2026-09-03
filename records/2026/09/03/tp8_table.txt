@@ -103,3 +103,20 @@ THE TP CONTRAST, pool 1,920,000 and c=1000 on BOTH sides
   identical geometry, the same connector costs +5.69 ms/step of steady state.
   Pool, concurrency, batched-token budget, prompt count and client are equal
   on both rows.  TP degree is the only variable left, and it is the amplifier.
+
+===========================================================================
+CORRECTED by records/2026/09/03/6_..., 10:23.  Every ms/step in this file
+derived from the MEDIAN of Avg prompt throughput is a classifier, not a
+measurement: the log line has two quantised attractors (~95,99x and
+~89,99x) and the median only reports which one an arm sits on.  By step
+probe (differenced), the same arms are:
+
+  tp8_none 83.94   tp8_nostore 85.71 (+1.77)   tp8_tinykey 88.53 (+4.59)
+  tp8_mp 91.90 (+7.97)
+  tp8sp_none 84.10  tp8sp_mp 91.38 (+7.28)   <- pool 1,920,000
+  c1000_none 132.01 c1000_mp 133.11 (+1.10)   <- TP=4, pool 1,920,000
+
+Each delta x 7200 steps matches that arm end-to-end delta within ~1 s.
+So: pool depth is NOT irrelevant to four significant figures (7.28 vs
+7.97), and TP=4 does NOT show zero steady-state loss (+1.10, 0.83%).
+The conclusions survive; the precision claims do not.

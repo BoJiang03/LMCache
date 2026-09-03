@@ -1,0 +1,7 @@
+arm                 n     median       mean        p25        p75
+tp8_none           62      95993      96407      95988     101483
+tp8_nostore        64      95990      93136      95982      95995
+tp8_tinykey        66      89997      90426      89990      95984
+tp8_mp             68      89987      87135      89336      89993
+
+The median is a classifier: two attractors, ~95,99x and ~89,99x.
