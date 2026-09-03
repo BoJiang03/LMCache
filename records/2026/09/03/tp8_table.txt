@@ -60,3 +60,46 @@ TP=4, pool pinned 1,920,000, the concurrency pair (results/lane_c1000):
   against c=300 in the same geometry: none 296.9 s, mp 299.4 s (+0.84%).
   Raising client concurrency 3.3x did NOT raise the tax.  The 1.92M pool caps
   in-flight requests at ~32 either way, so c=1000 only lengthens the queue.
+
+===========================================================================
+TP=8 AT THE SMALL POOL -- the controlled TP comparison (results/tp8_smallpool)
+
+Everything is now held fixed except the TP degree: pool 1,920,000,
+max_num_batched_tokens 8192, 1000 prompts, c=1000, same client, same box.
+
+IN-ENGINE (median Avg prompt throughput, ms/step = 8192000 / tok_per_s)
+
+  arm            median tok/s   ms/step    pool
+  tp8sp_none         95,994.0     85.34    1,920,000
+  tp8sp_mp           89,989.1     91.03    1,920,000
+                                  +5.69   (+6.7%)
+
+  for reference, the SAME pair at pool 13,724,416 (results/phase1_v2):
+  tp8_none           95,992.8     85.34
+  tp8_mp             89,986.9     91.04    (+5.70, +6.7%)
+
+  The 1.92M pool reproduces 85.34 / 91.03 to four significant figures.
+  Pool depth is irrelevant across the whole range measured: 1,920,000 ->
+  13,724,416 -> 25,798,626 all give 85.3 / 91.0.
+
+END-TO-END (client duration)
+
+  tp8sp_none        628.3 s    95,491 tok/s   mean_ttft 319.7 s
+  tp8sp_mp          681.6 s    88,023 tok/s   mean_ttft 345.7 s
+                    +53.3 s   (+8.5%)
+
+  vs the 13.7M pool pair: 625.2 -> 686.0 s (+9.7%).
+
+THE TP CONTRAST, pool 1,920,000 and c=1000 on BOTH sides
+
+  TP   arm     in-engine ms/step    end-to-end
+   4   none        136.54            980.7 s
+   4   mp          136.54            985.7 s   (+0.51%)
+   8   none         85.34            628.3 s
+   8   mp           91.03            681.6 s   (+8.5%)
+
+  At TP=4 the in-engine steady state shows NO loss at all -- 136.54 against
+  136.54, and the whole +0.51% end-to-end is ramp and drain.  At TP=8, in the
+  identical geometry, the same connector costs +5.69 ms/step of steady state.
+  Pool, concurrency, batched-token budget, prompt count and client are equal
+  on both rows.  TP degree is the only variable left, and it is the amplifier.

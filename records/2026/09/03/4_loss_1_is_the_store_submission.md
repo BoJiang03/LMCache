@@ -114,3 +114,35 @@ The GPU watchdog added to `lane.sh` this session is WRONG: it flags on free
 memory and utilisation without checking process ownership, so it marks our own
 TP=8 arms DIRTY.  Ownership must come from
 `nvidia-smi --query-compute-apps=pid` filtered against our own pids.
+
+## Addendum, 09:03 -- it is not the pool, it is the TP degree
+
+`tp8sp_none` / `tp8sp_mp` repeat the TP=8 pair with the pool pinned to
+1,920,000 instead of 13,724,416 and everything else identical:
+
+    arm            median tok/s   ms/step
+    tp8sp_none         95,994.0     85.34
+    tp8sp_mp           89,989.1     91.03   (+5.69, +6.7%)
+
+Four significant figures onto the 13.7M pair (85.34 / 91.04). Pool depth is
+irrelevant across the entire measured range -- 1,920,000, 13,724,416 and
+25,798,626 all give 85.3 / 91.0. That closes the last alternative to the TP
+hypothesis, and it makes the TP contrast fully controlled, because the c1000
+TP=4 pair already ran at that same 1,920,000 pool:
+
+    TP   arm     in-engine ms/step    end-to-end
+     4   none        136.54            980.7 s
+     4   mp          136.54            985.7 s   (+0.51%)
+     8   none         85.34            628.3 s
+     8   mp           91.03            681.6 s   (+8.5%)
+
+Pool, concurrency, `max_num_batched_tokens`, prompt count, client and box are
+equal on both halves. At TP=4 the in-engine steady state shows **no loss at
+all** -- 136.54 against 136.54 -- and the whole +0.51% end-to-end is ramp and
+drain. At TP=8 the same connector costs +5.69 ms/step of steady state. TP
+degree is the only variable left standing, and it is the amplifier.
+
+This also explains why the TP=4 lane could never locate loss #1: at TP=4 there
+is nothing in steady state to locate. Every TP=4 conclusion about *where* the
+cost sits was drawn from a regime where the cost is ~0.
+
