@@ -1,0 +1,7 @@
+chunk_size: 8192
+save_decode_cache: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+mp_host: 127.0.0.1
+mp_port: 5765

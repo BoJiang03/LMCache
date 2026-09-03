@@ -1,0 +1,18 @@
+chunk_size: 8192
+save_decode_cache: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: 180.0
+save_unfull_chunk: false
+remote_storage_plugins:
+  - fs
+store_location: RemoteBackend-fs
+extra_config:
+  remote_storage_plugin.fs.base_path: __KVCACHE_DIR__
+  remote_storage_plugin.fs.use_odirect: true
+  remote_storage_plugin.fs.read_ahead_size: 8192
+  fs_connector_read_ahead_size: 8192
+  fs_connector_use_odirect: true
+  save_chunk_meta: false

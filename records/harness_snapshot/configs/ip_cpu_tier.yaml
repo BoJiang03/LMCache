@@ -1,0 +1,19 @@
+# IP with a real CPU tier -- the fair counterpart to MP's --l1-size-gb.
+#
+# VAST's IP config sets local_cpu:false, i.e. NO storage tier at all: nothing is
+# stored, nothing is retrieved, and LMCache is a pass-through.  Their MP config
+# meanwhile runs a 1600 GB L1.  Comparing those two measures "LMCache idle" vs
+# "LMCache working", not IP vs MP.  This config gives IP the tier so the
+# comparison is like-for-like.
+#
+# max_local_cpu_size is PER TP RANK.  To match an MP server with --l1-size-gb N
+# at TP=8, use N/8 here.  (This is the arithmetic that OOM-killed the box on
+# 2026-09-01: VAST's 180.0 at TP=8 is 1.44 TB, not 180 GB.)
+chunk_size: 8192
+save_decode_cache: false
+save_unfull_chunk: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: true
+max_local_cpu_size: 62.0     # 62 x 8 = 496 GB, matching L1_GB=496 on the MP side
