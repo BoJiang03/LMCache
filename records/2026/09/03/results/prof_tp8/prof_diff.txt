@@ -1,0 +1,46 @@
+nostore: 8 workers, total 552.7s = 115.15 ms/step/worker
+mp: 8 workers, total 620.1s = 129.20 ms/step/worker
+delta (profiled tottime, all functions): +14.04 ms/step/worker
+
+   d_tot    d_cum  calls/step   nostore        mp  function
+ ms/step  ms/step      a -> b   ms/step   ms/step
+   1.915    9.178 3167.5->5115.3     2.357     4.272  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:176(wait)
+   1.122    2.547    4.0->4.0     1.591     2.713  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:657(acquire_read)
+   1.120    1.872 3167.5->5115.3     2.765     3.885  <built-in method posix.sched_yield>
+   1.013    1.013    0.0->5.8     0.000     1.013  <built-in method msgspec._core.msgpack_encode>
+   0.880    0.880 110.0->110.0     1.891     2.771  <_launch_kernel>
+   0.684    0.897 3177.4->5125.3     1.054     1.738  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:60(memory_fence)
+   0.606    1.502 3169.4->5117.3     0.967     1.574  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:670(check)
+   0.416    5.221 3167.5->5115.3     0.707     1.124  site-packages/vllm/distributed/utils.py:46(sched_yield)
+   0.341    0.341  31.5->31.5     1.583     1.923  <built-in method torch.mm>
+  -0.281   -0.614   81.0->0.0     0.281     0.000  /home/bo/vast_profiling_problem/timedconn/timed_mp_connector.py:180(wrapper)
+   0.243    0.257    0.0->1.0     0.000     0.243  lmcache/integration/vllm/vllm_multi_process_adapter.py:2027(_create_key)
+   0.228    0.228 3173.4->5121.3     0.371     0.598  <built-in method time.monotonic>
+   0.218    0.388    1.0->1.0     0.148     0.366  site-packages/torch/distributed/distributed_c10d.py:4090(all_gather_into_tensor)
+   0.217    0.217 3181.6->5135.2     0.336     0.553  <method '__exit__' of '_thread.lock' objects>
+   0.202    0.202 3167.5->5115.3     0.308     0.510  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:627(timeout_ms)
+   0.194    2.038  72.0->72.0     4.864     5.058  site-packages/vllm/third_party/triton_kernels/matmul_ogs.py:299(matmul_ogs)
+   0.175    0.175 3167.5->5115.3     0.271     0.446  site-packages/vllm/distributed/device_communicators/shm_broadcast.py:647(should_warn)
+   0.169    0.169  76.5->76.5     2.884     3.053  <built-in method torch.addmm>
+  -0.161   -0.161  164.0->2.0     0.166     0.005  <built-in method time.thread_time>
+   0.155    0.155 154.3->154.3     2.131     2.286  <method 'copy_' of 'torch._C.TensorBase' objects>
+   0.152    0.703 253.0->253.0     4.679     4.831  site-packages/triton/runtime/jit.py:695(run)
+   0.124  102.408    0.1->1.9     0.005     0.130  site-packages/zmq/sugar/poll.py:80(poll)
+   0.121    0.632 1584.0->1584.0     3.166     3.286  site-packages/triton/runtime/jit.py:1074(__call__)
+   0.117    0.117 18652.9->18727.3     2.251     2.368  <built-in method builtins.isinstance>
+   0.106    0.106 469.0->469.0     2.230     2.335  <built-in method torch.empty>
+  -0.102    2.260  33.9->34.9     0.215     0.113  <built-in method builtins.next>
+   0.101    0.107 6416.0->6416.0     2.150     2.251  <built-in method triton._C.libtriton.native_specialize_impl>
+   0.094    0.191    2.0->7.7     0.025     0.119  site-packages/zmq/sugar/socket.py:638(send)
+   0.082    0.083 687.0->687.0     1.571     1.653  <method 'view' of 'torch._C.TensorBase' objects>
+   0.082    0.129 2736.0->2736.0     1.896     1.978  site-packages/triton/language/core.py:346(_unwrap_if_constexpr)
+  -0.077  -97.537    1.0->1.0     0.126     0.049  site-packages/vllm/model_executor/models/gpt_oss.py:1243(compute_logits)
+   0.075    0.000    2.0->2.0     0.627     0.701  site-packages/torch/autograd/grad_mode.py:293(__exit__)
+   0.074    0.323  73.0->73.0     1.466     1.540  site-packages/vllm/distributed/device_communicators/symm_mem.py:126(all_reduce)
+   0.065    0.065  36.0->36.0     1.756     1.821  <built-in method torch._ops._vllm_fa3_C.fwd>
+   0.065    5.262  37.0->37.0     1.169     1.234  site-packages/torch/_inductor/utils.py:3397(run)
+   0.063  -14.296  36.0->45.2     0.433     0.495  <built-in method torch._ops.vllm.>
+   0.060    0.126 216.0->216.0     1.390     1.451  site-packages/vllm/third_party/triton_kernels/tensor.py:103(__post_init__)
+   0.060    0.254 1296.0->1296.0     1.502     1.562  site-packages/torch/cuda/__init__.py:674(get_device_properties)
+   0.058    0.728  72.0->72.0     1.223     1.281  <built-in method apply>
+   0.058    0.074    0.0->1.0     0.000     0.058  site-packages/zmq/sugar/socket.py:785(recv_multipart)

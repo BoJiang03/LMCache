@@ -1,0 +1,150 @@
+[32;20m[2026-09-03 09:24:48,141] LMCache INFO:[0m torch_dev=<module 'torch.cuda' from '/home/bo/vast_profiling_problem/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda [3m(_device_detect.py:312:lmcache.v1.platform._device_detect)[0m
+[32;20m[2026-09-03 09:24:48,142] LMCache INFO:[0m Auto-selected backend [cuda] for accelerator 'cuda' from candidate backends [cuda, rocm]. [3m(__init__.py:148:lmcache.v1.platform)[0m
+
+ _     __  __    ____           _          
+| |   |  \/  |  / ___|__ _  ___| |__   ___      LMCache v0.5.4.dev147 (ga12e430c)
+| |   | |\/| | | |   / _` |/ __| '_ \ / _ \     Website:  https://lmcache.ai/
+| |___| |  | | | |__| (_| | (__| | | |  __/     Recipes:  https://docs.lmcache.ai/recipes
+|_____|_|  |_|  \____\__,_|\___|_| |_|\___|     LinkedIn: https://www.linkedin.com/company/lmcache-lab
+Set LMCACHE_DISABLE_BANNER=1 to hide this banner.
+
+[32;20m[2026-09-03 09:24:49,173] LMCache INFO:[0m multi_layer_block_kv_transfer mode: ptr [3m(base.py:95:lmcache.v1.multiprocess.transfer_context.base)[0m
+[32;20m[2026-09-03 09:24:51,976] LMCache INFO:[0m Discovered API module: cache_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,977] LMCache INFO:[0m Discovered API module: env_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,979] LMCache INFO:[0m Discovered API module: loglevel_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,980] LMCache INFO:[0m Discovered API module: metrics_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,982] LMCache INFO:[0m Discovered API module: periodic_thread_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,983] LMCache INFO:[0m Discovered API module: run_script_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,985] LMCache INFO:[0m Discovered API module: thread_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,985] LMCache INFO:[0m Discovered API module: common_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,986] LMCache INFO:[0m Discovered API module: config_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,989] LMCache INFO:[0m Discovered API module: info_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,992] LMCache INFO:[0m Discovered API module: quota_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:51,997] LMCache INFO:[0m Discovered API module: reconfigure_api [3m(router_discovery.py:53:lmcache.v1.utils.router_discovery)[0m
+[32;20m[2026-09-03 09:24:52,142] LMCache INFO:[0m CudaPinMemoryBackend: using torch cudart [3m(pin_memory.py:89:lmcache.v1.platform.cuda.pin_memory)[0m
+[32;20m[2026-09-03 09:24:52,144] LMCache INFO:[0m Starting LMCache HTTP server on http://0.0.0.0:8766 [3m(http_server.py:259:lmcache.v1.multiprocess.http_server)[0m
+INFO:     Started server process [2989579]
+INFO:     Waiting for application startup.
+[32;20m[2026-09-03 09:24:52,163] LMCache INFO:[0m Starting LMCache HTTP server... (accelerator available: True) [3m(http_server.py:77:lmcache.v1.multiprocess.http_server)[0m
+[32;20m[2026-09-03 09:24:52,166] LMCache INFO:[0m OTel MeterProvider initialised with Prometheus fallback (standalone metrics HTTP server disabled; /metrics must be exposed by the caller), resource={'telemetry.sdk.language': 'python', 'telemetry.sdk.name': 'opentelemetry', 'telemetry.sdk.version': '1.40.0', 'service.instance.id': 'a8e62a71-1201-41c7-b112-072c22c001fc', 'service.name': 'unknown_service'} [3m(otel_init.py:114:lmcache.v1.mp_observability.otel_init)[0m
+[32;20m[2026-09-03 09:24:54,617] LMCache INFO:[0m Starting L1EvictionController... [3m(eviction_controller.py:53:lmcache.v1.distributed.storage_controllers.eviction_controller)[0m
+[32;20m[2026-09-03 09:24:54,618] LMCache INFO:[0m Starting L2EvictionController... [3m(eviction_controller.py:250:lmcache.v1.distributed.storage_controllers.eviction_controller)[0m
+[32;20m[2026-09-03 09:24:54,619] LMCache INFO:[0m Starting StoreController... [3m(store_controller.py:305:lmcache.v1.distributed.storage_controllers.store_controller)[0m
+[32;20m[2026-09-03 09:24:54,619] LMCache INFO:[0m Starting PrefetchController... [3m(prefetch_controller.py:596:lmcache.v1.distributed.storage_controllers.prefetch_controller)[0m
+[32;20m[2026-09-03 09:24:54,619] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:79:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-03 09:24:54,620] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:180:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-03 09:24:54,620] LMCache INFO:[0m TokenHasher initialized: chunk_size=8192, hash_algorithm=blake3 [3m(token_hasher.py:67:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-03 09:24:54,621] LMCache INFO:[0m PeriodicThread SessionManager-cleanup-thread-7fcca62ffb00 entering main loop (interval=60.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,621] LMCache INFO:[0m Started PeriodicThread: SessionManager-cleanup-thread-7fcca62ffb00 (level=medium, interval=60.0s, init_wait=0.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,622] LMCache INFO:[0m PeriodicThread DeviceHostFuncDispatcher entering main loop (interval=0.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,622] LMCache INFO:[0m Started PeriodicThread: DeviceHostFuncDispatcher (level=high, interval=0.0s, init_wait=0.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,623] LMCache INFO:[0m Supported transfer mode: lmcache_driven [3m(server.py:220:lmcache.v1.multiprocess.server)[0m
+[32;20m[2026-09-03 09:24:54,623] LMCache INFO:[0m PeriodicThread lmcache-mp-worker-reaper entering main loop (interval=45.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,623] LMCache INFO:[0m Started PeriodicThread: lmcache-mp-worker-reaper (level=medium, interval=45.0s, init_wait=0.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,624] LMCache INFO:[0m Initializing MP usage context. [3m(mp.py:93:lmcache.usage_telemetry.mp)[0m
+[32;20m[2026-09-03 09:24:54,624] LMCache INFO:[0m Initializing MP continuous usage reporting. [3m(mp_continuous.py:217:lmcache.usage_telemetry.mp_continuous)[0m
+[32;20m[2026-09-03 09:24:54,625] LMCache INFO:[0m Started PeriodicThread: lmcache-usage-continuous (level=low, interval=600.0s, init_wait=600.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,625] LMCache INFO:[0m Initializing L2 connector usage reporting. [3m(l2_usage.py:243:lmcache.usage_telemetry.l2_usage)[0m
+[32;20m[2026-09-03 09:24:54,625] LMCache INFO:[0m Started PeriodicThread: lmcache-usage-l2 (level=low, interval=600.0s, init_wait=600.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,625] LMCache INFO:[0m Initializing L1 usage reporting. [3m(l1_usage.py:154:lmcache.usage_telemetry.l1_usage)[0m
+[32;20m[2026-09-03 09:24:54,626] LMCache INFO:[0m Started PeriodicThread: lmcache-usage-l1 (level=low, interval=600.0s, init_wait=600.0s) [3m(periodic_thread.py:248:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:24:54,633] LMCache INFO:[0m Created AffinityThreadPool 'affinity-pool-0' with 8 worker slots: up to 8 distinct affinity keys each bind to their own thread before slots are shared. Compare this against the number of clients expected to connect to confirm routing. [3m(affinity_pool.py:60:lmcache.v1.multiprocess.affinity_pool)[0m
+[32;20m[2026-09-03 09:24:54,633] LMCache INFO:[0m LMCache ZMQ cache server is running on tcp://127.0.0.1:5765 [3m(server.py:444:lmcache.v1.multiprocess.server)[0m
+[32;20m[2026-09-03 09:24:54,633] LMCache INFO:[0m LMCache cache server is running... [3m(server.py:459:lmcache.v1.multiprocess.server)[0m
+[32;20m[2026-09-03 09:24:54,633] LMCache INFO:[0m LMCache HTTP server initialized [3m(http_server.py:164:lmcache.v1.multiprocess.http_server)[0m
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8766 (Press CTRL+C to quit)
+[32;20m[2026-09-03 09:26:09,983] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:09,985] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:09,986] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:0 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:09,986] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:10,324] LMCache INFO:[0m Registered KV cache for GPU ID 4038010872973625433 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:10,324] LMCache INFO:[0m Initialized cuda stream on device cuda:0 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:10,681] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:10,682] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:10,682] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:4 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:10,683] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:10,689] LMCache INFO:[0m Registered KV cache for GPU ID 2581150186459151977 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:10,689] LMCache INFO:[0m Initialized cuda stream on device cuda:4 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:11,045] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,046] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,046] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:5 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:11,046] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:11,053] LMCache INFO:[0m Registered KV cache for GPU ID 2686808107543128350 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:11,053] LMCache INFO:[0m Initialized cuda stream on device cuda:5 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:11,424] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,424] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,425] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:7 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:11,425] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:11,432] LMCache INFO:[0m Registered KV cache for GPU ID 4551481527996063574 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:11,432] LMCache INFO:[0m Initialized cuda stream on device cuda:7 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:11,813] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,814] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:11,814] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:2 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:11,814] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:11,821] LMCache INFO:[0m Registered KV cache for GPU ID 2437694462823871426 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:11,822] LMCache INFO:[0m Initialized cuda stream on device cuda:2 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:12,217] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:12,218] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:12,218] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:6 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:12,219] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:12,227] LMCache INFO:[0m Registered KV cache for GPU ID 1194587564295446718 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:12,227] LMCache INFO:[0m Initialized cuda stream on device cuda:6 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:12,648] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:12,648] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:12,649] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:1 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:12,649] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:12,658] LMCache INFO:[0m Registered KV cache for GPU ID 4098193029294879795 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:12,658] LMCache INFO:[0m Initialized cuda stream on device cuda:1 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:26:13,038] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:13,039] LMCache INFO:[0m Engine KV Format: EngineKVFormat.NL_X_TWO_NB_BS_NH_HS NL x [2, NB, BS, NH, HS] [3m(detection.py:69:lmcache.v1.gpu_connector.kv_format.detection)[0m
+[32;20m[2026-09-03 09:26:13,039] LMCache INFO:[0m Group 0 first-layer tensor: layer_idx=0 shape=(2, 214444, 64, 1, 64) stride=(878362624, 4096, 64, 64, 1) is_contiguous=True dtype=torch.bfloat16 device=cuda:3 storage_offset=0 numel=1756725248 storage_nbytes=3513450496 padding_per_block=0 [3m(utils.py:608:lmcache.v1.gpu_connector.utils)[0m
+[32;20m[2026-09-03 09:26:13,039] LMCache INFO:[0m KV layer groups: ---
+KernelGroupInfo(layers=36, indices=0-35, shape_desc=(kv=2, nl=36, nb=214444, bs=64, nh=1, hs=64, element_size=2, block_stride_elems=0), dtype=torch.bfloat16, tokens_per_block=64, slots_per_block=64, engine_group_idx=0, sw_size_tokens=-1)
+--- [3m(kv_layer_groups.py:474:lmcache.v1.kv_layer_groups)[0m
+[32;20m[2026-09-03 09:26:13,044] LMCache INFO:[0m Registered KV cache for GPU ID 1052332343261018912 with 36 layers [3m(lmcache_driven_transfer.py:1010:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:26:13,045] LMCache INFO:[0m Initialized cuda stream on device cuda:3 [3m(cache_context.py:463:lmcache.v1.platform.cuda.cache_context)[0m
+[32;20m[2026-09-03 09:34:54,625] LMCache INFO:[0m PeriodicThread lmcache-usage-continuous entering main loop (interval=600.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:34:54,626] LMCache INFO:[0m PeriodicThread lmcache-usage-l2 entering main loop (interval=600.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:34:54,628] LMCache INFO:[0m PeriodicThread lmcache-usage-l1 entering main loop (interval=600.0s) [3m(periodic_thread.py:304:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,170] LMCache INFO:[0m Unregistered KV cache for GPU ID 1052332343261018912 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+INFO:     Shutting down
+[32;20m[2026-09-03 09:44:14,189] LMCache INFO:[0m Unregistered KV cache for GPU ID 1194587564295446718 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,200] LMCache INFO:[0m Unregistered KV cache for GPU ID 4098193029294879795 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,214] LMCache INFO:[0m Unregistered KV cache for GPU ID 2581150186459151977 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,224] LMCache INFO:[0m Unregistered KV cache for GPU ID 4038010872973625433 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,234] LMCache INFO:[0m Unregistered KV cache for GPU ID 4551481527996063574 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,243] LMCache INFO:[0m Unregistered KV cache for GPU ID 2437694462823871426 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+[32;20m[2026-09-03 09:44:14,253] LMCache INFO:[0m Unregistered KV cache for GPU ID 2686808107543128350 [3m(lmcache_driven_transfer.py:1037:lmcache.v1.multiprocess.modules.lmcache_driven_transfer)[0m
+INFO:     Waiting for application shutdown.
+[32;20m[2026-09-03 09:44:14,287] LMCache INFO:[0m Shutting down LMCache HTTP server... [3m(http_server.py:169:lmcache.v1.multiprocess.http_server)[0m
+[32;20m[2026-09-03 09:44:14,287] LMCache INFO:[0m Stopping PeriodicThread: lmcache-usage-continuous [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,288] LMCache INFO:[0m PeriodicThread lmcache-usage-continuous loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,910] LMCache INFO:[0m Stopping PeriodicThread: lmcache-usage-l2 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,911] LMCache INFO:[0m PeriodicThread lmcache-usage-l2 loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,912] LMCache INFO:[0m Stopping PeriodicThread: lmcache-usage-l1 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:14,912] LMCache INFO:[0m PeriodicThread lmcache-usage-l1 loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,259] LMCache INFO:[0m Stopping PeriodicThread: lmcache-mp-worker-reaper [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,260] LMCache INFO:[0m PeriodicThread lmcache-mp-worker-reaper loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,261] LMCache INFO:[0m Stopping PeriodicThread: DeviceHostFuncDispatcher [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,262] LMCache INFO:[0m PeriodicThread DeviceHostFuncDispatcher loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,262] LMCache INFO:[0m Stopping PeriodicThread: SessionManager-cleanup-thread-7fcca62ffb00 [3m(periodic_thread.py:267:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:15,263] LMCache INFO:[0m PeriodicThread SessionManager-cleanup-thread-7fcca62ffb00 loop stopped [3m(periodic_thread.py:371:lmcache.v1.periodic_thread)[0m
+[32;20m[2026-09-03 09:44:17,594] LMCache INFO:[0m MPCacheServer closed [3m(server.py:127:lmcache.v1.multiprocess.server)[0m
+[32;20m[2026-09-03 09:44:17,594] LMCache INFO:[0m LMCache HTTP server stopped [3m(http_server.py:187:lmcache.v1.multiprocess.http_server)[0m
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2989579]
