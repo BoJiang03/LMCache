@@ -1,0 +1,21 @@
+# "GPU Only + LMCache" (PDF chart 1, curve 1b): LMCache attached, no CPU tier,
+# no remote backend.
+#
+# max_local_cpu_size must stay > 0 even with local_cpu:false, because
+# LocalCPUBackend doubles as LMCache's chunk allocator -- 0 makes
+# storage_manager.py:325 raise KeyError('LocalCPUBackend') and the engine
+# silently degrades to recompute.
+#
+# It is also PER TP RANK and is allocated even when local_cpu is false. VAST's
+# 180.0 at TP=8 means 1440 GB of pinned host memory; this box has ~1404 GB
+# available, so 8 workers OOM during init. 20.0 x 8 = 160 GB is plenty here:
+# with local_cpu:false the pool only has to hold in-flight chunks
+# (8192 tokens x 4608 B/rank = 37.7 MB per chunk).
+chunk_size: 8192
+save_decode_cache: false
+save_unfull_chunk: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: 20.0

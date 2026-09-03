@@ -1,5 +1,40 @@
 # 2026-09-02 (6) — Localising the IP surcharge to a `time.sleep` in the scheduler, and what is left
 
+> ## CORRECTION, same day, 17:05 — the fix in this record measures ZERO
+> ## improvement.  Read this box before believing anything below it.
+>
+> 1f ran the patched LMCache against the identical 1b configuration:
+>
+> | | duration | tok/s | P99 TTFT | mean TTFT |
+> |---|---|---|---|---|
+> | 1b unpatched | 727.7 s | 82,454 | 718.4 s | 372.3 s |
+> | **1f patched** | **728.1 s** | **82,407** | 718.0 s | 370.9 s |
+>
+> 0.06% apart.  The pre-registered band in this record said "REFUTED if
+> >= 715 s".  **Refuted.**
+>
+> **What was wrong.**  This record's mechanism says the stall is O(pending)
+> per scheduling pass, sized from `Deferred` peaking at 926 as "up to 9.2 s of
+> dead engine time in a single pass".  That was an upper bound, and it never
+> happened.  The patch's whole effect is to collapse many sleeps within one
+> pass into one; it changed nothing, so **there was only ever about one
+> `lookup_cache` call per pass to collapse.**  `max_num_batched_tokens` is
+> 8192 and each waiting request wants 8192 tokens, so the scheduler's token
+> budget ends the loop after roughly the first request — it never walks the
+> deferred queue.  Any sentence below that reasons from `Deferred` peak x 10 ms
+> is void.
+>
+> **What survives.**  The two defects are still real as defects: sleeping under
+> the lock the response thread needs is wrong, and an O(pending) backoff is
+> wrong to leave in place.  The tests still bite (3 of 5 fail on the old code).
+> What does not survive is the claim that fixing them buys throughput.  The PR
+> must not claim a performance win.  Decision on the PR is parked until 1g.
+>
+> **What replaces it.**  One 10 ms sleep per scheduling pass, on the engine
+> thread — not per request.  See record 7 for the per-step decomposition that
+> sizes it, and for 1g, which tests it with `lookup_backoff_time: 0.0` and no
+> source change at all.
+
 ## Headline
 
 The 6% that IP costs **over MP** is localised to a single `time.sleep()` in

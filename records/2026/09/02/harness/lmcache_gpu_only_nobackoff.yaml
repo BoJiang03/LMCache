@@ -1,0 +1,20 @@
+# 1g: byte-identical to lmcache_gpu_only.yaml except the last two lines.
+#
+# lookup_backoff_time is the sleep LMCacheAsyncLookupClient performs ON THE
+# ENGINE THREAD every time the scheduler polls a lookup that has not answered
+# yet.  It defaults to 0.01 (10 ms).  Setting it to 0 turns that sleep into a
+# bare GIL yield, so the scheduler returns to the forward pass immediately and
+# picks the answer up on the next pass instead of blocking for it.
+#
+# This is a CONFIG-ONLY arm: no LMCache source change, so it isolates the sleep
+# from everything else the connector does.
+chunk_size: 8192
+save_decode_cache: false
+save_unfull_chunk: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: 20.0
+extra_config:
+  lookup_backoff_time: 0.0

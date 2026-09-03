@@ -1,0 +1,8 @@
+chunk_size: 8192
+save_decode_cache: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: 180.0
+save_unfull_chunk: false
