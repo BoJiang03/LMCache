@@ -561,6 +561,18 @@ class LoadStoreOp:
     """Number of tokens to skip writing at the beginning of the retrieve
     range. Used to avoid overwriting APC-shared GPU blocks during retrieve."""
 
+    token_offset: int = 0
+    """Absolute position of ``token_ids[0]``.
+
+    0 means ``token_ids`` is the request's whole prefix and ``start``/``end``
+    index into it -- what retrieve ops send. A store op instead carries only
+    ``[start, end)`` with ``token_offset == start``: the server's session
+    already holds the rolling hash of everything before it, so resending the
+    prefix every step only costs a list copy on the scheduler, a serialize per
+    step into the connector metadata that vLLM broadcasts to every worker, and
+    a tuple build plus msgpack encode on each of them. ``start``/``end`` stay
+    absolute in both cases."""
+
     @property
     def flat_block_ids(self) -> list[int]:
         """Return all block IDs flattened for group-blind error paths.
@@ -1533,6 +1545,7 @@ class LMCacheMPWorkerAdapter:
             op.end,
             request_id=request_id,
             cache_salt=cache_salt,
+            token_offset=op.token_offset,
         )
         if self.transfer_ctx is None:
             raise RuntimeError(
@@ -2031,15 +2044,19 @@ class LMCacheMPWorkerAdapter:
         end: int,
         request_id: str,
         cache_salt: str = "",
+        token_offset: int = 0,
     ) -> IPCCacheServerKey:
         """Convert token IDs to an IPC cache engine key.
 
         Args:
-            token_ids: The token IDs.
-            start: Start token index.
-            end: End token index.
+            token_ids: The token IDs covering
+                ``[token_offset, token_offset + len(token_ids))``.
+            start: Start token index (absolute).
+            end: End token index (absolute).
             request_id: The request ID.
             cache_salt: Per-user isolation salt.
+            token_offset: Absolute position of ``token_ids[0]``. 0 (the
+                default) means ``token_ids`` is the whole prefix.
 
         Returns:
             IPCCacheServerKey: The constructed key.
@@ -2054,4 +2071,5 @@ class LMCacheMPWorkerAdapter:
             end=end,
             request_id=request_id,
             cache_salt=cache_salt,
+            token_offset=token_offset,
         )

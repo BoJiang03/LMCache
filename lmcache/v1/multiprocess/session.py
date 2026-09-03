@@ -12,7 +12,10 @@ import time
 
 # First Party
 from lmcache.logging import init_logger
-from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
+from lmcache.v1.multiprocess.custom_types import (
+    IPCCacheServerKey,
+    SessionTokenGapError,
+)
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 from lmcache.v1.periodic_thread import (
     PeriodicThread,
@@ -59,6 +62,52 @@ class Session:
         """
         with self._lock:
             self.token_ids = full_token_ids
+
+    def extend_tokens(self, token_ids: list[int], token_offset: int) -> None:
+        """Splice a token range in at ``token_offset``.
+
+        ``token_offset == 0`` is exactly ``set_tokens``: the caller sent the
+        whole prefix and it replaces whatever is here. A non-zero offset is a
+        delta -- the caller sent only ``[token_offset, token_offset + len)``
+        because the chunks before it are already folded into the rolling hash
+        state (``num_chunks_processed`` / ``last_prefix_hash``), which this
+        never touches.
+
+        Splicing rather than appending keeps the call idempotent: a resend of
+        the same range overwrites itself instead of duplicating. The tokens
+        below ``token_offset`` are left in place, so ``_compute_hash`` can
+        still walk any chunk it has not processed yet.
+
+        It never shortens the sequence, and that is load-bearing rather than
+        tidy: every TP rank submits the same ranges to this one shared session,
+        asynchronously. If a straggler rank's ``[0, chunk)`` delta truncated the
+        list back to one chunk, every rank already further along would find its
+        next offset past the end and fail as a gap -- and then stay failed,
+        because each retry truncates again. Overwrite in place, keep the tail.
+
+        Args:
+            token_ids: The tokens covering ``[token_offset, token_offset + len)``.
+            token_offset: Absolute position of ``token_ids[0]``.
+
+        Raises:
+            SessionTokenGapError: If ``token_offset`` is past the end of the
+                tokens held, which would leave a hole the hash chain cannot
+                cross. The session is left untouched.
+        """
+        with self._lock:
+            held = len(self.token_ids)
+            if token_offset > held:
+                raise SessionTokenGapError(
+                    f"token_offset ({token_offset}) is past the {held} token(s) "
+                    f"held by session {self.request_id!r}; the session was most "
+                    "likely swept or recreated mid-request, so the hash chain "
+                    "cannot be continued from this delta"
+                )
+            end = token_offset + len(token_ids)
+            if end >= held:
+                self.token_ids[token_offset:] = token_ids
+            else:
+                self.token_ids[token_offset:end] = token_ids
 
     @overload
     def get_hashes(self, start: int, end: int) -> list: ...

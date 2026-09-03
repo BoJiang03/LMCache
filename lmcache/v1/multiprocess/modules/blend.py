@@ -1822,16 +1822,21 @@ class BlendModule(InstanceLivenessTarget):
         try:
             session = self._ctx.session_manager.get_or_create(key.request_id)
             # Request-end cleanup may have deleted the session; get_or_create
-            # then returns a fresh one whose hash chain is garbage. Re-set
-            # tokens: idempotent if the session survived, corrective if not.
-            session.set_tokens(list(key.token_ids))
+            # then returns a fresh one whose hash chain is garbage. Splicing
+            # the key's tokens back in is idempotent if the session survived,
+            # and corrective if not -- unless the key is a delta that does not
+            # reach back to what is held, which raises and lands in the
+            # ``except`` below (fingerprinting is best-effort by design).
+            session.extend_tokens(list(key.token_ids), key.token_offset)
             chunk_hashes = [
                 TokenHasher.hash_to_bytes(h)
                 for h in session.get_hashes(key.start, key.end)
             ]
             if not chunk_hashes:
                 return result
-            tokens_in_range = list(key.token_ids)[key.start : key.end]
+            tokens_in_range = list(key.token_ids)[
+                key.start - key.token_offset : key.end - key.token_offset
+            ]
             # Chunk 0 is owned by the prefix lookup leg; its fingerprint
             # would be redundant.
             start_chunk_idx = 0 if key.start != 0 else 1
