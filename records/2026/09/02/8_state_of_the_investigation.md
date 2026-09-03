@@ -1,5 +1,16 @@
 # 2026-09-02 (8) — State of the investigation: the 9% is inside LMCache, and I have not found it
 
+> **SUPERSEDED ON THE HEADLINE QUESTION — see record 9.**  This record ends by
+> saying the common +5.7 ms/step is inside LMCache and unlocated, and offers two
+> candidate instruments.  The first of them (timing instrumentation inside
+> LMCache's hooks) was built and run the same evening as arms 1j and 1k, and it
+> found the answer: the vLLM EngineCore scheduler thread blocks on a synchronous
+> LOOKUP round trip to the LMCache server inside `get_num_new_matched_tokens`,
+> 7.36 ms/step of wall clock against 0.083 ms/step of thread CPU.  Everything
+> else in this record — the elimination table, the three refuted mechanisms, the
+> py-spy negative result, the decomposition method — still stands and is what
+> made 1j/1k cheap to design.  Only the "I have not found it" is out of date.
+
 Read this one first. Records 1-7 are the chronological log and several of their
 headline claims have since been falsified; each now carries a correction box.
 

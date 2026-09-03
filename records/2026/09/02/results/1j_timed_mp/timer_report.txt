@@ -1,0 +1,33 @@
+324 TIMER windows, 315 inside the steady band [80, 110] ms/step  (9 processes)
+
+=== role=SCHEDULER  35 windows over 1 process(es) ===
+  wall        91.27 ms/step (median)
+  hooks       8.417 ms/step (median)   <- compare with 5.7
+  cpu_busy     0.94
+  hook                                     ms/step  calls/step
+  get_num_new_matched_tokens                 7.664         0.1
+  build_connector_meta                       0.806         1.0
+  update_state_after_alloc                   0.026         0.1
+  request_finished                           0.006         0.1
+  request_finished_all_groups                0.006         0.1
+  update_connector_output                    0.002         1.0
+  on_new_request                             0.001         0.3
+  take_events                                0.001         1.0
+
+=== role=WORKER  280 windows over 8 process(es) ===
+  wall        91.29 ms/step (median)
+  hooks       0.746 ms/step (median)   <- compare with 5.7
+  cpu_busy     1.83
+  hook                                     ms/step  calls/step
+  wait_for_save                              0.519         1.0
+  get_finished                               0.103         1.0
+  save_kv_layer                              0.055        36.0
+  wait_for_layer_load                        0.053        36.0
+  handle_preemptions                         0.006         1.0
+  start_load_kv                              0.003         1.0
+  bind_connector_metadata                    0.002         1.0
+  get_block_ids_with_load_errors             0.002         1.0
+  build_connector_worker_meta                0.001         1.0
+  clear_connector_metadata                   0.001         1.0
+  get_kv_connector_stats                     0.001         1.0
+
