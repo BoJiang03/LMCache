@@ -28,15 +28,22 @@ all.  This is a deviation from VAST's flags and it is the one caveat below.
 
 ## The result
 
-| arm | cold | warm | speedup |
-|---|---|---|---|
-| MP | 105.6 s / 56,794 tok/s | **27.7 s / 216,784 tok/s** | **3.8x** |
-| IP | 112.6 s / 53,270 tok/s | **109.9 s / 54,620 tok/s** | **1.03x** |
+Both connectors, both prefix-caching settings.  The 2x2 is clean:
 
-On the warm path MP is **4.0x faster than IP**.  So the MP-vs-IP degradation
-reproduces, at a different sign from their chart -- they had IP ahead of MP
-with a VAST L2 attached, on AMD, at ISL 120k; here, with no L2 and on NVIDIA,
-IP is the one that loses.
+| connector | APC | cold | warm | speedup |
+|---|---|---|---|---|
+| MP | off | 105.6 s / 56,794 | **27.7 s / 216,784** | **3.8x** |
+| MP | on | 105.2 s / 57,020 | **25.6 s / 234,576** | **4.1x** |
+| IP | off | 112.6 s / 53,270 | 109.9 s / 54,620 | **1.03x** |
+| IP | on | 112.5 s / 53,315 | 111.4 s / 53,859 | **1.01x** |
+
+MP gets ~4x out of its cache whether or not vLLM's own prefix cache is on.  IP
+gets nothing either way.  On the warm path with APC on, **MP is 4.4x faster
+than IP**.
+
+So the MP-vs-IP degradation reproduces, at a different sign from their chart --
+they had IP ahead of MP with a VAST L2 attached, on AMD, at ISL 120k; here,
+with no L2 and on NVIDIA, IP is the one that loses.
 
 ## The mechanism is not a slow retrieve.  There is no retrieve.
 
@@ -55,18 +62,12 @@ profiled in record 2, at 33.7 ms per call.
 ## The caveat is closed: it is not an artifact of disabling APC
 
 Turning APC off is what makes a hit attributable to LMCache, but it could in
-principle have been what broke IP's retrieve rather than what exposed it.  Arm
-`warm_ip_apc` reran with prefix caching ON -- VAST's actual flag:
-
-| IP arm | cold | warm | speedup |
-|---|---|---|---|
-| APC off | 112.6 s / 53,270 | 109.9 s / 54,620 | 1.03x |
-| **APC on** | **112.5 s / 53,315** | **111.4 s / 53,859** | **1.01x** |
-
-Identical.  And with APC on, all 200 requests still logged
-`LMCache hit tokens: 0`, while vLLM's own prefix cache managed a 4.0% hit rate
--- so neither tier served the warm pass.  The write-only behaviour is real and
-independent of the flag.
+principle have been what broke IP's retrieve rather than what exposed it.  The
+APC-on rows above -- VAST's actual flag -- settle it: IP is 1.01x with prefix
+caching on, all 200 requests still log `LMCache hit tokens: 0`, and vLLM's own
+prefix cache managed a 4.0% hit rate, so neither tier served the warm pass.
+Meanwhile MP is 4.1x under exactly the same flag.  The write-only behaviour is
+real and independent of the setting.
 
 ## Also worth flagging to VAST
 

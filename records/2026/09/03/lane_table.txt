@@ -51,8 +51,10 @@ For scale, LMCache's own log for the 144 MB KV offload that follows it:
    throughput: 9.4289 GB/s; offload_time: 14.7735 ms"
 
 VAST finding #2, warm path, 100 prompts x 60,000 tokens, ~500 GB each side:
-  arm       APC   cold                 warm                 speedup
-  MP        off   105.6 s / 56,794     27.7 s / 216,784     3.8x
-  IP        off   112.6 s / 53,270    109.9 s /  54,620     1.03x
-  IP        on    112.5 s / 53,315    111.4 s /  53,859     1.01x
+  conn  APC   cold                 warm                 speedup
+  MP    off   105.6 s / 56,794     25.6-27.7 s / 216,784   3.8x
+  MP    on    105.2 s / 57,020     25.6 s / 234,576        4.1x
+  IP    off   112.6 s / 53,270    109.9 s /  54,620        1.03x
+  IP    on    112.5 s / 53,315    111.4 s /  53,859        1.01x
   All 200 IP requests logged "LMCache hit tokens: 0" under both APC settings.
+  vLLM's own prefix cache hit rate in the APC-on IP run: 4.0%.
