@@ -1,5 +1,24 @@
 # The common 9% is the vLLM scheduler blocking on an LMCache LOOKUP
 
+> **CORRECTED by 2026-09-03 record 1.  The headline above is wrong.**
+>
+> Arm 1l removed the blocking wait this record identifies.  The scheduler's
+> blocking dropped by ~2.1 ms/step and the engine's step rate did not move:
+> 89,989 tok/s = 91.0 ms/step, against stock MP's 89,988-89,991.  The scheduler
+> thread has slack; while it waits, the GPU is not waiting for it.  So the
+> waiting is a symptom, not the +5.7 ms/step.
+>
+> **What survives, and is still the best measurement of the scheduler side:**
+> everything below about *where the scheduler's time goes* -- the 1j per-process
+> and per-hook attribution, the 1k wall-vs-thread-CPU split, the instrument-is-
+> free table, the code references, and the four mistakes.  The `_create_key`
+> suspect really is dead.  What does not survive is the causal step from "the
+> scheduler waits here" to "therefore this is the cost".
+>
+> This record already flagged that claim as unproven and named 1l as the test
+> (see "Can the wait be removed?" below).  That is the only reason the error
+> cost one 20-minute run.
+
 2026-09-02, evening.  Arms 1j and 1k.  **This closes the question record 8 left
 open.**  Read record 8 first for how the ground was cleared; this record is the
 answer and the evidence for it.
@@ -115,6 +134,10 @@ IP runs the same lookup through `LMCacheAsyncLookupClient` and sits at
 5.7 ms it saves.  Arm 1g also ruled out the backoff sleep as that cost.  So
 "make it async" is **not** established as a win, and this record does not claim
 it is.
+
+**RUN, as arm 1l -- see 2026-09-03 record 1.  Result: the step rate did not
+move.  Removing the wait bought nothing, and the blocking merely relocated from
+LOOKUP (~73 ms/request) to QUERY (38.5 ms/request).**
 
 The cheapest decisive test, not yet run: keep MP, remove only the blocking
 `.result()` (fire the LOOKUP, keep the future, collect it on a later call),

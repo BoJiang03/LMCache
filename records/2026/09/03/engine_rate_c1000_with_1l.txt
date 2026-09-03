@@ -1,0 +1,122 @@
+engine_rate, c=1000, all arms including 1l (async lookup).  Frozen 2026-09-03.
+
+Produced by, exactly:
+
+    scripts/engine_rate.py results/phase1 --min-outstanding=0
+
+--min-outstanding=0 is REQUIRED, not a preference.  The script's default is 700
+and at ISL=60000 the API server's Running+Waiting peaks BELOW that in 1d, 1e,
+1i, 1j, 1k, 1l, 1a_rerun and 1c_rerun -- i.e. in exactly the arms being
+compared, which are then silently dropped from the table with no warning.
+
+ms/step = 1000 * 8192 / (tokens per second), valid because every arm runs the
+same max_num_batched_tokens=8192.  These are vLLM's IN-ENGINE steady-state
+counters, not the bench's end-to-end aggregate; the two differ by ~2.7 ms/step
+and must never be compared against each other.
+
+THE LINE THAT MATTERS THIS SESSION:
+  1l_async_lookup  89,989 tok/s = 91.0 ms/step, Deferred max 563
+  against stock MP 1e 89,990 / 1j 89,990 / 1k 89,988 / 1d 89,991, all Deferred 0.
+Removing the scheduler's blocking LOOKUP wait changed the step rate by nothing.
+
+max_num_batched_tokens = 8192  (a step is this many tokens in every arm)
+
+arm                   block                 dur    n   p50 tok/s   ms/step  Def max  histogram (units of 6000 tok/s)
+1c_rerun              13:20:24..13:26:04   340s   35      95,998      85.3        0  {0: 1, 6: 1, 11: 1, 16: 22, 17: 10}
+1c_vllm_nohybrid      18:22:21..18:32:51   630s   64      95,997      85.3        0  {0: 1, 2: 1, 6: 1, 14: 1, 15: 1, 16: 42, 17: 17}
+1c_vllm_nohybrid      18:39:01..18:49:32   631s   64      95,997      85.3        0  {0: 1, 1: 1, 9: 1, 10: 1, 16: 41, 17: 19}
+1c_vllm_nohybrid      18:59:03..19:14:44   941s   95      95,997      85.3        0  {0: 1, 1: 1, 6: 1, 10: 1, 15: 1, 16: 62, 17: 28}
+1a_vllm_only          16:13:35..16:23:56   621s   63      95,996      85.3        0  {0: 1, 4: 1, 11: 1, 16: 43, 17: 17}
+1a_vllm_only          16:33:36..16:49:07   931s   94      95,996      85.3        0  {0: 1, 3: 1, 15: 3, 16: 63, 17: 26}
+1c_vllm_nohybrid      18:00:10..18:06:00   350s   36      95,996      85.3        0  {0: 1, 1: 1, 7: 1, 10: 1, 16: 22, 17: 10}
+1a_vllm_only          15:26:07..15:28:28   141s   15      95,996      85.3        0  {0: 2, 12: 1, 15: 1, 16: 7, 17: 4}
+1a_vllm_only          15:56:54..16:07:15   621s   63      95,996      85.3        0  {0: 1, 6: 1, 10: 1, 15: 1, 16: 40, 17: 19}
+1a_vllm_only          15:35:59..15:41:20   321s   33      95,995      85.3        0  {0: 2, 3: 1, 5: 1, 10: 1, 11: 1, 16: 19, 17: 8}
+1c_vllm_nohybrid      17:48:29..17:51:40   191s   20      95,994      85.3        0  {0: 2, 10: 1, 15: 2, 16: 9, 17: 6}
+1c_vllm_nohybrid      18:09:50..18:16:11   381s   39      95,994      85.3        0  {0: 1, 3: 1, 8: 1, 16: 25, 17: 11}
+1a_vllm_only          16:58:18..17:13:39   921s   93      95,994      85.3        0  {1: 1, 13: 1, 15: 3, 16: 67, 17: 21}
+1a_vllm_only          15:45:20..15:50:22   302s   31      95,994      85.3        0  {0: 1, 5: 1, 13: 3, 15: 1, 16: 17, 17: 7, 21: 1}
+1c_rerun              13:29:54..13:35:26   332s   34      95,994      85.3        0  {3: 1, 13: 1, 14: 1, 16: 22, 17: 8, 18: 1}
+1c_vllm_nohybrid      17:53:40..17:56:30   170s   18      95,993      85.3        0  {0: 1, 1: 2, 12: 1, 15: 1, 16: 8, 17: 5}
+1i_null_connector     18:30:46..18:41:07   621s   63      95,993      85.3        0  {4: 1, 12: 1, 14: 1, 15: 2, 16: 47, 17: 11}
+1a_rerun              14:36:53..14:47:14   621s   63      95,993      85.3        0  {1: 1, 5: 1, 15: 1, 16: 43, 17: 17}
+1a_rerun              14:20:12..14:30:32   620s   63      95,993      85.3        0  {0: 1, 8: 1, 15: 2, 16: 42, 17: 17}
+1c_rerun              13:09:03..13:12:24   201s   21      95,992      85.3        0  {0: 1, 3: 2, 16: 12, 17: 6}
+1c_rerun              13:14:24..13:16:34   130s   14      95,987      85.3        0  {0: 1, 6: 2, 7: 1, 15: 1, 16: 7, 17: 2}
+1d_mp_gpu_only        15:21:00..15:32:11   671s   68      89,991      91.0        0  {2: 1, 11: 1, 14: 19, 15: 42, 16: 5}
+1e_mp_nohybrid        16:00:14..16:11:35   681s   69      89,990      91.0        0  {0: 1, 1: 1, 6: 1, 14: 13, 15: 43, 16: 10}
+1j_timed_mp           19:24:24..19:35:35   671s   68      89,990      91.0        0  {2: 1, 10: 1, 14: 9, 15: 52, 16: 5}
+1l_async_lookup       20:37:51..20:49:22   691s   70      89,989      91.0      563  {1: 1, 2: 1, 9: 1, 11: 1, 12: 1, 13: 4, 14: 8, 15: 48, 16: 5}
+1d_mp_gpu_only        15:03:59..15:14:30   631s   64      89,989      91.0        0  {0: 2, 9: 1, 11: 1, 13: 1, 14: 11, 15: 42, 16: 6}
+1e_mp_nohybrid        16:12:55..16:15:25   150s   16      89,988      91.0        1  {0: 1, 1: 1, 2: 1, 14: 2, 15: 10, 16: 1}
+1k_timed_mp_sub       19:46:43..19:57:44   661s   67      89,988      91.0        0  {3: 1, 14: 10, 15: 49, 16: 7}
+1e_mp_nohybrid        15:42:21..15:53:52   691s   70      89,988      91.0        0  {0: 1, 1: 1, 3: 1, 13: 1, 14: 11, 15: 51, 16: 4}
+1b_vllm_lmcache       11:56:14..12:08:24   730s   74      83,996      97.5      531  {0: 1, 1: 1, 3: 1, 5: 1, 8: 1, 10: 1, 12: 1, 13: 3, 14: 39, 15: 25}
+1d_mp_gpu_only        14:52:48..14:55:19   151s   16      83,996      97.5        0  {0: 1, 4: 1, 8: 1, 13: 1, 14: 5, 15: 7}
+1b_vllm_lmcache       12:45:25..13:03:07  1062s  107      83,995      97.5      926  {2: 1, 8: 1, 9: 2, 11: 1, 13: 3, 14: 66, 15: 33}
+1b_vllm_lmcache       12:17:44..12:35:45  1081s  109      83,994      97.5      891  {0: 1, 2: 1, 5: 1, 6: 1, 8: 1, 9: 2, 12: 1, 13: 1, 14: 64, 15: 36}
+1b_vllm_lmcache       11:12:42..11:19:53   431s   44      83,994      97.5      245  {0: 1, 2: 1, 7: 1, 8: 2, 11: 2, 12: 1, 13: 4, 14: 19, 15: 13}
+1b_vllm_lmcache       11:37:43..11:49:54   731s   74      83,994      97.5      549  {0: 1, 1: 1, 3: 1, 8: 2, 9: 1, 12: 1, 13: 2, 14: 46, 15: 19}
+1f_ip_patched         17:08:38..17:20:18   700s   71      83,994      97.5      599  {3: 1, 10: 1, 11: 1, 12: 3, 13: 5, 14: 46, 15: 14}
+1b_vllm_lmcache       11:23:53..11:31:23   450s   46      83,993      97.5      310  {0: 1, 2: 1, 4: 1, 8: 1, 10: 2, 11: 1, 12: 1, 13: 2, 14: 25, 15: 11}
+1g_ip_nobackoff       17:31:06..17:42:57   711s   72      83,993      97.5      575  {1: 1, 6: 1, 13: 7, 14: 53, 15: 10}
+1f_ip_patched         16:49:57..17:02:18   741s   75      83,991      97.5      415  {0: 1, 1: 1, 3: 1, 6: 1, 10: 1, 12: 2, 13: 7, 14: 50, 15: 11}
+1b_vllm_lmcache       11:01:30..11:04:31   181s   19      83,988      97.5       92  {0: 3, 1: 1, 7: 1, 10: 1, 12: 1, 13: 1, 14: 8, 15: 3}
+1b_vllm_lmcache       11:06:31..11:08:42   131s   14      62,616     130.8       66  {0: 2, 1: 1, 2: 1, 4: 1, 6: 1, 10: 2, 12: 2, 14: 3, 15: 1}
+1a_vllm_only          15:30:38..15:32:09    91s   10      53,873     152.1        0  {0: 1, 2: 1, 3: 1, 5: 1, 7: 1, 9: 1, 11: 1, 16: 3}
+1b_vllm_lmcache       10:56:50..10:59:30   160s   14      53,525     153.1       62  {0: 5, 1: 1, 5: 1, 9: 1, 13: 1, 14: 3, 15: 2}
+1a_vllm_only          15:21:36..15:24:07   151s   13      35,997     227.6        0  {0: 5, 1: 1, 6: 1, 12: 1, 16: 4, 17: 1}
+1h_mp_profile         17:56:25..18:13:28  1023s  103      23,998     341.4        0  {1: 1, 3: 1, 4: 69, 5: 25, 6: 4, 7: 2, 8: 1}
+1c_vllm_nohybrid      17:44:09..17:46:39   150s   13      17,998     455.2        0  {0: 5, 1: 1, 3: 1, 15: 1, 16: 4, 17: 1}
+1e_mp_nohybrid        16:16:45..16:17:15    30s    4         202   40634.9        0  {0: 4}
+1d_mp_gpu_only        14:56:39..14:57:39    60s    7         102   80000.0        0  {0: 7}
+
+deltas against the fastest block (95,998 tok/s = 85.3 ms/step):
+  1c_rerun                  +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1c_rerun                  +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1i_null_connector         +0.0 ms/step   (1.000x slower)
+  1a_rerun                  +0.0 ms/step   (1.000x slower)
+  1a_rerun                  +0.0 ms/step   (1.000x slower)
+  1c_rerun                  +0.0 ms/step   (1.000x slower)
+  1c_rerun                  +0.0 ms/step   (1.000x slower)
+  1d_mp_gpu_only            +5.7 ms/step   (1.067x slower)
+  1e_mp_nohybrid            +5.7 ms/step   (1.067x slower)
+  1j_timed_mp               +5.7 ms/step   (1.067x slower)
+  1l_async_lookup           +5.7 ms/step   (1.067x slower)
+  1d_mp_gpu_only            +5.7 ms/step   (1.067x slower)
+  1e_mp_nohybrid            +5.7 ms/step   (1.067x slower)
+  1k_timed_mp_sub           +5.7 ms/step   (1.067x slower)
+  1e_mp_nohybrid            +5.7 ms/step   (1.067x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1d_mp_gpu_only           +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1f_ip_patched            +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1g_ip_nobackoff          +12.2 ms/step   (1.143x slower)
+  1f_ip_patched            +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +45.5 ms/step   (1.533x slower)
+  1a_vllm_only             +66.7 ms/step   (1.782x slower)
+  1b_vllm_lmcache          +67.7 ms/step   (1.794x slower)
+  1a_vllm_only            +142.2 ms/step   (2.667x slower)
+  1h_mp_profile           +256.0 ms/step   (4.000x slower)
+  1c_vllm_nohybrid        +369.8 ms/step   (5.334x slower)
+  1e_mp_nohybrid         +40549.6 ms/step   (476.179x slower)
+  1d_mp_gpu_only         +79914.7 ms/step   (937.477x slower)
