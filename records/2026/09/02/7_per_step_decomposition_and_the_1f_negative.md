@@ -284,14 +284,41 @@ the record.
 
 | | |
 |---|---|
-| PR branch `fix_async_lookup_backoff_stall_pr` | pushed to fork, **not opened**. 1g settled it: correctness-only, no performance claim |
-| venv LMCache | **PATCHED** (`8ea23cd1` on `vast_repro_dev`). Every run from here measures patched LMCache unless reverted |
+| PR branch `fix_async_lookup_backoff_stall_pr` | **DELETED** from the fork and locally, 18:47. See below |
+| venv LMCache | **STOCK again** — `8ea23cd1` reverted by `b46f6a1c`, verified by import. Every arm from here measures unmodified LMCache |
 | 1f | done, negative, `results/phase1/1f_ip_patched/` |
 | 1g | done 17:43, **refuted**, `results/phase1/1g_ip_nobackoff/` |
 | 1h | running from 17:44, `logs/q_1g_1h.out` |
 | `1a@200`, `1c@200` | still never run; the whole c=200 column stays uninterpretable |
 | finding (2) (IP vs MP in VAST's matrix) | parked by user decision |
 | records 1–3 | still lead with the falsified KV-pool mechanism, still need editing |
+
+## The PR was cleared, not downgraded
+
+User's instruction, 18:45: this PR exists to fix the performance problem; a
+correctness change is not what it should carry, so empty it.
+
+That is the right call and it is stricter than what I proposed. I had suggested
+keeping the branch and rewriting it as a correctness-only PR. But the branch was
+opened to fix a performance problem, its commit is literally titled
+`[Perf] Stop the async lookup client from stalling vLLM's scheduler`, and two
+independent measurements say it stops nothing. Repurposing it would have shipped
+a change whose real justification was never the one that motivated writing it.
+
+Done:
+- `git push fork --delete fix_async_lookup_backoff_stall_pr` — gone from the fork
+- worktree removed (verified clean first) and the local branch deleted
+- the content is NOT lost: it survives as `8ea23cd1` on `vast_repro_dev`, which is
+  exactly where `<line>_dev` is supposed to hold it
+- `b46f6a1c` reverts `8ea23cd1` so the venv imports stock LMCache again; verified
+  by importing and checking the original sleep-under-lock is back
+
+The two defects it fixed are still real and still unfixed upstream: the backoff
+sleep is held under the lock `process_responses_from_workers` needs, and the
+backoff is O(pending) rather than O(1) per pass. They are worth a separate,
+honestly-scoped correctness PR **if and when someone wants one** — with no
+performance claim attached, since there is none. They are not part of this line
+of work and should not ride along with it.
 
 ## Open
 
