@@ -1,0 +1,20 @@
+# IP (in-process) connector with a CPU tier big enough to serve a warm pass.
+#
+# For VAST finding #2 -- "LMCache MP is about half the warm throughput of
+# LMCache IP" -- the retrieve path has to actually run, which means the cache
+# must hold the working set.  max_local_cpu_size is PER TP RANK and is
+# allocated whether or not local_cpu is true, so 120.0 at TP=4 is 480 GB of
+# pinned host memory.  This box has ~1365 GB available.
+#
+# Sized against the MP side: the MP server allocates 72 MiB per 8192-token
+# chunk per rank, i.e. 73,728 B per token across TP=8, so 100 prompts of 60,000
+# tokens is 442 GB in either connector.  Both sides are given ~500 GB so the
+# comparison is between code paths and not between cache sizes.
+chunk_size: 8192
+save_decode_cache: false
+save_unfull_chunk: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: true
+max_local_cpu_size: 120.0

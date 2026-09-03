@@ -1,0 +1,58 @@
+Frozen 2026-09-03.  TP=4 lane, GPUs 0-3, gpt-oss-120b, 300 prompts x 60,000
+tokens, OSL=1, c=300, cold pass, KV pool pinned at 30,000 blocks = 1,920,000
+tokens in EVERY arm (--num-gpu-blocks-override), max_num_batched_tokens=8192.
+
+NOT comparable to phase1's 85.3 / 91.0 / 97.5 ms/step -- those were TP=8.
+Every comparison here is internal to this lane.
+
+ms/step per worker, steady state, from sitecustomize's step probe.
+`blocked` = exec wall - exec thread CPU = time the worker's main thread was not
+running bytecode.  The baseline's exec EQUALS its cpu, which is what makes the
+connectors separable.
+
+arm            loop     exec      cpu   blocked   end-to-end   tok/s
+none         131.78    81.82    81.82      0.00      296.9 s   60,622
+nostore      131.79    78.02    78.01      0.01      296.4 s   60,726
+mp           132.87    81.16    79.56      1.60      299.4 s   60,124
+storeprobe   133.00    81.30    79.60      1.70      299.9 s   60,019
+nolookup     133.06    83.63    82.07      1.56      299.5 s   60,107
+bigl1        133.36    80.88    79.27      1.61      298.8 s   60,246
+timedip      143.28   140.39   140.18      0.21      326.1 s   55,192
+ipstoreprobe 143.64   140.47   140.25      0.22      326.0 s   55,217
+ipfixed      143.71   140.51   140.30      0.21      321.7 s   55,956
+ipprof       144.83   141.49   141.25      0.24      326.5 s   55,135
+
+  none         no connector
+  nostore      MP, worker_adapter.batched_submit_store_requests no-op'd
+  mp           stock LMCacheMPConnector (module path passed explicitly)
+  storeprobe   MP + sub-timers on the worker store submission
+  nolookup     MP, scheduler_adapter.maybe_submit_lookup_request no-op'd
+  bigl1        MP with --l1-size-gb 500 --eviction-policy LRU
+  timedip      stock LMCacheConnectorV1 + 19 hook timers
+  ipstoreprobe timedip + timers on the engine calls wait_for_save makes
+  ipfixed      ipstoreprobe with fix attempt 1 (hoisted skip check) -- REVERTED
+  ipprof       ipstoreprobe with cProfile on steps 900..1100
+
+Store outcomes (lmcache server log):
+  mp      56 stored / 8,344 "Failed to batched allocate"
+  bigl1   8,400 stored / 0 failed      -- same blocked, same loop
+
+IP worker hooks (ipstoreprobe, 2,200 steps):
+  wait_for_save   2,195 calls  160.43 s wall  160.42 s cpu   72.921 ms/step
+  sub_ip_store    2,094 calls   10.90 s wall   10.89 s cpu    4.953 ms/step
+  sub_ip_unpin    2,388 calls    0.04 s                       0.017 ms/step
+
+cProfile, one worker, steps 900..1100:
+  1016  7.404 s  {method 'to' of 'torch._C.TensorBase' objects}
+  {method 'to'} <- 217 calls / 7.321 s / vllm_v1_adapter.py:1102(wait_for_save)
+  = 33.7 ms per call for a 480 KB pageable host-to-device copy.
+For scale, LMCache's own log for the 144 MB KV offload that follows it:
+  "Stored 8192 of 8192 tokens. size: 0.1406 GB, cost 14.9143 ms,
+   throughput: 9.4289 GB/s; offload_time: 14.7735 ms"
+
+VAST finding #2, warm path, 100 prompts x 60,000 tokens, ~500 GB each side:
+  arm       APC   cold                 warm                 speedup
+  MP        off   105.6 s / 56,794     27.7 s / 216,784     3.8x
+  IP        off   112.6 s / 53,270    109.9 s /  54,620     1.03x
+  IP        on    112.5 s / 53,315    111.4 s /  53,859     1.01x
+  All 200 IP requests logged "LMCache hit tokens: 0" under both APC settings.

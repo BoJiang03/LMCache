@@ -1,0 +1,128 @@
+{
+  "pid": 2380934,
+  "role": "SCHEDULER",
+  "steps": 2200,
+  "cpu_seconds": 323.158589,
+  "hooks": {
+    "build_connector_meta": {
+      "calls": 2200,
+      "seconds": 1.6134714735671878,
+      "thread_cpu_seconds": 1.5469218499995367
+    },
+    "build_connector_worker_meta": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "get_num_new_matched_tokens": {
+      "calls": 300,
+      "seconds": 5.021062979474664,
+      "thread_cpu_seconds": 0.6324934160001376
+    },
+    "update_state_after_alloc": {
+      "calls": 300,
+      "seconds": 0.04972197441384196,
+      "thread_cpu_seconds": 0.04993698899942878
+    },
+    "on_new_request": {
+      "calls": 300,
+      "seconds": 0.000955742783844471,
+      "thread_cpu_seconds": 0.0009937109998823246
+    },
+    "request_finished": {
+      "calls": 299,
+      "seconds": 0.018808888271450996,
+      "thread_cpu_seconds": 0.013934342000039734
+    },
+    "request_finished_all_groups": {
+      "calls": 299,
+      "seconds": 0.02076178789138794,
+      "thread_cpu_seconds": 0.015484877000456976
+    },
+    "update_connector_output": {
+      "calls": 2198,
+      "seconds": 0.008241546340286732,
+      "thread_cpu_seconds": 0.007076557000312178
+    },
+    "get_finished_count": {
+      "calls": 1,
+      "seconds": 5.558133125305176e-06,
+      "thread_cpu_seconds": 3.914000000548867e-06
+    },
+    "handle_preemptions": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "take_events": {
+      "calls": 2198,
+      "seconds": 0.004769498482346535,
+      "thread_cpu_seconds": 0.0051549810004107854
+    },
+    "get_kv_connector_stats": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "start_load_kv": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "wait_for_layer_load": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "save_kv_layer": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "wait_for_save": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "get_finished": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "get_block_ids_with_load_errors": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "bind_connector_metadata": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "clear_connector_metadata": {
+      "calls": 0,
+      "seconds": 0.0,
+      "thread_cpu_seconds": 0.0
+    },
+    "sub_get_tracker": {
+      "calls": 300,
+      "seconds": 0.003799908794462681,
+      "thread_cpu_seconds": 0.003960896000039682
+    },
+    "sub_create_key": {
+      "calls": 300,
+      "seconds": 0.06963563431054354,
+      "thread_cpu_seconds": 0.0639134609997356
+    },
+    "sub_submit_lookup": {
+      "calls": 300,
+      "seconds": 4.215726857539266,
+      "thread_cpu_seconds": 0.21537083899996645
+    },
+    "sub_check_result": {
+      "calls": 300,
+      "seconds": 0.41382958041504025,
+      "thread_cpu_seconds": 0.02671715899987781
+    }
+  }
+}

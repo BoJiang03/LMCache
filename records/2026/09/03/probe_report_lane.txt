@@ -1,0 +1,26 @@
+arm                     wins procs     loop     exec     cpu  exec-cpu   (ms/step, steady state)
+none                      32     4   131.78    81.82   81.82      0.00
+nostore                   32     4   131.79    78.02   78.01      0.01
+mp                        32     4   132.87    81.16   79.56      1.60
+storeprobe                32     4   133.00    81.30   79.60      1.70
+nolookup                  32     4   133.06    83.63   82.07      1.56
+bigl1                     32     4   133.36    80.88   79.27      1.61
+timedip                   32     4   143.28   140.39  140.18      0.21
+ipstoreprobe              32     4   143.64   140.47  140.25      0.22
+ipfixed                   32     4   143.71   140.51  140.30      0.21
+ipprof                    32     4   144.83   141.49  141.25      0.24
+
+against the fastest arm (none):
+  none                   loop   +0.00  exec   +0.00  cpu   +0.00  blocked   +0.00
+  nostore                loop   +0.01  exec   -3.80  cpu   -3.80  blocked   +0.01
+  mp                     loop   +1.09  exec   -0.66  cpu   -2.25  blocked   +1.60
+  storeprobe             loop   +1.22  exec   -0.52  cpu   -2.22  blocked   +1.69
+  nolookup               loop   +1.28  exec   +1.81  cpu   +0.26  blocked   +1.56
+  bigl1                  loop   +1.58  exec   -0.94  cpu   -2.54  blocked   +1.60
+  timedip                loop  +11.50  exec  +58.57  cpu  +58.37  blocked   +0.21
+  ipstoreprobe           loop  +11.86  exec  +58.65  cpu  +58.43  blocked   +0.21
+  ipfixed                loop  +11.93  exec  +58.69  cpu  +58.48  blocked   +0.21
+  ipprof                 loop  +13.05  exec  +59.67  cpu  +59.43  blocked   +0.23
+
+read: `blocked` tracks the loop delta -> the GPU is doing more work;
+      `cpu` tracks it -> the cost is host-side.
