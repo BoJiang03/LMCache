@@ -1,0 +1,18 @@
+arm                     wins procs     loop     exec     cpu  exec-cpu   (ms/step, steady state)
+VOID_tp8_mpfix_truncation_bug   288     8    81.71    66.85   66.33      0.52
+tp8_none                 264     8    83.94    68.76   68.75      0.00
+tp8_nostore              264     8    85.71    68.22   68.19      0.04
+tp8_mpfix                264     8    87.72    72.30   71.74      0.56
+tp8_tinykey              264     8    88.53    71.19   70.63      0.56
+tp8_mp                   264     8    91.90    73.89   72.04      1.85
+
+against the fastest arm (VOID_tp8_mpfix_truncation_bug):
+  VOID_tp8_mpfix_truncation_bug loop   +0.00  exec   +0.00  cpu   +0.00  blocked   +0.00
+  tp8_none               loop   +2.23  exec   +1.90  cpu   +2.42  blocked   -0.52
+  tp8_nostore            loop   +4.00  exec   +1.37  cpu   +1.85  blocked   -0.49
+  tp8_mpfix              loop   +6.01  exec   +5.45  cpu   +5.41  blocked   +0.04
+  tp8_tinykey            loop   +6.82  exec   +4.34  cpu   +4.30  blocked   +0.04
+  tp8_mp                 loop  +10.19  exec   +7.03  cpu   +5.71  blocked   +1.32
+
+read: `blocked` tracks the loop delta -> the GPU is doing more work;
+      `cpu` tracks it -> the cost is host-side.

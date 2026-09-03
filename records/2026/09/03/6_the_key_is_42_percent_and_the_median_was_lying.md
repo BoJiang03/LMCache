@@ -1,3 +1,21 @@
+> **Corrected by record 7 (2026-09-03).** Two things here are wrong:
+>
+> 1. The msgpack encode does **not** run on the worker's model-execution
+>    thread. `process_outbound_task` has one callsite, `mq.py:247`, inside the
+>    `mq-client-shared-loop` daemon thread. It still costs — through the GIL,
+>    which `msgspec._core.msgpack_encode` does not release — but the mechanism
+>    is contention, not serialization on the hot thread. The cProfile caller
+>    table that suggested otherwise is cross-thread garbage for that frame.
+> 2. `tinykey`'s **semantics were broken**, not just diagnostic. It sent
+>    `start=0` with one chunk while `Session.num_chunks_processed` persisted,
+>    so after the first store `_compute_hash` skipped and `get_hashes(0, 8192)`
+>    returned a stale chunk-0 hash forever. Its timing is still valid; its key
+>    derivation was not. The real fix ships the delta with an absolute offset
+>    and keeps the prefix chain.
+>
+> The shipped fix lands **4.18 ms/step (52%)**, better than the 3.38 (42%)
+> `tinykey` bounded here.
+
 # The store key is 42% of loss #1 -- and the instrument that said otherwise
 
 `tinykey` is `mp` with the STORE key built from the slice it actually stores
