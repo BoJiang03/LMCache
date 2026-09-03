@@ -156,46 +156,6 @@ class LMCacheAsyncLookupClient(LookupClientInterface):
                 config.extra_config.get("lookup_backoff_time", self.lookup_backoff_time)
             )
 
-        # Guards the backoff gate below.  Deliberately NOT self.lock: the gate
-        # must be claimable without blocking the response thread.
-        self._backoff_lock = threading.Lock()
-        self._next_backoff_allowed_at = 0.0
-
-    def _yield_to_lookup_threads(self) -> None:
-        """Briefly yield the calling thread so lookups can make progress.
-
-        This runs on vLLM's scheduler thread, which is also the thread that
-        steps the engine.  Two properties matter, and the plain
-        ``time.sleep(self.lookup_backoff_time)`` this replaces violated both:
-
-        * It must not run while holding ``self.lock``.
-          ``process_responses_from_workers`` takes that same lock to record
-          worker results, so sleeping under it blocks the very thread that
-          produces the answer being waited on -- the wait made itself longer.
-
-        * It must cost O(1) per scheduler pass, not O(requests in flight).
-          A request whose lookup has not resolved is returned to vLLM as
-          "no answer yet", which parks it on the scheduler's ``skipped_waiting``
-          queue; under FCFS the scheduler drains that queue ahead of ``waiting``
-          on every pass.  A per-request sleep therefore multiplied the stall by
-          the queue depth.  On a 1000-request gpt-oss-120b prefill benchmark the
-          queue reached 926, i.e. up to 9.2 s of dead engine time in a single
-          scheduling pass.
-
-        The gate below yields for at most one backoff interval per interval of
-        wall clock, however many requests are polled in between.  When the
-        engine has nothing else to run this still throttles the poll loop, which
-        is what the original sleep was for.
-        """
-        now = time.monotonic()
-        with self._backoff_lock:
-            if now < self._next_backoff_allowed_at:
-                return
-            # Claim through the end of this yield, so a caller that arrives
-            # while we are sleeping does not queue up behind us.
-            self._next_backoff_allowed_at = now + 2 * self.lookup_backoff_time
-        time.sleep(self.lookup_backoff_time)
-
     def lookup_cache(self, lookup_id: str) -> Optional[int]:
         """
         -1 means not found;
@@ -206,37 +166,28 @@ class LMCacheAsyncLookupClient(LookupClientInterface):
         self._cleanup_finished_aborted_lookups()
 
         with self.lock:
-            req_status = self.reqs_status.get(lookup_id, -1)
-            if req_status == -1:
+            if (req_status := self.reqs_status.get(lookup_id, -1)) == -1:
                 self.reqs_status[lookup_id] = None
                 self.first_lookup_time[lookup_id] = time.time()
-                return -1
-            if req_status is not None:
-                return req_status
-            elapsed_ms = (time.time() - self.first_lookup_time[lookup_id]) * 1000
+            elif req_status is None:
+                time.sleep(self.lookup_backoff_time)
+                if (
+                    time.time() - self.first_lookup_time[lookup_id]
+                ) * 1000 > self.config.lookup_timeout_ms:
+                    logger.warning(
+                        (
+                            "Request %s is still waiting for async lookup "
+                            "after %d seconds, returning 0 lmcache cached tokens "
+                            "so vllm can recompute"
+                        ),
+                        lookup_id,
+                        self.config.lookup_timeout_ms // 1000,
+                    )
+                    self.cancel_lookup(lookup_id)
+                    self.first_lookup_time.pop(lookup_id, None)
+                    return 0
 
-        # Still in flight.  From here on the lock is released, so the response
-        # thread can keep recording results while we wait.
-        if elapsed_ms > self.config.lookup_timeout_ms:
-            logger.warning(
-                (
-                    "Request %s is still waiting for async lookup "
-                    "after %d seconds, returning 0 lmcache cached tokens "
-                    "so vllm can recompute"
-                ),
-                lookup_id,
-                self.config.lookup_timeout_ms // 1000,
-            )
-            self.cancel_lookup(lookup_id)
-            with self.lock:
-                self.first_lookup_time.pop(lookup_id, None)
-            return 0
-
-        self._yield_to_lookup_threads()
-        with self.lock:
-            # The response may have landed during the yield, in which case the
-            # request is admissible now instead of a scheduling pass later.
-            return self.reqs_status.get(lookup_id)
+            return req_status
 
     # TODO(Jiayi): Consider batching here
     def lookup(
@@ -266,7 +217,7 @@ class LMCacheAsyncLookupClient(LookupClientInterface):
 
         for i in range(self.world_size):
             self.push_sockets[i].send(msg_buf, copy=False)
-        self._yield_to_lookup_threads()
+        time.sleep(self.lookup_backoff_time)
         return None
 
     def process_responses_from_workers(self):
