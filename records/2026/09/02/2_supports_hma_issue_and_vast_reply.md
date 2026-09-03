@@ -1,5 +1,35 @@
 # Drafts: LMCache issue + reply to VAST on the GPU-only regression
 
+> ## CORRECTION (2026-09-02, end of day) — the halved KV pool is REAL but COSTS NOTHING
+>
+> The pool halving itself stands: attaching either LMCache connector turns off
+> vLLM's hybrid KV cache manager on gpt-oss-120b and the pool goes
+> 25,798,626 -> 13,724,416 tokens, 1.880x, byte-for-byte reproducible.
+>
+> **What is false is that this explains the slowdown.** Measured per forward step
+> (every arm runs `max_num_batched_tokens=8192`, so a step is a fixed 8192 tokens):
+>
+> | | pool 25,798,626 | pool 13,724,416 |
+> |---|---|---|
+> | no connector | **85.3 ms/step** (1a) | **85.3 ms/step** (1c) |
+> | LMCache MP | **91.0 ms/step** (1d) | **91.0 ms/step** (1e) |
+>
+> The pool changes by 1.88x and the per-step cost does not move at all, in either
+> row. At ISL=60,000 and c<=1500 the pool never binds: vLLM reports max concurrency
+> 104.71x even with the allocator off. **Any sentence below that treats the halved
+> pool as the cause of the regression, or that quantifies a "pool-halving cost" in
+> throughput, is void.**
+>
+> The settled decomposition is in `7_per_step_decomposition_and_the_1f_negative.md`
+> and `8_state_of_the_investigation.md`: vLLM's connector plumbing +0.0 ms/step,
+> LMCache common to IP and MP +5.7, LMCache IP-only +6.5.
+>
+> This does not kill the `SupportsHMA` issue draft in record 2 — silently halving a
+> user's KV cache is still worth reporting as a resource/correctness problem — but
+> **that draft must not claim a throughput regression**, because there isn't one.
+
+
+
 Status: **drafts only.** Nothing filed, nothing sent, nothing pushed.
 Evidence chain is complete and does not depend on the still-running 1b sweep
 or on Phase 2.  Companion to `1_vast_lmcache_gpu_only_regression_repro.md`.

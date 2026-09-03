@@ -1,0 +1,53 @@
+max_num_batched_tokens = 8192  (a step is this many tokens in every arm)
+
+arm                   block                 dur    n   p50 tok/s   ms/step  Def max  histogram (units of 6000 tok/s)
+1c_vllm_nohybrid      18:22:21..18:32:51   630s   64      95,997      85.3        0  {0: 1, 2: 1, 6: 1, 14: 1, 15: 1, 16: 42, 17: 17}
+1c_vllm_nohybrid      18:39:01..18:49:32   631s   64      95,997      85.3        0  {0: 1, 1: 1, 9: 1, 10: 1, 16: 41, 17: 19}
+1c_vllm_nohybrid      18:59:03..19:14:44   941s   95      95,997      85.3        0  {0: 1, 1: 1, 6: 1, 10: 1, 15: 1, 16: 62, 17: 28}
+1a_vllm_only          16:13:35..16:23:56   621s   63      95,996      85.3        0  {0: 1, 4: 1, 11: 1, 16: 43, 17: 17}
+1a_vllm_only          16:33:36..16:49:07   931s   94      95,996      85.3        0  {0: 1, 3: 1, 15: 3, 16: 63, 17: 26}
+1a_vllm_only          15:56:54..16:07:15   621s   63      95,996      85.3        0  {0: 1, 6: 1, 10: 1, 15: 1, 16: 40, 17: 19}
+1a_vllm_only          16:58:18..17:13:39   921s   93      95,994      85.3        0  {1: 1, 13: 1, 15: 3, 16: 67, 17: 21}
+1i_null_connector     18:30:46..18:41:07   621s   63      95,993      85.3        0  {4: 1, 12: 1, 14: 1, 15: 2, 16: 47, 17: 11}
+1a_rerun              14:36:53..14:47:14   621s   63      95,993      85.3        0  {1: 1, 5: 1, 15: 1, 16: 43, 17: 17}
+1a_rerun              14:20:12..14:30:32   620s   63      95,993      85.3        0  {0: 1, 8: 1, 15: 2, 16: 42, 17: 17}
+1d_mp_gpu_only        15:21:00..15:32:11   671s   68      89,991      91.0        0  {2: 1, 11: 1, 14: 19, 15: 42, 16: 5}
+1e_mp_nohybrid        16:00:14..16:11:35   681s   69      89,990      91.0        0  {0: 1, 1: 1, 6: 1, 14: 13, 15: 43, 16: 10}
+1d_mp_gpu_only        15:03:59..15:14:30   631s   64      89,989      91.0        0  {0: 2, 9: 1, 11: 1, 13: 1, 14: 11, 15: 42, 16: 6}
+1e_mp_nohybrid        15:42:21..15:53:52   691s   70      89,988      91.0        0  {0: 1, 1: 1, 3: 1, 13: 1, 14: 11, 15: 51, 16: 4}
+1b_vllm_lmcache       11:56:14..12:08:24   730s   74      83,996      97.5      531  {0: 1, 1: 1, 3: 1, 5: 1, 8: 1, 10: 1, 12: 1, 13: 3, 14: 39, 15: 25}
+1b_vllm_lmcache       12:45:25..13:03:07  1062s  107      83,995      97.5      926  {2: 1, 8: 1, 9: 2, 11: 1, 13: 3, 14: 66, 15: 33}
+1b_vllm_lmcache       12:17:44..12:35:45  1081s  109      83,994      97.5      891  {0: 1, 2: 1, 5: 1, 6: 1, 8: 1, 9: 2, 12: 1, 13: 1, 14: 64, 15: 36}
+1b_vllm_lmcache       11:12:42..11:19:53   431s   44      83,994      97.5      245  {0: 1, 2: 1, 7: 1, 8: 2, 11: 2, 12: 1, 13: 4, 14: 19, 15: 13}
+1b_vllm_lmcache       11:37:43..11:49:54   731s   74      83,994      97.5      549  {0: 1, 1: 1, 3: 1, 8: 2, 9: 1, 12: 1, 13: 2, 14: 46, 15: 19}
+1f_ip_patched         17:08:38..17:20:18   700s   71      83,994      97.5      599  {3: 1, 10: 1, 11: 1, 12: 3, 13: 5, 14: 46, 15: 14}
+1b_vllm_lmcache       11:23:53..11:31:23   450s   46      83,993      97.5      310  {0: 1, 2: 1, 4: 1, 8: 1, 10: 2, 11: 1, 12: 1, 13: 2, 14: 25, 15: 11}
+1g_ip_nobackoff       17:31:06..17:42:57   711s   72      83,993      97.5      575  {1: 1, 6: 1, 13: 7, 14: 53, 15: 10}
+1f_ip_patched         16:49:57..17:02:18   741s   75      83,991      97.5      415  {0: 1, 1: 1, 3: 1, 6: 1, 10: 1, 12: 2, 13: 7, 14: 50, 15: 11}
+1h_mp_profile         17:56:25..18:13:28  1023s  103      23,998     341.4        0  {1: 1, 3: 1, 4: 69, 5: 25, 6: 4, 7: 2, 8: 1}
+
+deltas against the fastest block (95,997 tok/s = 85.3 ms/step):
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1c_vllm_nohybrid          +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1a_vllm_only              +0.0 ms/step   (1.000x slower)
+  1i_null_connector         +0.0 ms/step   (1.000x slower)
+  1a_rerun                  +0.0 ms/step   (1.000x slower)
+  1a_rerun                  +0.0 ms/step   (1.000x slower)
+  1d_mp_gpu_only            +5.7 ms/step   (1.067x slower)
+  1e_mp_nohybrid            +5.7 ms/step   (1.067x slower)
+  1d_mp_gpu_only            +5.7 ms/step   (1.067x slower)
+  1e_mp_nohybrid            +5.7 ms/step   (1.067x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1f_ip_patched            +12.2 ms/step   (1.143x slower)
+  1b_vllm_lmcache          +12.2 ms/step   (1.143x slower)
+  1g_ip_nobackoff          +12.2 ms/step   (1.143x slower)
+  1f_ip_patched            +12.2 ms/step   (1.143x slower)
+  1h_mp_profile           +256.0 ms/step   (4.000x slower)
