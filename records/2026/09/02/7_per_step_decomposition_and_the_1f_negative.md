@@ -2,9 +2,12 @@
 
 ## Headline
 
-1. **The fix in record 6 buys nothing.** 1f (patched LMCache, otherwise byte-identical
-   to 1b) measured 728.1 s against 1b's 727.7 s. The pre-registered band said
-   "REFUTED if >= 715 s". Refuted. Record 6 now carries a correction box.
+1. **The fix in record 6 buys nothing.** 1f (patched LMCache, otherwise
+   byte-identical to 1b) measured cold 728.1 s vs 1b's 727.7 s, and warm
+   718.1 s vs 1b's 724.1 s. The pre-registered band said "REFUTED if
+   >= 715 s"; both passes are above it. Refuted. The warm pass's 0.8% is
+   barely more than 1b's own 0.5% cold-to-warm spread. Record 6 now carries
+   a correction box.
 
 2. **The tax now has a unit that points at code.** Every arm runs
    `max_num_batched_tokens=8192`, so a forward step is a fixed 8192 tokens and
@@ -88,15 +91,41 @@ py-spy flushes its output file when the tree is torn down. The standing ask for
 
 ---
 
-## In flight (approved 17:07, queued behind 1f as `scripts/q_1g_1h.sh`)
+## 1g (done) and 1h (in flight) — approved 17:07, queued as `scripts/q_1g_1h.sh`
 
-**1g — `lookup_backoff_time: 0.0`, config only, no source change.**
-`configs/lmcache_gpu_only_nobackoff.yaml` differs from 1b's config by exactly two
-lines; the knob was verified to reach the client before launch. Tests whether the
-IP-only +6.5 ms/step is the engine-thread sleep.
-Pre-registered: confirmed at 680–700 s, refuted at >= 715 s.
-If confirmed, the right fix is *never sleep on the engine thread*, not *throttle
-the sleep* — and the PR gets rewritten around that.
+**1g — `lookup_backoff_time: 0.0`, config only, no source change. DONE, REFUTED.**
+
+    arm                 backoff   ms/step   p50 tok/s   Deferred max
+    1c no connector     --           85.3      95,997       0
+    1e MP               --           91.0      89,990       0
+    1b IP unpatched     10 ms        97.5      83,996     531
+    1f IP patched       10 ms        97.5      83,994     599
+    1g IP               0 ms         97.5      83,993     575
+
+cold 726.3 s against a pre-registered refutation band of >= 715 s. **Removing the
+sleep entirely changes nothing** — the three IP arms' steady-state rates differ by
+3 tok/s. The arm is valid, not a misconfiguration: the knob was asserted to reach
+the client before launch, and `Deferred` still peaks at 575, so the async lookup
+path is demonstrably active.
+
+**Conclusion: the async-lookup backoff is not the IP-only +6.5 ms/step.** Two
+independent instruments — a source patch and a config knob to zero — both measure
+nothing. Everything downstream of `Deferred` as a *throughput* explanation is dead,
+including record 6's headline and the replacement hypothesis in this record's
+first draft. `Deferred` being large is real, and it costs nothing.
+
+**PR consequence.** `fix_async_lookup_backoff_stall_pr` now has no performance
+justification at all. What is left is a genuine correctness fix (a sleep held
+under the lock the response thread needs, and an O(pending) backoff) with tests
+that bite, and it must be described that way and only that way.
+
+**What the IP-only surcharge might be instead** — not yet tested, listed so the
+next session does not re-derive it. IP runs a full LMCache engine *inside each of
+the 8 TP worker processes*, where MP hands the work to a separate process:
+`wait_for_save` walks every request in the connector metadata every step and calls
+`lookup_unpin` per request; `build_connector_meta` builds a fresh O(tokens)
+`slot_mapping` tensor per request per step; and all of it contends for the same
+GIL as the worker's own Python. None of this is measured yet.
 
 **1h — py-spy profile of the MP arm at c=1000.** MP is the clean arm for the
 common tax: `Deferred` is 0 in every block, so the async lookup client cannot
@@ -117,10 +146,11 @@ native, and the follow-up is `--native` or a no-connector baseline to diff.
 
 | | |
 |---|---|
-| PR branch `fix_async_lookup_backoff_stall_pr` | pushed to fork, **not opened**, decision parked until 1g |
+| PR branch `fix_async_lookup_backoff_stall_pr` | pushed to fork, **not opened**. 1g settled it: correctness-only, no performance claim |
 | venv LMCache | **PATCHED** (`8ea23cd1` on `vast_repro_dev`). Every run from here measures patched LMCache unless reverted |
 | 1f | done, negative, `results/phase1/1f_ip_patched/` |
-| 1g, 1h | queued, `logs/q_1g_1h.out` |
+| 1g | done 17:43, **refuted**, `results/phase1/1g_ip_nobackoff/` |
+| 1h | running from 17:44, `logs/q_1g_1h.out` |
 | `1a@200`, `1c@200` | still never run; the whole c=200 column stays uninterpretable |
 | finding (2) (IP vs MP in VAST's matrix) | parked by user decision |
 | records 1–3 | still lead with the falsified KV-pool mechanism, still need editing |
@@ -129,6 +159,8 @@ native, and the follow-up is `--native` or a no-connector baseline to diff.
 
 - The common +5.7 ms/step. Everything above is elimination; 1h is the first
   measurement aimed at it.
+- The IP-only +6.5 ms/step is now **also** unexplained, since 1g killed the only
+  hypothesis for it. Candidates in the 1g section above; none measured.
 - `_cleanup_finished_aborted_lookups()` reads `reqs_status` unlocked — latent
   race, deliberately out of the PR, listed as a follow-up in its body.
 - Decode is unmeasured (OSL=1 means prefill only).

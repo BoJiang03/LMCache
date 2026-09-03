@@ -5,13 +5,14 @@
 >
 > 1f ran the patched LMCache against the identical 1b configuration:
 >
-> | | duration | tok/s | P99 TTFT | mean TTFT |
+> | | cold dur | cold tok/s | warm dur | warm tok/s |
 > |---|---|---|---|---|
-> | 1b unpatched | 727.7 s | 82,454 | 718.4 s | 372.3 s |
-> | **1f patched** | **728.1 s** | **82,407** | 718.0 s | 370.9 s |
+> | 1b unpatched | 727.7 s | 82,454 | 724.1 s | 82,864 |
+> | **1f patched** | **728.1 s** | **82,407** | **718.1 s** | **83,551** |
 >
-> 0.06% apart.  The pre-registered band in this record said "REFUTED if
-> >= 715 s".  **Refuted.**
+> The pre-registered band in this record said "REFUTED if >= 715 s".  Both
+> passes are above it.  **Refuted.**  The warm pass is 0.8% faster, which is
+> barely more than 1b's own cold-to-warm spread of 0.5% and is not a signal.
 >
 > **What was wrong.**  This record's mechanism says the stall is O(pending)
 > per scheduling pass, sized from `Deferred` peaking at 926 as "up to 9.2 s of
@@ -30,10 +31,15 @@
 > What does not survive is the claim that fixing them buys throughput.  The PR
 > must not claim a performance win.  Decision on the PR is parked until 1g.
 >
-> **What replaces it.**  One 10 ms sleep per scheduling pass, on the engine
-> thread — not per request.  See record 7 for the per-step decomposition that
-> sizes it, and for 1g, which tests it with `lookup_backoff_time: 0.0` and no
-> source change at all.
+> **The replacement hypothesis is ALSO dead.**  1g reran this configuration with
+> `lookup_backoff_time: 0.0`, i.e. no sleep at all, and measured 726.3 s —
+> identical to 1b and 1f to three digits (97.5 ms/step in all three).  So it is
+> not "O(pending) sleeps per pass" and not "one sleep per pass" either: **the
+> backoff sleep costs nothing measurable, at any call rate.**  Two independent
+> instruments, a source patch and a config knob, both read zero.
+>
+> Everything in this record that treats `Deferred` as a throughput explanation is
+> void.  `Deferred` peaking in the hundreds is real; it is free.  See record 7.
 
 ## Headline
 
