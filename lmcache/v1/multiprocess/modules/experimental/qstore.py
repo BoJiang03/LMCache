@@ -23,7 +23,11 @@ from lmcache.v1.distributed.api import ObjectKey
 from lmcache.v1.gpu_connector.utils import LayoutHints
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType
-from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey, KVCache
+from lmcache.v1.multiprocess.custom_types import (
+    IPCCacheServerKey,
+    KVCache,
+    SessionTokenGapError,
+)
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
 from lmcache.v1.multiprocess.engine_module import (
     HandlerSpec,
@@ -386,9 +390,22 @@ class QStoreModule(InstanceLivenessTarget):
         model_name = entry.model_name
 
         num_object_groups = cache_context.kv_layer_groups_manager.num_object_groups
-        obj_keys_per_obj_group = self._ctx.resolve_obj_keys(
-            key, list(range(num_object_groups))
-        )
+        try:
+            obj_keys_per_obj_group = self._ctx.resolve_obj_keys(
+                key, list(range(num_object_groups))
+            )
+        except SessionTokenGapError as e:
+            # A Q store carries only its own token range; the chunks before it
+            # live in the session's rolling hash state. If that state is gone
+            # the chain cannot be rebuilt from this request alone. Answer
+            # terminally rather than raising: this handler runs on a thread
+            # pool whose done-callback only logs on exception and sends no
+            # frame, so raising would leave the client's future pending
+            # forever -- and ``reclaim_finished_q_stores`` only frees the ring
+            # blocks once a future completes, so the ring would leak them and
+            # eventually run dry. A False result is already handled there.
+            logger.warning("Skipping Q store for %s: %s", key.request_id, e)
+            return b"", False
         num_chunks = len(obj_keys_per_obj_group[0])
 
         # NOTE: different engine groups may have different block sizes, so

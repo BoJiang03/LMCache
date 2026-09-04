@@ -20,6 +20,7 @@ from lmcache.v1.multiprocess.config import MPServerConfig
 from lmcache.v1.multiprocess.modules.experimental import TRANSFER_QUERY
 from lmcache.v1.multiprocess.modules.experimental import qstore as qstore_mod
 from lmcache.v1.multiprocess.modules.experimental.qstore import QStoreModule
+from lmcache.v1.multiprocess.custom_types import SessionTokenGapError
 from lmcache.v1.multiprocess.modules.lmcache_driven_transfer import ContextEntry
 
 REGISTER_ARGS = ("model##query", 2)
@@ -194,6 +195,31 @@ def test_store_q_unregistered_instance_raises() -> None:
     """A store for an unknown instance is a protocol error."""
     with pytest.raises(ValueError, match="No Q ring registered"):
         _module().store_q(MagicMock(), 42, [[0]], b"handle")
+
+
+def test_store_q_token_gap_answers_terminally(stub_device) -> None:
+    """A delta that cannot join the session is answered, never raised.
+
+    ``store_q`` is dispatched on a thread pool whose done-callback logs an
+    exception and sends no frame, so raising here would leave the client's
+    future pending forever.  ``reclaim_finished_q_stores`` only frees ring
+    blocks once a future completes, so that would also leak the ring blocks
+    until the ring ran dry.  A ``False`` result is handled there already.
+    """
+    ctx = _ctx()
+    ctx.resolve_obj_keys.side_effect = SessionTokenGapError("token_offset is past")
+    module = _module(ctx)
+    cache_context = MagicMock()
+    cache_context.kv_layer_groups_manager.num_object_groups = 1
+    module._q_contexts[1] = ContextEntry(
+        cache_context, *REGISTER_ARGS, time.monotonic()
+    )
+
+    handle, ok = module.store_q(MagicMock(), 1, [[0]], b"peer-handle")
+
+    assert ok is False
+    assert handle == b""
+    cast(MagicMock, ctx.storage_manager.reserve_write).assert_not_called()
 
 
 def test_store_q_block_id_underflow_fails_closed(stub_device) -> None:

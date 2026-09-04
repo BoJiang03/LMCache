@@ -535,6 +535,18 @@ class LoadStoreOp:
     """Number of tokens to skip writing at the beginning of the retrieve
     range. Used to avoid overwriting APC-shared GPU blocks during retrieve."""
 
+    token_offset: int = 0
+    """Absolute position of ``token_ids[0]``.
+
+    0 means ``token_ids`` is the request's whole prefix and ``start``/``end``
+    index into it -- what retrieve ops send. A store op instead carries only
+    ``[start, end)`` with ``token_offset == start``: the server's session
+    already holds the rolling hash of everything before it, so resending the
+    prefix every step only costs a list copy on the scheduler, a serialize per
+    step into the connector metadata that vLLM broadcasts to every worker, and
+    a tuple build plus msgpack encode on each of them. ``start``/``end`` stay
+    absolute in both cases."""
+
     @property
     def flat_block_ids(self) -> list[int]:
         """Return all block IDs flattened for group-blind error paths.
@@ -1494,13 +1506,14 @@ class LMCacheMPWorkerAdapter:
             return
 
         assert op.token_ids is not None
-        key = self._create_key(
+        key = self.create_key(
             op.token_ids,
             op.start,
             op.end,
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            token_offset=op.token_offset,
         )
         if self.transfer_ctx is None:
             raise RuntimeError(
@@ -1553,7 +1566,7 @@ class LMCacheMPWorkerAdapter:
             return
 
         assert op.token_ids is not None
-        key = self._create_key(
+        key = self.create_key(
             op.token_ids,
             op.start,
             op.end,
@@ -2041,7 +2054,7 @@ class LMCacheMPWorkerAdapter:
 
         return safe_finished_s
 
-    def _create_key(
+    def create_key(
         self,
         token_ids: list[int],
         start: int,
@@ -2049,17 +2062,25 @@ class LMCacheMPWorkerAdapter:
         request_id: str,
         cache_salt: str = "",
         request_configs: dict[str, Any] | None = None,
+        token_offset: int = 0,
     ) -> IPCCacheServerKey:
         """Convert token IDs to an IPC cache engine key.
 
+        Public because the Q ring buffer keys its own stores from the same
+        ``LoadStoreOp`` this worker stores KV for, and must key them the same
+        way -- ``token_offset`` included.
+
         Args:
-            token_ids: The token IDs.
-            start: Start token index.
-            end: End token index.
+            token_ids: The token IDs covering
+                ``[token_offset, token_offset + len(token_ids))``.
+            start: Start token index (absolute).
+            end: End token index (absolute).
             request_id: The request ID.
             cache_salt: Per-user isolation salt.
             request_configs: Optional LMCache request configs to include in
                 the IPC key.
+            token_offset: Absolute position of ``token_ids[0]``. 0 (the
+                default) means ``token_ids`` is the whole prefix.
 
         Returns:
             IPCCacheServerKey: The constructed key.
@@ -2075,4 +2096,5 @@ class LMCacheMPWorkerAdapter:
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            token_offset=token_offset,
         )

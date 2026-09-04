@@ -35,6 +35,7 @@ from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.multiprocess.custom_types import (
     IPCCacheServerKey,
     KVCache,
+    SessionTokenGapError,
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
 from lmcache.v1.multiprocess.engine_module import (
@@ -1094,9 +1095,19 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
             raise RuntimeError("Registered cache context has no event backend")
 
         num_object_groups = cache_context.kv_layer_groups_manager.num_object_groups
-        obj_keys_per_obj_group = self._ctx.resolve_obj_keys(
-            key, list(range(num_object_groups))
-        )
+        try:
+            obj_keys_per_obj_group = self._ctx.resolve_obj_keys(
+                key, list(range(num_object_groups))
+            )
+        except SessionTokenGapError as e:
+            # A store carries only its own token range; the chunks before it
+            # live in the session's rolling hash state. If that state is gone
+            # the chain cannot be rebuilt from this request alone. Answer
+            # terminally rather than raising: an unanswered handler leaves the
+            # client's future pending forever, whereas False here only makes
+            # the later retrieve miss and the engine recompute.
+            logger.warning("Skipping STORE for request %s: %s", key.request_id, e)
+            return b"", False
         num_chunks = len(obj_keys_per_obj_group[0])
 
         # NOTE: different engine groups may have different block sizes, so

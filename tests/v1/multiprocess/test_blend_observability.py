@@ -288,6 +288,8 @@ class TestFingerprintJobTuple:
             token_ids=list(range(512)),
             start=0,
             end=512,
+            # Whole-prefix key: token_ids[0] sits at absolute position 0.
+            token_offset=0,
         )
 
         assert _bind(eng, "store")(key, 0, [[0, 1]], b"evt") == (b"handle", True)

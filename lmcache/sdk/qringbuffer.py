@@ -699,12 +699,17 @@ class QRingBufferAdapter:
             logger.warning("Skipping Q store for %s: token_ids is None", request_id)
             self.q_ring.free(ring_block_ids)
             return
-        key = self._adapter._create_key(
+        key = self._adapter.create_key(
             op.token_ids,
             op.start,
             op.end,
             request_id=request_id,
             cache_salt=cache_salt,
+            # A STORE op carries only [start, end) with token_offset == start
+            # (the server's session already holds the prefix hashes).  Dropping
+            # the offset here would tell the server that token_ids is the whole
+            # prefix and make it hash the wrong range.
+            token_offset=op.token_offset,
         )
         key = replace(key, model_name=self.q_model_name)
         future = self._adapter.transfer_ctx.submit_q_store(
