@@ -21,6 +21,7 @@ import numpy as np
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.v1.hash_seed import derive_none_hash, resolve_none_hash
 
 logger = init_logger(__name__)
 
@@ -150,35 +151,20 @@ class TokenHasher:
         raise ValueError(f"Hash function '{hash_algorithm}' not found in {module_name}")
 
     def _init_none_hash(self) -> Any:
-        """Initialize NONE_HASH.
+        """Resolve the seed of the prefix-hash chain for this process.
 
-        Adapted from TokenDatabase.__init__ (token_database.py:64-82).
+        The seed must be identical in every process that derives keys for the
+        same cache and stable across restarts; see
+        :func:`lmcache.v1.hash_seed.resolve_none_hash` for why vLLM's own seed
+        cannot be adopted unconditionally.  vLLM cannot drive a blake3 chain,
+        so that algorithm always derives its own seed.
+
+        :return: The seed, as an int or a digest, matching what the configured
+            hash function returns.
         """
-        if self.hash_algorithm_name != "blake3":
-            try:
-                # Third Party
-                from vllm.v1.core import kv_cache_utils
-
-                if hasattr(kv_cache_utils, "init_none_hash"):
-                    kv_cache_utils.init_none_hash(self.hash_func)
-                    none_hash = kv_cache_utils.NONE_HASH
-                    logger.info("Initialized NONE_HASH=%s from vLLM", none_hash)
-                    return none_hash
-            except (
-                ImportError,
-                AttributeError,
-                ValueError,
-                RuntimeError,
-                # torch._dynamo.device_interface raises AssertionError
-                # when CudaInterface is defined on non-CUDA platforms.
-                AssertionError,
-            ):
-                pass
-
-        # Fallback: compute none_hash using our hash function
-        none_hash = self.hash_func((0, (0,), None))
-        logger.info("Computed NONE_HASH=%s using hash function", none_hash)
-        return none_hash
+        if self.hash_algorithm_name == "blake3":
+            return derive_none_hash(self.hash_func)
+        return resolve_none_hash(self.hash_func)
 
     def hash_tokens(self, tokens: list[int], prefix_hash: Any = None) -> Any:
         """Hash one chunk with rolling prefix.

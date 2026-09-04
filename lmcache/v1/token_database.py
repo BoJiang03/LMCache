@@ -24,6 +24,7 @@ import torch
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey, _lmcache_nvtx_annotate
 from lmcache.v1.config import LMCacheEngineConfig
+from lmcache.v1.hash_seed import resolve_none_hash
 from lmcache.v1.metadata import LMCacheMetadata
 
 logger = init_logger(__name__)
@@ -87,25 +88,11 @@ class TokenDatabase(metaclass=abc.ABCMeta):
         # Get hash function with vLLM version compatibility
         self.hash_func = self._get_vllm_hash_func(hash_algorithm)
 
-        # Initialize NONE_HASH (vLLM >= PR#20511)
-        # NOTE: For centralized cache sharing, ensure PYTHONHASHSEED is
-        # set consistently across all processes (e.g., export PYTHONHASHSEED=0).
-        try:
-            # Third Party
-            from vllm.v1.core import kv_cache_utils
-
-            if hasattr(kv_cache_utils, "init_none_hash"):
-                kv_cache_utils.init_none_hash(self.hash_func)
-                NONE_HASH = _normalize_hash_to_int(kv_cache_utils.NONE_HASH)
-                logger.info(
-                    "Initialized NONE_HASH=%s from vLLM (>= PR#20511)", NONE_HASH
-                )
-            else:
-                NONE_HASH = 0
-                logger.info("Using default NONE_HASH=0 (vLLM < PR#20511)")
-        except (ImportError, AttributeError):
-            NONE_HASH = 0
-            logger.info("Using default NONE_HASH=0 (vLLM not available)")
+        # Seed of the prefix-hash chain.  It must be identical in the scheduler
+        # process, in every worker process, and across restarts, otherwise the
+        # same chunk gets a different key depending on which process derived it.
+        # See lmcache.v1.hash_seed.resolve_none_hash.
+        NONE_HASH = _normalize_hash_to_int(resolve_none_hash(self.hash_func))
 
         logger.info("Using hash algorithm: %s", hash_algorithm)
         self.metadata = metadata
