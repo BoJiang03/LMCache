@@ -1,0 +1,38 @@
+# LMCache engine config for the ip_l2 arm: L2 on, DRAM NOT a cache tier.
+# Rendered by run_point.sh -- @L2_DIR@ and @CPU_GB@ are substituted.
+#
+# WHY local_cpu STAYS false.  It is what makes this arm comparable to the MP
+# arm: with local_cpu false the CPU pool is an allocator / staging arena, not a
+# lookup tier, so the measured round reads from L2 and not from DRAM.
+#   - LocalCPUBackend.use_hot is set from local_cpu, and
+#     batched_submit_put_task returns immediately when use_hot is false, so
+#     nothing ever enters hot_cache.  Every retrieve goes through
+#     storage_manager.batched_get, whose write-back uses that same gated
+#     method.  contains() only reads hot_cache, so lookups always miss it.
+#   - The MP arm reaches the same end state differently: --l2-store-policy
+#     skip_l1 drains L1 after each successful L2 store.
+# max_local_cpu_size is PER RANK, so the total DRAM is this value x TP.  It is
+# set from L1_GB / TP so that both arms get exactly the same DRAM budget.
+chunk_size: 8192
+save_decode_cache: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+local_cpu: false
+max_local_cpu_size: @CPU_GB@
+save_unfull_chunk: false
+remote_storage_plugins:
+  - fs
+store_location: RemoteBackend-fs
+extra_config:
+  remote_storage_plugin.fs.base_path: @L2_DIR@/ip
+  # FSConnector reads these two flat keys; they are what actually turn on
+  # O_DIRECT and read-ahead for the in-process path.
+  fs_connector_use_odirect: true
+  fs_connector_read_ahead_size: 8192
+  # LOAD-BEARING, not boilerplate.  save_chunk_meta defaults to TRUE, and with
+  # it on FSConnector force-disables O_DIRECT (its 28-byte inline header makes
+  # the write size unaligned).  Leaving it out would silently give the IP arm
+  # buffered I/O while the MP arm ran O_DIRECT.  With it off, the file is raw
+  # tensor bytes, which is also what the MP `fs` adapter always writes.
+  save_chunk_meta: false

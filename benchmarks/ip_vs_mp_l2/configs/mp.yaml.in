@@ -1,0 +1,10 @@
+# LMCache engine config for the MP arms.  The engine side only needs to know
+# where the server is; the tiers are configured on the `lmcache server` command
+# line.  Rendered by run_point.sh -- @MP_PORT@ is substituted.
+chunk_size: 8192
+save_decode_cache: false
+enable_async_loading: true
+blocking_timeout_secs: 120
+lookup_timeout_ms: 240000
+mp_host: 127.0.0.1
+mp_port: @MP_PORT@
