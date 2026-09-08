@@ -56,6 +56,8 @@ mkdir -p "$OUT"
 
 [ -x "${VLLM:-}" ] || { echo "ABORT: vllm not found; set VLLM=/path/to/vllm"; exit 1; }
 [ -x "${PY:-}" ]   || { echo "ABORT: python not found; set PY=/path/to/python"; exit 1; }
+case "$ARM" in mp_*) [ -x "${LMCACHE_BIN:-}" ] ||
+  { echo "ABORT: lmcache not found; set LMCACHE_BIN=/path/to/lmcache"; exit 1; };; esac
 
 echo "[point] arm=$ARM conc='$CONC' tp=$TP l1=${L1_GB}GB out=$OUT"
 "$PY" -c 'import lmcache,sys; print("[point] lmcache:", lmcache.__file__)' || exit 1
@@ -275,7 +277,7 @@ esac
 
 if [ "$needs_server" = "1" ]; then
   echo "=== [$ARM] lmcache server (l1=${L1_GB}GB, L2=$l2_adapter, skip_l1 ${server_extra[*]-}) $(date +%H:%M:%S) ==="
-  spawn "$dir/lmcache_server.log" lmcache server \
+  spawn "$dir/lmcache_server.log" "$LMCACHE_BIN" server \
     --host 127.0.0.1 --port "$MP_PORT" --http-port "$HTTP_PORT" \
     --l1-size-gb "$L1_GB" --eviction-policy noop \
     --eviction-trigger-watermark 0.8 --eviction-ratio 0.2 \

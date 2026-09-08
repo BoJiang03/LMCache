@@ -25,6 +25,7 @@ export MP_PORT="${MP_PORT:-5765}"
 export HTTP_PORT="${HTTP_PORT:-8766}"
 
 export VLLM="${VLLM:-$(command -v vllm)}"
+export LMCACHE_BIN="${LMCACHE_BIN:-$(command -v lmcache)}"
 export PY="${PY:-$(command -v python3)}"
 
 # Block device backing $L2_DIR, read from /sys/block/$L2_DEV/stat to account
