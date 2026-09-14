@@ -21,8 +21,8 @@ bash bench_objsize.sh                 # the object-size sweep, ~40 min
 
 `WORK` receives the corpus (tens of GiB) and the logs. Scripts that read
 `/proc/diskstats` take the device name through `--dev` (default `md1`); on
-tmpfs the device columns read zero and are ignored. `exp_move_check.sh` takes
-two checkouts, `NEW_TREE` and `OLD_TREE`.
+tmpfs the device columns read zero and are ignored. `exp_move_check.sh` and
+`exp_window.sh` take two checkouts, `NEW_TREE` and `OLD_TREE`.
 
 Every script prints one `RESULT` or `pass N:` line per arm. `summarise.py`
 turns an object-size sweep log into a per-rung table with a verdict.
@@ -65,6 +65,7 @@ effects were falsified by their own falsifiers and are kept here as such
 | `exp_probe.sh`, `exp_probe_quick.sh` | Little's law check: latency of a single read under each arm |
 | `exp_mixed.sh`, `exp_write_quick.sh` | write-path collateral of a large `num_workers` |
 | `exp_move_check.sh` | pool in `ConnectorBase` against pool in `FSConnector`, and the depth-based tile split for a lone large batch |
+| `exp_window.sh` | sliding-window dispatch against the grouped dispatch it replaced, 6 MiB and 1.5 MiB objects |
 | `exp_192_w64.sh` | 192 MiB objects, `num_workers` 64 and 4 against the pool, controlled |
 | `exp_h3_w64.sh` | tmpfs, `num_workers` 64 and 4 against the pool, controlled |
 
@@ -146,6 +147,27 @@ is within twice the drift: a tie.
 | pool in `FSConnector`, one 480-object batch | 50.54 | 50.55 |
 | pool in `ConnectorBase` (one tile), same | 41.12 | 40.44 |
 | `num_workers=64`, batch 16 | 53.29 | 53.75 |
+
+### Sliding window against grouped dispatch (`exp_window.sh`, `results/window_check.log`)
+
+The grouped version cut each tile into groups of at most `read_io_depth`
+objects within a per-worker budget share and drained each group before the
+next; the sliding window queues objects one at a time against one
+connector-wide budget and keeps a GET batch as a single tile. Same array,
+48 GiB corpus, discarded warmup, two interleaved rounds. The `Traceback`
+the raw run printed once at an arm's teardown (the probe thread outliving
+the closed client) is stripped; that arm's `RESULT` preceded it.
+
+| arm | 6 MiB, r1 / r2 | 1.5 MiB, r1 / r2 |
+|---|---|---|
+| window, batch 16, 16 outstanding | 52.67 / 51.83 | 53.57 / 52.18 |
+| grouped, batch 16, 16 outstanding | 52.56 / 52.35 | 52.01 / 52.42 |
+| window, one 480-object batch | 52.69 / 52.72 | |
+| grouped, one 480-object batch | 51.92 / 51.75 | |
+| `num_workers=64`, batch 16 | 53.92 / 53.96 | 54.43 / 54.43 |
+
+Small batches tie within drift; the lone large batch gains 1.7% with both
+arms within 0.3% of their own repeats. No lock cost shows at 1.5 MiB.
 
 ### End to end (not reproducible from this directory)
 
