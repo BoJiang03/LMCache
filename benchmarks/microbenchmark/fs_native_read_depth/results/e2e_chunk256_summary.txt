@@ -1,0 +1,16 @@
+=== POINT E1_legacy_w4  depth=0 workers=4  21:26:42
+=== POINT E1_legacy_w4 exit=0 21:37:43
+  config gate: OK (workers=4 depth=0 effective_budget=0)
+  warm=24.05s  510964 tok/s  n=100  L2 read=562.5 GiB  round-rate=25.1 GB/s
+=== POINT E4_legacy_w64  depth=0 workers=64  20:50:27
+=== POINT E4_legacy_w64 exit=0 21:01:15
+  config gate: OK (workers=64 depth=0 effective_budget=0)
+  warm=15.56s  789894 tok/s  n=100  L2 read=562.5 GiB  round-rate=38.8 GB/s
+=== POINT E2_pooled_d64  depth=64 workers=4  21:02:26
+=== POINT E2_pooled_d64 exit=0 21:13:10
+  config gate: OK (workers=4 depth=64 effective_budget=1610612736)
+  warm=14.49s  848037 tok/s  n=100  L2 read=562.5 GiB  round-rate=41.7 GB/s
+=== POINT E4_legacy_w64_drift  depth=0 workers=64  21:14:21
+=== POINT E4_legacy_w64_drift exit=0 21:25:05
+  config gate: OK (workers=64 depth=0 effective_budget=0)
+  warm=15.60s  787828 tok/s  n=100  L2 read=562.5 GiB  round-rate=38.7 GB/s
