@@ -19,12 +19,32 @@ from lmcache.v1.multiprocess.modules.lmcache_driven_transfer import (
     LMCacheDrivenTransferModule,
 )
 from lmcache.v1.multiprocess.session import SessionManager
+from lmcache.v1.multiprocess.token_codec import pack_token_ids, unpack_token_ids
 
 
 class _TestTokenHasher:
-    """Small deterministic hasher for lock-ownership tests."""
+    """Small deterministic hasher for lock-ownership tests.
+
+    The chunk hash is just the chunk's index, rolled forward through the
+    prefix hash, so that hashing a range one chunk at a time through a
+    ``Session`` and hashing it in one shot agree.
+    """
 
     chunk_size = 2
+    none_hash = b"h-1"
+
+    def hash_tokens(self, tokens: list[int], prefix_hash: object = None) -> bytes:
+        del tokens
+        return self._next(prefix_hash)
+
+    def hash_packed_chunk(self, chunk: bytes, prefix_hash: object = None) -> bytes:
+        del chunk
+        return self._next(prefix_hash)
+
+    def _next(self, prefix_hash: object) -> bytes:
+        prefix = self.none_hash if prefix_hash is None else prefix_hash
+        assert isinstance(prefix, bytes)
+        return f"h{int(prefix[1:]) + 1}".encode()
 
     def compute_chunk_hashes(
         self,
@@ -72,7 +92,7 @@ def _cache_key(
         model_name="test-model",
         world_size=world_size,
         worker_id=worker_id,
-        token_ids=(1, 2, 3, 4),
+        token_bytes=pack_token_ids([1, 2, 3, 4]),
         start=start,
         end=end,
         request_id=request_id,
@@ -130,6 +150,7 @@ def test_tp_failed_worker_releases_only_its_reader_share_once(mla: bool) -> None
         world_size=world_size, worker_id=None, request_id=request_id
     )
     session = sessions.get_or_create(request_id)
+    session.set_tokens(lookup_key.token_bytes)
     session.begin_lookup(lookup_key, (-1,))
     session.record_prefetch_result(2, (0,))
 
@@ -146,7 +167,9 @@ def test_tp_failed_worker_releases_only_its_reader_share_once(mla: bool) -> None
         storage_manager=storage,
     )
 
-    hashes = hasher.compute_chunk_hashes(list(lookup_key.token_ids), end=lookup_key.end)
+    hashes = hasher.compute_chunk_hashes(
+        unpack_token_ids(lookup_key.token_bytes), end=lookup_key.end
+    )
     all_rank_keys = ipc_key_to_object_keys(lookup_key, hashes, [0])[0]
     lookup_read_locks = tp_size if mla else 1
     # The request under test and a concurrent reader both own read locks.
@@ -212,12 +235,13 @@ def test_cleanup_exception_does_not_suppress_terminal_false() -> None:
         return_value=None
     )
     module._ctx = MagicMock()
+    module._ctx.chunk_size = 2
     session = MagicMock()
     session.prepare_failed_retrieve_release.return_value = (2, (0,), (-1,), 7)
+    session.absorb_tokens.return_value = True
+    session.num_tokens = 1 << 30
+    session.get_hashes.side_effect = RuntimeError("cleanup failed")
     module._ctx.session_manager.get.return_value = session
-    module._ctx.token_hasher.compute_chunk_hashes.side_effect = RuntimeError(
-        "cleanup failed"
-    )
 
     result = module.retrieve(
         _cache_key(world_size=1, worker_id=0, request_id="request"),

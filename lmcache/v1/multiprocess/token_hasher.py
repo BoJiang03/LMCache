@@ -21,8 +21,23 @@ import numpy as np
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.v1.multiprocess.token_codec import (
+    TOKEN_STRIDE,
+    num_packed_tokens,
+    unpack_token_ids,
+)
 
 logger = init_logger(__name__)
+
+
+def _update_with_prefix(h: Any, prefix_hash: Any) -> None:
+    """Feed a rolling prefix hash into an open blake3 hasher."""
+    if isinstance(prefix_hash, bytes):
+        h.update(prefix_hash)
+    elif isinstance(prefix_hash, int):
+        h.update(prefix_hash.to_bytes(8, byteorder="big", signed=True))
+    else:
+        h.update(bytes(prefix_hash))
 
 
 def _make_blake3_hash_func() -> Callable:
@@ -37,18 +52,33 @@ def _make_blake3_hash_func() -> Callable:
     def blake3_hash(args):
         prefix_hash, tokens, _ = args
         h = _blake3.blake3()
-        # Serialize prefix hash
-        if isinstance(prefix_hash, bytes):
-            h.update(prefix_hash)
-        elif isinstance(prefix_hash, int):
-            h.update(prefix_hash.to_bytes(8, byteorder="big", signed=True))
-        else:
-            h.update(bytes(prefix_hash))
+        _update_with_prefix(h, prefix_hash)
         # Serialize token IDs in one batch
         h.update(struct.pack(f">{len(tokens)}I", *tokens))
         return h.digest()  # 32 bytes
 
     return blake3_hash
+
+
+def _make_blake3_packed_hash_func() -> Callable:
+    """Create a blake3 hash over an already-packed chunk buffer.
+
+    ``blake3_hash`` above packs its tokens into big-endian ``uint32`` words
+    before hashing, which is exactly the layout
+    :mod:`lmcache.v1.multiprocess.token_codec` puts on the wire. Hashing the
+    buffer directly therefore yields the identical digest while skipping the
+    round trip through Python ints.
+    """
+    # Third Party
+    import blake3 as _blake3
+
+    def blake3_packed_hash(chunk: bytes, prefix_hash: Any) -> bytes:
+        h = _blake3.blake3()
+        _update_with_prefix(h, prefix_hash)
+        h.update(chunk)
+        return h.digest()  # 32 bytes
+
+    return blake3_packed_hash
 
 
 class TokenHasher:
@@ -63,6 +93,15 @@ class TokenHasher:
         self.chunk_size = chunk_size
         self.hash_algorithm_name = hash_algorithm
         self.hash_func = self._get_hash_func(hash_algorithm)
+        #: Hashes a packed chunk buffer directly. blake3 -- the default --
+        #: already hashes exactly that byte layout, so it needs no
+        #: conversion; every other algorithm takes the token list, so it
+        #: unpacks first and only saves the transport cost.
+        self._packed_hash_func: Callable[[bytes, Any], Any] = (
+            _make_blake3_packed_hash_func()
+            if hash_algorithm == "blake3"
+            else self._hash_by_unpacking
+        )
         self.none_hash = self._init_none_hash()
         logger.info(
             "TokenHasher initialized: chunk_size=%d, hash_algorithm=%s",
@@ -188,6 +227,67 @@ class TokenHasher:
         if prefix_hash is None:
             prefix_hash = self.none_hash
         return self.hash_func((prefix_hash, tuple(tokens), None))
+
+    def _hash_by_unpacking(self, chunk: bytes, prefix_hash: Any) -> Any:
+        """Hash a packed chunk via the token-list calling convention."""
+        return self.hash_tokens(unpack_token_ids(chunk), prefix_hash)
+
+    def hash_packed_chunk(self, chunk: bytes, prefix_hash: Any = None) -> Any:
+        """Hash one packed chunk with a rolling prefix.
+
+        Args:
+            chunk: ``chunk_size`` packed token ids.
+            prefix_hash: The previous chunk's hash, or ``None`` to start
+                from ``none_hash``.
+
+        Returns:
+            The chunk hash, in whatever type the configured algorithm
+            returns -- identical to ``hash_tokens`` on the same tokens.
+        """
+        if prefix_hash is None:
+            prefix_hash = self.none_hash
+        return self._packed_hash_func(chunk, prefix_hash)
+
+    def compute_packed_chunk_hashes(
+        self,
+        packed: bytes,
+        prefix_hash: Any = None,
+        start: int = 0,
+        end: int | None = None,
+    ) -> list[bytes]:
+        """Compute rolling prefix hashes over a packed token buffer.
+
+        The packed-buffer counterpart of :meth:`compute_chunk_hashes`, with
+        the same semantics: hashing always starts at the beginning of
+        ``packed`` because each chunk's hash depends on all previous ones,
+        but only chunks within ``[start, end)`` are returned.
+
+        Args:
+            packed: The packed token sequence.
+            prefix_hash: Optional initial prefix hash (defaults to
+                ``none_hash``).
+            start: Token-level start index (must be chunk-aligned).
+            end: Token-level end index (must be chunk-aligned). When
+                provided, hashing stops there.
+
+        Returns:
+            List of ``bytes`` hash values for chunks in ``[start, end)``.
+        """
+        hashes: list[bytes] = []
+        prefix_hash = self.none_hash if prefix_hash is None else prefix_hash
+        num_tokens = num_packed_tokens(packed)
+        effective_len = min(num_tokens, end) if end is not None else num_tokens
+        num_complete = effective_len - effective_len % self.chunk_size
+        view = memoryview(packed)
+        stride = self.chunk_size * TOKEN_STRIDE
+        for i in range(0, num_complete, self.chunk_size):
+            offset = i * TOKEN_STRIDE
+            prefix_hash = self.hash_packed_chunk(
+                view[offset : offset + stride], prefix_hash
+            )
+            if i >= start:
+                hashes.append(self.hash_to_bytes(prefix_hash))
+        return hashes
 
     def compute_chunk_hashes(
         self,

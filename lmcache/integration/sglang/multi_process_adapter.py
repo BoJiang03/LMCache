@@ -41,6 +41,7 @@ from lmcache.v1.platform.base.event_ipc import (
     get_event_ipc_backend,
 )
 from lmcache.v1.platform.kv_wrap import wrap_one_kv_cache
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 if TYPE_CHECKING:
     # Third Party
@@ -283,7 +284,7 @@ class LMCacheMPConnector:
             # sharing in this adapter yet).
             num_kv_readers=1,
             worker_id=None if no_worker_id else self.worker_id,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=start,
             end=end,
             request_id=request_id,

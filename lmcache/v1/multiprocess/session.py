@@ -14,6 +14,7 @@ import time
 # First Party
 from lmcache.logging import init_logger
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
+from lmcache.v1.multiprocess.token_codec import TOKEN_STRIDE, unpack_token_ids
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 from lmcache.v1.periodic_thread import (
     PeriodicThread,
@@ -30,17 +31,31 @@ logger = init_logger(__name__)
 class Session:
     """Tracks accumulated token IDs and computed chunk hashes for a request.
 
+    The session is the server's source of truth for a request's token
+    sequence. A LOOKUP seeds it with the whole prompt via
+    :meth:`set_tokens`; later STORE and RETRIEVE keys may carry only the
+    slice their own range needs and splice it in via
+    :meth:`absorb_tokens`. Everything that needs tokens or chunk hashes for
+    a request reads them back from here rather than from the key, so a
+    delta-carrying key and a full-sequence key resolve identically.
+
+    Tokens are held in the packed big-endian ``uint32`` form of
+    :mod:`lmcache.v1.multiprocess.token_codec`, the same layout that
+    arrives on the wire and that blake3 hashes, so splicing and hashing
+    both stay memcpy-cheap; only callers that need Python ints unpack.
+
     Thread-safe: all public methods are protected by an internal lock
     to allow concurrent access from multiple TP worker threads.
     """
 
     request_id: str
     hasher: TokenHasher
-    token_ids: list[int] = field(default_factory=list)
+    tokens: bytearray = field(default_factory=bytearray)
     chunk_hashes: list = field(default_factory=list)
     last_prefix_hash: Any = None
     num_chunks_processed: int = 0
     created_at: float = field(default_factory=time.time)
+    last_used_at: float = field(default_factory=time.time)
     lookup_ipc_key: Optional[IPCCacheServerKey] = None
     prefetch_hit_chunks: int = -1
     prefetch_locked_gids: tuple = ()
@@ -52,14 +67,108 @@ class Session:
     )
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def set_tokens(self, full_token_ids: list[int]) -> None:
+    def set_tokens(self, packed_token_ids: bytes) -> None:
         """Update the token sequence (idempotent, replaces not extends).
 
         Args:
-            full_token_ids: Complete token sequence.
+            packed_token_ids: Complete packed token sequence, starting at
+                position 0.
         """
         with self._lock:
-            self.token_ids = full_token_ids
+            self.tokens = bytearray(packed_token_ids)
+            self.last_used_at = time.time()
+
+    def absorb_tokens(self, offset: int, packed_token_ids: bytes) -> bool:
+        """Splice a packed token slice starting at ``offset`` into the sequence.
+
+        Tokens already held are left alone, so a repeated or fully-covered
+        slice is a no-op and the memoized chunk hashes stay valid. Only the
+        part beyond the current end is appended.
+
+        Args:
+            offset: Absolute token position the slice starts at.
+            packed_token_ids: The packed slice to splice in.
+
+        Returns:
+            ``True`` when the session now holds a contiguous sequence
+            covering the slice. ``False`` when ``offset`` is past the end of
+            what the session holds: the missing prefix cannot be invented,
+            and hashing across the gap would produce valid-looking garbage,
+            so the caller must degrade instead.
+
+        Raises:
+            ValueError: If ``offset`` is negative.
+        """
+        if offset < 0:
+            raise ValueError(f"offset must be >= 0 (got {offset})")
+        byte_offset = offset * TOKEN_STRIDE
+        with self._lock:
+            self.last_used_at = time.time()
+            held = len(self.tokens)
+            if byte_offset > held:
+                return False
+            if byte_offset + len(packed_token_ids) <= held:
+                return True
+            self.tokens[byte_offset:] = packed_token_ids
+            return True
+
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens the session currently holds."""
+        with self._lock:
+            return len(self.tokens) // TOKEN_STRIDE
+
+    def packed_tokens_in_range(self, start: int, end: int) -> bytes:
+        """Return the packed tokens at absolute positions ``[start, end)``.
+
+        The range is clipped to what the session holds, so a caller asking
+        past the end gets a short buffer rather than an error.
+
+        Args:
+            start: Absolute start position.
+            end: Absolute end position (exclusive).
+
+        Returns:
+            The packed tokens in the (clipped) range.
+        """
+        with self._lock:
+            return bytes(self.tokens[start * TOKEN_STRIDE : end * TOKEN_STRIDE])
+
+    def tokens_in_range(self, start: int, end: int) -> list[int]:
+        """Return the token ids at absolute positions ``[start, end)``.
+
+        Unpacks, so prefer :meth:`packed_tokens_in_range` unless Python
+        ints are genuinely needed.
+
+        Args:
+            start: Absolute start position.
+            end: Absolute end position (exclusive).
+
+        Returns:
+            The token ids in the (clipped) range.
+        """
+        return unpack_token_ids(self.packed_tokens_in_range(start, end))
+
+    def matches_tokens(self, offset: int, packed_token_ids: bytes) -> bool:
+        """Whether the session holds exactly these tokens at ``offset``.
+
+        Args:
+            offset: Absolute token position the slice claims to sit at.
+            packed_token_ids: The packed slice to check.
+
+        Returns:
+            ``True`` if the session covers the slice and every token agrees.
+        """
+        with self._lock:
+            return self._matches_tokens_locked(offset, packed_token_ids)
+
+    def _matches_tokens_locked(self, offset: int, packed_token_ids: bytes) -> bool:
+        """Body of :meth:`matches_tokens`; caller holds ``self._lock``."""
+        start = offset * TOKEN_STRIDE
+        end = start + len(packed_token_ids)
+        if end > len(self.tokens):
+            return False
+        return self.tokens[start:end] == packed_token_ids
 
     @overload
     def get_hashes(self, start: int, end: int) -> list: ...
@@ -98,17 +207,19 @@ class Session:
         start_chunk = start // chunk_size
 
         with self._lock:
-            if end is not None and end > len(self.token_ids):
+            self.last_used_at = time.time()
+            held = len(self.tokens) // TOKEN_STRIDE
+            if end is not None and end > held:
                 raise ValueError(
                     f"get_hashes end ({end}) exceeds the session's "
-                    f"{len(self.token_ids)} token(s); the session may have "
+                    f"{held} token(s); the session may have "
                     "been recreated after request cleanup"
                 )
             if end is None:
                 # No explicit end: use the last full-chunk boundary.
-                # Lock must be held here because `self.token_ids` may be
+                # Lock must be held here because `self.tokens` may be
                 # concurrently replaced by `set_tokens` from another thread.
-                end = len(self.token_ids) - (len(self.token_ids) % chunk_size)
+                end = held - (held % chunk_size)
             assert end % chunk_size == 0, (
                 f"end ({end}) must be a multiple of chunk_size ({chunk_size})"
             )
@@ -124,22 +235,25 @@ class Session:
         Args:
             end_chunk: Compute hashes up to (but not including) this chunk.
         """
-        chunk_size = self.hasher.chunk_size
+        stride = self.hasher.chunk_size * TOKEN_STRIDE
 
-        while self.num_chunks_processed < end_chunk:
-            cs = self.num_chunks_processed * chunk_size
-            ce = cs + chunk_size
-            chunk = self.token_ids[cs:ce]
+        # A live memoryview pins the bytearray against resizing, so it is
+        # released before returning: a traceback that kept this frame alive
+        # would otherwise make the next `absorb_tokens` raise BufferError.
+        with memoryview(self.tokens) as view:
+            while self.num_chunks_processed < end_chunk:
+                cs = self.num_chunks_processed * stride
+                chunk = view[cs : cs + stride]
 
-            prefix = (
-                self.last_prefix_hash
-                if self.last_prefix_hash is not None
-                else self.hasher.none_hash
-            )
-            h = self.hasher.hash_tokens(chunk, prefix)
-            self.last_prefix_hash = h
-            self.chunk_hashes.append(h)
-            self.num_chunks_processed += 1
+                prefix = (
+                    self.last_prefix_hash
+                    if self.last_prefix_hash is not None
+                    else self.hasher.none_hash
+                )
+                h = self.hasher.hash_packed_chunk(chunk, prefix)
+                self.last_prefix_hash = h
+                self.chunk_hashes.append(h)
+                self.num_chunks_processed += 1
 
     def begin_lookup(
         self,
@@ -182,10 +296,10 @@ class Session:
             same_lookup = (
                 key.model_name == lookup_key.model_name
                 and key.world_size == lookup_key.world_size
-                and key.token_ids == lookup_key.token_ids
                 and key.cache_salt == lookup_key.cache_salt
                 and key.start >= lookup_key.start
                 and key.end <= lookup_key.end
+                and self._matches_tokens_locked(key.token_offset, key.token_bytes)
             )
             if not same_lookup:
                 return None
@@ -227,10 +341,10 @@ class Session:
             same_lookup = (
                 key.model_name == lookup_key.model_name
                 and key.world_size == lookup_key.world_size
-                and key.token_ids == lookup_key.token_ids
                 and key.cache_salt == lookup_key.cache_salt
                 and key.start >= lookup_key.start
                 and key.end <= lookup_key.end
+                and self._matches_tokens_locked(key.token_offset, key.token_bytes)
             )
             if not same_lookup:
                 return False
@@ -317,6 +431,11 @@ class SessionManager:
     def cleanup_expired(self) -> int:
         """Remove sessions that have exceeded their TTL.
 
+        The TTL runs from the session's last use, not its creation: a
+        long-running request keeps touching its session on every store, and
+        dropping it mid-request would strand the token prefix that its
+        delta-carrying keys chain onto.
+
         Returns:
             Number of sessions removed.
         """
@@ -324,7 +443,7 @@ class SessionManager:
         expired: list[Session] = []
         with self._lock:
             for session in self._sessions.values():
-                if now - session.created_at > self._ttl:
+                if now - session.last_used_at > self._ttl:
                     expired.append(session)
             for session in expired:
                 del self._sessions[session.request_id]

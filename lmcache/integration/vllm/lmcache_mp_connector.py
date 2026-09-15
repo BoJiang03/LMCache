@@ -54,6 +54,7 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (
     LMCacheMPRequestState,
     LMCacheMPRequestTracker,
     LMCacheMPWorkerMetadata,
+    TokenIdsTransport,
 )
 from lmcache.integration.vllm.lmcache_mp_metrics import (
     LMCacheMPConnectorStats,
@@ -587,6 +588,19 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             "lmcache.mp.lazy_offload", False
         )
 
+        # Whether store/retrieve ops carry only their own token range instead
+        # of the request's whole sequence. See TokenIdsTransport.
+        self._token_ids_transport = (
+            TokenIdsTransport.DELTA
+            if vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.delta_token_ids", True
+            )
+            else TokenIdsTransport.FULL
+        )
+        #: Set while the scheduler adapter reports an unhealthy server, so the
+        #: recovery step knows to resend every request's full sequence.
+        self._server_was_unhealthy = False
+
         if self.role == KVConnectorRole.SCHEDULER:
             # Banner from the scheduler role only, so tensor-parallel
             # deployments print it once rather than once per worker.
@@ -1054,11 +1068,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         if tracker.lookup_started_at is None:
             tracker.lookup_started_at = time.monotonic()
-        self.scheduler_adapter.maybe_submit_lookup_request(
-            request.request_id,
-            token_ids=tracker.get_token_ids(),
-            cache_salt=tracker.cache_salt,
-            request_configs=tracker.request_configs,
+        tracker.note_tokens_at_server(
+            self.scheduler_adapter.maybe_submit_lookup_request(
+                request.request_id,
+                packed_token_ids=tracker.packed_token_ids(),
+                cache_salt=tracker.cache_salt,
+                request_configs=tracker.request_configs,
+            )
         )
 
         ret = self.scheduler_adapter.check_lookup_result(request.request_id)
@@ -1117,11 +1133,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         tracker = self._get_or_create_request_tracker(request)
         if tracker.lookup_started_at is None:
             tracker.lookup_started_at = time.monotonic()
-        self.scheduler_adapter.maybe_submit_lookup_request(
-            request.request_id,
-            token_ids=tracker.get_token_ids(),
-            cache_salt=tracker.cache_salt,
-            request_configs=tracker.request_configs,
+        tracker.note_tokens_at_server(
+            self.scheduler_adapter.maybe_submit_lookup_request(
+                request.request_id,
+                packed_token_ids=tracker.packed_token_ids(),
+                cache_salt=tracker.cache_salt,
+                request_configs=tracker.request_configs,
+            )
         )
 
     def update_state_after_alloc(
@@ -1199,7 +1217,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
                 if free_end > 0:
                     self.scheduler_adapter.free_lookup_locks(
-                        token_ids=tracker.get_token_ids(),
+                        packed_token_ids=tracker.packed_token_ids(),
                         start=0,
                         end=free_end,
                         request_id=request.request_id,
@@ -1227,6 +1245,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         metadata = LMCacheMPConnectorMetadata()
         metadata.need_flush_before_forward = _has_preemption_reqs(scheduler_output)
 
+        self._resync_server_token_state()
         self._process_retrieve_requests(metadata)
         self._process_new_requests(scheduler_output, metadata)
         self._process_cached_requests(scheduler_output, metadata)
@@ -1403,6 +1422,25 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     ##############################
     # Helper functions
     ##############################
+    def _resync_server_token_state(self) -> None:
+        """Resend full token sequences after the server has been unhealthy.
+
+        A delta op chains onto the prefix the server's session holds. A
+        server that went away may come back without those sessions, so once
+        it has been seen unhealthy every tracker must forget what it thought
+        the server knew; the next op for each request then carries the whole
+        sequence and re-seeds it. Runs once per scheduler step and touches
+        the trackers only on the recovery edge.
+        """
+        if not self.scheduler_adapter.is_healthy:
+            self._server_was_unhealthy = True
+            return
+        if not self._server_was_unhealthy:
+            return
+        self._server_was_unhealthy = False
+        for request_tracker in self.request_trackers.values():
+            request_tracker.forget_tokens_at_server()
+
     def _process_retrieve_requests(
         self,
         metadata: LMCacheMPConnectorMetadata,
@@ -1416,6 +1454,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 request_tracker,
                 lmcache_tokens_per_chunk,
                 group_tokens_per_block=self._group_tokens_per_block,
+                transport=self._token_ids_transport,
             )
             if r_metadata is not None:
                 metadata.add_request_metadata(r_metadata)
@@ -1438,6 +1477,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 request_tracker,
                 lmcache_tokens_per_chunk,
                 self._group_tokens_per_block,
+                transport=self._token_ids_transport,
             )
             if r_meta is not None:
                 # In lazy_offload mode, add to pending queue instead of immediate store
@@ -1478,6 +1518,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 request_tracker,
                 lmcache_tokens_per_chunk,
                 self._group_tokens_per_block,
+                transport=self._token_ids_transport,
             )
 
             if r_meta is not None:

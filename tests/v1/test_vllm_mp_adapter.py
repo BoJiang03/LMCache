@@ -19,6 +19,7 @@ import torch
 # First Party
 from lmcache.integration.vllm import vllm_multi_process_adapter as adapter_mod
 from lmcache.integration.vllm.experimental.dispatcher import Dispatcher
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 from lmcache.integration.vllm.vllm_multi_process_adapter import (
     HeartbeatThread,
     LMCacheMPWorkerAdapter,
@@ -122,7 +123,9 @@ def _make_worker_adapter(
 
 def _op(block_ids: list[list[int]]) -> LoadStoreOp:
     """Build a minimal four-token ``LoadStoreOp`` over *block_ids*."""
-    return LoadStoreOp(token_ids=[1, 2, 3, 4], block_ids=block_ids, start=0, end=4)
+    return LoadStoreOp(
+        token_bytes=pack_token_ids([1, 2, 3, 4]), block_ids=block_ids, start=0, end=4
+    )
 
 
 def _patch_transfer_context_factory(
@@ -294,7 +297,9 @@ def test_submit_store_request_tracks_returned_future(fake_adapter, monkeypatch):
     fake_future = MagicMock()
     transfer_ctx.submit_store.return_value = fake_future
     adapter.transfer_ctx = transfer_ctx
-    op = LoadStoreOp(token_ids=[1, 2, 3, 4], block_ids=[[0]], start=0, end=4)
+    op = LoadStoreOp(
+        token_bytes=pack_token_ids([1, 2, 3, 4]), block_ids=[[0]], start=0, end=4
+    )
 
     adapter.submit_store_request(
         "req-1",
@@ -328,7 +333,7 @@ def test_submit_store_request_expands_block_ids_to_views(fake_adapter, monkeypat
     transfer_ctx.submit_store.return_value = fake_future
     adapter.transfer_ctx = transfer_ctx
     op = LoadStoreOp(
-        token_ids=[1, 2, 3, 4],
+        token_bytes=pack_token_ids([1, 2, 3, 4]),
         block_ids=[[0, 1], [10, 11]],
         start=0,
         end=4,
@@ -355,7 +360,7 @@ def test_submit_retrieve_request_tracks_returned_future(fake_adapter, monkeypatc
     transfer_ctx.submit_retrieve.return_value = fake_future
     adapter.transfer_ctx = transfer_ctx
     op = LoadStoreOp(
-        token_ids=[1, 2, 3, 4],
+        token_bytes=pack_token_ids([1, 2, 3, 4]),
         block_ids=[[0]],
         start=0,
         end=4,
@@ -402,7 +407,7 @@ def test_batched_submit_rejects_mismatched_parallel_lists(
 
 def test_load_store_op_accepts_per_group_block_ids():
     op = LoadStoreOp(
-        token_ids=[1, 2, 3, 4],
+        token_bytes=pack_token_ids([1, 2, 3, 4]),
         block_ids=[[0, 1], [10, 11]],
         start=0,
         end=4,
@@ -561,7 +566,9 @@ def test_store_keeps_event_until_future_finishes(fake_adapter):
 
     event = FakeCudaEvent()
     event_ref = weakref.ref(event)
-    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
+    op = LoadStoreOp(
+        token_bytes=pack_token_ids([1, 2]), block_ids=[[7]], start=0, end=2
+    )
 
     adapter.submit_store_request("req-1", op, event)
     del event
@@ -591,7 +598,9 @@ def test_retrieve_keeps_event_until_future_finishes(fake_adapter):
 
     event = FakeCudaEvent()
     event_ref = weakref.ref(event)
-    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
+    op = LoadStoreOp(
+        token_bytes=pack_token_ids([1, 2]), block_ids=[[7]], start=0, end=2
+    )
 
     adapter.submit_retrieve_request("req-1", op, event)
     del event

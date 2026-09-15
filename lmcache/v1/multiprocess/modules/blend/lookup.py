@@ -41,6 +41,7 @@ from lmcache.v1.multiprocess.modules.blend.read_set import (
     _classify_cb_read_groups,
     _narrow_attn_desc,
 )
+from lmcache.v1.multiprocess.token_codec import unpack_token_ids
 
 logger = init_logger(__name__)
 
@@ -111,7 +112,9 @@ class LookupMixin:
         """Drain pending registrations, then return raw fingerprint matches
         (any order, possibly overlapping)."""
         self._drain_fingerprints_sync()
-        return self._token_range_matcher.match_sub_sequence(list(key.token_ids))
+        return self._token_range_matcher.match_sub_sequence(
+            unpack_token_ids(key.token_bytes)
+        )
 
     @staticmethod
     def _non_overlapping_after_prefix(
@@ -338,7 +341,9 @@ class LookupMixin:
         read, layouts, attn_desc = resolved
         layout_desc = layouts[read.attn_gid]
 
-        chunk_hashes = self._ctx.token_hasher.compute_chunk_hashes(list(key.token_ids))
+        chunk_hashes = self._ctx.token_hasher.compute_packed_chunk_hashes(
+            key.token_bytes
+        )
         if not chunk_hashes:
             return None, world_size, (), (), 0, False
 
@@ -353,7 +358,7 @@ class LookupMixin:
                         "chunk_hashes": chunk_hashes,
                         "model_name": model_name,
                         "chunk_size": self._ctx.chunk_size,
-                        "seq_len": len(key.token_ids),
+                        "seq_len": key.num_tokens,
                         "dtypes": [str(d) for d in layout_desc.dtypes],
                         "shapes": [list(s) for s in layout_desc.shapes],
                     },
@@ -366,7 +371,7 @@ class LookupMixin:
         obj_keys = _cb_chunk_major_object_keys(key, chunk_hashes, read.prefix_gids)
         prefix_desc = _narrow_attn_desc(attn_desc, read.prefix_gids)
         session = self._ctx.session_manager.get_or_create(rid)
-        session.set_tokens(list(key.token_ids))
+        session.set_tokens(key.token_bytes)
         session.begin_lookup(key, tuple(attn_desc.num_chunks_in_sw))
         handle = self._ctx.storage_manager.submit_prefetch_task(
             PrefetchRequestSpec(
@@ -468,7 +473,7 @@ class LookupMixin:
                 Event(
                     event_type=EventType.CB_LOOKUP_START,
                     session_id=rid,
-                    metadata={"num_tokens": len(key.token_ids)},
+                    metadata={"num_tokens": key.num_tokens},
                 )
             )
             # SEGMENTED_PREFIX is forced OFF for recurrent registrations:
@@ -511,7 +516,7 @@ class LookupMixin:
                 )
             job = _CBUnifiedJob(
                 matches=matches,
-                num_tokens=len(key.token_ids),
+                num_tokens=key.num_tokens,
                 prefix_handle=prefix_handle,
                 prefix_world_size=prefix_ws,
                 prefix_lock_gids=prefix_gids,
@@ -657,8 +662,8 @@ class LookupMixin:
         # so the connector tags them ``prefix`` (pure load, no recompute).
         segmented_tail: list[CBMatchResult] = []
         if segmented and job.retained_chunks:
-            chunk_hashes = self._ctx.token_hasher.compute_chunk_hashes(
-                list(key.token_ids)
+            chunk_hashes = self._ctx.token_hasher.compute_packed_chunk_hashes(
+                key.token_bytes
             )
             for i in job.retained_chunks:
                 if i < prefix_chunks or i >= len(chunk_hashes):
@@ -725,7 +730,7 @@ class LookupMixin:
         if coordinator is None:
             return False
         try:
-            tokens = list(key.token_ids)
+            tokens = unpack_token_ids(key.token_bytes)
             if len(tokens) < self._ctx.chunk_size:
                 return False
             coordinator.submit_match(

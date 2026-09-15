@@ -21,10 +21,38 @@ from lmcache.integration.vllm.utils import (
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.v1.multiprocess.group_view import slice_block_ids_per_group
+from lmcache.v1.multiprocess.token_codec import (
+    TOKEN_STRIDE,
+    num_packed_tokens,
+    pack_token_ids,
+)
 
 if TYPE_CHECKING:
     # Third Party
     from vllm.v1.request import Request
+
+
+class TokenIdsTransport(enum.Enum):
+    """How much of a request's token sequence an op carries.
+
+    ``FULL`` puts the whole sequence on every store and retrieve, so the
+    per-step scheduler -> worker -> server payload grows with the context
+    length even when the op only covers one chunk. ``DELTA`` puts only the
+    op's own ``[start, end)`` range on the wire and lets the LMCache server
+    chain it onto the prefix its session already holds.
+
+    Either way the tokens travel packed (see
+    :mod:`lmcache.v1.multiprocess.token_codec`); the transport choice is
+    about how many of them ride along, not how they are encoded.
+
+    ``DELTA`` is only safe once the server has that prefix, which the
+    request's LOOKUP supplies; see
+    :meth:`LMCacheMPRequestTracker.build_op_tokens`, which falls back to the
+    full sequence whenever that cannot be established.
+    """
+
+    FULL = enum.auto()
+    DELTA = enum.auto()
 
 
 class LMCacheMPRequestState(enum.Enum):
@@ -79,6 +107,18 @@ class LMCacheMPRequestTracker:
 
     mm_adjusted_prompt_ids: list[int] = field(default_factory=list)
 
+    # High-water mark of the token prefix the LMCache server is known to
+    # hold for this request, in tokens. Seeded by the LOOKUP and advanced by
+    # every op built for it; see `build_op_tokens`.
+    num_tokens_at_server: int = 0
+
+    # Packed prefix of `get_token_ids()`, grown in place as the request
+    # generates. Packing is what every op and lookup ships, and a request
+    # emits one op per scheduler step, so packing the whole sequence each
+    # time would put the context length back on the scheduler's critical
+    # path -- exactly what the delta transport removes from the wire.
+    packed_tokens: bytearray = field(default_factory=bytearray)
+
     def __init__(self, request: "Request"):
         self.request_id = request.request_id
         self.cache_salt: str = request.cache_salt or ""
@@ -93,6 +133,8 @@ class LMCacheMPRequestTracker:
         self.num_vllm_hit_tokens = 0
         self.num_lmcache_hit_tokens = 0
         self.state = LMCacheMPRequestState.PREFETCHING
+        self.num_tokens_at_server = 0
+        self.packed_tokens = bytearray()
         self.mm_adjusted_prompt_ids = []
         mm_hashes, mm_positions = extract_mm_features(request)
         if mm_hashes and mm_positions:
@@ -163,6 +205,114 @@ class LMCacheMPRequestTracker:
             self.all_token_ids[num_prompt_tokens:]
         )
 
+    def get_token_ids_slice(self, start: int, end: int) -> list[int]:
+        """Return ``get_token_ids()[start:end]`` without building the whole list.
+
+        Args:
+            start: Absolute start position.
+            end: Absolute end position (exclusive).
+
+        Returns:
+            The token ids in ``[start, end)``.
+        """
+        num_prompt_tokens = len(self.mm_adjusted_prompt_ids)
+        if end <= num_prompt_tokens:
+            return self.mm_adjusted_prompt_ids[start:end]
+        if start >= num_prompt_tokens:
+            return list(self.all_token_ids[start:end])
+        return self.mm_adjusted_prompt_ids[start:] + list(
+            self.all_token_ids[num_prompt_tokens:end]
+        )
+
+    def packed_token_ids(self) -> bytes:
+        """Return the whole current token sequence, packed.
+
+        Returns:
+            Every token ``get_token_ids`` would return, in packed form.
+        """
+        return self.packed_token_slice(0, len(self.all_token_ids))
+
+    def packed_token_slice(self, start: int, end: int) -> bytes:
+        """Return the packed tokens at ``[start, end)``.
+
+        Args:
+            start: Absolute start position.
+            end: Absolute end position (exclusive).
+
+        Returns:
+            The packed tokens in the (clipped) range.
+        """
+        self._pack_through(end)
+        return bytes(self.packed_tokens[start * TOKEN_STRIDE : end * TOKEN_STRIDE])
+
+    def _pack_through(self, end: int) -> None:
+        """Extend the packed buffer so it covers up to ``end`` tokens.
+
+        Args:
+            end: Absolute position the buffer must reach, clipped to the
+                tokens the request actually has.
+        """
+        packed_so_far = len(self.packed_tokens) // TOKEN_STRIDE
+        if end <= packed_so_far:
+            return
+        self.packed_tokens += pack_token_ids(
+            self.get_token_ids_slice(packed_so_far, end)
+        )
+
+    def note_tokens_at_server(self, num_tokens: int) -> None:
+        """Record that the server holds at least ``num_tokens`` of the prefix.
+
+        Args:
+            num_tokens: Prefix length the server is known to hold. Smaller
+                values are ignored, so a call that sent nothing can pass 0.
+        """
+        self.num_tokens_at_server = max(self.num_tokens_at_server, num_tokens)
+
+    def forget_tokens_at_server(self) -> None:
+        """Forget what the server holds, forcing the next op to resend it all.
+
+        Called when the server may have lost this request's session, e.g.
+        after it was seen unhealthy: a delta op chained onto a prefix that
+        is no longer there resolves to nothing.
+        """
+        self.num_tokens_at_server = 0
+
+    def build_op_tokens(
+        self,
+        transport: TokenIdsTransport,
+        start: int,
+        end: int,
+    ) -> tuple[bytes, int]:
+        """Build the packed token ids for an op covering ``[start, end)``.
+
+        Under ``DELTA`` this is just the op's own range, provided the server
+        already holds everything before ``start`` for this request. When it
+        does not -- no lookup has been submitted yet, or the connector reset
+        the mark after the server was seen unhealthy -- the whole sequence
+        is sent instead, which re-seeds the server for later ops.
+
+        Recording ``end`` as reached assumes the op is delivered, the same
+        assumption ``GetStoreMetadata`` already makes when it advances
+        ``num_stored_tokens``.
+
+        Args:
+            transport: How much of the sequence to put on the op.
+            start: Absolute start position of the op's range.
+            end: Absolute end position of the op's range (exclusive).
+
+        Returns:
+            The packed token ids for the op and the absolute position of
+            their first token.
+        """
+        if transport is TokenIdsTransport.DELTA and start <= self.num_tokens_at_server:
+            token_bytes, token_offset = self.packed_token_slice(start, end), start
+        else:
+            token_bytes, token_offset = self.packed_token_ids(), 0
+        self.note_tokens_at_server(
+            max(end, token_offset + num_packed_tokens(token_bytes))
+        )
+        return token_bytes, token_offset
+
     ####
     # For debugging
     ####
@@ -195,6 +345,7 @@ class LMCacheMPRequestMetadata:
         tracker: LMCacheMPRequestTracker,
         lmcache_tokens_per_chunk: int,
         group_tokens_per_block: list[int],
+        transport: TokenIdsTransport = TokenIdsTransport.FULL,
     ) -> "LMCacheMPRequestMetadata | None":
         """
         Generate the store metadata for the current request tracker.
@@ -206,6 +357,7 @@ class LMCacheMPRequestMetadata:
                 paged chunk (one block ID) of that group, i.e. the group's
                 KV cache spec ``block_size``. Must each divide
                 ``lmcache_tokens_per_chunk`` (hybrid models can mix different values).
+            transport: How much of the token sequence the op should carry.
         """
         num_engine_groups = len(group_tokens_per_block)
         # NOTE: the invariant here is that `num_stored_tokens` should
@@ -265,12 +417,15 @@ class LMCacheMPRequestMetadata:
                 start_token_idx,
                 end_token_idx,
             )
-            token_ids = tracker.get_token_ids()
+            token_bytes, token_offset = tracker.build_op_tokens(
+                transport, start_token_idx, end_token_idx
+            )
             op = LoadStoreOp(
-                token_ids=token_ids,
+                token_bytes=token_bytes,
                 block_ids=block_ids,
                 start=start_token_idx,
                 end=end_token_idx,
+                token_offset=token_offset,
             )
 
             ret = LMCacheMPRequestMetadata(
@@ -292,6 +447,7 @@ class LMCacheMPRequestMetadata:
         tracker: LMCacheMPRequestTracker,
         lmcache_tokens_per_chunk: int,
         group_tokens_per_block: list[int],
+        transport: TokenIdsTransport = TokenIdsTransport.FULL,
     ) -> "LMCacheMPRequestMetadata | None":
         """
         Generate the retrieve metadata for the current request tracker.
@@ -303,6 +459,7 @@ class LMCacheMPRequestMetadata:
                 paged chunk (one block ID) of that group, i.e. the group's
                 KV cache spec ``block_size``. Must each divide
                 ``lmcache_tokens_per_chunk`` (hybrid models can mix different values).
+            transport: How much of the token sequence the op should carry.
         """
         if not tracker.is_ready_for_retrieving():
             return None
@@ -333,7 +490,9 @@ class LMCacheMPRequestMetadata:
                 start_token_idx,
                 end_token_idx,
             )
-            token_ids = tracker.get_token_ids()
+            token_bytes, token_offset = tracker.build_op_tokens(
+                transport, start_token_idx, end_token_idx
+            )
 
             # Compute how many tokens at the start of the retrieve range
             # overlap with APC-shared blocks. The server must skip writing
@@ -343,11 +502,12 @@ class LMCacheMPRequestMetadata:
             skip_first_n_tokens = tracker.num_vllm_hit_tokens - start_token_idx
 
             op = LoadStoreOp(
-                token_ids=token_ids,
+                token_bytes=token_bytes,
                 block_ids=block_ids,
                 start=start_token_idx,
                 end=end_token_idx,
                 skip_first_n_tokens=skip_first_n_tokens,
+                token_offset=token_offset,
             )
 
             ret = LMCacheMPRequestMetadata(

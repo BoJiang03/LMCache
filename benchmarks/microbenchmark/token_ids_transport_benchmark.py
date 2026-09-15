@@ -2,51 +2,64 @@
 # SPDX-License-Identifier: Apache-2.0
 """Microbenchmark for the connector's per-op ``token_ids`` transmission cost.
 
-Every ``LoadStoreOp`` the MP connector emits carries the request's **entire**
-token id list (``LMCacheMPRequestTracker.get_token_ids()``), not just the tokens
-the op actually covers.  At long context that whole list is copied, pickled,
-msgpacked and shipped on every scheduler step, on three process hops.  The
-stages below are each measured against the real production types imported from
-this checkout:
+Every scheduler step, each in-flight request emits a store (and, once, a
+retrieve) whose token ids travel three process hops: scheduler -> worker
+through vLLM's shm ring, then worker -> LMCache server over ZMQ, once per TP
+rank. Two independent things decide what that costs.
+
+**How many tokens ride along.** An op covers ``[start, end)`` but can carry
+the request's whole sequence anyway. ``lmcache.mp.delta_token_ids`` (default
+on) makes it carry only its own range, at ``token_offset``, chained onto the
+prefix the server's session already holds.
+
+**How each token is encoded.** As ``list[int]`` every hop has to materialize
+one Python ``int`` per token. Packed big-endian ``uint32``
+(:mod:`lmcache.v1.multiprocess.token_codec`) makes the same hop a memcpy --
+and since that is the exact byte layout blake3 already hashes, chunk hashes
+are unchanged.
+
+The two are independent, so all four combinations are measured and each
+effect can be read off on its own:
+
+``list+full``
+    what shipped before this work: whole sequence, list of ints.
+``list+delta``
+    only the op's range, still a list -- isolates the delta change.
+``packed+full``
+    whole sequence, packed -- isolates the encoding change.
+``packed+delta``
+    what ships now: both.
 
 ====  =========================================================  ==============
  id   what it measures                                           whose CPU
 ====  =========================================================  ==============
- A    ``get_token_ids()`` -> ``list(ConstantList)``              scheduler
+ A    building the op's token payload on the scheduler           scheduler
  B1   ``pickle.dumps`` of ``LMCacheMPConnectorMetadata``         scheduler
  B2   ``pickle.loads`` of the same                               each worker
- C1   ``_create_key``: ``tuple()`` + key + msgspec encode        each worker
- C2   ``msgspec`` decode back into ``IPCCacheServerKey``         server
- D    ``Session.set_tokens`` + memoized ``get_hashes``           server
- E    LOOKUP's uncached full ``compute_chunk_hashes``            server
+ C1   ``_create_key`` + msgspec encode                           each worker
+ C2   ``msgspec`` decode back into the key                       server
+ D    session token splice + memoized chunk hashing              server
+ E    LOOKUP's uncached whole-sequence chunk hash                server
+ Z    real cross-process ZMQ round trip (check on C1+wire+C2)    --
 ====  =========================================================  ==============
 
-B1/B2 are the scheduler -> worker hop: vLLM's ``shm_broadcast.MessageQueue``
-pickles ``SchedulerOutput`` (connector metadata inside) once and every worker
-unpickles its own copy.  C1/C2 are the worker -> LMCache server hop over ZMQ,
-issued once per TP rank.  Stage Z additionally times a real cross-process
-DEALER/ROUTER round trip as an end-to-end check on C1 + wire + C2.
+Stage E is unchanged by ``delta_token_ids``: LOOKUP is the call that seeds
+the session every delta chains onto, so it always carries the whole
+sequence. Its delta columns therefore repeat the matching full ones;
+packing still speeds it up.
 
-Each stage is measured in two variants:
+Run with::
 
-``full``
-    what ships today -- the complete token id list.
-``delta``
-    the lower bound -- only ``token_ids[start:end]``, the tokens the op covers.
-
-The gap between them is the headroom.  Run with::
-
-    python benchmarks/microbenchmark/token_ids_transport_benchmark.py
-    python benchmarks/microbenchmark/token_ids_transport_benchmark.py --quick
-
-Stage D is memoized per request session on the server, so its ``full`` variant
-is dominated by the ``list(key.token_ids)`` copy rather than by hashing; stage E
-is not memoized and re-hashes the whole prefix on every LOOKUP.
+    cd <repo root>
+    PYTHONPATH=$PWD python \
+        benchmarks/microbenchmark/token_ids_transport_benchmark.py [--quick]
 """
 
 # Standard
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any
 import argparse
 import multiprocessing as mp
 import os
@@ -73,12 +86,14 @@ import zmq  # noqa: E402
 from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
     LMCacheMPConnectorMetadata,
     LMCacheMPRequestMetadata,
+    LMCacheMPRequestTracker,
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
     LoadStoreOp,
 )
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey  # noqa: E402
 from lmcache.v1.multiprocess.session import Session  # noqa: E402
+from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
 from lmcache.v1.multiprocess.token_hasher import TokenHasher  # noqa: E402
 
 CONTEXT_LENGTHS = (1_024, 4_096, 16_384, 32_768, 65_536, 131_072, 200_000)
@@ -95,7 +110,13 @@ VOCAB_SIZE = 128_256
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 
-STAGE_A = "A  sched get_token_ids"
+LIST_FULL = "list+full"
+LIST_DELTA = "list+delta"
+PACKED_FULL = "packed+full"
+PACKED_DELTA = "packed+delta"
+VARIANTS = (LIST_FULL, LIST_DELTA, PACKED_FULL, PACKED_DELTA)
+
+STAGE_A = "A  sched build payload"
 STAGE_B1 = "B1 sched pickle.dumps"
 STAGE_B2 = "B2 worker pickle.loads"
 STAGE_C1 = "C1 worker key+encode"
@@ -105,7 +126,12 @@ STAGE_E = "E  server LOOKUP hash"
 STAGE_Z = "Z  worker->server RTT"
 
 WIRE_STAGES = (STAGE_B1, STAGE_C1)
-"""Stages whose ``*_bytes`` are actual bytes crossing a process boundary."""
+"""Stages whose ``wire_bytes`` actually cross a process boundary."""
+
+
+####
+# Result types
+####
 
 
 @dataclass(frozen=True)
@@ -118,38 +144,52 @@ class Timing:
 
 @dataclass(frozen=True)
 class StageResult:
-    """One stage measured at one context length, for both payload variants."""
+    """One stage at one context length, measured for every variant."""
 
     stage: str
     context_len: int
-    full: Timing
-    delta: Timing
-    full_bytes: int
-    delta_bytes: int
+    timings: dict[str, Timing]
+    wire_bytes: dict[str, int] = field(default_factory=dict)
 
-    @property
-    def speedup(self) -> float:
-        """How many times faster the delta variant is than the full one."""
-        if self.delta.median_us == 0.0:
+    def median_us(self, variant: str) -> float:
+        """Median microseconds for ``variant``."""
+        return self.timings[variant].median_us
+
+    def bytes_for(self, variant: str) -> int:
+        """Bytes ``variant`` puts on the wire, or 0 when the stage moves none."""
+        return self.wire_bytes.get(variant, 0)
+
+    def speedup(self, variant: str, baseline: str = LIST_FULL) -> float:
+        """How many times faster ``variant`` is than ``baseline``."""
+        if self.median_us(variant) == 0.0:
             return float("inf")
-        return self.full.median_us / self.delta.median_us
+        return self.median_us(baseline) / self.median_us(variant)
 
 
-def measure(fn: Callable[[], object], repeats: int, warmup: int = 3) -> Timing:
+def measure(
+    fn: Callable[[], object],
+    repeats: int,
+    warmup: int = 3,
+    setup: Callable[[], None] = lambda: None,
+) -> Timing:
     """Time ``fn`` ``repeats`` times and return its median and p90.
 
     Args:
         fn: The zero-argument callable to time.
         repeats: Number of timed calls.
         warmup: Number of untimed calls made first.
+        setup: Run before each call, outside the timed region. Use it to
+            undo state ``fn`` mutates, so every iteration does equal work.
 
     Returns:
         Timing: Median and p90 wall time in microseconds.
     """
     for _ in range(warmup):
+        setup()
         fn()
     samples: list[float] = []
     for _ in range(repeats):
+        setup()
         start = time.perf_counter_ns()
         fn()
         samples.append((time.perf_counter_ns() - start) / 1_000.0)
@@ -158,6 +198,51 @@ def measure(fn: Callable[[], object], repeats: int, warmup: int = 3) -> Timing:
         median_us=statistics.median(samples),
         p90_us=samples[min(len(samples) - 1, int(0.9 * len(samples)))],
     )
+
+
+####
+# The pre-change representation, for the baseline column
+####
+
+
+@dataclass
+class _ListLoadStoreOp:
+    """``LoadStoreOp`` as it was before packing: token ids as a list.
+
+    Mirrors the field layout so the baseline column is measured on a real
+    pickle of a real object graph rather than estimated.
+    """
+
+    token_ids: list[int]
+    block_ids: list[list[int]]
+    start: int = 0
+    end: int = 0
+    skip_first_n_tokens: int = 0
+
+
+@dataclass(order=True, frozen=True)
+class _ListIPCCacheServerKey:
+    """``IPCCacheServerKey`` as it was before packing: token ids as a tuple.
+
+    msgspec encodes both this and the real key as maps of the same fields,
+    so encoding and decoding it measures exactly the old wire cost.
+    """
+
+    model_name: str
+    world_size: int
+    worker_id: int | None
+    token_ids: tuple[int, ...]
+    start: int
+    end: int
+    request_id: str
+    cache_salt: str = ""
+    request_configs: dict[str, Any] | None = None
+    num_kv_readers: int = 0
+
+
+####
+# Fixtures
+####
 
 
 def make_token_ids(context_len: int, seed: int = 1234) -> list[int]:
@@ -170,8 +255,7 @@ def op_range(context_len: int) -> tuple[int, int]:
     """Return the ``[start, end)`` a mid-prefill store op would cover.
 
     Models the last chunked-prefill step of a ``context_len`` prompt: the op
-    covers the final ``PREFILL_CHUNK_TOKENS`` window, chunk-aligned, while
-    ``token_ids`` still carries the whole prompt.
+    covers the final ``PREFILL_CHUNK_TOKENS`` window, chunk-aligned.
 
     Args:
         context_len: The prompt length.
@@ -191,15 +275,36 @@ def build_block_ids(
     return [list(range(start // tokens_per_block, end // tokens_per_block))]
 
 
-def make_connector_metadata(
-    token_ids: list[int], start: int, end: int, num_requests: int
-) -> LMCacheMPConnectorMetadata:
-    """Build the real connector metadata a scheduler step would broadcast.
+def make_request_tracker(token_ids: list[int]) -> LMCacheMPRequestTracker:
+    """Build a real request tracker over a text-only prompt.
+
+    The tracker reads only these fields off the vLLM request, so a stand-in
+    is enough to exercise the real payload-building code.
 
     Args:
-        token_ids: The token id list each op carries.
-        start: Store op start index.
-        end: Store op end index.
+        token_ids: The request's token ids.
+
+    Returns:
+        A tracker whose ``all_token_ids`` view wraps ``token_ids``.
+    """
+    request = SimpleNamespace(
+        request_id="req-0",
+        cache_salt="",
+        prompt_token_ids=token_ids,
+        all_token_ids=ConstantList(token_ids),
+        mm_features=[],
+        sampling_params=SimpleNamespace(extra_args=None),
+    )
+    return LMCacheMPRequestTracker(request)
+
+
+def make_connector_metadata(
+    op: LoadStoreOp | _ListLoadStoreOp, num_requests: int
+) -> LMCacheMPConnectorMetadata:
+    """Wrap ``op`` in the real connector metadata a scheduler step broadcasts.
+
+    Args:
+        op: The store op every request in the step carries.
         num_requests: Requests sharing the step.
 
     Returns:
@@ -207,17 +312,11 @@ def make_connector_metadata(
     """
     metadata = LMCacheMPConnectorMetadata()
     for request_idx in range(num_requests):
-        op = LoadStoreOp(
-            token_ids=token_ids,
-            block_ids=build_block_ids(start, end),
-            start=start,
-            end=end,
-        )
         metadata.add_request_metadata(
             LMCacheMPRequestMetadata(
                 request_id=f"req-{request_idx}",
                 direction="STORE",
-                op=op,
+                op=op,  # type: ignore[arg-type]
                 cache_salt="",
                 request_configs=None,
             )
@@ -225,9 +324,30 @@ def make_connector_metadata(
     return metadata
 
 
-def make_ipc_key(token_ids: Sequence[int], start: int, end: int) -> IPCCacheServerKey:
+def make_ipc_key(
+    token_bytes: bytes, start: int, end: int, token_offset: int = 0
+) -> IPCCacheServerKey:
     """Build the real server key a worker sends for a store op."""
     return IPCCacheServerKey(
+        model_name=MODEL_NAME,
+        world_size=8,
+        worker_id=0,
+        num_kv_readers=1,
+        token_bytes=token_bytes,
+        start=start,
+        end=end,
+        request_id="req-0",
+        cache_salt="",
+        request_configs=None,
+        token_offset=token_offset,
+    )
+
+
+def make_list_ipc_key(
+    token_ids: Sequence[int], start: int, end: int
+) -> _ListIPCCacheServerKey:
+    """Build the pre-change key a worker used to send for a store op."""
+    return _ListIPCCacheServerKey(
         model_name=MODEL_NAME,
         world_size=8,
         worker_id=0,
@@ -242,14 +362,18 @@ def make_ipc_key(token_ids: Sequence[int], start: int, end: int) -> IPCCacheServ
 
 
 ####
-# Stage A -- scheduler-side list copy
+# Stage A -- scheduler builds the op's token payload
 ####
 
 
 def bench_stage_a(
     token_ids: list[int], start: int, end: int, repeats: int
 ) -> StageResult:
-    """Measure ``get_token_ids()``'s ``list(ConstantList)`` copy.
+    """Measure building one step's token payload on the scheduler.
+
+    The packed variants pay for packing only the tokens this step added --
+    the tracker keeps the packed prefix across steps -- plus the copy of
+    whatever the op carries. The baseline copies the whole list every step.
 
     Args:
         token_ids: The request's full token id list.
@@ -258,18 +382,36 @@ def bench_stage_a(
         repeats: Number of timed calls.
 
     Returns:
-        StageResult: Full-list copy versus delta-slice copy.
+        StageResult: Payload build cost per variant.
     """
-    constant = ConstantList(token_ids)
+    tracker = make_request_tracker(token_ids)
+    packed_prefix = tracker.packed_token_slice(0, start)
+
+    def rewind() -> None:
+        """Leave the tracker packed only through ``start``, as a step starts."""
+        tracker.packed_tokens = bytearray(packed_prefix)
+
     return StageResult(
         stage=STAGE_A,
         context_len=len(token_ids),
-        full=measure(lambda: list(constant), repeats),
-        delta=measure(lambda: list(constant[start:end]), repeats),
-        # The CPython list's pointer array is the part that scales; the int
-        # objects themselves are shared with the source list.
-        full_bytes=8 * len(token_ids),
-        delta_bytes=8 * (end - start),
+        timings={
+            LIST_FULL: measure(tracker.get_token_ids, repeats),
+            LIST_DELTA: measure(
+                lambda: tracker.get_token_ids_slice(start, end), repeats
+            ),
+            PACKED_FULL: measure(tracker.packed_token_ids, repeats, setup=rewind),
+            PACKED_DELTA: measure(
+                lambda: tracker.packed_token_slice(start, end), repeats, setup=rewind
+            ),
+        },
+        wire_bytes={
+            # The CPython list's pointer array is the part that scales; the
+            # int objects themselves are shared with the source list.
+            LIST_FULL: 8 * len(token_ids),
+            LIST_DELTA: 8 * (end - start),
+            PACKED_FULL: 4 * len(token_ids),
+            PACKED_DELTA: 4 * (end - start),
+        },
     )
 
 
@@ -283,10 +425,10 @@ def bench_stage_b(
 ) -> tuple[StageResult, StageResult]:
     """Measure both halves of the pickle hop vLLM's ``MessageQueue`` performs.
 
-    ``shm_broadcast.MessageQueue.enqueue`` pickles ``SchedulerOutput`` (with the
-    connector metadata inside it) at ``pickle.HIGHEST_PROTOCOL``; each worker
-    then unpickles its own copy out of the ring, so the two halves have
-    different multipliers.
+    ``shm_broadcast.MessageQueue.enqueue`` pickles ``SchedulerOutput`` (with
+    the connector metadata inside it) at ``pickle.HIGHEST_PROTOCOL``; each
+    worker then unpickles its own copy out of the ring, so the two halves
+    have different multipliers.
 
     Args:
         token_ids: The request's full token id list.
@@ -298,32 +440,64 @@ def bench_stage_b(
     Returns:
         The dumps-side and loads-side results.
     """
-    full_meta = make_connector_metadata(token_ids, start, end, num_requests)
-    delta_meta = make_connector_metadata(
-        token_ids[start:end], 0, end - start, num_requests
-    )
-    full_blob = pickle.dumps(full_meta, protocol=pickle.HIGHEST_PROTOCOL)
-    delta_blob = pickle.dumps(delta_meta, protocol=pickle.HIGHEST_PROTOCOL)
+    block_ids = build_block_ids(start, end)
+    metas = {
+        LIST_FULL: make_connector_metadata(
+            _ListLoadStoreOp(
+                token_ids=token_ids, block_ids=block_ids, start=start, end=end
+            ),
+            num_requests,
+        ),
+        LIST_DELTA: make_connector_metadata(
+            _ListLoadStoreOp(
+                token_ids=token_ids[start:end],
+                block_ids=block_ids,
+                start=start,
+                end=end,
+            ),
+            num_requests,
+        ),
+        PACKED_FULL: make_connector_metadata(
+            LoadStoreOp(
+                token_bytes=pack_token_ids(token_ids),
+                block_ids=block_ids,
+                start=start,
+                end=end,
+            ),
+            num_requests,
+        ),
+        PACKED_DELTA: make_connector_metadata(
+            LoadStoreOp(
+                token_bytes=pack_token_ids(token_ids[start:end]),
+                block_ids=block_ids,
+                start=start,
+                end=end,
+                token_offset=start,
+            ),
+            num_requests,
+        ),
+    }
+    blobs = {
+        name: pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL)
+        for name, meta in metas.items()
+    }
+
+    def dump(meta: LMCacheMPConnectorMetadata) -> Callable[[], object]:
+        return lambda: pickle.dumps(meta, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load(blob: bytes) -> Callable[[], object]:
+        return lambda: pickle.loads(blob)
 
     dumps = StageResult(
         stage=STAGE_B1,
         context_len=len(token_ids),
-        full=measure(
-            lambda: pickle.dumps(full_meta, protocol=pickle.HIGHEST_PROTOCOL), repeats
-        ),
-        delta=measure(
-            lambda: pickle.dumps(delta_meta, protocol=pickle.HIGHEST_PROTOCOL), repeats
-        ),
-        full_bytes=len(full_blob),
-        delta_bytes=len(delta_blob),
+        timings={n: measure(dump(metas[n]), repeats) for n in VARIANTS},
+        wire_bytes={n: len(blobs[n]) for n in VARIANTS},
     )
     loads = StageResult(
         stage=STAGE_B2,
         context_len=len(token_ids),
-        full=measure(lambda: pickle.loads(full_blob), repeats),
-        delta=measure(lambda: pickle.loads(delta_blob), repeats),
-        full_bytes=0,
-        delta_bytes=0,
+        timings={n: measure(load(blobs[n]), repeats) for n in VARIANTS},
     )
     return dumps, loads
 
@@ -346,12 +520,17 @@ def _echo_server(endpoint: str, ready_path: str) -> None:
     with open(ready_path, "w") as handle:
         handle.write("ready")
     while True:
-        identity, payload = socket.recv_multipart()
-        if payload == b"stop":
+        identity, kind, payload = socket.recv_multipart()
+        if kind == b"stop":
             socket.send_multipart([identity, b"stopped"])
             break
-        key = msgspec.msgpack.decode(payload, type=IPCCacheServerKey)
-        socket.send_multipart([identity, str(len(key.token_ids)).encode()])
+        if kind == b"packed":
+            size = msgspec.msgpack.decode(payload, type=IPCCacheServerKey).num_tokens
+        else:
+            size = len(
+                msgspec.msgpack.decode(payload, type=_ListIPCCacheServerKey).token_ids
+            )
+        socket.send_multipart([identity, str(size).encode()])
     socket.close()
     context.term()
 
@@ -377,15 +556,15 @@ class ZmqHarness:
         self._socket = self._context.socket(zmq.DEALER)
         self._socket.connect(self._endpoint)
 
-    def roundtrip(self, payload: bytes) -> None:
+    def roundtrip(self, kind: bytes, payload: bytes) -> None:
         """Send an encoded key and wait for the server's decode to ack."""
-        self._socket.send(payload)
+        self._socket.send_multipart([kind, payload])
         self._socket.recv()
 
     def close(self) -> None:
         """Stop the child process and release both ZMQ contexts."""
         try:
-            self._socket.send(b"stop")
+            self._socket.send_multipart([b"stop", b""])
             self._socket.recv()
         finally:
             self._socket.close()
@@ -401,8 +580,8 @@ def bench_stage_c(
 ) -> tuple[StageResult, StageResult, StageResult]:
     """Measure the worker's key build, the server's decode, and the round trip.
 
-    ``tuple(token_ids)`` is inside C1's timed region because ``_create_key``
-    performs it on every submit, and at 200k it is not free.
+    Key construction is inside C1's timed region because ``_create_key``
+    performs it on every submit.
 
     Args:
         harness: The connected DEALER/ROUTER pair.
@@ -414,45 +593,57 @@ def bench_stage_c(
     Returns:
         The encode-side, decode-side and end-to-end results.
     """
-    delta_ids = token_ids[start:end]
-    delta_end = end - start
-    full_blob = msgspec.msgpack.encode(make_ipc_key(token_ids, start, end))
-    delta_blob = msgspec.msgpack.encode(make_ipc_key(delta_ids, 0, delta_end))
+    full_packed = pack_token_ids(token_ids)
+    delta_packed = pack_token_ids(token_ids[start:end])
+
+    builders: dict[str, Callable[[], bytes]] = {
+        LIST_FULL: lambda: msgspec.msgpack.encode(
+            make_list_ipc_key(token_ids, start, end)
+        ),
+        LIST_DELTA: lambda: msgspec.msgpack.encode(
+            make_list_ipc_key(token_ids[start:end], start, end)
+        ),
+        PACKED_FULL: lambda: msgspec.msgpack.encode(
+            make_ipc_key(full_packed, start, end)
+        ),
+        PACKED_DELTA: lambda: msgspec.msgpack.encode(
+            make_ipc_key(delta_packed, start, end, token_offset=start)
+        ),
+    }
+    blobs = {name: build() for name, build in builders.items()}
+    kinds = {
+        LIST_FULL: b"list",
+        LIST_DELTA: b"list",
+        PACKED_FULL: b"packed",
+        PACKED_DELTA: b"packed",
+    }
+
+    def decode(name: str) -> Callable[[], object]:
+        blob = blobs[name]
+        if name in (LIST_FULL, LIST_DELTA):
+            return lambda: msgspec.msgpack.decode(blob, type=_ListIPCCacheServerKey)
+        return lambda: msgspec.msgpack.decode(blob, type=IPCCacheServerKey)
+
+    def trip(name: str) -> Callable[[], object]:
+        return lambda: harness.roundtrip(kinds[name], blobs[name])
 
     encode = StageResult(
         stage=STAGE_C1,
         context_len=len(token_ids),
-        full=measure(
-            lambda: msgspec.msgpack.encode(make_ipc_key(token_ids, start, end)), repeats
-        ),
-        delta=measure(
-            lambda: msgspec.msgpack.encode(make_ipc_key(delta_ids, 0, delta_end)),
-            repeats,
-        ),
-        full_bytes=len(full_blob),
-        delta_bytes=len(delta_blob),
+        timings={n: measure(builders[n], repeats) for n in VARIANTS},
+        wire_bytes={n: len(blobs[n]) for n in VARIANTS},
     )
-    decode = StageResult(
+    decoded = StageResult(
         stage=STAGE_C2,
         context_len=len(token_ids),
-        full=measure(
-            lambda: msgspec.msgpack.decode(full_blob, type=IPCCacheServerKey), repeats
-        ),
-        delta=measure(
-            lambda: msgspec.msgpack.decode(delta_blob, type=IPCCacheServerKey), repeats
-        ),
-        full_bytes=0,
-        delta_bytes=0,
+        timings={n: measure(decode(n), repeats) for n in VARIANTS},
     )
     roundtrip = StageResult(
         stage=STAGE_Z,
         context_len=len(token_ids),
-        full=measure(lambda: harness.roundtrip(full_blob), repeats),
-        delta=measure(lambda: harness.roundtrip(delta_blob), repeats),
-        full_bytes=0,
-        delta_bytes=0,
+        timings={n: measure(trip(n), repeats) for n in VARIANTS},
     )
-    return encode, decode, roundtrip
+    return encode, decoded, roundtrip
 
 
 ####
@@ -463,12 +654,14 @@ def bench_stage_c(
 def bench_stage_d(
     token_ids: list[int], start: int, end: int, repeats: int
 ) -> StageResult:
-    """Measure the server's per-store ``Session`` token handling.
+    """Measure the server's per-store session token handling.
 
-    ``EngineContext.resolve_obj_keys`` calls ``Session.set_tokens(list(...))``
-    and then ``Session.get_hashes(start, end)``.  Hashing is memoized across a
-    request's stores, so a warm session pays only for new chunks -- but the
-    ``list(key.token_ids)`` copy is paid in full on every store, by every rank.
+    ``EngineContext.resolve_obj_keys`` splices the key's tokens into the
+    request's session and then asks it for ``[start, end)``'s chunk hashes.
+    Hashing is memoized across a request's stores, so a warm session pays
+    only for new chunks; what a whole-sequence key still pays on every
+    store, by every rank, is the copy of the whole context out of the
+    decoded key.
 
     Args:
         token_ids: The request's full token id list.
@@ -477,71 +670,75 @@ def bench_stage_d(
         repeats: Number of timed calls.
 
     Returns:
-        StageResult: Full-list session update versus delta-slice update.
+        StageResult: Session update cost per variant.
     """
-    delta_ids = token_ids[start:end]
-    delta_end = end - start
+    hasher = TokenHasher(chunk_size=LMCACHE_CHUNK_SIZE)
+    full_packed = pack_token_ids(token_ids)
+    delta_packed = pack_token_ids(token_ids[start:end])
+    token_tuple = tuple(token_ids)
+    delta_tuple = tuple(token_ids[start:end])
 
-    def warm(ids: list[int], hash_start: int, hash_end: int) -> Session:
-        session = Session(
-            request_id="req-0", hasher=TokenHasher(chunk_size=LMCACHE_CHUNK_SIZE)
-        )
-        session.set_tokens(ids)
-        session.get_hashes(hash_start, hash_end)
+    def warm() -> Session:
+        session = Session(request_id="req-0", hasher=hasher)
+        session.set_tokens(full_packed)
+        session.get_hashes(start, end)
         return session
 
-    full_session = warm(token_ids, start, end)
-    delta_session = warm(delta_ids, 0, delta_end)
+    packed_full_session = warm()
+    packed_delta_session = warm()
 
-    def full_store() -> None:
-        full_session.set_tokens(list(token_ids))
-        full_session.get_hashes(start, end)
+    def packed_full_store() -> None:
+        packed_full_session.absorb_tokens(0, full_packed)
+        packed_full_session.get_hashes(start, end)
 
-    def delta_store() -> None:
-        delta_session.set_tokens(list(delta_ids))
-        delta_session.get_hashes(0, delta_end)
+    def packed_delta_store() -> None:
+        packed_delta_session.absorb_tokens(start, delta_packed)
+        packed_delta_session.get_hashes(start, end)
 
     return StageResult(
         stage=STAGE_D,
         context_len=len(token_ids),
-        full=measure(full_store, repeats),
-        delta=measure(delta_store, repeats),
-        full_bytes=0,
-        delta_bytes=0,
+        timings={
+            # The pre-change path did ``set_tokens(list(key.token_ids))``
+            # then memoized hashing, so a warm session's cost was the
+            # whole-context list copy out of the decoded tuple.
+            LIST_FULL: measure(lambda: list(token_tuple), repeats),
+            LIST_DELTA: measure(lambda: list(delta_tuple), repeats),
+            PACKED_FULL: measure(packed_full_store, repeats),
+            PACKED_DELTA: measure(packed_delta_store, repeats),
+        },
     )
 
 
-def bench_stage_e(token_ids: list[int], start: int, repeats: int) -> StageResult:
-    """Measure LOOKUP's uncached full-sequence chunk hash.
+def bench_stage_e(token_ids: list[int], repeats: int) -> StageResult:
+    """Measure LOOKUP's uncached whole-sequence chunk hash.
 
-    ``PrefetchLookupHandler`` calls ``compute_chunk_hashes(list(key.token_ids))``
-    with no ``end``, outside the session memoization, so it re-hashes the whole
-    sequence.  The delta variant is the cost if the client carried the prefix
-    hash forward and the server hashed only the new tokens.
+    ``PrefetchLookupHandler`` hashes the request's whole sequence outside
+    the session memoization. LOOKUP is what seeds that session, so it always
+    carries every token: ``delta_token_ids`` cannot shrink it and both
+    packed columns are the same measurement. Packing still helps, because
+    blake3 can take the buffer as it arrives.
 
     Args:
         token_ids: The request's full token id list.
-        start: Store op start index, i.e. where the new tokens begin.
         repeats: Number of timed calls.
 
     Returns:
-        StageResult: Whole-sequence hashing versus new-tokens-only hashing.
+        StageResult: Whole-sequence hashing cost per variant.
     """
     hasher = TokenHasher(chunk_size=LMCACHE_CHUNK_SIZE)
-    delta_ids = token_ids[start:]
-    prefix_hash = hasher.hash_tokens(token_ids[:LMCACHE_CHUNK_SIZE])
+    packed = pack_token_ids(token_ids)
+    packed_timing = measure(lambda: hasher.compute_packed_chunk_hashes(packed), repeats)
+    list_timing = measure(lambda: hasher.compute_chunk_hashes(list(token_ids)), repeats)
     return StageResult(
         stage=STAGE_E,
         context_len=len(token_ids),
-        full=measure(lambda: hasher.compute_chunk_hashes(list(token_ids)), repeats),
-        delta=measure(
-            lambda: hasher.compute_chunk_hashes(
-                list(delta_ids), prefix_hash=prefix_hash
-            ),
-            repeats,
-        ),
-        full_bytes=0,
-        delta_bytes=0,
+        timings={
+            LIST_FULL: list_timing,
+            LIST_DELTA: list_timing,
+            PACKED_FULL: packed_timing,
+            PACKED_DELTA: packed_timing,
+        },
     )
 
 
@@ -562,17 +759,20 @@ def format_bytes(count: int) -> str:
 
 def print_stage_table(results: Sequence[StageResult]) -> None:
     """Print one stage's results across all measured context lengths."""
-    print(f"\n{results[0].stage}")
+    print(f"\n{results[0].stage}  (microseconds per op)")
     print(
-        f"  {'ctx':>8} {'full (us)':>10} {'delta (us)':>11} {'ratio':>8} "
-        f"{'full wire':>11} {'delta wire':>11}"
+        f"  {'ctx':>8} {LIST_FULL:>10} {LIST_DELTA:>11} {PACKED_FULL:>12} "
+        f"{PACKED_DELTA:>13} {'speedup':>8} {'wire':>10}"
     )
     for result in results:
         print(
-            f"  {result.context_len:>8,} {result.full.median_us:>10.1f} "
-            f"{result.delta.median_us:>11.1f} {result.speedup:>7.1f}x "
-            f"{format_bytes(result.full_bytes):>11} "
-            f"{format_bytes(result.delta_bytes):>11}"
+            f"  {result.context_len:>8,} "
+            f"{result.median_us(LIST_FULL):>10.1f} "
+            f"{result.median_us(LIST_DELTA):>11.1f} "
+            f"{result.median_us(PACKED_FULL):>12.1f} "
+            f"{result.median_us(PACKED_DELTA):>13.1f} "
+            f"{result.speedup(PACKED_DELTA):>7.1f}x "
+            f"{format_bytes(result.bytes_for(PACKED_DELTA)):>10}"
         )
 
 
@@ -584,9 +784,9 @@ def print_request_rollup(
     """Project the per-op numbers onto one full ``context_len`` prefill.
 
     A chunked prefill takes ``ceil(context_len / PREFILL_CHUNK_TOKENS)``
-    scheduler steps, and each step emits one store op.  Scheduler-side stages
-    run once per step; worker- and server-side stages run once per step per TP
-    rank, because every rank submits its own store.  LOOKUP runs once.
+    scheduler steps, and each step emits one store op. Scheduler-side stages
+    run once per step; worker- and server-side stages run once per step per
+    TP rank, because every rank submits its own store. LOOKUP runs once.
 
     Args:
         by_stage: Stage name -> context length -> result.
@@ -614,115 +814,134 @@ def print_request_rollup(
         f"prefill chunk={PREFILL_CHUNK_TOKENS:,}, lmcache chunk={LMCACHE_CHUNK_SIZE}"
     )
     print(
-        f"  {'stage':<24} {'x':>5} {'full (ms)':>10} {'delta (ms)':>11} "
-        f"{'saved (ms)':>11}"
+        f"  {'stage':<24} {'x':>5} {LIST_FULL:>10} {LIST_DELTA:>11} "
+        f"{PACKED_FULL:>12} {PACKED_DELTA:>13}"
     )
 
-    total_full = 0.0
-    total_delta = 0.0
+    totals = dict.fromkeys(VARIANTS, 0.0)
     for stage, multiplier in multipliers.items():
         result = by_stage[stage][context_len]
-        full_ms = multiplier * result.full.median_us / 1_000.0
-        delta_ms = multiplier * result.delta.median_us / 1_000.0
-        total_full += full_ms
-        total_delta += delta_ms
+        row = {n: multiplier * result.median_us(n) / 1_000.0 for n in VARIANTS}
+        for name in VARIANTS:
+            totals[name] += row[name]
+        note = "  (unchanged by delta)" if stage == STAGE_E else ""
         print(
-            f"  {stage:<24} {multiplier:>5} {full_ms:>10.1f} {delta_ms:>11.1f} "
-            f"{full_ms - delta_ms:>11.1f}"
+            f"  {stage:<24} {multiplier:>5} {row[LIST_FULL]:>10.1f} "
+            f"{row[LIST_DELTA]:>11.1f} {row[PACKED_FULL]:>12.1f} "
+            f"{row[PACKED_DELTA]:>13.1f}{note}"
         )
     print(
-        f"  {'TOTAL CPU':<24} {'':>5} {total_full:>10.1f} {total_delta:>11.1f} "
-        f"{total_full - total_delta:>11.1f}"
+        f"  {'TOTAL CPU (ms)':<24} {'':>5} {totals[LIST_FULL]:>10.1f} "
+        f"{totals[LIST_DELTA]:>11.1f} {totals[PACKED_FULL]:>12.1f} "
+        f"{totals[PACKED_DELTA]:>13.1f}"
     )
 
-    wire_full = sum(
-        multipliers[stage] * by_stage[stage][context_len].full_bytes
-        for stage in WIRE_STAGES
-    )
-    wire_delta = sum(
-        multipliers[stage] * by_stage[stage][context_len].delta_bytes
-        for stage in WIRE_STAGES
-    )
+    wire = {
+        name: sum(
+            multipliers[stage] * by_stage[stage][context_len].bytes_for(name)
+            for stage in WIRE_STAGES
+        )
+        for name in VARIANTS
+    }
     print(
-        f"  bytes crossing process boundaries: "
-        f"{format_bytes(wire_full)} -> {format_bytes(wire_delta)}"
+        f"  {'bytes across processes':<24} {'':>5} "
+        f"{format_bytes(wire[LIST_FULL]):>10} "
+        f"{format_bytes(wire[LIST_DELTA]):>11} "
+        f"{format_bytes(wire[PACKED_FULL]):>12} "
+        f"{format_bytes(wire[PACKED_DELTA]):>13}"
+    )
+    # Each axis on its own, against the same baseline, plus the two
+    # together -- they do not simply add, since whichever lands first
+    # takes the bulk of a stage's cost with it.
+    print(
+        f"  -> delta alone saves {totals[LIST_FULL] - totals[LIST_DELTA]:.1f} ms, "
+        f"packing alone {totals[LIST_FULL] - totals[PACKED_FULL]:.1f} ms, "
+        f"both {totals[LIST_FULL] - totals[PACKED_DELTA]:.1f} ms"
     )
 
-    # Stage Z sends an already-encoded blob, so it covers transport plus a
-    # decode in the child process, but not the client's encode (C1).  It lands
-    # at roughly the in-process C2 time, which says the ZMQ hop itself is small
-    # next to the msgspec decode of the token list -- the decode is the cost.
     rtt = by_stage[STAGE_Z][context_len]
     decode = by_stage[STAGE_C2][context_len]
     print(
-        f"  cross-check: ZMQ round trip {rtt.full.median_us:.0f} us vs "
-        f"in-process decode {decode.full.median_us:.0f} us "
-        f"-- transport is minor next to decoding the token list"
+        f"  cross-check: ZMQ round trip {rtt.median_us(LIST_FULL):.0f} us vs "
+        f"in-process decode {decode.median_us(LIST_FULL):.0f} us -- transport "
+        f"is minor next to decoding the token list"
     )
 
 
-def main() -> None:
-    """Run every stage across the configured context lengths and report."""
-    parser = argparse.ArgumentParser(
-        description="Measure the connector's token_ids transmission overhead."
-    )
-    parser.add_argument(
-        "--quick", action="store_true", help="measure 3 context lengths, fewer repeats"
-    )
-    parser.add_argument(
-        "--repeats", type=int, default=0, help="timed calls per point (0 = auto)"
-    )
-    parser.add_argument(
-        "--concurrent-requests",
-        type=int,
-        default=1,
-        help="requests sharing one scheduler step in stage B",
-    )
-    parser.add_argument(
-        "--tensor-parallel-size", type=int, default=8, help="TP ranks for the rollup"
-    )
-    args = parser.parse_args()
+####
+# Driver
+####
 
-    lengths = QUICK_CONTEXT_LENGTHS if args.quick else CONTEXT_LENGTHS
-    repeats = args.repeats or (10 if args.quick else 50)
 
-    print("Connector token_ids transmission overhead")
-    print(f"  context lengths      : {', '.join(f'{n:,}' for n in lengths)}")
-    print(f"  repeats per point    : {repeats}")
-    print(f"  prefill chunk tokens : {PREFILL_CHUNK_TOKENS:,}")
-    print(f"  lmcache chunk size   : {LMCACHE_CHUNK_SIZE}")
-    print(f"  concurrent requests  : {args.concurrent_requests}")
+def run(context_lengths: Sequence[int], repeats: int, num_requests: int) -> None:
+    """Measure every stage at every context length and print the report.
 
-    harness = ZmqHarness()
+    Args:
+        context_lengths: Prompt lengths to sweep.
+        repeats: Timed calls per measurement.
+        num_requests: Concurrent requests sharing a scheduler step.
+    """
     by_stage: dict[str, dict[int, StageResult]] = {}
+    harness = ZmqHarness()
     try:
-        for context_len in lengths:
+        for context_len in context_lengths:
             token_ids = make_token_ids(context_len)
             start, end = op_range(context_len)
-            dumps, loads = bench_stage_b(
-                token_ids, start, end, repeats, args.concurrent_requests
-            )
-            encode, decode, roundtrip = bench_stage_c(
-                harness, token_ids, start, end, repeats
-            )
-            for result in (
+            results = [
                 bench_stage_a(token_ids, start, end, repeats),
-                dumps,
-                loads,
-                encode,
-                decode,
-                roundtrip,
+                *bench_stage_b(token_ids, start, end, repeats, num_requests),
+                *bench_stage_c(harness, token_ids, start, end, repeats),
                 bench_stage_d(token_ids, start, end, repeats),
-                bench_stage_e(token_ids, start, repeats),
-            ):
+                bench_stage_e(token_ids, repeats),
+            ]
+            for result in results:
                 by_stage.setdefault(result.stage, {})[context_len] = result
     finally:
         harness.close()
 
-    for stage in by_stage:
-        print_stage_table([by_stage[stage][n] for n in lengths])
+    print(
+        f"\nOne store op per scheduler step; {num_requests} request(s) per step, "
+        f"{repeats} repeats."
+    )
+    print("'speedup' is packed+delta over list+full; 'wire' is packed+delta's bytes.")
+    for stage in (
+        STAGE_A,
+        STAGE_B1,
+        STAGE_B2,
+        STAGE_C1,
+        STAGE_C2,
+        STAGE_Z,
+        STAGE_D,
+        STAGE_E,
+    ):
+        print_stage_table([by_stage[stage][c] for c in context_lengths])
 
-    print_request_rollup(by_stage, lengths[-1], args.tensor_parallel_size)
+    print_request_rollup(by_stage, max(context_lengths), tensor_parallel_size=8)
+
+
+def main() -> None:
+    """Parse arguments and run the benchmark."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Sweep three context lengths with fewer repeats.",
+    )
+    parser.add_argument(
+        "--repeats", type=int, default=50, help="Timed calls per measurement."
+    )
+    parser.add_argument(
+        "--requests",
+        type=int,
+        default=1,
+        help="Concurrent requests sharing one scheduler step.",
+    )
+    args = parser.parse_args()
+    run(
+        QUICK_CONTEXT_LENGTHS if args.quick else CONTEXT_LENGTHS,
+        repeats=10 if args.quick else args.repeats,
+        num_requests=args.requests,
+    )
 
 
 if __name__ == "__main__":

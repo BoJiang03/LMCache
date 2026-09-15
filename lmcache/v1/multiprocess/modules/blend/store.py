@@ -86,16 +86,20 @@ class StoreMixin:
         tokens_in_range: list[int] = []
         try:
             session = self._ctx.session_manager.get_or_create(key.request_id)
-            # Request-end cleanup may have replaced the session; re-set tokens
-            # (idempotent if it survived, corrective if not).
-            session.set_tokens(list(key.token_ids))
+            # Request-end cleanup may have replaced the session; splice the
+            # key's tokens back in (a no-op if it survived, corrective if
+            # not). A key carrying only its own slice cannot restore a lost
+            # prefix, so give up on the fingerprint rather than hash across
+            # the gap.
+            if not session.absorb_tokens(key.token_offset, key.token_bytes):
+                return result
             chunk_hashes = [
                 TokenHasher.hash_to_bytes(h)
                 for h in session.get_hashes(key.start, key.end)
             ]
             if not chunk_hashes:
                 return result
-            tokens_in_range = list(key.token_ids)[key.start : key.end]
+            tokens_in_range = session.tokens_in_range(key.start, key.end)
             # Chunk 0 is owned by the prefix lookup leg; skip its fingerprint.
             start_chunk_idx = 0 if key.start != 0 else 1
             job: FpJob = (

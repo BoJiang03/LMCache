@@ -8,6 +8,7 @@ reach the real dataclasses and the real msgspec key type.
 """
 
 # Standard
+import importlib.util
 import itertools
 import sys
 import types
@@ -56,11 +57,18 @@ class _StubModule(types.ModuleType):
 
 
 def install_native_stubs() -> None:
-    """Register no-op ``lmcache_native``/``device_ops`` modules."""
+    """Register no-op ``lmcache_native``/``device_ops`` modules.
+
+    A checkout that has been built already exposes the real extensions, and
+    shadowing them would measure the stubs instead; each one is stubbed only
+    when it is genuinely absent.
+    """
     # First Party
     import lmcache
 
-    if "lmcache.lmcache_native" not in sys.modules:
+    if "lmcache.lmcache_native" not in sys.modules and not _real_module_exists(
+        "lmcache.lmcache_native"
+    ):
         native = _StubModule("lmcache.lmcache_native")
         lmcache.lmcache_native = native  # type: ignore[attr-defined]
         sys.modules["lmcache.lmcache_native"] = native
@@ -68,3 +76,11 @@ def install_native_stubs() -> None:
         ops = _StubModule("lmcache.device_ops")
         lmcache.device_ops = ops  # type: ignore[attr-defined]
         sys.modules["lmcache.device_ops"] = ops
+
+
+def _real_module_exists(name: str) -> bool:
+    """Whether ``name`` can be imported for real from this checkout."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False

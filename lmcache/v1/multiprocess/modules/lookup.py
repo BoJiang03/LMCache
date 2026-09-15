@@ -22,6 +22,7 @@ from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.otel_init import register_gauge
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
+from lmcache.v1.multiprocess.session import Session
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 
 logger = init_logger(__name__)
@@ -29,6 +30,7 @@ logger = init_logger(__name__)
 
 def resolve_prefetched_obj_keys(
     ctx: MPCacheServerContext,
+    session: Session,
     key: IPCCacheServerKey,
     hit_chunks: int,
     locked_gids: tuple,
@@ -39,14 +41,56 @@ def resolve_prefetched_obj_keys(
     ``key.worker_id=None`` resolves every KV rank for scheduler-owned cleanup.
     A worker-specific key resolves only that worker's shard (or one MLA reader
     share), which is required for per-instance RETRIEVE failure cleanup.
+
+    Chunk hashes come from ``session``, which is the server's record of the
+    request's token sequence: a key that carries only a slice cannot be
+    hashed on its own, and a full key re-seeds a session that request-end
+    cleanup already dropped. Returns no keys when the session lacks the
+    prefix -- releasing guessed keys would decrement another request's
+    anonymous L1 read count.
+
+    Args:
+        ctx: The server context.
+        session: The request's session, the source of the token sequence.
+        key: The range whose locked keys should be resolved.
+        hit_chunks: Chunks the lookup reported as hit, or negative when the
+            prefetch result was never consumed.
+        locked_gids: Object group ids the lookup actually locked; empty
+            means every group.
+        group_windows: Per-group cross-chunk attention windows. Looked up
+            from the layout registry when ``None``.
+
+    Returns:
+        The locked object keys, or an empty list when nothing is locked in
+        range or the session cannot supply the prefix.
     """
-    chunk_hashes = ctx.token_hasher.compute_chunk_hashes(
-        list(key.token_ids), start=key.start, end=key.end
-    )
+    if not session.absorb_tokens(key.token_offset, key.token_bytes):
+        logger.warning(
+            "Not releasing lookup locks for request %s: its tokens start at "
+            "%d but the session holds only %d token(s)",
+            key.request_id,
+            key.token_offset,
+            session.num_tokens,
+        )
+        return []
+    # ``free_lookup_locks`` documents that unaligned bounds are tolerated,
+    # so both ends are snapped inward to whole chunks: no chunk is released
+    # unless the range covers all of it. Releasing a chunk the caller only
+    # partly owns would decrement a concurrent reader's anonymous L1 count.
+    chunk_size = ctx.chunk_size
+    aligned_start = -(-key.start // chunk_size) * chunk_size
+    aligned_end = min(key.end, session.num_tokens)
+    aligned_end -= aligned_end % chunk_size
+    if aligned_end <= aligned_start:
+        return []
+    chunk_hashes = [
+        TokenHasher.hash_to_bytes(h)
+        for h in session.get_hashes(aligned_start, aligned_end)
+    ]
     if not chunk_hashes:
         return []
 
-    start_chunk = key.start // ctx.chunk_size
+    start_chunk = aligned_start // chunk_size
     end_chunk = start_chunk + len(chunk_hashes)
     if group_windows is None:
         group_windows = tuple(
@@ -201,7 +245,9 @@ class LookupModule:
 
         num_kv_readers = key.require_num_kv_readers()
 
-        chunk_hashes = self._ctx.token_hasher.compute_chunk_hashes(list(key.token_ids))
+        chunk_hashes = self._ctx.token_hasher.compute_packed_chunk_hashes(
+            key.token_bytes
+        )
         if not chunk_hashes:
             self._register_prefetch_job(
                 _PrefetchJob(
@@ -243,7 +289,7 @@ class LookupModule:
                         "chunk_hashes": chunk_hashes,
                         "model_name": model_name,
                         "chunk_size": self._ctx.chunk_size,
-                        "seq_len": len(key.token_ids),
+                        "seq_len": key.num_tokens,
                         "dtypes": [str(d) for d in layout_desc.dtypes],
                         "shapes": [list(s) for s in layout_desc.shapes],
                     },
@@ -256,7 +302,7 @@ class LookupModule:
             model_name, world_size
         )
         session = self._ctx.session_manager.get_or_create(key.request_id)
-        session.set_tokens(list(key.token_ids))
+        session.set_tokens(key.token_bytes)
         session.begin_lookup(key, tuple(attn_desc.num_chunks_in_sw))
         obj_keys = self._chunk_major_object_keys(key, chunk_hashes)
 
@@ -483,9 +529,8 @@ class LookupModule:
         if key.start >= key.end:
             return
 
-        hit_chunks = self._ctx.session_manager.get_or_create(
-            key.request_id
-        ).prefetch_hit_chunks
+        session = self._ctx.session_manager.get_or_create(key.request_id)
+        hit_chunks = session.prefetch_hit_chunks
         if hit_chunks < 0:
             logger.warning(
                 "free_lookup_locks for request %s before its prefetch result "
@@ -496,10 +541,10 @@ class LookupModule:
         # Release exactly the groups the prefetch locked (std lookup: all;
         # CB prefix leg: its prefix set) -- releasing an unlocked group
         # would drop another request's lock on the shared object key.
-        locked_gids = self._ctx.session_manager.get_or_create(
-            key.request_id
-        ).prefetch_locked_gids
-        obj_keys = resolve_prefetched_obj_keys(self._ctx, key, hit_chunks, locked_gids)
+        locked_gids = session.prefetch_locked_gids
+        obj_keys = resolve_prefetched_obj_keys(
+            self._ctx, session, key, hit_chunks, locked_gids
+        )
 
         if not obj_keys:
             return

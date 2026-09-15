@@ -14,6 +14,7 @@ from lmcache.integration.vllm.utils import (
     mla_only,
 )
 from lmcache.utils import init_logger as lmcache_init_logger
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -361,7 +362,7 @@ class LMCacheMPRequestMetadata:
             end_token_idx = end * vllm_block_size
             token_ids = tracker.get_token_ids()
             op = LoadStoreOp(
-                token_ids=token_ids,
+                token_bytes=pack_token_ids(token_ids),
                 block_ids=block_ids,
                 start=start_token_idx,
                 end=end_token_idx,
@@ -428,7 +429,7 @@ class LMCacheMPRequestMetadata:
             skip_first_n_tokens = apc_overlap_blocks * vllm_block_size
 
             op = LoadStoreOp(
-                token_ids=token_ids,
+                token_bytes=pack_token_ids(token_ids),
                 block_ids=block_ids,
                 start=start_token_idx,
                 end=end_token_idx,
@@ -791,7 +792,7 @@ class LMCacheMPConnector(KVConnectorBase_V1):
 
         self.scheduler_adapter.maybe_submit_lookup_request(
             request.request_id,
-            token_ids=tracker.get_token_ids(),
+            packed_token_ids=pack_token_ids(tracker.get_token_ids()),
             cache_salt=tracker.cache_salt,
             request_configs=tracker.request_configs,
         )
@@ -888,7 +889,9 @@ class LMCacheMPConnector(KVConnectorBase_V1):
 
                 if free_end > 0:
                     self.scheduler_adapter.free_lookup_locks(
-                        token_ids=tracker.get_token_ids(),
+                        packed_token_ids=pack_token_ids(
+                            tracker.get_token_ids()
+                        ),
                         start=0,
                         end=free_end,
                         request_id=request.request_id,

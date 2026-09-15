@@ -21,6 +21,7 @@ from lmcache.v1.distributed.api import AttnWindowDesc, TrimPolicy
 from lmcache.v1.mp_coordinator.blend_client import PENDING
 from lmcache.v1.mp_observability.event import EventType
 from lmcache.v1.multiprocess.custom_types import CBMatchResult
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 from lmcache.v1.multiprocess.modules.blend.lookup import _CBUnifiedJob
 from lmcache.v1.multiprocess.modules.blend.matcher import (
     BlendTokenRangeMatcher,
@@ -181,7 +182,7 @@ class TestPrefixLegNoGpuContext:
             request_id="req-ctx",
             model_name="m",
             world_size=2,
-            token_ids=[1, 2, 3],
+            token_bytes=pack_token_ids([1, 2, 3]),
         )
 
     def test_missing_layout_reports_no_gpu_context(self):
@@ -212,7 +213,7 @@ class TestPrefixLegNoGpuContext:
             )
         )
         eng._ctx = MagicMock()
-        eng._ctx.token_hasher.compute_chunk_hashes.return_value = []
+        eng._ctx.token_hasher.compute_packed_chunk_hashes.return_value = []
 
         handle, _, _, _, _, no_gpu_context = _bind(eng, "_submit_prefix_leg")(
             self._key(), 2, TrimPolicy.PREFIX
@@ -284,16 +285,17 @@ class TestFingerprintJobTuple:
         eng._pending_fp_hashes = set()
         eng._coordinator = None
         eng._ctx = MagicMock()
-        eng._ctx.session_manager.get_or_create.return_value.get_hashes.return_value = [
-            123,
-            456,
-        ]
+        fake_session = eng._ctx.session_manager.get_or_create.return_value
+        fake_session.get_hashes.return_value = [123, 456]
+        fake_session.absorb_tokens.return_value = True
+        fake_session.tokens_in_range.return_value = list(range(512))
 
         eng._fingerprint_queue = Queue()
         key = SimpleNamespace(
             request_id="req-store",
             worker_id=0,
-            token_ids=list(range(512)),
+            token_bytes=pack_token_ids(range(512)),
+            token_offset=0,
             start=0,
             end=512,
         )

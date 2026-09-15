@@ -33,6 +33,7 @@ from lmcache.v1.multiprocess.transfer_context.worker_transfer import (
 )
 from lmcache.v1.multiprocess.transport.base import RequestClient
 from lmcache.v1.multiprocess.transport.factory import RequestClientFactory
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 import lmcache.lmcache_native as lmcache_native
 
 logger = init_logger(__name__)
@@ -537,7 +538,7 @@ class LMCacheSDKContext:
             world_size=self._world_size,
             num_kv_readers=self._num_kv_readers,
             worker_id=worker_id,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=start,
             end=end,
             request_id=request_id,

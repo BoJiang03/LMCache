@@ -45,6 +45,7 @@ from lmcache.v1.platform.base.event_ipc import (
     get_event_ipc_backend,
 )
 from lmcache.v1.platform.cuda.ipc_wrapper import RawCudaIPCWrapper
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 logger = init_logger(__name__)
 
@@ -121,7 +122,7 @@ class LMCacheMPKvConnectorScheduler(KvCacheConnectorScheduler):
             # sharing in this adapter yet).
             num_kv_readers=1,
             worker_id=None,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=start,
             end=end,
             request_id=str(request_id),
@@ -304,7 +305,7 @@ class LMCacheMPKvConnectorWorker(KvCacheConnectorWorker):
             world_size=self._world_size,
             num_kv_readers=1,
             worker_id=self._rank,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=0,
             end=aligned_end,
             request_id=str(request_id),

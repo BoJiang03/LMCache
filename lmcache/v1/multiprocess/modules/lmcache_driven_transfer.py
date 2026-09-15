@@ -770,6 +770,7 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
         hit_chunks, locked_gids, group_windows, lookup_generation = lock_state
         obj_keys = resolve_prefetched_obj_keys(
             self._ctx,
+            session,
             key,
             hit_chunks,
             locked_gids,
@@ -1547,13 +1548,18 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
         # position of each chunk's first token. Prefix-chained chunk hashes
         # imply a position without revealing it, so it is reported here. A
         # trailing partial chunk has no stored KV to bind to.
+        #
+        # Tokens come from the session rather than the key: a key that
+        # carries only its own slice cannot be indexed by absolute position,
+        # and resolve_obj_keys has already absorbed that slice here.
         chunk_size = self._ctx.chunk_size
-        token_ids = list(key.token_ids)
-        effective_len = min(len(token_ids), key.end)
+        session = self._ctx.session_manager.get_or_create(key.request_id)
+        effective_len = min(session.num_tokens, key.end)
         num_complete = effective_len - effective_len % chunk_size
         token_offsets = list(range(key.start, num_complete, chunk_size))
         token_chunks = [
-            token_ids[offset : offset + chunk_size] for offset in token_offsets
+            session.tokens_in_range(offset, offset + chunk_size)
+            for offset in token_offsets
         ]
         if not token_chunks:
             return

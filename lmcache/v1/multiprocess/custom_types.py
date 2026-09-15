@@ -8,6 +8,11 @@ import msgspec
 import torch
 
 # First Party
+from lmcache.v1.multiprocess.token_codec import (
+    TOKEN_STRIDE,
+    num_packed_tokens,
+    pack_token_ids,
+)
 from lmcache.v1.platform.base.ipc_wrapper import (  # noqa: E402,F401
     DeviceIPCWrapper,
 )
@@ -18,7 +23,7 @@ communications.
 
 Key Types:
 - IPCCacheServerKey: Token-based cache key
-  - Contains token_ids, start, end, request_id (all required)
+  - Contains token_bytes, start, end, request_id (all required)
   - Converted to ObjectKey for storage operations via ipc_key_to_object_keys()
 """
 
@@ -29,9 +34,18 @@ class IPCCacheServerKey:
 
     This key type is sent by the client over ZMQ (serialized via msgspec).
 
-    The client sends token_ids, start, end, and request_id (all required).
+    The client sends token_bytes, start, end, and request_id (all required).
     The server computes chunk hashes via TokenHasher and converts to
     ObjectKey for storage operations using ipc_key_to_object_keys().
+
+    ``token_bytes`` carries the tokens at absolute positions
+    ``[token_offset, token_offset + num_tokens)``, packed by
+    :mod:`lmcache.v1.multiprocess.token_codec`. A LOOKUP sends the whole
+    sequence (``token_offset == 0``); a STORE or RETRIEVE may instead send
+    only the slice its own ``[start, end)`` range needs, relying on the
+    server-side :class:`~lmcache.v1.multiprocess.session.Session` to already
+    hold the prefix from that request's LOOKUP. See
+    :meth:`lmcache.v1.multiprocess.session.Session.absorb_tokens`.
 
     The request_id field is for session tracking and is NOT included
     in equality/hash comparisons (two keys with same content but different
@@ -42,7 +56,7 @@ class IPCCacheServerKey:
     world_size: int
     worker_id: int | None
 
-    token_ids: tuple[int, ...]  # frozen tuple for hashability
+    token_bytes: bytes  # packed big-endian uint32, one word per token
     start: int
     end: int
 
@@ -69,12 +83,35 @@ class IPCCacheServerKey:
     # lookups reject it.
     num_kv_readers: int = field(default=0, compare=False)
 
+    # Absolute position of the first token in ``token_bytes``. 0 means the
+    # key carries the sequence from its beginning, which is what a LOOKUP
+    # always does. Part of cache identity: the same tokens at a different
+    # offset denote different content.
+    #
+    # NOTE: ``token_bytes`` replaced a ``token_ids`` tuple, so this key does
+    # not decode payloads from a client older than that change -- client and
+    # server must be upgraded together, as ``num_kv_readers`` already
+    # requires (see ``require_num_kv_readers``).
+    token_offset: int = 0
+
     # Duplicated from ObjectKey — cannot import ObjectKey here due to
     # circular dependency (api.py imports IPCCacheServerKey).
     _SALT_FORBIDDEN_CHARS = frozenset("@/\\\x00")
     _SALT_MAX_LEN = 128
 
     def __post_init__(self) -> None:
+        if len(self.token_bytes) % TOKEN_STRIDE:
+            raise ValueError(
+                f"token_bytes of {len(self.token_bytes)} byte(s) is not a "
+                f"whole number of {TOKEN_STRIDE}-byte token ids"
+            )
+        if self.token_offset < 0:
+            raise ValueError(f"token_offset must be >= 0 (got {self.token_offset})")
+        if self.token_offset > self.start:
+            raise ValueError(
+                f"token_offset ({self.token_offset}) must not exceed start "
+                f"({self.start}): the key would not carry its own range"
+            )
         bad = self._SALT_FORBIDDEN_CHARS & set(self.cache_salt)
         if bad:
             raise ValueError(
@@ -100,6 +137,7 @@ class IPCCacheServerKey:
         cache_salt: str = "",
         num_kv_readers: int = 1,
         request_configs: dict[str, Any] | None = None,
+        token_offset: int = 0,
     ) -> "IPCCacheServerKey":
         """Create a key from token ids. Only used by the tests."""
         return cls(
@@ -107,13 +145,29 @@ class IPCCacheServerKey:
             world_size=world_size,
             worker_id=worker_id,
             num_kv_readers=num_kv_readers,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=start,
             end=end,
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            token_offset=token_offset,
         )
+
+    @property
+    def num_tokens(self) -> int:
+        """How many token ids this key carries."""
+        return num_packed_tokens(self.token_bytes)
+
+    @property
+    def tokens_end(self) -> int:
+        """Absolute position one past the last token carried by this key."""
+        return self.token_offset + self.num_tokens
+
+    @property
+    def carries_full_sequence(self) -> bool:
+        """Whether ``token_bytes`` starts at the beginning of the sequence."""
+        return self.token_offset == 0
 
     def require_num_kv_readers(self) -> int:
         """Declared reader count; rejects keys from pre-field clients.
@@ -139,12 +193,13 @@ class IPCCacheServerKey:
             world_size=self.world_size,
             worker_id=None,
             num_kv_readers=self.num_kv_readers,
-            token_ids=self.token_ids,
+            token_bytes=self.token_bytes,
             start=self.start,
             end=self.end,
             request_id=self.request_id,
             cache_salt=self.cache_salt,
             request_configs=self.request_configs,
+            token_offset=self.token_offset,
         )
 
 

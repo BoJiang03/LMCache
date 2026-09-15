@@ -33,6 +33,7 @@ from lmcache.v1.multiprocess.transfer_context import (
 from lmcache.v1.multiprocess.transport.base import RequestClient
 from lmcache.v1.multiprocess.transport.factory import RequestClientFactory
 from lmcache.v1.periodic_thread import PeriodicThread, ThreadLevel, ThreadRunSummary
+from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 logger = init_logger(__name__)
 
@@ -297,7 +298,7 @@ class AtomMPSchedulerAdapter:
             # Each ATOM TP rank retrieves only its own rank-local object.
             num_kv_readers=1,
             worker_id=worker_id,
-            token_ids=tuple(token_ids),
+            token_bytes=pack_token_ids(token_ids),
             start=start,
             end=end,
             request_id=request_id,
@@ -817,7 +818,7 @@ class AtomMPWorkerAdapter:
             # Each ATOM TP rank retrieves only its own rank-local object.
             num_kv_readers=1,
             worker_id=self._parallel.worker_id,
-            token_ids=tuple(spec.token_ids),
+            token_bytes=pack_token_ids(spec.token_ids),
             start=spec.start,
             end=spec.end,
             request_id=request_id,

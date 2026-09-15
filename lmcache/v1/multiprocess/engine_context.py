@@ -23,7 +23,7 @@ from lmcache.v1.gpu_connector.gds_context import (
 )
 from lmcache.v1.mp_observability.event_bus import EventBus, get_event_bus
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
-from lmcache.v1.multiprocess.session import SessionManager
+from lmcache.v1.multiprocess.session import Session, SessionManager
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 
 logger = init_logger(__name__)
@@ -183,6 +183,65 @@ class LayoutDescRegistry:
             return entry.attn_desc
 
 
+def resolve_obj_keys_from_session(
+    session: Session,
+    key: IPCCacheServerKey,
+    object_group_ids: list[int],
+) -> list[list[ObjectKey]]:
+    """Resolve per-object-group object keys for one store or retrieve.
+
+    The key's tokens are spliced into ``session``, which is the server's
+    record of the request's sequence, and the chunk hashes for
+    ``[key.start, key.end)`` are read back from it. That is what makes the
+    result independent of how much of the sequence the key carried: a key
+    with only its own range and a key with the whole sequence produce the
+    same object keys.
+
+    A key that carries only a slice (``token_offset > 0``) needs the
+    session to already hold everything before it, which that request's
+    LOOKUP supplies. If the prefix is missing -- the session was never
+    seeded, or was dropped after the client decided to send a delta -- no
+    keys are produced: chunk hashes are prefix-chained, so hashing across
+    the gap would silently mint keys for content that was never stored. An
+    empty result degrades the caller to a miss (the store writes nothing,
+    the retrieve reports failure and vLLM recomputes) instead of corrupting
+    the cache.
+
+    Args:
+        session: The request's session.
+        key: IPC cache key describing model/session/token range.
+        object_group_ids: Object group ids to produce keys for.
+
+    Returns:
+        The i-th element is the list of ObjectKeys for
+        ``object_group_ids[i]``, or an empty list per group when the
+        session lacks the prefix the key chains onto.
+
+    Raises:
+        ValueError: If ``key.worker_id`` is ``None``.
+    """
+    if not session.absorb_tokens(key.token_offset, key.token_bytes):
+        logger.error(
+            "Dropping transfer [%d, %d) for request %s: its tokens start "
+            "at %d but the session holds only %d token(s), so the prefix "
+            "the chunk hashes chain onto is missing",
+            key.start,
+            key.end,
+            key.request_id,
+            key.token_offset,
+            session.num_tokens,
+        )
+        return [[] for _ in object_group_ids]
+    if session.lookup_ipc_key is None:
+        session.lookup_ipc_key = key.no_worker_id_version()
+    chunk_hashes = [
+        TokenHasher.hash_to_bytes(h) for h in session.get_hashes(key.start, key.end)
+    ]
+    if key.worker_id is None:
+        raise ValueError("Must resolve keys with worker_id != None")
+    return ipc_key_to_object_keys(key, chunk_hashes, object_group_ids)
+
+
 class MPCacheServerContext:
     """Shared infrastructure for all engine modules.
 
@@ -281,8 +340,8 @@ class MPCacheServerContext:
     ) -> list[list[ObjectKey]]:
         """Resolve per-object-group object keys from an IPC cache key.
 
-        Uses the session manager to track token state and the token hasher
-        to compute chunk hashes for the requested range.
+        Looks up (or creates) the request's session and delegates to
+        :func:`resolve_obj_keys_from_session`.
 
         Args:
             key: IPC cache key describing model/session/token range.
@@ -290,21 +349,14 @@ class MPCacheServerContext:
 
         Returns:
             The i-th element is the list of ObjectKeys for
-            ``object_group_ids[i]``.
+            ``object_group_ids[i]``, or an empty list per group when the
+            session lacks the prefix the key chains onto.
 
         Raises:
             ValueError: If ``key.worker_id`` is ``None``.
         """
         session = self.session_manager.get_or_create(key.request_id)
-        session.set_tokens(list(key.token_ids))
-        if session.lookup_ipc_key is None:
-            session.lookup_ipc_key = key.no_worker_id_version()
-        chunk_hashes = [
-            TokenHasher.hash_to_bytes(h) for h in session.get_hashes(key.start, key.end)
-        ]
-        if key.worker_id is None:
-            raise ValueError("Must resolve keys with worker_id != None")
-        return ipc_key_to_object_keys(key, chunk_hashes, object_group_ids)
+        return resolve_obj_keys_from_session(session, key, object_group_ids)
 
     @staticmethod
     def _compute_shm_pool_info(
