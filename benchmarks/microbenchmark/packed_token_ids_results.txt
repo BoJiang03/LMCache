@@ -1,0 +1,146 @@
+[32;20m[2026-09-15 22:18:41,474] LMCache INFO:[0m torch_dev=<module 'torch.cuda' from '/home/bo/LMCache-worktrees/mtp/.venv/lib/python3.10/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda [3m(_device_detect.py:312:lmcache.v1.platform._device_detect)[0m
+[32;20m[2026-09-15 22:18:41,474] LMCache INFO:[0m Auto-selected backend [cuda] for accelerator 'cuda' from candidate backends [cuda, rocm]. [3m(__init__.py:148:lmcache.v1.platform)[0m
+[32;20m[2026-09-15 22:18:47,237] LMCache INFO:[0m multi_layer_block_kv_transfer mode: ptr [3m(base.py:95:lmcache.v1.multiprocess.transfer_context.base)[0m
+[32;20m[2026-09-15 22:18:48,880] LMCache INFO:[0m torch_dev=<module 'torch.cuda' from '/home/bo/LMCache-worktrees/mtp/.venv/lib/python3.10/site-packages/torch/cuda/__init__.py'>, torch_device_type=cuda [3m(_device_detect.py:312:lmcache.v1.platform._device_detect)[0m
+[32;20m[2026-09-15 22:18:48,880] LMCache INFO:[0m Auto-selected backend [cuda] for accelerator 'cuda' from candidate backends [cuda, rocm]. [3m(__init__.py:148:lmcache.v1.platform)[0m
+[32;20m[2026-09-15 22:18:52,719] LMCache INFO:[0m multi_layer_block_kv_transfer mode: ptr [3m(base.py:95:lmcache.v1.multiprocess.transfer_context.base)[0m
+[32;20m[2026-09-15 22:18:52,757] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,758] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,758] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,758] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,758] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,758] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,789] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,789] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,789] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,790] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,790] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,790] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,883] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,883] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,883] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,885] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,885] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:52,885] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,106] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,106] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,106] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,111] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,111] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,111] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,556] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,558] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,558] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,569] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,569] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:53,569] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,566] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,566] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,566] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,587] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,587] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:54,587] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,913] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,913] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,913] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,953] LMCache INFO:[0m Using blake3 hash function [3m(token_hasher.py:118:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,953] LMCache INFO:[0m Computed NONE_HASH=b"~>\xff\x9e\xf7a:P4\x0e\xb1&w\xee\x03\xb8:\xc7Y\xfc\xba\x9b\xb3'\x05\xf0rH\xd5mG;" using hash function [3m(token_hasher.py:219:lmcache.v1.multiprocess.token_hasher)[0m
+[32;20m[2026-09-15 22:18:55,953] LMCache INFO:[0m TokenHasher initialized: chunk_size=256, hash_algorithm=blake3 [3m(token_hasher.py:106:lmcache.v1.multiprocess.token_hasher)[0m
+
+One store op per scheduler step; 1 request(s) per step, 50 repeats.
+'speedup' is packed over list; 'wire' is packed's bytes.
+
+A  sched build payload  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024          3.1         11.0      0.3x    4.00 KB
+     4,096         11.1         38.9      0.3x   16.00 KB
+    16,384         42.8         77.8      0.6x   64.00 KB
+    32,768         92.2         86.8      1.1x  128.00 KB
+    65,536        196.7         95.8      2.1x  256.00 KB
+   131,072        496.2        154.9      3.2x  512.00 KB
+   200,000        659.3        154.9      4.3x  781.25 KB
+
+B1 sched pickle.dumps  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024         10.1          4.1      2.5x    4.54 KB
+     4,096         35.7          5.8      6.2x   16.91 KB
+    16,384        169.9          8.2     20.7x   65.92 KB
+    32,768        357.8         12.4     28.8x  129.92 KB
+    65,536        709.2         12.3     57.8x  257.92 KB
+   131,072       1875.6         23.6     79.3x  513.92 KB
+   200,000       2152.7         28.8     74.8x  783.17 KB
+
+B2 worker pickle.loads  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024         16.4          5.1      3.2x          -
+     4,096         63.5          6.9      9.2x          -
+    16,384        235.5         10.5     22.3x          -
+    32,768        626.6         15.9     39.5x          -
+    65,536        946.7         14.4     65.7x          -
+   131,072       2299.8         20.1    114.4x          -
+   200,000       3364.0         41.2     81.7x          -
+
+C1 worker key+encode  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024          9.3          2.0      4.5x    4.16 KB
+     4,096         35.0          2.3     15.4x   16.16 KB
+    16,384        138.2          3.3     42.1x   64.16 KB
+    32,768        381.6          6.1     62.7x  128.16 KB
+    65,536        774.4          9.8     79.1x  256.16 KB
+   131,072       1633.5         16.8     97.3x  512.16 KB
+   200,000       1980.0         21.8     91.0x  781.41 KB
+
+C2 server msgspec dec  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024         16.9          1.2     14.6x          -
+     4,096         72.6          1.5     49.7x          -
+    16,384        275.0          2.5    109.9x          -
+    32,768        734.6          4.6    159.0x          -
+    65,536       1522.8          9.3    164.2x          -
+   131,072       3436.4         15.5    222.0x          -
+   200,000       4184.3         25.8    162.0x          -
+
+Z  worker->server RTT  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024         93.0         74.9      1.2x          -
+     4,096        160.9         88.0      1.8x          -
+    16,384        419.3        127.7      3.3x          -
+    32,768        961.0        152.1      6.3x          -
+    65,536       2390.7        212.7     11.2x          -
+   131,072       5520.1        414.0     13.3x          -
+   200,000       6418.6        460.3     13.9x          -
+
+D  server session hash  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024          1.6          1.2      1.4x          -
+     4,096          6.8          1.5      4.4x          -
+    16,384         27.1          2.7     10.1x          -
+    32,768         74.5          4.0     18.8x          -
+    65,536        173.6          8.6     20.2x          -
+   131,072        326.4         13.3     24.5x          -
+   200,000        621.6         33.2     18.7x          -
+
+E  server LOOKUP hash  (microseconds per op)
+       ctx         list       packed   speedup       wire
+     1,024         23.7          7.6      3.1x          -
+     4,096         93.4         27.6      3.4x          -
+    16,384        369.2        107.5      3.4x          -
+    32,768        777.0        211.6      3.7x          -
+    65,536       1530.2        454.0      3.4x          -
+   131,072       3670.6        852.9      4.3x          -
+   200,000       4731.7       1524.8      3.1x          -
+
+Per-request rollup: 200,000-token prefill, TP=8
+  25 scheduler steps x 1 store op, prefill chunk=8,192, lmcache chunk=256
+  stage                        x         list       packed
+  A  sched build payload      25         16.5          3.9
+  B1 sched pickle.dumps       25         53.8          0.7
+  B2 worker pickle.loads     200        672.8          8.2
+  C1 worker key+encode       200        396.0          4.4
+  C2 server msgspec dec      200        836.9          5.2
+  D  server session hash     200        124.3          6.6
+  E  server LOOKUP hash        1          4.7          1.5
+  TOTAL CPU (ms)                       2105.0         30.5
+  bytes across processes            170.79 MB    171.74 MB
+  -> packing saves 2074.5 ms of CPU per request
+  cross-check: ZMQ round trip 6419 us vs in-process decode 4184 us -- transport is minor next to decoding the token list
