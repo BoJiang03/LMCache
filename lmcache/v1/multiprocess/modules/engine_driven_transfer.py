@@ -22,13 +22,11 @@ from lmcache.v1.multiprocess.custom_types import (
 )
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext, ShmPoolInfo
 from lmcache.v1.multiprocess.engine_module import InstanceLivenessTarget
-from lmcache.v1.multiprocess.protocols.base import HandlerType, RequestType
 from lmcache.v1.multiprocess.protocols.engine import (
     PrepareRetrieveResponse,
     PrepareStoreResponse,
     RegisterEngineDrivenContextResponse,
 )
-from lmcache.v1.multiprocess.request_handler import request_handler
 from lmcache.v1.multiprocess.transfer_context.base import EngineDrivenContextMetadata
 
 # Local
@@ -254,7 +252,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
         non-GPU transfers."""
         return self._ctx.resolve_obj_keys(key, [0])[0]
 
-    @request_handler(RequestType.REGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT)
     def register_kv_cache_engine_driven_context(
         self,
         payload: RegisterEngineDrivenContextPayload,
@@ -356,7 +353,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
             shm_name=shm_name, pool_size=pool_size
         )
 
-    @request_handler(RequestType.UNREGISTER_KV_CACHE_ENGINE_DRIVEN_CONTEXT)
     def unregister_kv_cache(self, instance_id: int) -> None:
         """Unregister a non-GPU KV cache context for the given instance ID.
 
@@ -377,11 +373,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
         self._release_entry(instance_id, entry)
         logger.info("Unregistered non-CUDA context for instance ID %d", instance_id)
 
-    @request_handler(
-        RequestType.PREPARE_STORE,
-        HandlerType.BLOCKING,
-        requires_client_affinity=True,
-    )
     @_lmcache_nvtx_annotate
     def prepare_store(
         self,
@@ -408,11 +399,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
         session.extras["store_start_time"] = time.perf_counter()
         return response
 
-    @request_handler(
-        RequestType.COMMIT_STORE,
-        HandlerType.BLOCKING,
-        requires_client_affinity=True,
-    )
     @_lmcache_nvtx_annotate
     def commit_store(
         self,
@@ -455,11 +441,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
             )
         return result
 
-    @request_handler(
-        RequestType.PREPARE_RETRIEVE,
-        HandlerType.BLOCKING,
-        requires_client_affinity=True,
-    )
     @_lmcache_nvtx_annotate
     def prepare_retrieve(
         self,
@@ -489,11 +470,6 @@ class EngineDrivenTransferModule(InstanceLivenessTarget):
         session.extras["retrieve_start_time"] = time.perf_counter()
         return response
 
-    @request_handler(
-        RequestType.COMMIT_RETRIEVE,
-        HandlerType.BLOCKING,
-        requires_client_affinity=True,
-    )
     @_lmcache_nvtx_annotate
     def commit_retrieve(
         self,

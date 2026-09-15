@@ -25,7 +25,7 @@ Transport schemes
        binds ZMQ over TCP.
    * - ``grpc://host:port`` or ``grpc+unix:///path``
      - gRPC
-     - Supported.
+     - Not supported yet. gRPC support is planned soon.
 
 gRPC schema development
 -----------------------
@@ -54,7 +54,8 @@ port in ``lmcache.mp.port``. The current ZMQ configuration is:
      "lmcache.mp.port": 5555
    }
 
-To select gRPC, use the same configuration shape with a ``grpc://`` host:
+When gRPC becomes available, selecting it will use the same configuration
+shape with a ``grpc://`` host:
 
 .. code-block:: json
 
@@ -62,13 +63,6 @@ To select gRPC, use the same configuration shape with a ``grpc://`` host:
      "lmcache.mp.host": "grpc://localhost",
      "lmcache.mp.port": 5555
    }
-
-Start the server with the matching request transport:
-
-.. code-block:: bash
-
-   lmcache server --transport zmq --host localhost --port 5555
-   lmcache server --transport grpc --host localhost --port 5555
 
 For multiple servers, specify the scheme on every entry in
 ``lmcache.mp.server_urls``, for example

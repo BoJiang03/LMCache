@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """MPCacheServer compositor and unified cache server entry point."""
 
-# Future
-from __future__ import annotations
-
 # Standard
 import argparse
 import shutil
@@ -57,10 +54,10 @@ from lmcache.v1.multiprocess.modules.lmcache_driven_transfer import (
 from lmcache.v1.multiprocess.modules.lookup import LookupModule
 from lmcache.v1.multiprocess.modules.management import ManagementModule
 from lmcache.v1.multiprocess.modules.p2p_controller import P2PController
-from lmcache.v1.multiprocess.transport.base import RequestServer
+from lmcache.v1.multiprocess.mq import MessageQueueServer
 from lmcache.v1.multiprocess.transport.server_factory import create_request_server
 from lmcache.v1.platform.base.cache_context import BaseCacheContext
-from lmcache.v1.platform.ipc_policy import set_isolated_ipc
+from lmcache.v1.platform.isolated_ipc import set_isolated_ipc
 
 logger = init_logger(__name__)
 
@@ -170,7 +167,6 @@ def _build_modules(
         mp_config.p2p_config,
         coordinator_config,
         mp_config.instance_id,
-        mp_config.transport,
     )
 
     # Build the transfer and blend modules first so the ManagementModule can
@@ -299,11 +295,11 @@ def run_cache_server(
     return_engine: bool = False,
     start_prometheus_http_server: bool = True,
     coordinator_config: CoordinatorConfig = DEFAULT_COORDINATOR_CONFIG,
-) -> tuple[RequestServer, MPCacheServer] | None:
-    """Run the LMCache cache server with the selected request transport.
+) -> tuple[MessageQueueServer, MPCacheServer] | None:
+    """Run the LMCache cache server with ZMQ message queue.
 
     Args:
-        mp_config: Configuration for the multiprocess server.
+        mp_config: Configuration for the ZMQ multiprocess server.
         storage_manager_config: Configuration for the storage manager.
         obs_config: Configuration for the observability stack.
         coordinator_config: Coordinator connection used by the P2P controller
@@ -316,7 +312,7 @@ def run_cache_server(
             ``/metrics`` to avoid port conflicts or redundant servers.
 
     Returns:
-        If return_engine is True: tuple of (request server, MPCacheServer).
+        If return_engine is True: tuple of (MessageQueueServer, MPCacheServer).
         If return_engine is False: None (blocks until interrupted).
     """
     # Before any event IPC backend is resolved (KV-cache registration), so
@@ -385,12 +381,10 @@ def run_cache_server(
     InitializeL2ConnectorUsage(event_bus, ctx.storage_manager)
     InitializeL1Usage(event_bus, ctx.storage_manager)
 
-    transport = mp_config.transport
-    server: RequestServer = create_request_server(modules, mp_config)
+    server = create_request_server(modules, mp_config)
 
     logger.info(
-        "LMCache %s cache server is running on %s:%d",
-        transport,
+        "LMCache ZMQ cache server is running on tcp://%s:%d",
         mp_config.host,
         mp_config.port,
     )
@@ -428,7 +422,9 @@ def parse_args():
     Returns:
         Parsed arguments namespace.
     """
-    parser = argparse.ArgumentParser(description="LMCache Cache Server (without HTTP)")
+    parser = argparse.ArgumentParser(
+        description="LMCache ZMQ Cache Server (without HTTP)"
+    )
     add_mp_server_args(parser)
     add_storage_manager_args(parser)
     add_observability_args(parser)

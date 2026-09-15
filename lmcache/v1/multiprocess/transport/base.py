@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Transport-neutral multiprocess request contracts."""
+"""Transport-neutral multiprocess request client contract."""
 
 # Standard
 from typing import Any, Protocol
 
 # First Party
 from lmcache.v1.multiprocess.futures import MessagingFuture
-
-
-class RequestServer(Protocol):
-    """Base interface for multiprocess request servers."""
-
-    def start(self) -> None:
-        """Start accepting request transport traffic."""
-        ...
-
-    def close(self) -> None:
-        """Close the server and release its transport resources."""
-        ...
 
 
 class RequestClient(Protocol):

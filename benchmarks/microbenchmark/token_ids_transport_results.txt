@@ -1,0 +1,100 @@
+Connector token_ids transmission overhead
+  context lengths      : 1,024, 4,096, 16,384, 32,768, 65,536, 131,072, 200,000
+  repeats per point    : 50
+  prefill chunk tokens : 8,192
+  lmcache chunk size   : 256
+  concurrent requests  : 1
+
+A  sched get_token_ids
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024        2.8         3.6     0.8x     8.00 KB     8.00 KB
+     4,096       10.9        14.1     0.8x    32.00 KB    32.00 KB
+    16,384       43.0        27.9     1.5x   128.00 KB    64.00 KB
+    32,768      111.5        35.6     3.1x   256.00 KB    64.00 KB
+    65,536      194.4        27.9     7.0x   512.00 KB    64.00 KB
+   131,072      537.5        37.1    14.5x     1.00 MB    64.00 KB
+   200,000      674.4        34.5    19.6x     1.53 MB    64.00 KB
+
+B1 sched pickle.dumps
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024       10.3        10.0     1.0x     4.55 KB     4.55 KB
+     4,096       34.6        34.2     1.0x    16.96 KB    16.96 KB
+    16,384      170.4        84.2     2.0x    65.78 KB    33.50 KB
+    32,768      350.9        84.2     4.2x   129.42 KB    33.39 KB
+    65,536      719.8        87.0     8.3x   256.65 KB    33.39 KB
+   131,072     1458.6        81.0    18.0x   511.18 KB    33.50 KB
+   200,000     2557.0       101.8    25.1x   779.48 KB    33.48 KB
+
+B2 worker pickle.loads
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024       15.8        15.6     1.0x           -           -
+     4,096       61.6        61.8     1.0x           -           -
+    16,384      235.5       121.4     1.9x           -           -
+    32,768      556.2       147.6     3.8x           -           -
+    65,536     1140.7       145.2     7.9x           -           -
+   131,072     2559.4       122.7    20.9x           -           -
+   200,000     4279.0       121.0    35.4x           -           -
+
+C1 worker key+encode
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024        9.5         9.2     1.0x     4.17 KB     4.17 KB
+     4,096       34.9        34.5     1.0x    16.19 KB    16.19 KB
+    16,384      136.2        68.4     2.0x    63.97 KB    31.97 KB
+    32,768      354.4        89.6     4.0x   127.56 KB    31.86 KB
+    65,536      726.2        82.2     8.8x   254.68 KB    31.86 KB
+   131,072     1252.9        82.0    15.3x   508.98 KB    31.97 KB
+   200,000     2308.9        84.6    27.3x   777.04 KB    31.95 KB
+
+C2 server msgspec dec
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024       17.6        17.5     1.0x           -           -
+     4,096       70.7        71.2     1.0x           -           -
+    16,384      282.8       162.8     1.7x           -           -
+    32,768      704.9       173.5     4.1x           -           -
+    65,536     1224.1       140.1     8.7x           -           -
+   131,072     3419.4       167.7    20.4x           -           -
+   200,000     5234.3       171.8    30.5x           -           -
+
+Z  worker->server RTT
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024       87.8        88.2     1.0x           -           -
+     4,096      156.9       155.6     1.0x           -           -
+    16,384      479.6       238.1     2.0x           -           -
+    32,768      946.6       274.7     3.4x           -           -
+    65,536     1591.7       272.0     5.9x           -           -
+   131,072     3298.7       282.7    11.7x           -           -
+   200,000     4682.6       247.2    18.9x           -           -
+
+D  server session hash
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024        2.6         2.5     1.0x           -           -
+     4,096        7.8         7.8     1.0x           -           -
+    16,384       28.6        14.9     1.9x           -           -
+    32,768       74.8        18.9     3.9x           -           -
+    65,536      147.0        14.9     9.9x           -           -
+   131,072      398.3        17.8    22.3x           -           -
+   200,000      658.0        19.1    34.5x           -           -
+
+E  server LOOKUP hash
+       ctx  full (us)  delta (us)    ratio   full wire  delta wire
+     1,024       23.0        23.4     1.0x           -           -
+     4,096       90.4        90.0     1.0x           -           -
+    16,384      363.3       183.3     2.0x           -           -
+    32,768      891.9       183.9     4.9x           -           -
+    65,536     1521.9       184.0     8.3x           -           -
+   131,072     3630.3       219.6    16.5x           -           -
+   200,000     5716.3       217.6    26.3x           -           -
+
+Per-request rollup: 200,000-token prefill, TP=8
+  25 scheduler steps x 1 store op, prefill chunk=8,192, lmcache chunk=256
+  stage                        x  full (ms)  delta (ms)  saved (ms)
+  A  sched get_token_ids      25       16.9         0.9        16.0
+  B1 sched pickle.dumps       25       63.9         2.5        61.4
+  B2 worker pickle.loads     200      855.8        24.2       831.6
+  C1 worker key+encode       200      461.8        16.9       444.9
+  C2 server msgspec dec      200     1046.9        34.4      1012.5
+  D  server session hash     200      131.6         3.8       127.8
+  E  server LOOKUP hash        1        5.7         0.2         5.5
+  TOTAL CPU                          2582.5        82.9      2499.6
+  bytes crossing process boundaries: 170.80 MB -> 7.06 MB
+  cross-check: ZMQ round trip 4683 us vs in-process decode 5234 us -- transport is minor next to decoding the token list
