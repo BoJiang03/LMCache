@@ -1,0 +1,48 @@
+{
+  "label": "packed",
+  "spec": {
+    "label": "packed",
+    "checkout": "/raid/bo/delta_token_ids_pr",
+    "model": "/raid/kuntai/hf_cache/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots/553034d7dd9e06c2eeaee68cf85a17d6d4754cf0",
+    "tensor_parallel_size": 4,
+    "input_len": 200000,
+    "output_len": 1,
+    "num_prompts": 16,
+    "concurrency": 4,
+    "lmcache_port": 5599,
+    "vllm_port": 8199,
+    "l1_size_gb": 200,
+    "max_model_len": 210000,
+    "gpu_memory_utilization": 0.85,
+    "kv_cache_dtype": "fp8_ds_mla",
+    "vllm_extra_args": [
+      "--enforce-eager"
+    ]
+  },
+  "cold": {
+    "ttft_ms": {
+      "mean": 40021.77208289504,
+      "p50": 43628.92290670425,
+      "p90": 45231.56274482608,
+      "p99": 45288.694471120834,
+      "max": 45288.694471120834
+    },
+    "total_s": 176.5760308690369,
+    "completed": 16,
+    "failed": 0
+  },
+  "warm": {
+    "ttft_ms": {
+      "mean": 38925.53153075278,
+      "p50": 42761.26365177333,
+      "p90": 43368.44347976148,
+      "p99": 43459.40389484167,
+      "max": 43459.40389484167
+    },
+    "total_s": 171.9557114727795,
+    "completed": 16,
+    "failed": 0
+  },
+  "lmcache_server_cpu_s": 10.629999999999995,
+  "vllm_cpu_s": 1756.75
+}

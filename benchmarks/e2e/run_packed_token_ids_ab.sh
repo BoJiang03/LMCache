@@ -19,6 +19,25 @@
 # also multiplies by TP rank, so TP=1 understates it. The default 30k sits
 # well past that crossover and inside Qwen2.5-7B's 32k position limit.
 #
+# Two model properties decide whether the saving is visible at all:
+#
+#   native context   the cost removed grows with the square of prompt length
+#                    (longer prompts, and more scheduler steps over them), so
+#                    a 32k model caps the experiment an order of magnitude
+#                    below where the microbenchmark measures.
+#   KV bytes/token   the connector's CPU competes with the KV transfer it is
+#                    bookkeeping for. A fat-KV model buries it; an MLA or
+#                    sparse-attention model leaves it exposed.
+#
+# DeepSeek-V4-Flash is the local checkout that is good on both counts (1M
+# positions, MLA with per-layer compression), which is why MODEL is an env
+# var rather than baked into the runner:
+#
+#   MODEL=/raid/kuntai/hf_cache/hub/models--deepseek-ai--DeepSeek-V4-Flash/\
+#         snapshots/553034d7dd9e06c2eeaee68cf85a17d6d4754cf0 \
+#   MAX_MODEL_LEN=210000 KV_CACHE_DTYPE=fp8_ds_mla CUDA_VISIBLE_DEVICES=2,3,4,5 \
+#     benchmarks/e2e/run_packed_token_ids_ab.sh 200000 32 8 4
+#
 # Usage: benchmarks/e2e/run_packed_token_ids_ab.sh [input_len] [num_prompts] [concurrency] [tp]
 
 set -euo pipefail
@@ -40,6 +59,16 @@ L1_SIZE_GB="${L1_SIZE_GB:-120}"
 # the compiled kernel and takes the engine core down mid-run. Qwen2.5-7B is
 # a 32k model; 128k needs YaRN rope scaling turned on explicitly.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
+MODEL="${MODEL:-}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
+# DeepSeek-V4 needs fp8_ds_mla; "auto" trips an assert inside every TP worker
+# at load time, which surfaces as WorkerProc failed to start.
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-auto}"
+# Extra vLLM flags, space separated, applied identically to both arms.
+VLLM_EXTRA="${VLLM_EXTRA:-}"
+# Repeats of the warm pass, pooled. The cache is already populated by then,
+# so each repeat costs one warm pass of wall-clock and nothing else.
+WARM_PASSES="${WARM_PASSES:-1}"
 
 INPUT_LEN="${1:-30000}"
 NUM_PROMPTS="${2:-16}"
@@ -51,14 +80,30 @@ TP="${4:-4}"
 RUNNER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/packed_token_ids_e2e.py"
 COMMON=(--input-len "$INPUT_LEN" --num-prompts "$NUM_PROMPTS"
         --concurrency "$CONCURRENCY" --tp "$TP" --out-dir "$OUT_DIR"
-        --l1-size-gb "$L1_SIZE_GB" --max-model-len "$MAX_MODEL_LEN")
+        --l1-size-gb "$L1_SIZE_GB" --max-model-len "$MAX_MODEL_LEN"
+        --gpu-memory-utilization "$GPU_MEM_UTIL"
+        --kv-cache-dtype "$KV_CACHE_DTYPE"
+        --warm-passes "$WARM_PASSES")
+# One --vllm-extra= per flag: the runner's option needs its value attached.
+if [[ -n "$VLLM_EXTRA" ]]; then
+  for flag in $VLLM_EXTRA; do
+    COMMON+=("--vllm-extra=$flag")
+  done
+fi
+# Empty means "whatever the runner defaults to"; an empty --model would be
+# passed through as a literal empty path.
+if [[ -n "$MODEL" ]]; then
+  COMMON+=(--model "$MODEL")
+fi
 
 run_one() {
   local label="$1" checkout="$2"
   echo "=== $label ==="
   # Serially, on distinct ports, so a stale server from a crashed run cannot
   # be mistaken for this one's.
-  "$PY" "$RUNNER" run \
+  # -u: progress goes to a file, so block buffering would hide every print
+  # until the run ends -- exactly when a stuck run needs to be diagnosed.
+  "$PY" -u "$RUNNER" run \
     --label "$label" --checkout "$checkout" \
     --lmcache-port 5599 --vllm-port 8199 "${COMMON[@]}"
 }
@@ -66,4 +111,4 @@ run_one() {
 run_one baseline "$BASELINE"
 run_one packed "$BRANCH"
 
-"$PY" "$RUNNER" report "$OUT_DIR/baseline.json" "$OUT_DIR/packed.json"
+"$PY" -u "$RUNNER" report "$OUT_DIR/baseline.json" "$OUT_DIR/packed.json"

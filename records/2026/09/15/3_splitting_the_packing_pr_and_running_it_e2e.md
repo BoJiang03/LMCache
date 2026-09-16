@@ -161,24 +161,70 @@ packing-only benchmark is a separate file rather than a column selection.
 
 **No latency benefit at this scale, and that should not be dressed up.** Warm
 p50 is 156 vs 157 ms. The cold p50 and warm p99 deltas are single-run n=16 and
-are not claimed. The one clean signal is LMCache server CPU, **−0.64 s
-(−25%)**, which matches the microbenchmark's prediction to within a factor of
-two (~340 ms predicted from store ops alone; retrieves account for the rest).
+are not claimed. The one apparently clean signal is LMCache server CPU,
+**−0.64 s (−25%)**, which matches the microbenchmark's prediction to within a
+factor of two (~340 ms predicted from store ops alone; retrieves account for
+the rest). **The next run retracts this** — see below.
 
 The reason is scale, not the change: the connector's CPU is simply not on the
 critical path at 30k / TP=4 / concurrency 4. The microbenchmark's 2105 ms is a
 200k, TP=8 figure, and both factors are multiplicative.
 
-A larger run (31k x 64, concurrency 16, TP=4) was in flight when this record
-was written; 128k prompts would need YaRN rope scaling enabled explicitly on
-this model, which was left alone as an extra variable.
+### End to end (31k x 64, concurrency 16, TP=4) — second scale
+
+Four times the requests and four times the concurrency, to see whether the
+first run's two interesting deltas were signal.
+
+| | cold TTFT p50 | warm TTFT p50 | warm p99 | lmcache CPU | vLLM CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | 4434 ms | 630 ms | 745 ms | 19.65 s | 140.59 s |
+| packed | 4467 ms | 605 ms | 821 ms | 19.13 s | 141.31 s |
+
+64/64 completed in every pass, both arms. Raw output:
+`benchmarks/e2e/packed_token_ids_results/31k_x64_c16_tp4_{baseline,packed}.json`.
+
+**This run retracts the one claim the 30k run made.** At 4x the requests the
+LMCache server CPU saving is −0.52 s, against −0.64 s at 1x. It did not grow.
+
+Working the prediction out properly, which the first run's write-up did not
+do: a 31k prefill is 4 scheduler steps of 8192, so per request the packing
+saves, on the *server* process only,
+`16 x (C2 734.6−4.6 + D 74.5−4.0) + 1 x (E 777.0−211.6)` ≈ **13.4 ms**. Over
+64 cold + 64 warm requests that is ~1.7 s of 19.6 s, i.e. ~9%. The 30k run's
+32 requests predict ~0.43 s. So run 1 measured 0.64 s against a 0.43 s
+prediction and run 2 measured 0.52 s against a 1.7 s prediction — one over,
+one under by 3x, and the measured values flat across a 4x load change. That
+is the signature of a noise floor around ±0.5 s, not of an effect.
+
+The honest reading of the two runs together is that **packing produces no e2e
+effect measurable at 31k, on any of the six columns**, and that the earlier
+−25% was me reading a ratio (0.64 of 2.52 s) that only looked large because
+the denominator was small.
+
+The direction of the TTFT numbers is likewise nothing: cold p50 +0.7%, warm
+p50 −4%, warm p99 +10%, all n=64 single-run, and they do not agree on a sign.
+
+This is not a negative result about the change, it is a statement about the
+ceiling of this rig. Qwen2.5-7B-Instruct has `max_position_embeddings=32768`,
+so 31k is the longest prompt it accepts without enabling YaRN rope scaling,
+and the microbenchmark's 2105 ms is a 200k, TP=8 figure. Prompt length and TP
+width are both multiplicative, so this rig is roughly 40x x 2x = 80x short of
+the regime where the CPU saving is visible above noise. Reaching it needs a
+model with a long native context, not a bigger `num_prompts`; that is the one
+thing scaling this harness cannot fix.
+
+So the case for PR1 rests on the microbenchmark and on the argument that the
+cost it removes is quadratic in context length — not on an e2e measurement,
+and the PR description should say exactly that.
 
 ## Where things are
 
 - `delta_token_ids_pr` @ `e4986c82` — PR1, packing only, tests green.
 - `delta_token_ids` @ `cf801298` — working branch; holds both benchmark suites
   (`token_ids_transport_*` for the combined change, `packed_token_ids_*` for
-  PR1). Benchmarks deliberately live here and not on the PR branch.
+  PR1) plus the e2e JSON under
+  `benchmarks/e2e/packed_token_ids_results/`. Benchmarks deliberately live
+  here and not on the PR branch.
 - Still open: PR2 (delta, stacked, must fix the qringbuffer offset and
   re-argue RETRIEVE); a separate small PR for the pre-existing
   `resolve_prefetched_obj_keys` chunk off-by-one, which this work only

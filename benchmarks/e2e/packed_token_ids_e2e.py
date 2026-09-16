@@ -86,6 +86,9 @@ class RunSpec:
     l1_size_gb: int
     max_model_len: int
     gpu_memory_utilization: float
+    kv_cache_dtype: str
+    vllm_extra_args: list[str]
+    warm_passes: int
 
 
 @dataclass
@@ -96,6 +99,8 @@ class PassStats:
     total_s: float = 0.0
     completed: int = 0
     failed: int = 0
+    samples: list[float] = field(default_factory=list)
+    """Raw per-request TTFTs, kept so repeated passes can be pooled."""
 
 
 @dataclass
@@ -108,11 +113,47 @@ class RunResult:
     warm: PassStats
     lmcache_server_cpu_s: float
     vllm_cpu_s: float
+    main_loop_cpu_s: float
+    """CPU seconds burned by the server's busiest single thread (see
+    :func:`busiest_thread_delta`); over the measured wall time it gives that
+    thread's utilization, i.e. how close the run came to the serialization
+    limit this change relieves."""
+    measured_wall_s: float
+    """Wall time the CPU counters span, for turning them into utilizations."""
 
 
 ####
 # Prompt generation
 ####
+
+
+def model_vocab_size(model: str) -> int:
+    """Read a model's vocabulary size from its ``config.json``.
+
+    Prompts are sent as raw token ids, so an id past the embedding table is
+    not a bad prompt but an out-of-bounds gather: vLLM does not validate it
+    and the failure surfaces as a device-side assert that takes the engine
+    core down. The bound therefore has to come from the model being served,
+    not from a constant.
+
+    Args:
+        model: Path to a local HuggingFace checkout.
+
+    Returns:
+        The exclusive upper bound on token ids.
+
+    Raises:
+        ValueError: If the checkout has no readable ``vocab_size``.
+    """
+    config_path = Path(model) / "config.json"
+    try:
+        config = json.loads(config_path.read_text())
+    except OSError as exc:
+        raise ValueError(f"cannot read {config_path}: {exc}") from exc
+    vocab_size = config.get("vocab_size", 0)
+    if not isinstance(vocab_size, int) or vocab_size <= 1:
+        raise ValueError(f"{config_path} has no usable vocab_size: {vocab_size!r}")
+    return vocab_size
 
 
 def make_prompts(
@@ -166,6 +207,41 @@ def died(process: subprocess.Popen[bytes], name: str, log: Path) -> RuntimeError
     return RuntimeError(
         f"{name} exited with code {process.returncode} during startup\n{tail}"
     )
+
+
+FATAL_STARTUP_MARKERS = (
+    "Engine core initialization failed",
+    "EngineCore failed to start",
+    "WorkerProc failed to start",
+)
+"""Log lines that mean a server will never become healthy.
+
+``died()`` only catches a server whose *own* process exits. vLLM's API server
+outlives its engine core: when the core dies during startup the parent keeps
+running and keeps answering nothing, so a liveness check alone waits out the
+full startup timeout. These markers are the engine's own report that it gave
+up.
+"""
+
+
+def startup_failed(log: Path) -> str:
+    """Return the fatal line from ``log``, or an empty string if there is none.
+
+    Args:
+        log: The server's log file.
+
+    Returns:
+        The first matching fatal line, stripped; empty when the log shows no
+        fatal marker or cannot be read.
+    """
+    try:
+        text = log.read_text(errors="replace")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if any(marker in line for marker in FATAL_STARTUP_MARKERS):
+            return line.strip()
+    return ""
 
 
 def wait_for_port(
@@ -226,6 +302,14 @@ async def wait_for_health(
                 pass
             if process.poll() is not None:
                 raise died(process, name, log)
+            fatal = startup_failed(log)
+            if fatal:
+                raise RuntimeError(
+                    f"{name} failed to start (process still alive): {fatal}\n"
+                    + "".join(
+                        log.read_text(errors="replace").splitlines(keepends=True)[-20:]
+                    )
+                )
             await asyncio.sleep(2.0)
     raise TimeoutError(f"{url} never became healthy")
 
@@ -301,7 +385,10 @@ def launch_vllm(spec: RunSpec, log_dir: Path) -> subprocess.Popen[bytes]:
             str(spec.max_model_len),
             "--gpu-memory-utilization",
             str(spec.gpu_memory_utilization),
+            "--kv-cache-dtype",
+            spec.kv_cache_dtype,
             "--disable-uvicorn-access-log",
+            *spec.vllm_extra_args,
             "--kv-transfer-config",
             kv_config,
         ],
@@ -311,6 +398,64 @@ def launch_vllm(spec: RunSpec, log_dir: Path) -> subprocess.Popen[bytes]:
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+
+
+def thread_cpu_seconds(pid: int) -> dict[str, float]:
+    """Return per-thread CPU seconds for ``pid``, keyed by thread id.
+
+    Threads are identified by id, not by name: CPython 3.10 does not push
+    ``threading.Thread(name=...)`` down to the OS, so every entry under
+    ``/proc/<pid>/task/*/comm`` reads ``python`` and a name-based lookup
+    silently matches nothing.
+
+    Args:
+        pid: The process to sample.
+
+    Returns:
+        ``{tid: user + system CPU seconds}``; empty if the process is gone.
+    """
+    try:
+        task_dir = Path(f"/proc/{pid}/task")
+        tids = [entry.name for entry in task_dir.iterdir()]
+    except OSError:
+        return {}
+    ticks_per_second = os.sysconf("SC_CLK_TCK")
+    out: dict[str, float] = {}
+    for tid in tids:
+        try:
+            # utime and stime are fields 14 and 15 of /proc/.../stat, counted
+            # from after comm -- which can itself contain spaces, so the
+            # split starts past its closing parenthesis.
+            stat = (task_dir / tid / "stat").read_text()
+            fields = stat[stat.rindex(") ") + 2 :].split()
+            out[tid] = (int(fields[11]) + int(fields[12])) / ticks_per_second
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
+
+
+def busiest_thread_delta(before: dict[str, float], after: dict[str, float]) -> float:
+    """Return the largest CPU-second increase of any single thread.
+
+    The LMCache server decodes every request's msgpack payload on one thread:
+    ``BlockingRequestHandler.__call__`` calls ``unwrap_request_payloads``
+    before handing work to its executor. That thread is therefore a
+    serialization point, and whether a run can show this change in latency
+    rather than only in total CPU depends on how close it came to using a
+    full core. Taking the maximum over threads finds it without needing to
+    know which one it is.
+
+    Args:
+        before: Sample taken before the measured window.
+        after: Sample taken after it.
+
+    Returns:
+        The busiest thread's CPU seconds over the window, 0.0 if unknown.
+    """
+    if not after:
+        return 0.0
+    deltas = (used - before.get(tid, 0.0) for tid, used in after.items())
+    return max(deltas, default=0.0)
 
 
 def tree_cpu_seconds(pid: int) -> float:
@@ -448,6 +593,15 @@ async def run_pass(
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=3600),
         connector=aiohttp.TCPConnector(limit=concurrency * 2),
+        # An SSE chunk is read as one line, and aiohttp caps a line at 512 KB
+        # by default. Over that it raises LineTooLong, whose ``code`` is 400 --
+        # so the failure reads like an HTTP 400 from the server even though
+        # the server logged nothing and sent a perfectly good response. Raise
+        # the ceiling rather than lose requests, which would silently reduce
+        # the load this benchmark is trying to apply.
+        read_bufsize=2**22,
+        max_line_size=2**24,
+        max_field_size=2**24,
     ) as session:
 
         async def guarded(prompt: list[int]) -> None:
@@ -469,6 +623,7 @@ async def run_pass(
         total_s=elapsed,
         completed=len(ttfts),
         failed=failures,
+        samples=ttfts,
     )
 
 
@@ -528,19 +683,44 @@ async def measure(spec: RunSpec, log_dir: Path) -> RunResult:
         print(f"[{spec.label}] serving; generating prompts")
 
         prompts = make_prompts(
-            spec.num_prompts, spec.input_len, vocab_size=150_000, seed=20260915
+            spec.num_prompts,
+            spec.input_len,
+            vocab_size=model_vocab_size(spec.model),
+            seed=20260915,
         )
         url = f"http://127.0.0.1:{spec.vllm_port}/v1/completions"
 
         lmcache_cpu_before = tree_cpu_seconds(lmcache.pid)
         vllm_cpu_before = tree_cpu_seconds(vllm.pid)
+        threads_before = thread_cpu_seconds(lmcache.pid)
+        measured_start = time.perf_counter()
 
         print(f"[{spec.label}] cold pass ({spec.num_prompts} prompts)")
         cold = await run_pass(url, prompts, spec.output_len, spec.concurrency)
         # Give asynchronous stores time to land before asking for them back.
         await asyncio.sleep(30.0)
-        print(f"[{spec.label}] warm pass (same prompts, expect LMCache hits)")
-        warm = await run_pass(url, prompts, spec.output_len, spec.concurrency)
+        # Repeat the warm pass to raise n without enlarging the prompt set.
+        # The effect being looked for here is small -- one LOOKUP and one
+        # RETRIEVE per request, tens of milliseconds against a warm TTFT of
+        # a few hundred -- so a handful of samples cannot resolve it, while
+        # more prompts would need proportionally more L1 and risk evicting
+        # the very entries the warm pass is meant to hit. The cache contents
+        # are identical on every repeat, so the passes are samples of one
+        # distribution and are pooled.
+        warm_ttfts: list[float] = []
+        warm = PassStats()
+        for pass_index in range(spec.warm_passes):
+            print(
+                f"[{spec.label}] warm pass {pass_index + 1}/{spec.warm_passes} "
+                "(same prompts, expect LMCache hits)"
+            )
+            one = await run_pass(url, prompts, spec.output_len, spec.concurrency)
+            warm_ttfts.extend(one.samples)
+            warm.total_s += one.total_s
+            warm.completed += one.completed
+            warm.failed += one.failed
+        warm.ttft_ms = summarize(warm_ttfts)
+        warm.samples = warm_ttfts
 
         return RunResult(
             label=spec.label,
@@ -549,6 +729,10 @@ async def measure(spec: RunSpec, log_dir: Path) -> RunResult:
             warm=warm,
             lmcache_server_cpu_s=tree_cpu_seconds(lmcache.pid) - lmcache_cpu_before,
             vllm_cpu_s=tree_cpu_seconds(vllm.pid) - vllm_cpu_before,
+            main_loop_cpu_s=busiest_thread_delta(
+                threads_before, thread_cpu_seconds(lmcache.pid)
+            ),
+            measured_wall_s=time.perf_counter() - measured_start,
         )
     finally:
         if vllm is not None:
@@ -572,6 +756,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         l1_size_gb=args.l1_size_gb,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        kv_cache_dtype=args.kv_cache_dtype,
+        vllm_extra_args=list(args.vllm_extra),
+        warm_passes=args.warm_passes,
     )
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -594,23 +781,45 @@ def cmd_report(args: argparse.Namespace) -> None:
         f"concurrency {spec['concurrency']}, TP={spec['tensor_parallel_size']}"
     )
     header = (
-        f"  {'config':<16} {'cold TTFT p50':>13} {'warm TTFT p50':>13} "
-        f"{'warm p99':>10} {'warm wall':>10} {'lmcache CPU':>12} {'vLLM CPU':>10}"
+        f"  {'config':<10} {'cold p50':>10} {'warm p50':>10} {'warm p99':>10} "
+        f"{'warm req/s':>11} {'lmcache CPU':>12} {'dispatch':>9} {'vLLM CPU':>10}"
     )
     print(header)
     for result in results:
         cold = result["cold"]["ttft_ms"]
         warm = result["warm"]["ttft_ms"]
+        warm_s = result["warm"]["total_s"]
+        rate = result["warm"]["completed"] / warm_s if warm_s else 0.0
         print(
-            f"  {result['label']:<16} {cold.get('p50', 0):>12.0f}ms "
-            f"{warm.get('p50', 0):>12.0f}ms {warm.get('p99', 0):>9.0f}ms "
-            f"{result['warm']['total_s']:>9.1f}s "
+            f"  {result['label']:<10} {cold.get('p50', 0):>9.0f}ms "
+            f"{warm.get('p50', 0):>9.0f}ms {warm.get('p99', 0):>9.0f}ms "
+            f"{rate:>11.2f} "
             f"{result['lmcache_server_cpu_s']:>11.1f}s "
+            f"{result.get('main_loop_cpu_s', 0.0):>8.1f}s "
             f"{result['vllm_cpu_s']:>9.1f}s"
         )
     failures = sum(r["cold"]["failed"] + r["warm"]["failed"] for r in results)
     if failures:
         print(f"  note: {failures} request(s) failed; see the server logs")
+
+    # Without this the table cannot be interpreted: the same CPU saving is
+    # invisible below saturation and becomes throughput above it.
+    print("\n  busiest LMCache server thread (the payload-decode loop):")
+    for result in results:
+        wall = result.get("measured_wall_s", 0.0)
+        used = result.get("main_loop_cpu_s", 0.0)
+        if wall <= 0:
+            print(f"    {result['label']:<10} unmeasured")
+            continue
+        share = used / wall * 100
+        verdict = (
+            "SATURATED -- this run can show the change in latency/throughput"
+            if share >= 80
+            else "near saturation"
+            if share >= 50
+            else "far below saturation -- expect CPU savings only, not latency"
+        )
+        print(f"    {result['label']:<10} {share:5.1f}% of one core   {verdict}")
 
 
 def main() -> None:
@@ -624,7 +833,13 @@ def main() -> None:
     run.add_argument("--model", default=DEFAULT_MODEL)
     run.add_argument("--tp", type=int, default=4)
     run.add_argument("--input-len", type=int, default=120_000)
-    run.add_argument("--output-len", type=int, default=16)
+    # One token is all TTFT needs, and generating more measures nothing extra:
+    # a store op is emitted only once a whole LMCache chunk of new tokens has
+    # accumulated (``GetStoreMetadata`` returns None below one chunk), and
+    # decode adds one token per step, so a short generation emits no store ops
+    # at all. Decode length is therefore pure wall-clock -- expensive here,
+    # since --enforce-eager is what a DeepSeek-V4 run needs to start at all.
+    run.add_argument("--output-len", type=int, default=1)
     run.add_argument("--num-prompts", type=int, default=8)
     run.add_argument("--concurrency", type=int, default=4)
     run.add_argument("--lmcache-port", type=int, default=5599)
@@ -632,6 +847,20 @@ def main() -> None:
     run.add_argument("--l1-size-gb", type=int, default=400)
     run.add_argument("--max-model-len", type=int, default=131_072)
     run.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    # Some models refuse "auto": DeepSeek-V4's fp8_ds_mla paged layout asserts
+    # unless the KV cache dtype is fp8, and the assert fires in each TP worker
+    # during load, so the failure looks like a worker crash rather than a
+    # configuration error.
+    run.add_argument("--kv-cache-dtype", default="auto")
+    # Model-specific vLLM flags without growing a knob per model. Both arms
+    # get the same list, so it cannot bias the A/B. Repeat the option once per
+    # flag and attach the value with "=", since a bare
+    # "--vllm-extra --enforce-eager" reads as a missing value to argparse:
+    #   --vllm-extra=--enforce-eager --vllm-extra=--block-size=64
+    run.add_argument("--vllm-extra", action="append", default=[])
+    # Pooled repeats of the warm pass. The cache is already populated, so a
+    # repeat costs one warm pass of wall-clock and nothing else.
+    run.add_argument("--warm-passes", type=int, default=1)
     run.add_argument("--out-dir", default="benchmarks/e2e/results")
     run.set_defaults(func=cmd_run)
 

@@ -1,0 +1,44 @@
+{
+  "label": "baseline",
+  "spec": {
+    "label": "baseline",
+    "checkout": "/raid/bo/delta_baseline",
+    "model": "/raid/jiayi-data/hf/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28",
+    "tensor_parallel_size": 4,
+    "input_len": 31000,
+    "output_len": 16,
+    "num_prompts": 64,
+    "concurrency": 16,
+    "lmcache_port": 5599,
+    "vllm_port": 8199,
+    "l1_size_gb": 200,
+    "max_model_len": 32768,
+    "gpu_memory_utilization": 0.85
+  },
+  "cold": {
+    "ttft_ms": {
+      "mean": 4217.872309323866,
+      "p50": 4433.549892157316,
+      "p90": 4646.411657333374,
+      "p99": 6159.333815798163,
+      "max": 6159.333815798163
+    },
+    "total_s": 23.8617547955364,
+    "completed": 64,
+    "failed": 0
+  },
+  "warm": {
+    "ttft_ms": {
+      "mean": 593.9992346102372,
+      "p50": 629.8487447202206,
+      "p90": 730.6677214801311,
+      "p99": 744.8678612709045,
+      "max": 744.8678612709045
+    },
+    "total_s": 2.817360281944275,
+    "completed": 64,
+    "failed": 0
+  },
+  "lmcache_server_cpu_s": 19.65,
+  "vllm_cpu_s": 140.58999999999997
+}
