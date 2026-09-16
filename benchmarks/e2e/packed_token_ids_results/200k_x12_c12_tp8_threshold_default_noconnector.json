@@ -1,0 +1,81 @@
+{
+  "label": "nolmcache_default",
+  "spec": {
+    "label": "nolmcache_default",
+    "checkout": "/raid/bo/delta_baseline",
+    "model": "/raid/kuntai/hf_cache/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots/553034d7dd9e06c2eeaee68cf85a17d6d4754cf0",
+    "tensor_parallel_size": 8,
+    "input_len": 200000,
+    "output_len": 1,
+    "num_prompts": 12,
+    "concurrency": 12,
+    "lmcache_port": 5599,
+    "vllm_port": 8199,
+    "l1_size_gb": 450,
+    "max_model_len": 210000,
+    "gpu_memory_utilization": 0.85,
+    "kv_cache_dtype": "fp8_ds_mla",
+    "vllm_extra_args": [
+      "--enforce-eager",
+      "--max-num-seqs=64"
+    ],
+    "warm_passes": 1,
+    "connector": "none"
+  },
+  "cold": {
+    "ttft_ms": {
+      "mean": 57172.19472164288,
+      "p50": 56971.47789597511,
+      "p90": 95628.6046449095,
+      "p99": 104215.6561166048,
+      "max": 104215.6561166048
+    },
+    "total_s": 104.24420676007867,
+    "completed": 12,
+    "failed": 0,
+    "samples": [
+      10344.819985330105,
+      18699.332144111395,
+      27384.818363934755,
+      35681.53917230666,
+      44346.66118584573,
+      52735.902627930045,
+      61207.05316402018,
+      70040.16166739166,
+      78576.30688883364,
+      87205.4806984961,
+      95628.6046449095,
+      104215.6561166048
+    ]
+  },
+  "warm": {
+    "ttft_ms": {
+      "mean": 56168.57240116224,
+      "p50": 56053.972573019564,
+      "p90": 94560.61694584787,
+      "p99": 103033.05750526488,
+      "max": 103033.05750526488
+    },
+    "total_s": 103.09913256950676,
+    "completed": 12,
+    "failed": 0,
+    "samples": [
+      9397.661462426186,
+      17745.732005685568,
+      26375.954430550337,
+      34760.320611298084,
+      43428.93569730222,
+      51850.03973543644,
+      60257.90541060269,
+      68929.05169539154,
+      77494.5138990879,
+      86189.07941505313,
+      94560.61694584787,
+      103033.05750526488
+    ]
+  },
+  "lmcache_server_cpu_s": 0.0,
+  "vllm_cpu_s": 1873.2800000000002,
+  "main_loop_cpu_s": 0.0,
+  "measured_wall_s": 237.44103970192373
+}

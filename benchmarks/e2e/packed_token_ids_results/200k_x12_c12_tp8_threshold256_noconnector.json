@@ -1,0 +1,82 @@
+{
+  "label": "nolmcache_t256",
+  "spec": {
+    "label": "nolmcache_t256",
+    "checkout": "/raid/bo/delta_baseline",
+    "model": "/raid/kuntai/hf_cache/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots/553034d7dd9e06c2eeaee68cf85a17d6d4754cf0",
+    "tensor_parallel_size": 8,
+    "input_len": 200000,
+    "output_len": 1,
+    "num_prompts": 12,
+    "concurrency": 12,
+    "lmcache_port": 5599,
+    "vllm_port": 8199,
+    "l1_size_gb": 450,
+    "max_model_len": 210000,
+    "gpu_memory_utilization": 0.85,
+    "kv_cache_dtype": "fp8_ds_mla",
+    "vllm_extra_args": [
+      "--enforce-eager",
+      "--max-num-seqs=64",
+      "--long-prefill-token-threshold=256"
+    ],
+    "warm_passes": 1,
+    "connector": "none"
+  },
+  "cold": {
+    "ttft_ms": {
+      "mean": 134058.37385961786,
+      "p50": 134192.01329909265,
+      "p90": 134238.58710564673,
+      "p99": 134266.7350936681,
+      "max": 134266.7350936681
+    },
+    "total_s": 134.38403240591288,
+    "completed": 12,
+    "failed": 0,
+    "samples": [
+      132578.97952757776,
+      134109.07801426947,
+      134131.72234408557,
+      134144.60975304246,
+      134172.20220342278,
+      134185.579739511,
+      134198.4468586743,
+      134212.10125647485,
+      134225.46259127557,
+      134236.9818277657,
+      134238.58710564673,
+      134266.7350936681
+    ]
+  },
+  "warm": {
+    "ttft_ms": {
+      "mean": 1856.6504462311666,
+      "p50": 1879.585032351315,
+      "p90": 2551.1806420981884,
+      "p99": 2611.251264810562,
+      "max": 2611.251264810562
+    },
+    "total_s": 2.6778023187071085,
+    "completed": 12,
+    "failed": 0,
+    "samples": [
+      945.6825349479914,
+      1152.2808261215687,
+      1343.9952544867992,
+      1492.4946390092373,
+      1817.727392539382,
+      1839.1299787908792,
+      1920.0400859117508,
+      2019.693860784173,
+      2133.068934082985,
+      2453.259941190481,
+      2551.1806420981884,
+      2611.251264810562
+    ]
+  },
+  "lmcache_server_cpu_s": 0.0,
+  "vllm_cpu_s": 1221.96,
+  "main_loop_cpu_s": 0.0,
+  "measured_wall_s": 167.1876710895449
+}

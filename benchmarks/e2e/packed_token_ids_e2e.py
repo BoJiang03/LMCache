@@ -41,6 +41,7 @@ Usage::
 
 # Standard
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 import argparse
@@ -69,6 +70,18 @@ STARTUP_TIMEOUT_S = 1800.0
 """vLLM with TP=8 loads weights and captures graphs before it serves."""
 
 
+class Connector(str, Enum):
+    """Which KV connector vLLM is started with.
+
+    ``NONE`` is the control arm: vLLM runs with no ``--kv-transfer-config`` and
+    no LMCache server, which prices vLLM's own cost of a configuration
+    separately from the connector's.
+    """
+
+    LMCACHE = "lmcache"
+    NONE = "none"
+
+
 @dataclass
 class RunSpec:
     """One configuration to measure."""
@@ -89,6 +102,7 @@ class RunSpec:
     kv_cache_dtype: str
     vllm_extra_args: list[str]
     warm_passes: int
+    connector: Connector
 
 
 @dataclass
@@ -355,14 +369,19 @@ def launch_vllm(spec: RunSpec, log_dir: Path) -> subprocess.Popen[bytes]:
     Returns:
         The running process.
     """
-    extra: dict[str, Any] = {"lmcache.mp.port": spec.lmcache_port}
-    kv_config = json.dumps(
-        {
-            "kv_connector": "LMCacheMPConnector",
-            "kv_role": "kv_both",
-            "kv_connector_extra_config": extra,
-        }
-    )
+    connector_args: list[str] = []
+    if spec.connector is Connector.LMCACHE:
+        extra: dict[str, Any] = {"lmcache.mp.port": spec.lmcache_port}
+        connector_args = [
+            "--kv-transfer-config",
+            json.dumps(
+                {
+                    "kv_connector": "LMCacheMPConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": extra,
+                }
+            ),
+        ]
     env = dict(
         os.environ,
         PYTHONPATH=str(spec.checkout),
@@ -389,8 +408,7 @@ def launch_vllm(spec: RunSpec, log_dir: Path) -> subprocess.Popen[bytes]:
             spec.kv_cache_dtype,
             "--disable-uvicorn-access-log",
             *spec.vllm_extra_args,
-            "--kv-transfer-config",
-            kv_config,
+            *connector_args,
         ],
         cwd=str(spec.checkout),
         env=env,
@@ -660,17 +678,22 @@ async def measure(spec: RunSpec, log_dir: Path) -> RunResult:
     Returns:
         The configuration's results.
     """
-    print(f"[{spec.label}] starting LMCache server on :{spec.lmcache_port}")
-    lmcache = launch_lmcache_server(spec, log_dir)
+    lmcache: subprocess.Popen[bytes] | None = None
+    if spec.connector is Connector.LMCACHE:
+        print(f"[{spec.label}] starting LMCache server on :{spec.lmcache_port}")
+        lmcache = launch_lmcache_server(spec, log_dir)
+    else:
+        print(f"[{spec.label}] no connector; vLLM runs alone")
     vllm = None
     try:
-        wait_for_port(
-            spec.lmcache_port,
-            time.monotonic() + 120.0,
-            lmcache,
-            "LMCache server",
-            log_dir / f"{spec.label}-lmcache-server.log",
-        )
+        if lmcache is not None:
+            wait_for_port(
+                spec.lmcache_port,
+                time.monotonic() + 120.0,
+                lmcache,
+                "LMCache server",
+                log_dir / f"{spec.label}-lmcache-server.log",
+            )
         print(f"[{spec.label}] starting vLLM on :{spec.vllm_port}")
         vllm = launch_vllm(spec, log_dir)
         await wait_for_health(
@@ -690,9 +713,9 @@ async def measure(spec: RunSpec, log_dir: Path) -> RunResult:
         )
         url = f"http://127.0.0.1:{spec.vllm_port}/v1/completions"
 
-        lmcache_cpu_before = tree_cpu_seconds(lmcache.pid)
+        lmcache_cpu_before = 0.0 if lmcache is None else tree_cpu_seconds(lmcache.pid)
         vllm_cpu_before = tree_cpu_seconds(vllm.pid)
-        threads_before = thread_cpu_seconds(lmcache.pid)
+        threads_before = {} if lmcache is None else thread_cpu_seconds(lmcache.pid)
         measured_start = time.perf_counter()
 
         print(f"[{spec.label}] cold pass ({spec.num_prompts} prompts)")
@@ -727,17 +750,26 @@ async def measure(spec: RunSpec, log_dir: Path) -> RunResult:
             spec={**asdict(spec), "checkout": str(spec.checkout)},
             cold=cold,
             warm=warm,
-            lmcache_server_cpu_s=tree_cpu_seconds(lmcache.pid) - lmcache_cpu_before,
+            lmcache_server_cpu_s=(
+                0.0
+                if lmcache is None
+                else tree_cpu_seconds(lmcache.pid) - lmcache_cpu_before
+            ),
             vllm_cpu_s=tree_cpu_seconds(vllm.pid) - vllm_cpu_before,
-            main_loop_cpu_s=busiest_thread_delta(
-                threads_before, thread_cpu_seconds(lmcache.pid)
+            main_loop_cpu_s=(
+                0.0
+                if lmcache is None
+                else busiest_thread_delta(
+                    threads_before, thread_cpu_seconds(lmcache.pid)
+                )
             ),
             measured_wall_s=time.perf_counter() - measured_start,
         )
     finally:
         if vllm is not None:
             terminate(vllm, "vllm")
-        terminate(lmcache, "lmcache server")
+        if lmcache is not None:
+            terminate(lmcache, "lmcache server")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -759,6 +791,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         kv_cache_dtype=args.kv_cache_dtype,
         vllm_extra_args=list(args.vllm_extra),
         warm_passes=args.warm_passes,
+        connector=Connector(args.connector),
     )
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -861,6 +894,14 @@ def main() -> None:
     # Pooled repeats of the warm pass. The cache is already populated, so a
     # repeat costs one warm pass of wall-clock and nothing else.
     run.add_argument("--warm-passes", type=int, default=1)
+    # The control arm. vLLM's own cost of a scheduler setting is common to both
+    # A/B arms and so cancels in their difference, but it is needed to say what
+    # fraction of a configuration's cost the connector is responsible for.
+    run.add_argument(
+        "--connector",
+        choices=[c.value for c in Connector],
+        default=Connector.LMCACHE.value,
+    )
     run.add_argument("--out-dir", default="benchmarks/e2e/results")
     run.set_defaults(func=cmd_run)
 
