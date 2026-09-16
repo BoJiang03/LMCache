@@ -69,6 +69,11 @@ VLLM_EXTRA="${VLLM_EXTRA:-}"
 # Repeats of the warm pass, pooled. The cache is already populated by then,
 # so each repeat costs one warm pass of wall-clock and nothing else.
 WARM_PASSES="${WARM_PASSES:-1}"
+# Which arm runs first. The two arms run serially on the same GPUs, so arm
+# order is a confound: clock/thermal drift and any box-level warmup land on
+# whichever arm is second. Run the pair both ways and the effect has to
+# survive the flip to be real.
+ARM_ORDER="${ARM_ORDER:-baseline_first}"
 
 INPUT_LEN="${1:-30000}"
 NUM_PROMPTS="${2:-16}"
@@ -108,7 +113,19 @@ run_one() {
     --lmcache-port 5599 --vllm-port 8199 "${COMMON[@]}"
 }
 
-run_one baseline "$BASELINE"
-run_one packed "$BRANCH"
+case "$ARM_ORDER" in
+  baseline_first)
+    run_one baseline "$BASELINE"
+    run_one packed "$BRANCH"
+    ;;
+  packed_first)
+    run_one packed "$BRANCH"
+    run_one baseline "$BASELINE"
+    ;;
+  *)
+    echo "ARM_ORDER must be baseline_first or packed_first, got: $ARM_ORDER" >&2
+    exit 2
+    ;;
+esac
 
 "$PY" -u "$RUNNER" report "$OUT_DIR/baseline.json" "$OUT_DIR/packed.json"
