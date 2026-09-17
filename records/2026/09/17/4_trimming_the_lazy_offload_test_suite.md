@@ -7,18 +7,18 @@ twice, that it was too much.
 
 State at the end:
 
-- PR half: `lazy_offloading_pr_test_cases` at `ae826fe5`, still one commit on
-  `origin/dev` `4d5423a2`. `tests/v1/lazy_offload/` only, 10 files, 3618 lines,
-  159 tests. `git diff origin/dev -- lmcache/` is empty.
+- PR half: `lazy_offloading_pr_test_cases`, two commits on `origin/dev`
+  `4d5423a2`. `tests/v1/lazy_offload/` only, 10 files, 3614 lines, 157 tests.
+  `git diff origin/dev -- lmcache/` is empty.
 - Dev half: `lazy_offloading_pr_test_cases_dev`, this record on top.
-- Green on every installed vLLM: 159 passed on 0.24.0, 0.25.0, 0.25.1,
-  0.26.0, 0.27.0 and 0.27.1; 157 passed / 2 skipped on 0.23.0, where the
+- Green on every installed vLLM: 157 passed on 0.24.0, 0.25.0, 0.25.1,
+  0.26.0, 0.27.0 and 0.27.1; 155 passed / 2 skipped on 0.23.0, where the
   block-pool guards skip by design. ruff, ruff-format, isort, codespell and
-  the SPDX check all clean. mypy is no longer installed on this box, so it was
-  not re-run; nothing here touched a type.
-- Nothing pushed. No PR opened.
+  the SPDX check all clean. mypy 1.17.1 runs from a scratchpad install against
+  an interpreter with no vLLM, the way CI runs it: clean.
+- Both halves pushed to the fork. No PR opened.
 
-4419 -> 3618 lines over three passes, 18%.
+4419 -> 3614 lines over three passes, 18%.
 
 ## 1. Measure against the repo before defending the size
 
@@ -134,7 +134,7 @@ still oversized. Two separate questions.
 On size: it is not. The repo's own well-tested modules run 1.1 to 2.3 test
 lines per source line -- `torch_ops` 1.12, `prefetch_controller` 1.27,
 `l1_manager` 2.03, `dax_backend` 2.26. The lazy-offload core is 1904 source
-lines, so 3618 test lines is 1.90, inside that band and below two of the four.
+lines, so 3614 test lines is 1.90, inside that band and below two of the four.
 `test_offload_manager.py` at 1233 lines is the 16th largest test file in the
 repo. The earlier complaint was right and this one would not have been; what
 was out of line was the prose, and that is fixed.
@@ -187,9 +187,43 @@ version available rather than to grep for the pattern.
 vLLM main (0.28.1 dev) is the one gap: that venv has no pytest, and installing
 into it would be a shared-environment change.
 
-## 7. Open
+## 7. CI's mypy is not this machine's mypy
 
-- Push both halves to the fork, then open the PR by hand.
+The fork push went up and CI came back with four `arg-type` / `dict-item`
+errors in the config tests. mypy is not installed in any venv here, so the
+earlier records say only that it was not run.
+
+Installed 1.17.1 -- the version `.pre-commit-config.yaml` pins -- into the
+scratchpad with `pip install --target`, and the first run reported 24 errors,
+not 4. The extra 20 were all `SimpleNamespace` passed where vLLM declares
+`SchedulerOutput` or `Request`. The pre-commit hook lists its own
+`additional_dependencies` and vLLM is not among them, so under CI every vLLM
+type is `Any` and those 20 do not exist; lmcache's own types are checked for
+real. Reproduced the four exactly by pointing mypy at an empty interpreter
+with `--python-executable`, which is worth keeping:
+
+    python -m mypy --config-file=pyproject.toml \
+      --python-executable=<a venv with no vllm> tests/v1/lazy_offload/
+
+Both errors came from the parametrize merges of section 3, and both were the
+same mistake -- widening a type to make one call site accept several cases.
+`test_policy_selection.py` built the config as `**{field: value}`, which mypy
+reads as `dict[str, float]` against an `int` field; replaced with three direct
+constructions in one test, which is shorter than the parametrize was.
+`test_eviction_aware_policy.py` annotated the parametrized tunables `object`,
+which is not a `ConfigValue`; annotated them as what the cases actually pass.
+
+The lesson is the same shape as section 6: a gate that cannot run locally is
+not a gate that can be skipped, and the fix is to reconstruct the environment
+it runs in rather than to reason about what it would say. Fifteen minutes of
+`pip install --target` would have caught this before the push.
+
+Bo asked for this as a commit on top rather than an amend, since the branch
+was already on the fork and under review in the browser.
+
+## 8. Open
+
+- Both halves are on the fork. The PR is still to be opened by hand.
 - The 114 surviving mutants are real coverage gaps. They were not chased in
   this session, which was about cutting rather than adding. Worth a pass if
   the PR gets review comments about coverage.
