@@ -7,8 +7,8 @@ twice, that it was too much.
 
 State at the end:
 
-- PR half: `lazy_offloading_pr_test_cases`, two commits on `origin/dev`
-  `4d5423a2`. `tests/v1/lazy_offload/` only, 10 files, 3614 lines, 157 tests.
+- PR half: `lazy_offloading_pr_test_cases`, three commits on `origin/dev`
+  `4d5423a2`. `tests/v1/lazy_offload/` only, 10 files, 3638 lines, 157 tests.
   `git diff origin/dev -- lmcache/` is empty.
 - Dev half: `lazy_offloading_pr_test_cases_dev`, this record on top.
 - Green on every installed vLLM: 157 passed on 0.24.0, 0.25.0, 0.25.1,
@@ -18,7 +18,7 @@ State at the end:
   an interpreter with no vLLM, the way CI runs it: clean.
 - Both halves pushed to the fork. No PR opened.
 
-4419 -> 3614 lines over three passes, 18%.
+4419 -> 3638 lines over three passes, 18%.
 
 ## 1. Measure against the repo before defending the size
 
@@ -134,7 +134,7 @@ still oversized. Two separate questions.
 On size: it is not. The repo's own well-tested modules run 1.1 to 2.3 test
 lines per source line -- `torch_ops` 1.12, `prefetch_controller` 1.27,
 `l1_manager` 2.03, `dax_backend` 2.26. The lazy-offload core is 1904 source
-lines, so 3614 test lines is 1.90, inside that band and below two of the four.
+lines, so 3638 test lines is 1.91, inside that band and below two of the four.
 `test_offload_manager.py` at 1233 lines is the 16th largest test file in the
 repo. The earlier complaint was right and this one would not have been; what
 was out of line was the prose, and that is fixed.
@@ -221,7 +221,47 @@ it runs in rather than to reason about what it would say. Fifteen minutes of
 Bo asked for this as a commit on top rather than an amend, since the branch
 was already on the fork and under review in the browser.
 
-## 8. Open
+## 8. Two tests that only fail in company
+
+CI then failed both `TestCounterLedger` tests -- one unpacking zero records,
+one counting zero lines -- while they pass on their own here and did on every
+vLLM version. Nothing captured at all, in a run of six thousand tests.
+
+`init_logger` sets `propagate = False`, so the policy's records never reach
+the root logger where `caplog` installs its handler. They were captured only
+because pytest, on top of the root handler, walks the loggers that are
+*already* non-propagating when it starts capturing and attaches there too --
+which its own source comments as best-effort:
+
+    # Attach to all non-propagating loggers (won't reach root).
+    # Note that will miss loggers that *become* non-propagating
+    # after the `__enter__`.
+
+The tests were resting on that. In a whole-repo run it stops holding, and
+there are at least three ways an earlier test takes it away: detaching the
+logger from pytest's handler, disabling the logger, or raising its level above
+INFO. I could not reproduce the full-suite ordering locally -- the root
+`conftest.py` needs a native build this worktree does not have -- so which of
+the three CI hit is unknown, and the fix covers all three rather than
+guessing.
+
+The fix is to stop using `caplog` for this logger: attach a handler to it for
+the duration of the assertion, force level and `disabled`, restore both after.
+Verified with a throwaway parametrized test over the three states: `caplog`
+captures nothing in all three, the handler captures the line in all three.
+
+Worth keeping from the failed first attempt at that proof: sabotaging the
+logger from a *fixture* proves nothing, because pytest re-enters its capture
+context per phase and re-attaches during `call`. The sabotage has to happen
+inside the test body.
+
+The general lesson is the one from sections 6 and 7 a third time. A test that
+reads a log line is testing the logging configuration as much as the code, and
+this suite had never run in the process where that configuration is decided by
+six thousand other tests. Running it alone, on seven vLLM versions, against a
+CI-shaped mypy, still did not run it in company.
+
+## 9. Open
 
 - Both halves are on the fork. The PR is still to be opened by hand.
 - The 114 surviving mutants are real coverage gaps. They were not chased in
@@ -229,6 +269,10 @@ was already on the fork and under review in the browser.
   the PR gets review comments about coverage.
 - vLLM main (0.28 dev) is untested: that venv has no pytest. Everything from
   0.23.0 to 0.27.1 is green.
+- The suite has still never run locally alongside the rest of `tests/`, which
+  is where both of the last two CI failures came from. The blocker is the
+  native build the root `conftest.py` needs. Worth fixing before the next
+  branch, not by grepping harder.
 - Still unresolved from record 2: whether to `git rm` the original ported
   tests under `records/2026/09/04/artifacts/ported_tests/` on
   `lazy_offloading_policy_dev`.
