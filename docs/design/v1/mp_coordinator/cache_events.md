@@ -98,8 +98,7 @@ One `CacheEventSubscriber` per MP-server process owns the buffer, the
   coordinator, as of when the batch was built. The gate counts its
   increases as lost events (see [ingest.md](ingest.md)). The field is
   optional on the wire (default 0), so older emitters and trace files
-  still parse. The subscriber does not count any drop yet, so it sends
-  0.
+  still parse. The subscriber counts bus overflow (below).
 - **`incarnation` = server start time** (`int(time.time())` at
   lifespan startup). A restarted server's first batch fences out the
   **L1** placements its previous incarnation reported, matching the
@@ -180,8 +179,14 @@ listener plumbing or a dedicated flush task:
   elapsing instead of waiting for the next request. The sink posts
   synchronously with a short timeout (a slow coordinator briefly
   stalls the drain, bounded by the timeout). Overflow beyond the bus's
-  bounded queue happens before the subscriber assigns `seq`, so it is
-  logged by the bus but is not detectable as a gate sequence gap.
+  bounded queue happens before the subscriber assigns `seq`, so it
+  leaves no `seq` gap. The bus counts, per event type, the keys its
+  dropped events carried; the subscriber adds the growth since it
+  registered (its consumed types only) to `dropped_events`, one cache
+  event per key. A dropped event without keys (the flush tick, a token
+  binding, a capacity change) counts none. The node exports the count
+  as `lmcache_mp.cache_events.events_dropped_total{reason=bus_overflow}`
+  (`lmcache.mp_server` gauge).
 - **Coupling.** The stream requires the bus: enabling
   `--coordinator-event-reporting` together with
   `--disable-observability` is rejected at startup. Bus-level drops under
@@ -226,10 +231,13 @@ so HTTP-only deployments never load it.
 
 ## Known limitations (follow-ups)
 
-- **Bus overflow drops events before sequencing** (bounded queue,
-  rate-limited warning), so the gate cannot detect the loss. A durable
-  transport also cannot replay an event that never reached its producer;
-  a local spool is separate future work.
+- **Bus overflow loses events for good.** The gate counts them through
+  `dropped_events`, but nothing resyncs the instance's slice; a durable
+  transport cannot replay an event that never reached its producer.
+  A dropped capacity change is not counted (it carries no keys).
+- **A loss is reported only by a later batch.** `dropped_events` is
+  sampled when a flush builds batches; a node that goes idle right
+  after dropping events does not report them until it emits again.
 - **A Kafka declaration dropped after it was queued is not re-sent.** The
   subscriber restores a capacity declaration only when `publish` raises.
   When the producer drops it later, the coordinator lacks that

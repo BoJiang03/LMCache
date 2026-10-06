@@ -14,7 +14,7 @@ emission thread or task. See
 # Standard
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -36,7 +36,12 @@ from lmcache.v1.mp_coordinator.api import (
 )
 from lmcache.v1.mp_coordinator.schemas import CacheEventsRequest
 from lmcache.v1.mp_observability.event import Event, EventType
-from lmcache.v1.mp_observability.event_bus import EventCallback, EventSubscriber
+from lmcache.v1.mp_observability.event_bus import (
+    EventBus,
+    EventCallback,
+    EventSubscriber,
+)
+from lmcache.v1.mp_observability.otel_init import register_gauge
 from lmcache.v1.mp_observability.trace.lifecycle import get_active_trace_recorder
 from lmcache.v1.mp_observability.trace.recorder import EventsTraceRecorder
 from lmcache.v1.multiprocess.config import (
@@ -62,6 +67,8 @@ _KAFKA_MAX_BUFFER_KBYTES = 64 * 1024
 # Token-binding cache bound: covers the window between a chunk's
 # token-binding event and its last (async L2) store event.
 _TOKEN_BINDING_CACHE_SIZE = 65536
+
+_METER_NAME = "lmcache.mp_server"
 
 
 class CacheEventPublishError(Exception):
@@ -486,6 +493,35 @@ class CacheEventSubscriber(EventSubscriber):
         # ahead of the write-finished events), used to stamp STORE
         # entries. LRU-bounded; a miss stamps nothing.
         self._token_bindings: OrderedDict[bytes, _ChunkTokens] = OrderedDict()
+        # Bus overflow drops events before they reach us. register() binds
+        # this to the bus's count of keys dropped among the types we
+        # consume (one cache event per key); flush stamps the growth since
+        # registration into every batch as ``dropped_events``.
+        self._read_bus_drops: Callable[[], int] = lambda: 0
+        self._bus_drops_at_register = 0
+
+    def register(self, bus: EventBus) -> None:
+        """Subscribe to ``bus`` and watch its overflow drops of the
+        events this subscriber consumes. Drops from before this call are
+        not counted: the subscriber would not have received those events.
+
+        Args:
+            bus: The bus to subscribe to.
+        """
+        super().register(bus)
+        consumed = list(self.get_subscriptions())
+        self._read_bus_drops = lambda: bus.dropped_keys_count_for(consumed)
+        self._bus_drops_at_register = self._read_bus_drops()
+
+    def bus_dropped_events_total(self) -> int:
+        """Count the cache events lost to bus overflow.
+
+        Returns:
+            Keys carried by the consumed events the bus dropped since
+            :meth:`register`, one cache event each. Events without keys
+            (the flush tick, token bindings, capacity changes) count none.
+        """
+        return self._read_bus_drops() - self._bus_drops_at_register
 
     def get_subscriptions(self) -> dict[EventType, EventCallback]:
         """Return the bus events this subscriber consumes."""
@@ -508,7 +544,9 @@ class CacheEventSubscriber(EventSubscriber):
     def flush(self) -> None:
         """Drain the buffer and publish one batch per pending batch.
 
-        Publish failures are logged and the drained list is dropped.
+        Every batch carries ``dropped_events``: the cache events this
+        subscriber has lost so far. Publish failures are logged and the
+        drained list is dropped.
         """
         if not self._pending_batches and self._pending_capacity is None:
             return
@@ -517,9 +555,10 @@ class CacheEventSubscriber(EventSubscriber):
         capacity = self._pending_capacity
         self._pending_capacity = None
         ts = time.time()
+        dropped_events = self.bus_dropped_events_total()
         # Declaration first, so a flush that also carries placements gives
         # the coordinator its denominator before the bytes it divides.
-        batches = self._capacity_batches(capacity, ts)
+        batches = self._capacity_batches(capacity, ts, dropped_events)
         batches += [
             CacheEventBatch(
                 instance_id=self._instance_id,
@@ -531,6 +570,7 @@ class CacheEventSubscriber(EventSubscriber):
                 entries=pending.entries,
                 shared=pending.shared,
                 ts=ts,
+                dropped_events=dropped_events,
             )
             for offset, pending in enumerate(pending_batches)
         ]
@@ -551,7 +591,7 @@ class CacheEventSubscriber(EventSubscriber):
             )
 
     def _capacity_batches(
-        self, capacity: "CapacitySnapshot | None", ts: float
+        self, capacity: "CapacitySnapshot | None", ts: float, dropped_events: int
     ) -> list[CacheEventBatch]:
         """Expand one declaration into a ``config`` batch per compartment.
 
@@ -563,6 +603,7 @@ class CacheEventSubscriber(EventSubscriber):
             capacity: The declaration to expand, or ``None`` for no
                 declaration this flush.
             ts: Emitter wall-clock seconds to stamp the batches with.
+            dropped_events: The lost-event count to stamp the batches with.
 
         Returns:
             One batch per compartment, seq-numbered from the current
@@ -583,6 +624,7 @@ class CacheEventSubscriber(EventSubscriber):
                 ts=ts,
                 capacity_bytes=module.capacity_bytes,
                 capacity_revision=self._capacity_revision,
+                dropped_events=dropped_events,
             )
             for offset, module in enumerate(capacity.modules)
         ]
@@ -768,6 +810,24 @@ def create_cache_event_sink(config: CoordinatorConfig) -> CacheEventSink:
     return HttpCacheEventSink(config.url)
 
 
+def register_cache_event_metrics(subscriber: CacheEventSubscriber) -> None:
+    """Register the emitter's delivery-loss gauge.
+
+    Args:
+        subscriber: The subscriber whose bus-overflow drops to report.
+    """
+
+    def _dropped() -> list[tuple[int | float, dict[str, object]]]:
+        return [(subscriber.bus_dropped_events_total(), {"reason": "bus_overflow"})]
+
+    register_gauge(
+        _METER_NAME,
+        "lmcache_mp.cache_events.events_dropped_total",
+        "Cache events (one per key) lost before reaching the coordinator, by reason.",
+        _dropped,
+    )
+
+
 def maybe_create_cache_event_subscriber(
     mp_config: MPServerConfig,
     http_config: HTTPFrontendConfig | None,
@@ -814,9 +874,11 @@ def maybe_create_cache_event_subscriber(
             http_port=http_config.http_port if http_config is not None else 0,
             mq_port=mp_config.port if mp_config.p2p_config.enabled else 0,
         )
-    return CacheEventSubscriber(
+    subscriber = CacheEventSubscriber(
         sink=sinks[0] if len(sinks) == 1 else MultiCacheEventSink(sinks),
         instance_id=mp_config.instance_id,
         incarnation=incarnation,
         flush_interval=coordinator_config.event_flush_interval,
     )
+    register_cache_event_metrics(subscriber)
+    return subscriber

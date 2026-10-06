@@ -42,6 +42,9 @@ from lmcache.v1.mp_coordinator.cache_events import (
     TraceCacheEventSink,
 )
 from lmcache.v1.mp_coordinator.config import MPCoordinatorConfig
+from lmcache.v1.mp_coordinator.ingest.event_broadcaster import CacheEventBroadcaster
+from lmcache.v1.mp_coordinator.ingest.event_gate import EventGate
+from lmcache.v1.mp_coordinator.persistence.quiesce import QuiesceLock
 from lmcache.v1.mp_coordinator.views.key_directory import KeyDirectory
 from lmcache.v1.mp_observability.event import Event, EventType
 from lmcache.v1.mp_observability.event_bus import EventBus, EventBusConfig
@@ -645,6 +648,141 @@ def test_shutdown_flushes_and_closes_sink():
     subscriber.shutdown()
     assert len(sink.published) == 1
     assert sink.closed is True
+
+
+# -- Delivery loss is counted: bus overflow -----------------------------------
+
+
+def _l2_store(*hash_bytes: int) -> Event:
+    return Event(
+        event_type=EventType.L2_KEYS_STORED,
+        metadata={
+            "keys": [_key(h) for h in hash_bytes],
+            "sizes": [100] * len(hash_bytes),
+            "backend": "fs",
+        },
+    )
+
+
+class _GateSink(CacheEventSink):
+    """Sink that hands batches straight to a coordinator gate."""
+
+    def __init__(self) -> None:
+        self.gate = EventGate(CacheEventBroadcaster(), QuiesceLock())
+        self.published: list[CacheEventBatch] = []
+
+    def publish(self, batches: list[CacheEventBatch]) -> None:
+        self.published.extend(batches)
+        self.gate.ingest_batches(batches)
+
+    def loss(self) -> tuple[int, int, int]:
+        """The gate's ``(incidents, lost events, admitted events)``."""
+        stream = self.gate.stats()["node-a"]
+        return (
+            stream.loss_incidents_total,
+            stream.lost_events_total,
+            stream.admitted_events_total,
+        )
+
+
+def _overflowing_bus(subscriber: CacheEventSubscriber) -> EventBus:
+    """A bus, not started, whose queue holds one event: every publish
+    after the first before a drain is dropped."""
+    bus = EventBus(EventBusConfig(enabled=True, max_queue_size=1))
+    bus.register_subscriber(subscriber)
+    return bus
+
+
+def test_gate_counts_exactly_the_events_the_bus_dropped():
+    """End to end: each key of a dropped store is one lost cache event."""
+    sink = _GateSink()
+    subscriber = _subscriber(sink)
+    bus = _overflowing_bus(subscriber)
+    bus.publish(_l2_store(1))
+    bus._drain_all()
+    subscriber.flush()  # seq 1, nothing lost yet
+    bus.publish(_l2_store(2))  # queued
+    bus.publish(_l2_store(3, 4))  # dropped: 2 events
+    bus.publish(_l2_store(5, 6, 7))  # dropped: 3 events
+    bus.stop()  # drains, then the subscriber's shutdown flushes
+
+    assert bus.dropped_events_count() == 2
+    assert subscriber.bus_dropped_events_total() == 5
+    assert [(b.seq, b.dropped_events) for b in sink.published] == [(1, 0), (2, 5)]
+    assert sink.loss() == (1, 5, 2)
+    assert sink.gate.stats()["node-a"].gap_detected is True
+
+
+def test_loss_before_the_first_flush_is_counted():
+    sink = _GateSink()
+    subscriber = _subscriber(sink)
+    bus = _overflowing_bus(subscriber)
+    bus.publish(_l2_store(1))
+    bus.publish(_l2_store(2, 3))  # dropped
+    bus.stop()
+
+    assert [(b.seq, b.dropped_events) for b in sink.published] == [(1, 2)]
+    assert sink.loss() == (1, 2, 1)
+
+
+def test_dropped_events_without_keys_lose_no_cache_event():
+    """A lost flush tick loses no cache state."""
+    sink = _GateSink()
+    subscriber = _subscriber(sink)
+    bus = _overflowing_bus(subscriber)
+    bus.publish(_l2_store(1))
+    bus.publish(
+        Event(event_type=EventType.L1_EVICTION_LOOP_TICK, metadata={"usage": 0.0})
+    )
+    bus.stop()
+
+    assert bus.dropped_events_count() == 1
+    assert subscriber.bus_dropped_events_total() == 0
+    assert sink.loss() == (0, 0, 1)
+    assert sink.gate.stats()["node-a"].gap_detected is False
+
+
+def test_drops_of_types_the_subscriber_ignores_are_not_counted():
+    sink = _GateSink()
+    subscriber = _subscriber(sink)
+    bus = _overflowing_bus(subscriber)
+    bus.publish(_l2_store(1))
+    bus.publish(Event(event_type=EventType.L1_READ_FINISHED, metadata={"keys": [1]}))
+    bus.stop()
+
+    assert subscriber.bus_dropped_events_total() == 0
+    assert sink.loss() == (0, 0, 1)
+
+
+def test_drops_before_registration_are_not_counted():
+    """Events the bus dropped before the subscriber existed were never
+    going to reach it."""
+    sink = _GateSink()
+    bus = EventBus(EventBusConfig(enabled=True, max_queue_size=1))
+    bus.publish(_l2_store(1))
+    bus.publish(_l2_store(2))  # dropped before registration
+    subscriber = _subscriber(sink)
+    bus.register_subscriber(subscriber)
+    bus.stop()
+
+    assert subscriber.bus_dropped_events_total() == 0
+    assert [(b.seq, b.dropped_events) for b in sink.published] == [(1, 0)]
+    assert sink.gate.stats()["node-a"].gap_detected is False
+
+
+def test_events_dropped_gauge_reports_bus_overflow(monkeypatch):
+    register = MagicMock()
+    monkeypatch.setattr(cache_events, "register_gauge", register)
+    subscriber = _subscriber(_RecordingSink())
+    bus = _overflowing_bus(subscriber)
+    bus.publish(_l2_store(1))
+    bus.publish(_l2_store(2, 3))
+
+    cache_events.register_cache_event_metrics(subscriber)
+
+    (call,) = register.call_args_list
+    assert call.args[1] == "lmcache_mp.cache_events.events_dropped_total"
+    assert call.args[3]() == [(2, {"reason": "bus_overflow"})]
 
 
 # -- Bus integration -----------------------------------------------------------

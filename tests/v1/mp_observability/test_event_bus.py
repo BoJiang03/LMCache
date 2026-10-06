@@ -421,6 +421,22 @@ class TestSelfMonitoring:
             b.publish(_make_event())
         assert b.dropped_events_count() == 3
 
+    def test_dropped_keys_count_for_counts_keys_by_type(self):
+        b = EventBus(EventBusConfig(enabled=True, max_queue_size=1))
+        b.publish(_make_event(EventType.L1_WRITE_FINISHED))  # queued
+        b.publish(_make_event(EventType.L1_WRITE_FINISHED, keys=[1, 2]))
+        b.publish(_make_event(EventType.L1_KEYS_EVICTED, keys=[3, 4, 5]))
+        b.publish(_make_event(EventType.L1_KEYS_EVICTED))  # no keys
+        assert b.dropped_events_count() == 3
+        assert b.dropped_keys_count_for([EventType.L1_WRITE_FINISHED]) == 2
+        assert (
+            b.dropped_keys_count_for(
+                [EventType.L1_WRITE_FINISHED, EventType.L1_KEYS_EVICTED]
+            )
+            == 5
+        )
+        assert b.dropped_keys_count_for([EventType.L2_KEYS_STORED]) == 0
+
     def test_subscriber_exception_counts_starts_empty(self, bus):
         assert bus.subscriber_exception_counts() == {}
 

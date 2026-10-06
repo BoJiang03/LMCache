@@ -8,6 +8,7 @@ from __future__ import annotations
 # Standard
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Callable
 import collections
@@ -116,6 +117,10 @@ class EventBus:
         self._thread: threading.Thread | None = None
         self._registered_subscribers: list[EventSubscriber] = []
         self._discard_count: int = 0
+        # Keys (``metadata["keys"]``) carried by discarded events, per
+        # type, so a subscriber can count the per-key records it lost
+        # (written under _lock).
+        self._discarded_keys_by_type: dict[EventType, int] = {}
         self._last_discard_warning: float = 0.0
         self._subscriber_exception_counts: dict[str, int] = {}
 
@@ -205,6 +210,11 @@ class EventBus:
 
         if len(self._queue) >= self._config.max_queue_size:
             self._discard_count += 1
+            keys = len(event.metadata.get("keys", ()))
+            with self._lock:
+                self._discarded_keys_by_type[event.event_type] = (
+                    self._discarded_keys_by_type.get(event.event_type, 0) + keys
+                )
             now = time.monotonic()
             if now - self._last_discard_warning >= 1.0:
                 logger.warning(
@@ -293,6 +303,23 @@ class EventBus:
     def dropped_events_count(self) -> int:
         """Cumulative count of events dropped because the queue was full."""
         return self._discard_count
+
+    def dropped_keys_count_for(self, event_types: Collection[EventType]) -> int:
+        """Cumulative count of keys lost in queue-full drops among
+        ``event_types``: the length of each dropped event's
+        ``metadata["keys"]`` (0 for an event without one).
+
+        Lets a subscriber that emits one record per key (e.g. the
+        cache-event stream) count the records it lost.
+
+        Args:
+            event_types: The event types to count dropped keys for.
+
+        Returns:
+            The number of keys those types' dropped events carried.
+        """
+        with self._lock:
+            return sum(self._discarded_keys_by_type.get(t, 0) for t in event_types)
 
     def subscriber_exception_counts(self) -> dict[str, int]:
         """Snapshot of per-subscriber callback exception counts.
