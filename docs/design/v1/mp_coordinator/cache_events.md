@@ -30,10 +30,25 @@ storage layer ──► EventBus ──► CacheEventSubscriber ──► CacheE
   coordinator accepted it. A sink never needs exactly-once or global
   ordering.
 - **`HttpCacheEventSink`** — the first sink: one
-  `POST /events` per flush, batches in list order. Failures
-  raise `CacheEventPublishError`. Retrying is safe; the current subscriber
-  drops a failed drained list, consumes its sequence numbers, and leaves a
-  gap that marks the coordinator view stale.
+  `POST /events` per publish call, batches in list order. Failures
+  raise `CacheEventPublishError`. It is always wrapped in a
+  **`SpoolingCacheEventSink`**: a failed post stays in a bounded
+  in-memory spool (16384 entries) and is retried head-first, in `seq`
+  order, on later flushes with capped exponential backoff (0.5 s
+  doubling to 30 s), counted from the end of the failed post; the spool
+  posts in slices of at most 2048 entries. These are module constants,
+  not settings. A flush with nothing new calls the sink's
+  `redeliver()` so retries do not wait for new events. Newer
+  batches queue behind retained ones, so nothing overtakes a retry.
+  A retry that duplicates an applied post is dropped by the gate's
+  `seq` dedup. When a failed post leaves more than the bound retained,
+  the oldest batches are dropped; their `seq` numbers stay consumed, so
+  the loss is a gate gap, and the sink counts their entries in
+  `dropped_events()` for later batches to report. A slice that cannot
+  succeed is dropped the same way and draining continues: a 4xx answer
+  other than 408 or 429 (`CacheEventRejectedError`), or any
+  non-transport exception. 5xx, 408, 429 and transport errors are
+  retried.
 - **`TraceCacheEventSink`** appends each batch, in wire form, to an
   `events`-level trace file (`lmcache server --trace-level events`); it
   needs no coordinator. **`MultiCacheEventSink`** fans one flush out to
@@ -83,14 +98,16 @@ One `CacheEventSubscriber` per MP-server process owns the buffer, the
   Alternating identities therefore produce multiple pending batches of
   the same identity; that is intentional (extra batch headers, never
   reordering).
-- **`seq` is consumed even when publish fails.** A failed flush drops
-  the drained list (bounding memory while the coordinator is down) but
-  keeps the `seq` numbers it assigned. The directory sees a gap and
-  sets `gap_detected` for the instance when a later batch arrives — the
-  honest signal that events were lost. Replay can reconcile the gap only
-  if a durable transport retained the failed batch; HTTP did not.
-  Reusing the seqs instead would hide partial-delivery ambiguity (an
-  HTTP timeout after the coordinator applied the batch).
+- **`seq` is consumed even when publish fails.** A flush whose sink
+  raises (Kafka, trace) drops the drained list but keeps the `seq`
+  numbers it assigned; the spooled HTTP sink drops only on spool
+  overflow or a rejected slice, with the same effect. The directory
+  sees a gap and sets `gap_detected` for the instance when a later
+  batch arrives — the honest signal that events were lost. Replay can
+  reconcile the gap only if a durable transport retained the dropped
+  batch; the HTTP spool keeps nothing it dropped.
+  Reusing the seqs instead would hide partial-delivery ambiguity (a
+  dropped post the coordinator had in fact applied).
 - **`dropped_events` says how much was lost.** A `seq` numbers a
   batch, so a gap shows that something was lost, not how much. Every
   batch also carries `dropped_events`: the cumulative number of cache
@@ -98,7 +115,12 @@ One `CacheEventSubscriber` per MP-server process owns the buffer, the
   coordinator, as of when the batch was built. The gate counts its
   increases as lost events (see [ingest.md](ingest.md)). The field is
   optional on the wire (default 0), so older emitters and trace files
-  still parse. The subscriber counts bus overflow (below).
+  still parse. The subscriber stamps bus overflow (below) plus the
+  entries its sink dropped without raising
+  (`CacheEventSink.dropped_events()`: the HTTP spool's overflow and
+  rejected slices; `MultiCacheEventSink` sums its sinks, so an
+  `events` trace recorded beside HTTP carries the HTTP losses too). A
+  Kafka record the producer drops stays a `seq` gap only.
 - **`incarnation` = server start time** (`int(time.time())` at
   lifespan startup). A restarted server's first batch fences out the
   **L1** placements its previous incarnation reported, matching the
@@ -184,9 +206,11 @@ listener plumbing or a dedicated flush task:
   dropped events carried; the subscriber adds the growth since it
   registered (its consumed types only) to `dropped_events`, one cache
   event per key. A dropped event without keys (the flush tick, a token
-  binding, a capacity change) counts none. The node exports the count
-  as `lmcache_mp.cache_events.events_dropped_total{reason=bus_overflow}`
-  (`lmcache.mp_server` gauge).
+  binding, a capacity change) counts none. Node counters (`lmcache.mp_server`
+  gauges):
+  `lmcache_mp.cache_events.events_dropped_total{reason=bus_overflow|spool_overflow|rejected}`
+  (all in cache events), `publish_retries_total`, and `spool_depth`
+  (entries, at least one per batch).
 - **Coupling.** The stream requires the bus: enabling
   `--coordinator-event-reporting` together with
   `--disable-observability` is rejected at startup. Bus-level drops under
@@ -231,13 +255,16 @@ so HTTP-only deployments never load it.
 
 ## Known limitations (follow-ups)
 
-- **Bus overflow loses events for good.** The gate counts them through
-  `dropped_events`, but nothing resyncs the instance's slice; a durable
-  transport cannot replay an event that never reached its producer.
-  A dropped capacity change is not counted (it carries no keys).
+- **Dropped events are lost for good.** Bus overflow, spool overflow,
+  a rejected HTTP post and a record the Kafka producer gives up on are
+  all visible at the gate, but nothing yet resyncs the instance's slice
+  (a durable transport cannot replay an event that never reached its
+  producer either). A dropped capacity change is not counted as a lost
+  event (it carries no keys).
 - **A loss is reported only by a later batch.** `dropped_events` is
-  sampled when a flush builds batches; a node that goes idle right
-  after dropping events does not report them until it emits again.
+  sampled when a flush builds batches, so a spool drop shows up on the
+  batches built after it, and a node that goes idle right after
+  dropping events does not report them until it emits again.
 - **A Kafka declaration dropped after it was queued is not re-sent.** The
   subscriber restores a capacity declaration only when `publish` raises.
   When the producer drops it later, the coordinator lacks that

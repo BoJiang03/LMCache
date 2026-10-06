@@ -5,9 +5,11 @@ publish failure, and the HTTP sink end-to-end against a coordinator
 app."""
 
 # Standard
+from collections.abc import Callable
 from dataclasses import asdict
 from unittest.mock import MagicMock
 import asyncio
+import json
 import threading
 
 # Third Party
@@ -39,6 +41,7 @@ from lmcache.v1.mp_coordinator.cache_events import (
     CacheEventSubscriber,
     HttpCacheEventSink,
     MultiCacheEventSink,
+    SpoolingCacheEventSink,
     TraceCacheEventSink,
 )
 from lmcache.v1.mp_coordinator.config import MPCoordinatorConfig
@@ -665,15 +668,30 @@ def _l2_store(*hash_bytes: int) -> Event:
 
 
 class _GateSink(CacheEventSink):
-    """Sink that hands batches straight to a coordinator gate."""
+    """Sink that hands batches straight to a coordinator gate; can be
+    told to raise after delivering (a timeout the coordinator survived)."""
 
     def __init__(self) -> None:
         self.gate = EventGate(CacheEventBroadcaster(), QuiesceLock())
+        self.fail_after_delivery = 0
+        self.fail_before_delivery = 0
+        self.raise_value_error = 0
+        self.calls: list[list[int]] = []
         self.published: list[CacheEventBatch] = []
 
     def publish(self, batches: list[CacheEventBatch]) -> None:
+        self.calls.append([b.seq for b in batches])
+        if self.raise_value_error:
+            self.raise_value_error -= 1
+            raise ValueError("injected bad batch")
+        if self.fail_before_delivery:
+            self.fail_before_delivery -= 1
+            raise CacheEventPublishError("injected failure")
         self.published.extend(batches)
         self.gate.ingest_batches(batches)
+        if self.fail_after_delivery:
+            self.fail_after_delivery -= 1
+            raise CacheEventPublishError("injected timeout")
 
     def loss(self) -> tuple[int, int, int]:
         """The gate's ``(incidents, lost events, admitted events)``."""
@@ -778,11 +796,341 @@ def test_events_dropped_gauge_reports_bus_overflow(monkeypatch):
     bus.publish(_l2_store(1))
     bus.publish(_l2_store(2, 3))
 
-    cache_events.register_cache_event_metrics(subscriber)
+    cache_events.register_cache_event_metrics(subscriber, None)
 
     (call,) = register.call_args_list
     assert call.args[1] == "lmcache_mp.cache_events.events_dropped_total"
     assert call.args[3]() == [(2, {"reason": "bus_overflow"})]
+
+
+# -- Spooled HTTP delivery -----------------------------------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _spool(
+    inner: CacheEventSink,
+    clock: _Clock,
+    max_entries: int = 1000,
+    initial_backoff: float = 1.0,
+    max_backoff: float = 4.0,
+) -> SpoolingCacheEventSink:
+    return SpoolingCacheEventSink(
+        inner,
+        max_entries=max_entries,
+        initial_backoff=initial_backoff,
+        max_backoff=max_backoff,
+        clock=clock,
+    )
+
+
+def test_spool_retries_failed_batches_in_seq_order_without_a_gap():
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock)
+    subscriber = _subscriber(spool)
+
+    gate_sink.fail_before_delivery = 1
+    _dispatch(subscriber, _l2_store(1))
+    subscriber.flush()
+    assert spool.spool_depth() == 1
+
+    # Backoff not yet elapsed: the new batch queues behind the old one.
+    _dispatch(subscriber, _l2_store(2))
+    subscriber.flush()
+    assert gate_sink.calls == [[1]]
+    assert spool.spool_depth() == 2
+
+    clock.now += 1.0
+    subscriber.flush()  # nothing new: redelivers the spool
+    assert gate_sink.calls == [[1], [1, 2]]
+    assert spool.spool_depth() == 0
+    assert spool.retries_total() == 1
+    stream = gate_sink.gate.stats()["node-a"]
+    assert (stream.last_seq, stream.gap_detected) == (2, False)
+
+
+def test_spool_backoff_doubles_and_caps():
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock, initial_backoff=1.0, max_backoff=4.0)
+    gate_sink.fail_before_delivery = 100
+    spool.publish([_batch_for_spool(1)])
+    attempts_at: list[float] = []
+    for _ in range(24):
+        before = len(gate_sink.calls)
+        spool.redeliver()
+        if len(gate_sink.calls) > before:
+            attempts_at.append(clock.now)
+        clock.now += 0.5
+    # Failures at t=0 (publish), then 1, 2, 4, 4 seconds apart.
+    assert [t - 1000.0 for t in attempts_at] == [1.0, 3.0, 7.0, 11.0]
+    assert spool.retries_total() == 4
+
+
+def test_spool_bound_does_not_cap_a_healthy_flush():
+    """The bound limits what is retained during an outage, not how much
+    one flush may deliver."""
+    gate_sink = _GateSink()
+    spool = _spool(gate_sink, _Clock(), max_entries=1)
+    spool.publish([_batch_for_spool(1), _batch_for_spool(2)])
+
+    assert gate_sink.calls == [[1, 2]]
+    assert spool.overflow_events_total() == 0
+
+
+def test_spool_backoff_starts_when_the_failed_attempt_ends():
+    """A slow failure (a timeout) must not use up the backoff it arms."""
+
+    class _SlowFailingSink(CacheEventSink):
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+            self.attempts = 0
+
+        def publish(self, batches: list[CacheEventBatch]) -> None:
+            self.attempts += 1
+            self.clock.now += 2.0  # the request times out after 2 s
+            raise CacheEventPublishError("timeout")
+
+    clock = _Clock()
+    inner = _SlowFailingSink(clock)
+    spool = _spool(inner, clock, initial_backoff=1.0, max_backoff=4.0)
+    spool.publish([_batch_for_spool(1)])
+    spool.redeliver()
+
+    assert inner.attempts == 1
+
+
+def test_spool_redelivery_duplicates_are_dropped_by_the_gate():
+    """A post that the coordinator applied but that still failed (a
+    timeout) is resent; the gate's seq dedup makes that harmless."""
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock)
+    gate_sink.fail_after_delivery = 1
+    spool.publish([_batch_for_spool(1)])
+    clock.now += 1.0
+    spool.publish([_batch_for_spool(2)])
+
+    assert gate_sink.calls == [[1], [1, 2]]
+    stream = gate_sink.gate.stats()["node-a"]
+    assert (stream.last_seq, stream.gap_detected) == (2, False)
+
+
+def test_spool_overflow_drops_oldest_and_shows_up_as_a_gap():
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock, max_entries=2)
+    gate_sink.fail_before_delivery = 1
+    spool.publish([_batch_for_spool(1)])
+    spool.publish([_batch_for_spool(2), _batch_for_spool(3)])  # evicts seq 1
+
+    assert spool.overflow_events_total() == 1
+    assert spool.spool_depth() == 2
+    clock.now += 1.0
+    spool.redeliver()
+    assert gate_sink.calls[-1] == [2, 3]
+    assert gate_sink.gate.stats()["node-a"].gap_detected is True
+
+
+def test_spool_drains_a_large_backlog_in_bounded_slices(monkeypatch):
+    monkeypatch.setattr(cache_events, "_SPOOL_PUBLISH_SLICE_ENTRIES", 2)
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock)
+    gate_sink.fail_before_delivery = 1
+    spool.publish([_batch_for_spool(seq) for seq in range(1, 6)])
+    clock.now += 1.0
+    spool.redeliver()
+
+    assert gate_sink.calls[1:] == [[1, 2], [3, 4], [5]]
+    assert spool.spool_depth() == 0
+
+
+def test_spool_close_tries_once_more_then_closes_inner():
+    inner = _RecordingSink()
+    clock = _Clock()
+    spool = _spool(inner, clock)
+    inner.fail_next = True
+    spool.publish([_batch_for_spool(1)])
+    spool.close()  # inside the backoff window, but shutdown does not wait
+
+    assert [[b.seq for b in call] for call in inner.published] == [[1]]
+    assert inner.closed is True
+
+
+def _http_spool(
+    clock: _Clock, status_for: Callable[[list[int]], int]
+) -> tuple[SpoolingCacheEventSink, list[list[int]]]:
+    """A spooled HTTP sink whose coordinator answers ``status_for(seqs)``."""
+    posts: list[list[int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seqs = [b["seq"] for b in json.loads(request.content)["batches"]]
+        posts.append(seqs)
+        return httpx.Response(status_for(seqs))
+
+    http_sink = HttpCacheEventSink("http://coordinator")
+    http_sink._client = httpx.Client(  # noqa: SLF001 — test-only transport swap
+        transport=httpx.MockTransport(handler)
+    )
+    return _spool(http_sink, clock), posts
+
+
+def test_spool_drops_a_rejected_post_and_keeps_draining():
+    clock = _Clock()
+    spool, posts = _http_spool(clock, lambda seqs: 422 if 1 in seqs else 200)
+    spool.publish([_batch_for_spool(1)])
+    spool.publish([_batch_for_spool(2)])
+
+    assert posts == [[1], [2]]
+    assert spool.spool_depth() == 0
+    assert spool.rejected_events_total() == 1
+
+
+@pytest.mark.parametrize("status", [408, 429, 503])
+def test_spool_retries_transient_http_errors(status):
+    clock = _Clock()
+    transient = [status]
+
+    def status_for(seqs: list[int]) -> int:
+        if 1 in seqs:
+            return 422
+        return transient.pop() if transient else 200
+
+    spool, posts = _http_spool(clock, status_for)
+    spool.publish([_batch_for_spool(1)])  # rejected and dropped
+    spool.publish([_batch_for_spool(2)])  # transient failure: retained
+    assert spool.spool_depth() == 1
+
+    clock.now += 1.0
+    spool.redeliver()
+    assert posts == [[1], [2], [2]]
+    assert spool.spool_depth() == 0
+    assert spool.rejected_events_total() == 1
+
+
+def test_spool_drops_a_slice_that_raises_unexpectedly():
+    gate_sink = _GateSink()
+    spool = _spool(gate_sink, _Clock())
+    subscriber = _subscriber(spool)
+    gate_sink.raise_value_error = 1
+    _dispatch(subscriber, _l2_store(1))
+    subscriber.flush()  # must not raise
+    _dispatch(subscriber, _l2_store(2))
+    subscriber.flush()
+
+    assert gate_sink.calls == [[1], [2]]
+    assert spool.spool_depth() == 0
+    assert spool.rejected_events_total() == 1
+    stream = gate_sink.gate.stats()["node-a"]
+    assert (stream.last_seq, stream.gap_detected) == (2, True)
+
+
+def test_gate_counts_exactly_the_entries_the_spool_overflowed():
+    """End to end: spool overflow drops whole batches; later batches
+    report their entries, so the gate's lost count is exact."""
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock, max_entries=3)
+    subscriber = _subscriber(spool)
+    _dispatch(subscriber, _l2_store(1))
+    subscriber.flush()  # seq 1 delivered
+    gate_sink.fail_before_delivery = 1
+    _dispatch(subscriber, _l2_store(2, 3))
+    subscriber.flush()  # seq 2 retained
+    _dispatch(subscriber, _l2_store(4, 5, 6))
+    subscriber.flush()  # backoff: seq 3 queues; 5 > 3 entries drops seq 2
+    assert spool.overflow_events_total() == 2
+    assert spool.spool_depth() == 3
+
+    clock.now += 1.0
+    _dispatch(subscriber, _l2_store(7))
+    subscriber.flush()
+
+    assert [(b.seq, b.dropped_events) for b in gate_sink.published] == [
+        (1, 0),
+        (3, 0),
+        (4, 2),
+    ]
+    # The gap (seq 3) and the reported count (seq 4) land on different
+    # batches, so this one overflow is two incidents.
+    assert gate_sink.loss() == (2, 2, 5)
+
+
+def test_gate_counts_exactly_the_entries_of_a_rejected_slice():
+    gate_sink = _GateSink()
+    spool = _spool(gate_sink, _Clock())
+    subscriber = _subscriber(spool)
+    _dispatch(subscriber, _l2_store(1))
+    subscriber.flush()  # seq 1 delivered
+    gate_sink.raise_value_error = 1
+    _dispatch(subscriber, _l2_store(2, 3))
+    subscriber.flush()  # seq 2 rejected
+    _dispatch(subscriber, _l2_store(4))
+    subscriber.flush()
+
+    assert spool.rejected_events_total() == 2
+    assert [(b.seq, b.dropped_events) for b in gate_sink.published] == [
+        (1, 0),
+        (3, 2),
+    ]
+    assert gate_sink.loss() == (1, 2, 2)
+
+
+def test_multi_sink_reports_the_sum_of_its_sinks_drops():
+    class _Dropping(_RecordingSink):
+        def __init__(self, dropped: int) -> None:
+            super().__init__()
+            self.dropped = dropped
+
+        def dropped_events(self) -> int:
+            return self.dropped
+
+    sink = MultiCacheEventSink([_Dropping(2), _RecordingSink(), _Dropping(3)])
+    assert sink.dropped_events() == 5
+
+
+def test_spool_gauges_report_overflow_retries_and_depth(monkeypatch):
+    register = MagicMock()
+    monkeypatch.setattr(cache_events, "register_gauge", register)
+    gate_sink = _GateSink()
+    clock = _Clock()
+    spool = _spool(gate_sink, clock, max_entries=1)
+    gate_sink.fail_before_delivery = 2
+    spool.publish([_batch_for_spool(1)])
+    spool.publish([_batch_for_spool(2)])  # evicts seq 1
+    clock.now += 1.0
+    spool.redeliver()  # fails again: one retry
+
+    cache_events.register_cache_event_metrics(_subscriber(spool), spool)
+
+    gauges = {c.args[1]: c.args[3] for c in register.call_args_list}
+    assert gauges["lmcache_mp.cache_events.events_dropped_total"]() == [
+        (0, {"reason": "bus_overflow"}),
+        (1, {"reason": "spool_overflow"}),
+        (0, {"reason": "rejected"}),
+    ]
+    assert gauges["lmcache_mp.cache_events.publish_retries_total"]() == 1
+    assert gauges["lmcache_mp.cache_events.spool_depth"]() == 1
+
+
+def _batch_for_spool(seq: int) -> CacheEventBatch:
+    return CacheEventBatch(
+        instance_id="node-a",
+        incarnation=7,
+        seq=seq,
+        event_type=CacheEventType.STORE,
+        tier=Tier.L2,
+        backend="fs",
+        entries=[_entry(seq, size_bytes=100)],
+    )
 
 
 # -- Bus integration -----------------------------------------------------------

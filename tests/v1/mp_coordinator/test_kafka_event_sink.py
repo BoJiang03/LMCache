@@ -20,6 +20,7 @@ from lmcache.v1.mp_coordinator.cache_events import (
     CacheEventPublishError,
     HttpCacheEventSink,
     KafkaCacheEventSink,
+    SpoolingCacheEventSink,
     create_cache_event_sink,
 )
 from lmcache.v1.mp_coordinator.schemas import CacheEventsRequest
@@ -254,7 +255,8 @@ def test_kafka_sink_factory_uses_kafka_config(
 def test_sink_factory_preserves_default_http_transport() -> None:
     sink = create_cache_event_sink(CoordinatorConfig(url="http://coordinator:9300"))
 
-    assert isinstance(sink, HttpCacheEventSink)
+    assert isinstance(sink, SpoolingCacheEventSink)
+    assert isinstance(sink._inner, HttpCacheEventSink)
     sink.close()
 
 

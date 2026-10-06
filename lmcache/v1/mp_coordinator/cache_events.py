@@ -13,7 +13,7 @@ emission thread or task. See
 
 # Standard
 from abc import ABC, abstractmethod
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -68,11 +68,32 @@ _KAFKA_MAX_BUFFER_KBYTES = 64 * 1024
 # token-binding event and its last (async L2) store event.
 _TOKEN_BINDING_CACHE_SIZE = 65536
 
+# HTTP spool bound, counted in cache-event entries (a batch with no
+# entries counts as one). Roughly 150 MB even when every entry carries a
+# 256-token chunk's ids.
+_SPOOL_MAX_ENTRIES = 16384
+# Retry backoff after a failed post: doubles from the initial value up to
+# the cap, in seconds.
+_SPOOL_RETRY_INITIAL_BACKOFF = 0.5
+_SPOOL_RETRY_MAX_BACKOFF = 30.0
+# Most entries one spool redelivery sends per publish call, so draining a
+# full spool after an outage is several bounded posts rather than one
+# post too large to finish within the request timeout.
+_SPOOL_PUBLISH_SLICE_ENTRIES = 2048
+
 _METER_NAME = "lmcache.mp_server"
 
 
 class CacheEventPublishError(Exception):
     """A sink failed to deliver a list of cache-event batches."""
+
+
+class CacheEventRejectedError(CacheEventPublishError):
+    """The receiver refused the batches; resending them cannot succeed."""
+
+
+# 4xx statuses that are worth retrying: request timeout and rate limiting.
+_RETRYABLE_CLIENT_STATUSES = frozenset({408, 429})
 
 
 class CacheEventSink(ABC):
@@ -89,6 +110,11 @@ class CacheEventSink(ABC):
     def publish(self, batches: list[CacheEventBatch]) -> None:
         """Deliver ``batches`` to the directory, in list order.
 
+        A sink may instead retain the batches and return without raising;
+        it then delivers them on a later :meth:`publish` or
+        :meth:`redeliver` call, or drops them and counts their entries
+        in :meth:`dropped_events`.
+
         Args:
             batches: The batches to deliver.
 
@@ -98,6 +124,27 @@ class CacheEventSink(ABC):
                 repair only events already retained by a durable source.
         """
         raise NotImplementedError
+
+    def redeliver(self) -> None:  # noqa: B027
+        """Retry, best effort, the batches an earlier :meth:`publish`
+        retained (see there); never raises. A no-op for sinks that retain
+        nothing.
+        The subscriber calls it on flushes with nothing new to publish."""
+        pass
+
+    def dropped_events(self) -> int:
+        """Count the cache events this sink dropped without raising.
+
+        The subscriber adds this count to the ``dropped_events`` it
+        stamps on later batches. A sink that reports a failure by
+        raising leaves the count alone.
+
+        Returns:
+            Cumulative entries of the batches dropped so far; 0 for
+            sinks that do not count their drops this way (e.g. Kafka,
+            whose dropped records show up as ``seq`` gaps only).
+        """
+        return 0
 
     def close(self) -> None:  # noqa: B027
         """Release transport resources. Called once at shutdown."""
@@ -127,8 +174,10 @@ class HttpCacheEventSink(CacheEventSink):
             batches: The batches to deliver.
 
         Raises:
+            CacheEventRejectedError: If the coordinator answered with a
+                4xx status other than 408 or 429.
             CacheEventPublishError: If the request failed or returned
-                a non-2xx status.
+                another non-2xx status.
         """
         body = CacheEventsRequest(batches=batches)
         try:
@@ -137,6 +186,17 @@ class HttpCacheEventSink(CacheEventSink):
                 json=body.model_dump(mode="json"),
             )
             resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            error = (
+                CacheEventRejectedError
+                if 400 <= status < 500 and status not in _RETRYABLE_CLIENT_STATUSES
+                else CacheEventPublishError
+            )
+            raise error(
+                f"failed to publish {len(batches)} cache-event batches to "
+                f"{self._base_url}: {e}"
+            ) from e
         except httpx.HTTPError as e:
             raise CacheEventPublishError(
                 f"failed to publish {len(batches)} cache-event batches to "
@@ -406,10 +466,237 @@ class MultiCacheEventSink(CacheEventSink):
                 + "; ".join(failures)
             )
 
+    def redeliver(self) -> None:
+        """Let every sink retry what it retained."""
+        for sink in self._sinks:
+            sink.redeliver()
+
+    def dropped_events(self) -> int:
+        """Sum the sinks' silently dropped cache events.
+
+        Returns:
+            The total over every sink.
+        """
+        return sum(sink.dropped_events() for sink in self._sinks)
+
     def close(self) -> None:
         """Close every sink, in order."""
         for sink in self._sinks:
             sink.close()
+
+
+def _spool_cost(batch: CacheEventBatch) -> int:
+    """Spool cost of ``batch``: its entry count, at least one."""
+    return max(1, len(batch.entries))
+
+
+class SpoolingCacheEventSink(CacheEventSink):
+    """Sink that retains failed batches and redelivers them in seq order.
+
+    Wraps a non-durable transport (HTTP): every published batch joins the
+    tail of a bounded spool, and the spool drains head-first into the
+    inner sink. A failed attempt keeps the spool and backs off (doubling,
+    capped); later :meth:`publish` and :meth:`redeliver` calls retry once
+    the backoff has elapsed. Batches never overtake each other, so a
+    retried batch reaches the coordinator before any later ``seq``.
+    Redelivery after an uncertain failure may duplicate a batch the
+    coordinator already applied; the gate's ``seq`` dedup drops it.
+
+    When what a failed attempt left retained exceeds the bound, the
+    oldest batches are dropped. A slice the inner sink rejects
+    (:class:`CacheEventRejectedError`) or fails on with any exception
+    other than :class:`CacheEventPublishError` is dropped too, and
+    draining continues. Either way the ``seq`` numbers were assigned
+    already, so the coordinator sees a gap, and the dropped entries are
+    counted in :meth:`dropped_events` for later batches to report.
+
+    Runs on the bus's drain thread like every sink; not thread-safe.
+
+    Args:
+        inner: The transport to deliver through.
+        max_entries: Spool bound in entries (a batch with no entries
+            counts as one).
+        initial_backoff: Seconds to wait after the first failure.
+        max_backoff: Cap on the doubling backoff, in seconds.
+        clock: Monotonic clock in seconds (injectable for tests).
+    """
+
+    def __init__(
+        self,
+        inner: CacheEventSink,
+        max_entries: int = _SPOOL_MAX_ENTRIES,
+        initial_backoff: float = _SPOOL_RETRY_INITIAL_BACKOFF,
+        max_backoff: float = _SPOOL_RETRY_MAX_BACKOFF,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._inner = inner
+        self._max_entries = max_entries
+        self._initial_backoff = initial_backoff
+        self._max_backoff = max_backoff
+        self._clock = clock
+        self._spool: deque[CacheEventBatch] = deque()
+        self._spooled_entries = 0
+        # 0 while healthy; otherwise the backoff after the last failure.
+        self._backoff = 0.0
+        self._next_attempt = 0.0
+        self._retries_total = 0
+        self._overflow_events_total = 0
+        self._rejected_events_total = 0
+
+    def publish(self, batches: list[CacheEventBatch]) -> None:
+        """Spool ``batches`` behind any retained ones and try to drain.
+
+        Never raises: the batches are delivered, retained for a retry, or
+        (spool full) dropped as a visible ``seq`` gap.
+
+        Args:
+            batches: The batches to deliver, in ``seq`` order.
+        """
+        for batch in batches:
+            self._spool.append(batch)
+            self._spooled_entries += _spool_cost(batch)
+        self._drain()
+        self._trim()
+
+    def redeliver(self) -> None:
+        """Retry the retained batches if the backoff has elapsed."""
+        self._drain()
+
+    def close(self) -> None:
+        """Make one last delivery attempt, then close the inner sink."""
+        self._next_attempt = 0.0
+        self._drain()
+        if self._spool:
+            logger.warning(
+                "Abandoning %d spooled cache-event batches at shutdown",
+                len(self._spool),
+            )
+        self._inner.close()
+
+    def spool_depth(self) -> int:
+        """Measure the spool.
+
+        Returns:
+            Entries currently retained for delivery (a batch with no
+            entries counts as one).
+        """
+        return self._spooled_entries
+
+    def retries_total(self) -> int:
+        """Count retries.
+
+        Returns:
+            Cumulative publish attempts made after a failed one.
+        """
+        return self._retries_total
+
+    def overflow_events_total(self) -> int:
+        """Count overflow drops.
+
+        Returns:
+            Cumulative entries dropped because the spool was full.
+        """
+        return self._overflow_events_total
+
+    def rejected_events_total(self) -> int:
+        """Count rejection drops.
+
+        Returns:
+            Cumulative entries dropped because a post cannot succeed.
+        """
+        return self._rejected_events_total
+
+    def dropped_events(self) -> int:
+        """Count the entries dropped on overflow or rejection.
+
+        Returns:
+            Their cumulative total.
+        """
+        return self._overflow_events_total + self._rejected_events_total
+
+    def _trim(self) -> None:
+        """Drop the oldest batches until the spool is within its bound.
+        Called after a drain attempt, so it only trims what an outage left
+        retained."""
+        dropped = 0
+        dropped_entries = 0
+        while self._spool and self._spooled_entries > self._max_entries:
+            batch = self._spool.popleft()
+            self._spooled_entries -= _spool_cost(batch)
+            dropped += 1
+            dropped_entries += len(batch.entries)
+        if dropped:
+            self._overflow_events_total += dropped_entries
+            logger.warning(
+                "Cache-event spool full (%d entries): dropped the %d oldest "
+                "batches (%d entries); later batches report them as lost",
+                self._max_entries,
+                dropped,
+                dropped_entries,
+            )
+
+    def _drain(self) -> None:
+        """Deliver the spool head-first in bounded slices until it is
+        empty or an attempt fails retryably (which arms the backoff).
+        A slice that cannot succeed is dropped."""
+        if not self._spool or self._clock() < self._next_attempt:
+            return
+        while self._spool:
+            batch_slice: list[CacheEventBatch] = []
+            units = 0
+            for batch in self._spool:
+                cost = _spool_cost(batch)
+                if batch_slice and units + cost > _SPOOL_PUBLISH_SLICE_ENTRIES:
+                    break
+                batch_slice.append(batch)
+                units += cost
+            if self._backoff > 0:
+                self._retries_total += 1
+            try:
+                self._inner.publish(batch_slice)
+            except CacheEventRejectedError as e:
+                self._reject(batch_slice, e)
+            except CacheEventPublishError as e:
+                self._backoff = min(
+                    self._max_backoff, max(self._initial_backoff, self._backoff * 2)
+                )
+                # Count the backoff from the end of the failed attempt: a
+                # timeout can last longer than the backoff it arms.
+                self._next_attempt = self._clock() + self._backoff
+                logger.warning(
+                    "Cache-event publish failed; %d batches spooled, retrying "
+                    "in %.1fs: %s",
+                    len(self._spool),
+                    self._backoff,
+                    e,
+                )
+                return
+            except Exception as e:
+                # Not a transport failure (e.g. a batch that fails
+                # validation): resending the same slice would fail again.
+                self._reject(batch_slice, e)
+            for _ in batch_slice:
+                self._spool.popleft()
+            self._spooled_entries -= units
+            self._backoff = 0.0
+            self._next_attempt = 0.0
+
+    def _reject(self, batch_slice: list[CacheEventBatch], error: Exception) -> None:
+        """Count and log a slice that is dropped because it cannot succeed.
+
+        Args:
+            batch_slice: The slice being dropped.
+            error: Why it cannot be delivered.
+        """
+        entries = sum(len(batch.entries) for batch in batch_slice)
+        self._rejected_events_total += entries
+        logger.warning(
+            "Dropping %d cache-event batches (%d entries) that cannot be "
+            "delivered; later batches report them as lost: %r",
+            len(batch_slice),
+            entries,
+            error,
+        )
 
 
 @dataclass(frozen=True)
@@ -544,18 +831,21 @@ class CacheEventSubscriber(EventSubscriber):
     def flush(self) -> None:
         """Drain the buffer and publish one batch per pending batch.
 
-        Every batch carries ``dropped_events``: the cache events this
-        subscriber has lost so far. Publish failures are logged and the
-        drained list is dropped.
+        Every batch carries ``dropped_events``: the cache events lost so
+        far, to bus overflow or dropped by the sink
+        (:meth:`CacheEventSink.dropped_events`). With nothing to publish, the sink
+        retries what it retained instead. A sink that raises loses the
+        drained list (its seqs stay consumed); the failure is logged.
         """
         if not self._pending_batches and self._pending_capacity is None:
+            self._sink.redeliver()
             return
         pending_batches = self._pending_batches
         self._pending_batches = []
         capacity = self._pending_capacity
         self._pending_capacity = None
         ts = time.time()
-        dropped_events = self.bus_dropped_events_total()
+        dropped_events = self.bus_dropped_events_total() + self._sink.dropped_events()
         # Declaration first, so a flush that also carries placements gives
         # the coordinator its denominator before the bytes it divides.
         batches = self._capacity_batches(capacity, ts, dropped_events)
@@ -798,7 +1088,7 @@ def create_cache_event_sink(config: CoordinatorConfig) -> CacheEventSink:
         config: Coordinator connection and event-sink configuration.
 
     Returns:
-        The configured HTTP or Kafka sink.
+        The Kafka sink, or the HTTP sink behind a retrying spool.
 
     Raises:
         ValueError: If HTTP delivery is selected without a coordinator URL.
@@ -807,24 +1097,51 @@ def create_cache_event_sink(config: CoordinatorConfig) -> CacheEventSink:
         return KafkaCacheEventSink(config.event_sink_config)
     if not config.url:
         raise ValueError("HTTP cache-event reporting requires a coordinator URL")
-    return HttpCacheEventSink(config.url)
+    return SpoolingCacheEventSink(HttpCacheEventSink(config.url))
 
 
-def register_cache_event_metrics(subscriber: CacheEventSubscriber) -> None:
-    """Register the emitter's delivery-loss gauge.
+def register_cache_event_metrics(
+    subscriber: CacheEventSubscriber, spool: SpoolingCacheEventSink | None
+) -> None:
+    """Register the emitter's delivery-loss gauges.
 
     Args:
         subscriber: The subscriber whose bus-overflow drops to report.
+        spool: The HTTP spool whose overflow and rejection drops,
+            retries and depth to report, or ``None`` when the stream has
+            no spooling sink.
     """
 
     def _dropped() -> list[tuple[int | float, dict[str, object]]]:
-        return [(subscriber.bus_dropped_events_total(), {"reason": "bus_overflow"})]
+        observations: list[tuple[int | float, dict[str, object]]] = [
+            (subscriber.bus_dropped_events_total(), {"reason": "bus_overflow"})
+        ]
+        if spool is not None:
+            observations.append(
+                (spool.overflow_events_total(), {"reason": "spool_overflow"})
+            )
+            observations.append((spool.rejected_events_total(), {"reason": "rejected"}))
+        return observations
 
     register_gauge(
         _METER_NAME,
         "lmcache_mp.cache_events.events_dropped_total",
         "Cache events (one per key) lost before reaching the coordinator, by reason.",
         _dropped,
+    )
+    if spool is None:
+        return
+    register_gauge(
+        _METER_NAME,
+        "lmcache_mp.cache_events.publish_retries_total",
+        "Cache-event publish attempts made after a failed one.",
+        spool.retries_total,
+    )
+    register_gauge(
+        _METER_NAME,
+        "lmcache_mp.cache_events.spool_depth",
+        "Cache-event entries retained for redelivery.",
+        spool.spool_depth,
     )
 
 
@@ -850,12 +1167,16 @@ def maybe_create_cache_event_subscriber(
         The subscriber to register on the event bus, or ``None``.
     """
     sinks: list[CacheEventSink] = []
+    spool: SpoolingCacheEventSink | None = None
     if (
         http_config is not None
         and coordinator_config.url
         and coordinator_config.event_reporting
     ):
-        sinks.append(create_cache_event_sink(coordinator_config))
+        sink = create_cache_event_sink(coordinator_config)
+        if isinstance(sink, SpoolingCacheEventSink):
+            spool = sink
+        sinks.append(sink)
     trace_sink: TraceCacheEventSink | None = None
     recorder = get_active_trace_recorder()
     if isinstance(recorder, EventsTraceRecorder):
@@ -880,5 +1201,5 @@ def maybe_create_cache_event_subscriber(
         incarnation=incarnation,
         flush_interval=coordinator_config.event_flush_interval,
     )
-    register_cache_event_metrics(subscriber)
+    register_cache_event_metrics(subscriber, spool)
     return subscriber
