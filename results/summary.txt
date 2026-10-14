@@ -1,0 +1,28 @@
+== c200: 1378 requests
+  TTFT ms   p50     1641  p90     4316  p99     9339
+  tok/s/user p50    20.8  p10    12.4  p1      7.7
+  output tok/s total 1659
+  uncached  p50     2052  p90    11029  max   104876
+  10.2.201.16: requests 706  external_kv_transfer 10188032  local_cache_hit 43885824  local_compute 3902390
+  10.2.201.26: requests 672  external_kv_transfer 7930112  local_cache_hit 44094976  local_compute 3264840
+== A2_rail7_c200: 1389 requests
+  TTFT ms   p50     1633  p90     3868  p99     7659
+  tok/s/user p50    21.0  p10    12.3  p1      6.0
+  output tok/s total 1740
+  uncached  p50     2088  p90    10347  max   104876
+  10.2.201.16: requests 643  external_kv_transfer 8397568  local_cache_hit 44077568  local_compute 3270489
+  10.2.201.26: requests 746  external_kv_transfer 10341888  local_cache_hit 44722944  local_compute 3888704
+== B_rail1_c200: 1402 requests
+  TTFT ms   p50     1578  p90     3997  p99     7176
+  tok/s/user p50    20.9  p10    12.4  p1      7.7
+  output tok/s total 1706
+  uncached  p50     2065  p90    10516  max   104874
+  10.2.201.16: requests 615  external_kv_transfer 9306624  local_cache_hit 40625408  local_compute 3222894
+  10.2.201.26: requests 787  external_kv_transfer 9869568  local_cache_hit 48498176  local_compute 4001872
+== prtcfg_c32: 151 requests
+  TTFT ms   p50      563  p90     1399  p99     2690
+  tok/s/user p50    75.9  p10    36.4  p1     20.5
+  output tok/s total 465
+  uncached  p50     1059  p90     5553  max    39446
+  10.2.201.16: requests 23  external_kv_transfer 135424  local_cache_hit 1244928  local_compute 114474
+  10.2.201.26: requests 128  external_kv_transfer 922624  local_cache_hit 8487680  local_compute 323595
