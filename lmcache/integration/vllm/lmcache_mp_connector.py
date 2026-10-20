@@ -429,6 +429,7 @@ def get_mamba_step_extra_blocks(
 def get_prefill_alignment(
     vllm_config: VllmConfig,
     kv_cache_config: "KVCacheConfig | None",
+    mamba_groups: dict[int, int],
 ) -> int:
     """Return what a prefill chunk short of the prompt's end ends on.
 
@@ -439,13 +440,13 @@ def get_prefill_alignment(
     Args:
         vllm_config: The active vLLM configuration.
         kv_cache_config: vLLM's resolved KV cache group configuration.
+        mamba_groups: What ``get_mamba_step_extra_blocks`` returned for the
+            same configs; chunks align only when it holds a group.
 
     Returns:
         The alignment in tokens, or 0 when chunks may end anywhere.
     """
-    if kv_cache_config is None or not get_mamba_step_extra_blocks(
-        vllm_config, kv_cache_config
-    ):
+    if kv_cache_config is None or not mamba_groups:
         return 0
     scheduler_config = vllm_config.scheduler_config
     max_prefill_tokens = (
@@ -918,6 +919,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                         f"tokens_per_block {tokens_per_block}"
                     )
             if self.lazy_offload:
+                mamba_groups = get_mamba_step_extra_blocks(vllm_config, kv_cache_config)
                 self._lazy_offload_manager = LazyOffloadManager(
                     vllm_config.kv_transfer_config.kv_connector_extra_config,
                     self._group_tokens_per_block,
@@ -935,11 +937,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     num_lookahead_tokens=(
                         (spec_config.num_speculative_tokens or 0) if spec_config else 0
                     ),
-                    mamba_groups=get_mamba_step_extra_blocks(
-                        vllm_config, kv_cache_config
-                    ),
+                    mamba_groups=mamba_groups,
                     prefill_alignment=get_prefill_alignment(
-                        vllm_config, kv_cache_config
+                        vllm_config, kv_cache_config, mamba_groups
                     ),
                 )
 

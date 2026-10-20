@@ -39,6 +39,8 @@ CONFIGS = {"lmcache.mp.lazy_offload_max_deferral_seconds": 1e-9}
 
 
 class _NoReceipts:
+    """Receipts sink that never confirms a store."""
+
     def update_pending_store_count(self, request_id: str, count: int, /) -> bool:
         return False
 
@@ -93,6 +95,7 @@ def _manager(
     prefill_alignment: int = 0,
     num_lookahead_tokens: int = 0,
 ) -> LazyOffloadManager:
+    """Build a two-group manager bound to ``pool``."""
     manager = LazyOffloadManager(
         CONFIGS if configs is None else configs,
         [TOKENS_PER_BLOCK, TOKENS_PER_BLOCK],
@@ -770,13 +773,15 @@ def test_aligned_prefill_crossing_costs_a_whole_block(
     assert (actions.stores_to_submit != []) is stored
 
 
-def test_leftover_tokens_short_of_a_crossing_reach_no_block() -> None:
-    """A crossing is paid in whole tokens or not at all.
+def test_leftover_tokens_short_of_a_crossing_reach_at_most_one_block() -> None:
+    """Tokens short of a crossing buy at most one more block per group.
 
     Four requests each need a full block's worth of tokens to cross into a
-    new one, and the step has room for two crossings and one token more:
-    the token cannot buy part of a third block, so each group still takes
-    at most two and the fifth buffered block is out of reach.
+    new one, and the step has room for two crossings and one token more.
+    No schedule takes a third block per group with that token, but the
+    bound takes its crossings fractionally and rounds the last one up, so
+    it counts three per group: the fifth and sixth queue positions are
+    the slack, and the seventh is out of reach.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -790,7 +795,7 @@ def test_leftover_tokens_short_of_a_crossing_reach_no_block() -> None:
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
         manager.on_admission(request_id, 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[4]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[6]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -798,6 +803,47 @@ def test_leftover_tokens_short_of_a_crossing_reach_no_block() -> None:
     )
 
     assert actions.stores_to_submit == []
+
+
+@pytest.mark.parametrize(
+    ("position", "stored"), [(5, True), (6, False)], ids=["in-reach", "past-reach"]
+)
+def test_lookahead_slots_count_within_the_token_budget(
+    position: int, stored: bool
+) -> None:
+    """Draft-token slots let a few scheduled tokens cross a block.
+
+    Two prefilling requests have computed one block and, with four
+    lookahead slots, hold a second. One token each puts their slots into a
+    third block; the six-token step then has four tokens left, one block's
+    worth, for one more crossing. That is three blocks per group: the
+    sixth queue position is in reach, the seventh is not. Counting the
+    scheduled tokens alone would reach two per group.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    manager = _manager(
+        pool,
+        configs={},
+        receipts=_Receipts(),
+        max_step_tokens=TOKENS_PER_BLOCK + 2,
+        num_lookahead_tokens=TOKENS_PER_BLOCK,
+    )
+    running = [f"running-{index}" for index in range(2)]
+    for request_id in running:
+        manager.on_admission(request_id, 100, 0, 0, load_async=False)
+    manager.add_store_candidate(_op(0, [[ids[position]], [null]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+
+    actions = manager.on_scheduler_step(
+        _step(
+            {request_id: TOKENS_PER_BLOCK for request_id in running},
+            tables={request_id: ([null] * 2,) * 2 for request_id in running},
+        )
+    )
+
+    assert (actions.stores_to_submit != []) is stored
 
 
 @pytest.mark.parametrize(

@@ -29,7 +29,6 @@ ones defined in ``lazy_offload_policy.base``:
 # Standard
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
-import math
 
 # First Party
 from lmcache.integration.vllm.lazy_offload_policy import create_offload_policy
@@ -694,10 +693,10 @@ class LazyOffloadManager:
                 self._handed_blocks[request_id] = [set(group) for group in groups]
                 self._table_lengths[request_id] = [len(group) for group in groups]
                 continue
-            known = self._handed_blocks.setdefault(
-                request_id, [set() for _ in range(num_groups)]
-            )
-            lengths = self._table_lengths.setdefault(request_id, [0] * num_groups)
+            # vLLM moves a request into its running queue only by scheduling
+            # it new or resumed, so its table is already recorded.
+            known = self._handed_blocks[request_id]
+            lengths = self._table_lengths[request_id]
             for group_idx, group in enumerate(groups):
                 handed = set(group)
                 allocated += len(handed - known[group_idx] - {null_block_id})
@@ -722,8 +721,6 @@ class LazyOffloadManager:
         Returns:
             The bound, over every running request and KV-cache group.
         """
-        for request_id in scheduler_output.finished_req_ids:
-            self._forget_progress(request_id)
         for request_id in scheduler_output.preempted_req_ids or ():
             self._forget_progress(request_id)
         scheduled = scheduler_output.num_scheduled_tokens
@@ -772,10 +769,13 @@ class LazyOffloadManager:
         crossing cost up to a whole block too. An align-mode Mamba group
         takes one state block per step, plus its extra blocks.
 
-        Every crossing yields as many blocks as any other in the common
-        case, so the cheapest crossings that fit the budget whole are the
-        most any schedule allocates. Otherwise the cheapest blocks per
-        token are taken first, fractionally, which bounds it too.
+        The bound is the fractional knapsack over every crossing with the
+        step's token budget: the cheapest blocks per token are taken first,
+        and the crossing the budget ends in counts in full. Dropping the
+        rule that a request's further crossings need its first one only
+        raises the optimum, so the bound is at least what any schedule
+        allocates; the crossing taken in part costs at most one crossing
+        more, and only on a step the budget binds.
 
         Args:
             running: Per running request: its computed tokens, the most
@@ -791,7 +791,8 @@ class LazyOffloadManager:
         mamba_extra = self._mamba_groups.get(group_idx)
         lookahead = 0 if mamba_extra is not None else self._num_lookahead_tokens
         alignment = self._prefill_alignment
-        first_blocks: list[tuple[int, int]] = []  # (token cost, blocks)
+        # (token cost, blocks yielded, count) per kind of crossing.
+        crossings: list[tuple[int, int, int]] = []
         num_further = 0
         for num_computed, max_scheduled, remaining, lengths in running:
             # Mamba tables also hold the state blocks reserved per draft
@@ -815,74 +816,27 @@ class LazyOffloadManager:
                 if cost > max_scheduled:
                     continue
             if mamba_extra is not None:
-                first_blocks.append((cost, 1 + mamba_extra))
+                crossings.append((cost, 1 + mamba_extra, 1))
                 continue
             blocks = (
                 -(-(num_computed + cost + lookahead) // tokens_per_block)
                 - num_allocated
             )
-            first_blocks.append((cost, blocks))
+            crossings.append((cost, blocks, 1))
             num_further += reachable - blocks
-        if len({blocks for _, blocks in first_blocks}) <= 1 and (
-            not num_further or all(blocks == 1 for _, blocks in first_blocks)
-        ):
-            return self._whole_crossings(first_blocks, num_further, tokens_per_block)
-        budget = float(self._max_step_tokens)
-        bound = 0.0
-        for cost, blocks in sorted(first_blocks, key=lambda item: item[0] / item[1]):
-            if cost > budget:
-                bound += blocks * budget / cost
-                break
-            budget -= cost
-            bound += blocks
-        else:
-            bound += min(num_further, budget / tokens_per_block)
-        return math.ceil(bound)
-
-    def _whole_crossings(
-        self,
-        first_blocks: list[tuple[int, int]],
-        num_further: int,
-        tokens_per_block: int,
-    ) -> int:
-        """Bound a group's new blocks when every crossing yields as many.
-
-        Each crossing is paid in full, so with equal yields the most blocks
-        come from the cheapest crossings that fit the budget. That makes a
-        further block a crossing at a whole block's cost too, ignoring
-        that it needs its request's first one, which can only overcount.
-
-        Args:
-            first_blocks: Per request that can cross: the tokens its first
-                crossing costs and the blocks it yields, the same for all.
-            num_further: Further blocks the requests can reach, one each.
-            tokens_per_block: Tokens per block in the group.
-
-        Returns:
-            The bound for the group.
-        """
-        if not first_blocks:
-            return 0
-        costs = sorted(cost for cost, _ in first_blocks)
+        crossings.append((tokens_per_block, 1, num_further))
         budget = self._max_step_tokens
-        crossings = 0
-        index = 0
-        while True:
-            if index < len(costs) and (
-                not num_further or costs[index] <= tokens_per_block
-            ):
-                cost = costs[index]
-                index += 1
-            elif num_further:
-                cost = tokens_per_block
-                num_further -= 1
-            else:
+        bound = 0
+        for cost, blocks, count in sorted(
+            crossings, key=lambda item: item[0] / item[1]
+        ):
+            taken = min(count, budget // cost)
+            bound += taken * blocks
+            budget -= taken * cost
+            if taken < count:
+                bound += -(-blocks * budget // cost)
                 break
-            if cost > budget:
-                break
-            budget -= cost
-            crossings += 1
-        return crossings * first_blocks[0][1]
+        return bound
 
     def _chunk_tokens(self, remaining: int) -> int:
         """Bound the slots one scheduled chunk of a request allocates.

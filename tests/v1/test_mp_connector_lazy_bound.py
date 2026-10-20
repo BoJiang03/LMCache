@@ -3,6 +3,7 @@
 align-mode Mamba groups' blocks per step and the prefill chunk alignment."""
 
 # Standard
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 import importlib.util
@@ -50,6 +51,7 @@ def _vllm_config(
     max_num_batched_tokens: int = 2 * BLOCK_SIZE - 1,
     long_prefill_token_threshold: int = 0,
 ) -> SimpleNamespace:
+    """Build the cache and scheduler fields the helpers read."""
     return SimpleNamespace(
         cache_config=SimpleNamespace(
             block_size=BLOCK_SIZE,
@@ -64,7 +66,7 @@ def _vllm_config(
     )
 
 
-def _import_helpers():
+def _import_helpers() -> tuple[Callable, Callable]:
     """Import helpers lazily because their module imports vLLM."""
     # First Party
     from lmcache.integration.vllm.lmcache_mp_connector import (
@@ -100,11 +102,13 @@ def test_checkpoints_and_partial_hits_add_blocks() -> None:
 
 @requires_vllm
 def test_mamba_outside_align_mode_is_not_capped() -> None:
+    """Without align mode, no Mamba group is capped and prefill is unaligned."""
     get_mamba_step_extra_blocks, get_prefill_alignment = _import_helpers()
     config = _vllm_config(mamba_cache_mode="none")
+    mamba_groups = get_mamba_step_extra_blocks(config, _kv_cache_config())
 
-    assert get_mamba_step_extra_blocks(config, _kv_cache_config()) == {}
-    assert get_prefill_alignment(config, _kv_cache_config()) == 0
+    assert mamba_groups == {}
+    assert get_prefill_alignment(config, _kv_cache_config(), mamba_groups) == 0
 
 
 @pytest.mark.parametrize(
@@ -120,10 +124,12 @@ def test_mamba_outside_align_mode_is_not_capped() -> None:
 def test_prefill_aligns_only_when_a_block_fits_a_chunk(
     max_num_batched_tokens: int, long_prefill_token_threshold: int, alignment: int
 ) -> None:
-    _, get_prefill_alignment = _import_helpers()
+    """Prefill aligns to a block only when a whole block fits one chunk."""
+    get_mamba_step_extra_blocks, get_prefill_alignment = _import_helpers()
     config = _vllm_config(
         max_num_batched_tokens=max_num_batched_tokens,
         long_prefill_token_threshold=long_prefill_token_threshold,
     )
+    mamba_groups = get_mamba_step_extra_blocks(config, _kv_cache_config())
 
-    assert get_prefill_alignment(config, _kv_cache_config()) == alignment
+    assert get_prefill_alignment(config, _kv_cache_config(), mamba_groups) == alignment

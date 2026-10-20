@@ -183,14 +183,16 @@ the true vLLM hit instead of 0.
   config (`get_prefill_alignment`, `get_mamba_step_extra_blocks`). Without
   them, every prefilling request at a block boundary counted 2 blocks for
   1 token per group, and hold7's bound came out 3.83x the measured
-  allocation. When every crossing yields as many blocks (the common case:
-  one each, or `1 + extra` in a Mamba group), the bound is the most
-  crossings whose costs, cheapest first, fit `B` whole: a crossing is paid
-  in full or not at all. Otherwise it is the fractional knapsack over those
-  blocks with budget `B`. Either is at least what any schedule allocates.
+  allocation. The bound is the fractional knapsack over every crossing
+  with budget `B`: crossings sorted by tokens per block, taken whole while
+  they fit, and the one the budget ends in rounded up to its full blocks.
+  It ignores that a further crossing needs its request's first one, which
+  can only overcount, so it is at least what any schedule allocates; the
+  rounding costs at most one crossing per group, on a step `B` binds.
   On a replay of the hold7 workload (simulated, Qwen3.5-122B-A10B, N=104),
-  the table length and whole crossings bring the bound from 1.47x to 1.01x
-  the allocation, with no step over it. It is the token budget that keeps it tight: summing each
+  the table length and the token budget bring the bound from 1.47x to
+  1.01x the allocation, with no step over it (measured with crossings paid
+  whole, before the rounded-up one). It is the token budget that keeps it tight: summing each
   request's own reach instead counts a full chunk for every prefilling
   request, several times what one step can schedule. Spec-decode
   rejections only lower `c`. Free-queue *position* alone is never a
@@ -243,10 +245,6 @@ the true vLLM hit instead of 0.
   which always holds the op that made it overdue, and the ops behind that keep
   their own admission clocks and come due on their own deadlines. `0.0`, the
   default, disables it.
-- **Horizon calibration.** The default 2.5 steps came from a sweep over
-  2.0-8.0 on two opposing Qwen3-8B/H200 workloads, balancing eviction loss
-  (pushes it up) against store filtering (pushes it down). Calibrated, not
-  universal.
 - **Prefix closure**: a due op releases the request's ops from the front
   through the last due one; a data-loss drop (hash mismatch) drops from the
   first lost op through the tail and blacklists the request's later chunks;
@@ -254,9 +252,10 @@ the true vLLM hit instead of 0.
 - Cross-request drain order = min due rank ascending; `max_drain_per_step`
   bounds the per-step D2H burst in operations. The cap may split a request's
   due segment but only ever emits a front slice of it, so within-request
-  prefix order is preserved. Sized below the concurrent prefill admission
-  rate it becomes a steady-state loss setting rather than burst shaping;
-  `configuration.rst` states the rule.
+  prefix order is preserved. Due ops past the cap are not lost: they move
+  to the free-queue tail (held instead on a squeezed drain) and wait for a
+  later drain, so a low cap delays stores and reorders GPU prefix-cache
+  eviction; `configuration.rst` states the rule.
 - **Idle consequences**: receipts travel in worker metadata, which flows on
   every step, including steps that schedule no tokens. Those steps drain as
   well, which a squeezed admission needs: its pins can leave no waiting

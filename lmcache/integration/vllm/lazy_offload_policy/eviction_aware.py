@@ -9,6 +9,7 @@ deadline. Pure policy: it decides, ``LazyOffloadManager`` acts. See
 """
 
 # Standard
+from collections.abc import Container
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, cast
 import time
@@ -50,6 +51,21 @@ _HELD_RANK = 1 << 61
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
 _DROP_LOG_SAMPLE_REQUESTS = 8  # Dropped requests named in the drop line.
+
+
+def _pending_item(request_id: str, ops: "list[PendingStoreOp]") -> PendingStoreItem:
+    """Hand one request's buffered ops to the manager, in prefix order.
+
+    Args:
+        request_id: The request the ops belong to.
+        ops: The ops, each paired in the item with its hash snapshot.
+
+    Returns:
+        The item carrying every op of ``ops``.
+    """
+    item = PendingStoreItem(request_id=request_id)
+    item.metadatas.extend((op.store_metadata, op.block_hashes) for op in ops)
+    return item
 
 
 @dataclass
@@ -323,20 +339,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             for index, op in enumerate(ops)
             for block_id in op.block_hashes
         }
+        ranks, reaches_tail = self._free_queue_ranks(num_blocks, owners.keys())
         last_met: dict[str, int] = {}
-        consumed = 0
-        block = self._pool.free_block_queue.fake_free_list_head.next_free_block
-        while block is not None and block.next_free_block is not None:
-            if consumed >= num_blocks:
-                break
-            owner = owners.get(block.block_id)
-            if owner is None:
-                consumed += 1
-            else:
+        for block_id in ranks:
+            owner = owners.get(block_id)
+            if owner is not None:
                 request_id, index = owner
                 last_met[request_id] = max(last_met.get(request_id, -1), index)
-            block = block.next_free_block
-        reaches_tail = consumed < num_blocks
         if reaches_tail and self._pending:
             self._counters.squeezed_admissions += 1
             # Blocks freed between this walk and the allocation, as running
@@ -355,10 +364,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 end += 1
             if end <= start:
                 continue
-            item = PendingStoreItem(request_id=request_id)
-            item.metadatas.extend(
-                (op.store_metadata, op.block_hashes) for op in ops[start:end]
-            )
+            item = _pending_item(request_id, ops[start:end])
             if reaches_tail:
                 self._held[request_id] = end
                 self._counters.held += end - start
@@ -497,6 +503,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 for block_id in pending_op.block_hashes
             },
         )
+        if reaches_tail:
+            self._counters.squeezed_drains += 1
         overdue_cutoff = self._now - self._config.max_deferral_seconds
         drain = LazyOffloadDrain()
         dropped_ops = 0
@@ -532,12 +540,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 if target > held:
                     self._held[request_id] = target
                     self._counters.held += target - held
-                    item = PendingStoreItem(request_id=request_id)
-                    item.metadatas.extend(
-                        (op.store_metadata, op.block_hashes)
-                        for op in surviving[held:target]
+                    drain.holds.append(
+                        _pending_item(request_id, surviving[held:target])
                     )
-                    drain.holds.append(item)
                 continue
             overdue = (
                 self._config.max_deferral_seconds > 0.0
@@ -608,28 +613,20 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             if not is_overdue and len(due_ops) > len(emitted):
                 # Over budget, yet the running requests may recycle these
                 # before the next drain: move them out of reach.
-                item = PendingStoreItem(request_id=request_id)
-                item.metadatas.extend(
-                    (op.store_metadata, op.block_hashes)
-                    for op in due_ops[max(held, len(emitted)) :]
-                )
-                if item.metadatas and reaches_tail:
+                moved = due_ops[max(held, len(emitted)) :]
+                if moved and reaches_tail:
                     # The next step may take the tail too: pin instead.
                     self._held[request_id] = len(due_ops) - len(emitted)
-                    self._counters.held += len(item.metadatas)
-                    drain.holds.append(item)
-                elif item.metadatas:
-                    drain.to_tail.append(item)
+                    self._counters.held += len(moved)
+                    drain.holds.append(_pending_item(request_id, moved))
+                elif moved:
+                    drain.to_tail.append(_pending_item(request_id, moved))
             if not emitted:
                 continue
             self._counters.emitted += len(emitted)
             if is_overdue:
                 self._counters.emitted_overdue += len(emitted)
-            item = PendingStoreItem(request_id=request_id)
-            item.metadatas.extend(
-                (op.store_metadata, op.block_hashes) for op in emitted
-            )
-            drain.items.append(item)
+            drain.items.append(_pending_item(request_id, emitted))
             remaining = ops[len(emitted) :]
             if remaining:
                 self._pending[request_id] = remaining
@@ -654,19 +651,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         return self._next_step_blocks + self._resuming_blocks
 
     def _free_queue_ranks(
-        self, depth: int, pending_blocks: set[int]
+        self, depth: int, pending_blocks: "Container[int]"
     ) -> tuple[dict[int, int], bool]:
-        """The free-queue head the next step can recycle, id -> eviction rank.
+        """The free-queue head an allocation can recycle, id -> eviction rank.
 
-        A buffered block met in the walk is due, so the drain pins it or
-        moves it to the tail, and every block behind it moves up: the walk
-        runs until ``depth`` blocks outside buffered ops are counted, as
-        :meth:`protect` does. Walks the queue's links lazily rather than
+        A buffered block met in the walk is due, or protected, so it leaves
+        the queue or moves to the tail, and every block behind it moves up:
+        the walk runs until ``depth`` blocks outside buffered ops are
+        counted. Walks the queue's links lazily rather than
         ``get_all_free_blocks()``, which materialises the whole queue every
         step.
 
         Args:
-            depth: How many blocks the next step can take from the queue
+            depth: How many blocks the allocation can take from the queue
                 head. Zero or less returns an empty mapping without
                 touching the queue.
             pending_blocks: Every block a buffered op covers.
@@ -674,7 +671,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         Returns:
             Block id to its position from the head, lowest evicted first,
             and whether the walk reached the queue tail before counting
-            ``depth`` blocks, so the next step may take the whole queue.
+            ``depth`` blocks, so the allocation may take the whole queue.
 
         Raises:
             RuntimeError: If the fake head has no successor.
@@ -692,8 +689,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             if block.block_id not in pending_blocks:
                 counted += 1
             block = block.next_free_block
-        if counted < depth:
-            self._counters.squeezed_drains += 1
         return ranks, counted < depth
 
     def _drop_evicted_suffix(
