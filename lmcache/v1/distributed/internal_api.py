@@ -144,6 +144,13 @@ class L1ManagerListener(EventListener):
         """
         pass
 
+    def on_l1_out_of_memory(self) -> None:
+        """Notify the listener that a write reservation found L1 full.
+
+        Not abstract: only listeners that free memory need it.
+        """
+        pass
+
 
 class L2AdapterListener(EventListener):
     """Listener for L2 adapter events, analogous to L1ManagerListener."""

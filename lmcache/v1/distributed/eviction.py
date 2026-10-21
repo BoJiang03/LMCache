@@ -180,8 +180,13 @@ class L1EvictionPolicy(L1ManagerListener):
     the policy logic decoupled from the listener interface.
     """
 
-    def __init__(self, policy: EvictionPolicy):
+    def __init__(
+        self,
+        policy: EvictionPolicy,
+        on_out_of_memory: Callable[[], None] | None = None,
+    ):
         self._policy = policy
+        self._on_out_of_memory = on_out_of_memory
 
     @property
     def policy(self) -> EvictionPolicy:
@@ -213,6 +218,10 @@ class L1EvictionPolicy(L1ManagerListener):
 
     def on_l1_keys_accessed(self, keys: list[ObjectKey]):
         self._policy.on_keys_touched(keys)
+
+    def on_l1_out_of_memory(self) -> None:
+        if self._on_out_of_memory is not None:
+            self._on_out_of_memory()
 
 
 class L2EvictionPolicy(L2AdapterListener):

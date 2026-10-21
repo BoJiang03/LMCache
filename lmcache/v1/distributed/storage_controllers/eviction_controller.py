@@ -103,7 +103,12 @@ class L1EvictionController(EvictionController):
         self._eviction_config = eviction_config
         self._eviction_policy = CreateEvictionPolicy(eviction_config)
         self._l1_manager = l1_manager
-        self._listener = L1EvictionPolicy(self._eviction_policy)
+        # An allocation that finds L1 full wakes the loop at once instead of
+        # failing writes until the next periodic check.
+        self._wake = threading.Event()
+        self._listener = L1EvictionPolicy(
+            self._eviction_policy, on_out_of_memory=self._wake.set
+        )
         self._l1_manager.register_listener(self._listener)
         self._event_bus = get_event_bus()
         self._last_extra_log = time.monotonic()
@@ -162,12 +167,13 @@ class L1EvictionController(EvictionController):
         eviction_ratio = self._eviction_config.eviction_ratio
 
         while not self._stop_flag.is_set():
-            time.sleep(1)
+            out_of_memory = self._wake.wait(1)
+            self._wake.clear()
             used_bytes, total_bytes = self._l1_manager.get_memory_usage()
             if self._eviction_config.extra_logging_enabled:
                 self._maybe_log_memory_usage(used_bytes, total_bytes)
             usage = 0 if total_bytes == 0 else used_bytes / total_bytes
-            if usage < watermark:
+            if usage < watermark and not out_of_memory:
                 logger.debug(
                     "L1 memory usage %.2f below watermark %.2f; skipping eviction.",
                     usage,

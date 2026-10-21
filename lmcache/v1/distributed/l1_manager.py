@@ -551,6 +551,8 @@ class L1Manager(L1ManagerInterface):
             # Free the memory if partial allocation succeeded
             if allocated_objs:
                 self._memory_manager.free(allocated_objs)
+            for listener in self._registered_listeners:
+                listener.on_l1_out_of_memory()
 
         else:
             for (key, is_temp), mem_obj in zip(
