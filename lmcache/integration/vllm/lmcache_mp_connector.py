@@ -1431,7 +1431,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         # may poll this method repeatedly before that admission; do not submit
         # another lookup or re-enter WAITING_FOR_REMOTE_KVS in the meantime.
         if tracker.state == LMCacheMPRequestState.BYPASS_LMCACHE:
-            return self._report_admission(request, 0, False)
+            return self._report_admission(request, num_computed_tokens, 0, False)
 
         # A completed async load normally leaves num_computed_tokens > 0, so
         # the scheduler does not call this method again.  If vLLM reset the
@@ -1459,7 +1459,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             tracker.num_lmcache_hit_tokens = 0
             tracker.apc_covered_tokens = 0
             tracker.state = LMCacheMPRequestState.BYPASS_LMCACHE
-            return self._report_admission(request, 0, False)
+            return self._report_admission(request, num_computed_tokens, 0, False)
 
         # APC-covered lookup start (0 = none; stays 0 after a shrink):
         # the vLLM hit floored to every group's paged-chunk boundary and the
@@ -1551,7 +1551,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             return None, True
 
         if ret == 0:
-            return self._report_admission(request, 0, False)
+            return self._report_admission(request, num_computed_tokens, 0, False)
 
         assert ret % self.scheduler_adapter.lmcache_tokens_per_chunk == 0
 
@@ -1579,7 +1579,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         logger.debug(
             "vLLM hit is: %d, Need to load is %d", num_computed_tokens, need_to_load
         )
-        return self._report_admission(request, need_to_load, need_to_load > 0)
+        return self._report_admission(
+            request, num_computed_tokens, need_to_load, need_to_load > 0
+        )
 
     def on_new_request(self, request: "Request") -> None:
         """Submit an LMCache lookup when a request enters the waiting queue.
@@ -1749,6 +1751,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         if not self.lazy_offload:
             return
+        # vLLM resumes these requests next step without asking for a hit.
+        self._lazy_offload_manager.on_loads_finished(
+            set(connector_output.finished_recving or ())
+        )
         meta = connector_output.kv_connector_worker_meta
         if not isinstance(meta, LMCacheMPWorkerMetadata):
             return
@@ -2116,18 +2122,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     def _report_admission(
         self,
         request: "Request",
+        num_computed_tokens: int,
         num_external_tokens: int,
         load_async: bool,
     ) -> tuple[int, bool]:
         """Report a resolved lookup to lazy offload and pass its result on.
 
-        vLLM admits the request right after ``get_num_new_matched_tokens``
-        returns a count; lazy offload bounds what it allocates once running
-        by its token count.
+        vLLM allocates the request's blocks right after
+        ``get_num_new_matched_tokens`` returns a count, from the free-queue
+        head, before the step's drain can store there.
 
         Args:
             request: The request being admitted.
-            num_external_tokens: The external hit beyond the local one.
+            num_computed_tokens: The locally computed tokens.
+            num_external_tokens: The external hit beyond them.
             load_async: Whether that hit is loaded asynchronously.
 
         Returns:
@@ -2137,5 +2145,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             self._lazy_offload_manager.on_admission(
                 request.request_id,
                 len(request.all_token_ids),
+                num_computed_tokens,
+                num_external_tokens,
+                load_async,
             )
         return num_external_tokens, load_async

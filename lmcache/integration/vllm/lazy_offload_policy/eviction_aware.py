@@ -16,6 +16,7 @@ import time
 
 # First Party
 from lmcache.integration.vllm.lazy_offload_policy.base import (
+    AdmissionProtection,
     BlockHashes,
     ConfigValue,
     DrainSignals,
@@ -238,11 +239,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
 
     One rule decides when to store: an operation is due once one of its
     blocks sits within the *danger depth* of the free queue -- what the
-    running requests and one admission can allocate before the next drain
-    -- and nothing else makes it due but its request's deferral deadline.
-    An engine with no requests never drains; operations whose blocks are
-    evicted before they come due are dropped, never stored stale.
-    Scheduler thread only.
+    running requests, the resumed loads and one admission can allocate
+    before the next drain -- and nothing else makes it due but its request's
+    deferral deadline. A second admission in one step reaches past the
+    window; the operations it would recycle are moved to the free-queue tail
+    and stay buffered. An engine with no requests never drains; operations
+    whose blocks are evicted before they come due are dropped, never stored
+    stale. Scheduler thread only.
     """
 
     def __init__(self, config: EvictionAwarePolicyConfig, pool: "BlockPool") -> None:
@@ -322,6 +325,46 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             )
         )
         self._counters.admitted += 1
+
+    def protect(self, num_blocks: int) -> AdmissionProtection:
+        """Protect the buffered ops an admission's allocation would recycle.
+
+        The danger depth covers one admission, so the first admission of a
+        step meets no buffered block; a second one reaches past the window.
+        The walk runs until ``num_blocks`` blocks outside buffered ops are
+        counted: the ops it meets move to the tail, so the allocation
+        reaches that much further. They stay buffered, and the window meets
+        them again once the head reaches the tail. Per request, the ops moved
+        run up to the last op met, stopping at an op whose data is already
+        gone, which the next drain drops.
+
+        Args:
+            num_blocks: Upper bound on the blocks the allocation consumes.
+
+        Returns:
+            Per request, the ops to move to the tail.
+        """
+        owners = {
+            block_id: (request_id, index)
+            for request_id, ops in self._pending.items()
+            for index, op in enumerate(ops)
+            for block_id in op.block_hashes
+        }
+        last_met: dict[str, int] = {}
+        for block_id in self._free_queue_ranks(num_blocks, owners.keys()):
+            owner = owners.get(block_id)
+            if owner is not None:
+                request_id, index = owner
+                last_met[request_id] = max(last_met.get(request_id, -1), index)
+        protection = AdmissionProtection()
+        for request_id, last in last_met.items():
+            ops = self._pending[request_id]
+            end = 0
+            while end <= last and self._snapshot_intact(ops[end]):
+                end += 1
+            if end:
+                protection.to_tail.append(_pending_item(request_id, ops[:end]))
+        return protection
 
     def has_pending_request(self, request_id: str) -> bool:
         """Whether this request currently owns buffered operations.
@@ -427,8 +470,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
 
         Args:
             signals: The manager's bounds on the blocks the running
-                requests and one admission allocate before the next
-                drain, which set the danger depth, plus the
+                requests, the resumed loads and one admission allocate
+                before the next drain, which set the danger depth, plus the
                 finished and blocked request ids. Finished ids are not read
                 by this policy: imminence alone decides, whether or not the
                 request is still running.
@@ -452,7 +495,15 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             self._maybe_log_stats()
             return LazyOffloadDrain()
 
-        depth = signals.next_step_blocks + signals.admission_blocks
+        # A second admission in one step allocates further, but the manager
+        # protects buffered blocks from it right before it does. A resumed
+        # load still unscheduled was protected for a step that has passed, so
+        # its allocation counts here.
+        depth = (
+            signals.next_step_blocks
+            + signals.resuming_blocks
+            + signals.admission_blocks
+        )
         # Depth zero makes nothing due and the queue is not walked; the loss
         # check below reads hashes, not ranks, and still runs.
         ranks = self._free_queue_ranks(depth, self.buffered_block_ids())
@@ -536,8 +587,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     ) -> dict[int, int]:
         """The free-queue head an allocation can recycle, id -> eviction rank.
 
-        A buffered block met in the walk is due, so it leaves the queue and
-        every block behind it moves up:
+        A buffered block met in the walk is due, or protected, so it leaves
+        the queue or moves to the tail, and every block behind it moves up:
         the walk runs until ``depth`` blocks outside buffered ops are
         counted. A buffered block that stays (its request is blocked, or the
         drain budget ran out) only makes the walk reach further.

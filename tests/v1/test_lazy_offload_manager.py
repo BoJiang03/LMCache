@@ -40,7 +40,9 @@ CONFIGS = {"lmcache.mp.lazy_offload_max_deferral_seconds": 1e-9}
 # test manager's max_model_len of one block and no draft tokens. Per group:
 # the five slots of that block plus a recomputed token span two blocks, plus
 # a partial block at the start and a copy-on-write block; plus one block per
-# group for a split between a hit and an allocation.
+# group for a split between a hit and an allocation. Admissions here are
+# longer on purpose: they reach past the reserve, as a step's second
+# admission does.
 ADMISSION_RESERVE = 2 * (2 + 2) + 2
 # The same over two align-mode Mamba groups: per group, the state block, plus
 # a local and an external hit state block.
@@ -188,7 +190,7 @@ def test_decode_crossing_a_block_boundary_deepens_the_window(
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     manager = _manager(pool, configs={})
-    manager.on_admission("running", num_tokens)
+    manager.on_admission("running", num_tokens, 0, 0, load_async=False)
     block = ids[ADMISSION_RESERVE]
     manager.add_store_candidate(_store([[block], [pool.null_block.block_id]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
@@ -218,16 +220,102 @@ def _op(start: int, block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
 
 # An admission of this many tokens allocates at most this many blocks over
 # the manager's two groups: per group, a partial block at each end and one
-# for a copy-on-write or checkpoint block (no draft tokens here).
+# for a copy-on-write or checkpoint block (no draft tokens here). It reaches
+# past the admission reserve.
 ADMISSION_TOKENS = 8 * TOKENS_PER_BLOCK
 ADMISSION_BLOCKS = 2 * (8 + 2)
 
 
-def test_one_admission_after_a_drain_recycles_no_buffered_block() -> None:
+def _buffered_block_in_queue(
+    pool: BlockPool,
+    position: int,
+    running_tokens: int = 0,
+    mamba_groups: dict[int, int] | None = None,
+    num_lookahead_tokens: int = 0,
+) -> tuple[LazyOffloadManager, int, list[int]]:
+    """A buffered block at ``position`` of a free queue of cached blocks.
+
+    No request runs, so the danger depth is the admission reserve, and the
+    drain leaves a block past it buffered.
+
+    Args:
+        pool: The block pool, with every block free.
+        position: Where the buffered block sits in the free queue.
+        running_tokens: When set, a request ``"running"`` of that many
+            tokens is admitted first, to be scheduled by the caller.
+        mamba_groups: The manager's align-mode Mamba groups.
+        num_lookahead_tokens: The manager's draft tokens per step.
+
+    Returns:
+        The manager, the buffered block's id, and every other free block.
+    """
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    block = ids[position]
+    manager = _manager(
+        pool,
+        configs={},
+        receipts=_Receipts(),
+        mamba_groups=mamba_groups,
+        num_lookahead_tokens=num_lookahead_tokens,
+    )
+    if running_tokens:
+        manager.on_admission("running", running_tokens, 0, 0, load_async=False)
+    manager.add_store_candidate(_op(0, [[block], [pool.null_block.block_id]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    return manager, block, [block_id for block_id in ids if block_id != block]
+
+
+@pytest.mark.parametrize("admitted", [False, True], ids=["no-admission", "admission"])
+def test_admission_keeps_buffered_block_its_allocation_would_recycle(
+    admitted: bool,
+) -> None:
+    """An admission recycling past a buffered block does not cost a store.
+
+    The block sits past the admission reserve, where an admission longer
+    than ``max_model_len`` (as a step's second admission) still reaches.
+    Only the admission notice can save the block, and the notice must not
+    shrink the free queue the admission allocates from. Moved to the tail,
+    the block survives the allocation, still buffered.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, block, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
+    num_free = pool.get_num_free_blocks()
+
+    if admitted:
+        manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
+        assert pool.get_num_free_blocks() == num_free
+    allocated = pool.get_new_blocks(ADMISSION_BLOCKS)
+
+    assert (block in {b.block_id for b in allocated}) is not admitted
+
+
+def test_protected_op_waits_at_the_tail_until_the_head_reaches_it() -> None:
+    """A protected op is stored when it is about to be recycled, not before.
+
+    The admission notice moves the buffered block to the tail. The drain
+    leaves it buffered there, so one large protection is not stored in a
+    single burst; once allocations bring it within the reserve of the
+    head, the drain stores it intact.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
+    manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
+
+    waiting = manager.on_scheduler_step(_step()).stores_to_submit
+    pool.get_new_blocks(pool.get_num_free_blocks() - ADMISSION_RESERVE)
+    stored = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert waiting == []
+    assert stored != []
+
+
+def test_one_admission_after_a_drain_moves_no_buffered_block() -> None:
     """The drain keeps one ``max_model_len`` admission clear of buffered blocks.
 
     The buffered block sits right past the reserve, and the admission is as
-    long as the model allows: its allocation leaves the block buffered.
+    long as the model allows: it does not move the block, and its
+    allocation leaves the block where it was, buffered.
     """
     pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -240,10 +328,89 @@ def test_one_admission_after_a_drain_recycles_no_buffered_block() -> None:
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
 
-    manager.on_admission("new", ADMISSION_TOKENS)
+    manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
     allocated = pool.get_new_blocks(ADMISSION_BLOCKS)
 
     assert block not in {allocated_block.block_id for allocated_block in allocated}
+
+
+def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
+    """vLLM gives an external hit a Mamba state block before allocating.
+
+    Each Mamba group takes one block for the external hit and one state
+    block for the chunk, four in all. An earlier admission of the step has
+    taken the reserve, which leaves the buffered block third in the queue,
+    in reach. Saved by the admission notice, it is not recycled.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    manager, block, _ = _buffered_block_in_queue(
+        pool, position=MAMBA_RESERVE + 2, mamba_groups={0: 0, 1: 0}
+    )
+    pool.get_new_blocks(MAMBA_RESERVE)
+
+    manager.on_admission(
+        "new", 20 * TOKENS_PER_BLOCK, 0, 10 * TOKENS_PER_BLOCK, load_async=False
+    )
+    allocated = pool.get_new_blocks(4)
+
+    assert block not in {allocated_block.block_id for allocated_block in allocated}
+
+
+@pytest.mark.parametrize("notified", [False, True], ids=["no-notice", "notice"])
+def test_resumed_load_keeps_buffered_block_its_allocation_would_recycle(
+    notified: bool,
+) -> None:
+    """A finished asynchronous load does not cost a store when it resumes.
+
+    vLLM allocates only for the hit at admission, and the rest of the
+    request's blocks once the load finishes, without asking for a hit
+    again: the load-finished notice is all that can save the block.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    hit_blocks = 2 * (1 + 2)
+    manager, block, _ = _buffered_block_in_queue(
+        pool, position=ADMISSION_RESERVE + hit_blocks + 2
+    )
+
+    manager.on_admission(
+        "new", TOKENS_PER_BLOCK + ADMISSION_TOKENS, 0, TOKENS_PER_BLOCK, load_async=True
+    )
+    pool.get_new_blocks(hit_blocks)
+    if notified:
+        manager.on_loads_finished({"new"})
+    allocated = pool.get_new_blocks(ADMISSION_BLOCKS)
+
+    assert (block in {b.block_id for b in allocated}) is not notified
+
+
+def test_resumed_load_left_waiting_keeps_its_protection() -> None:
+    """A finished load vLLM schedules steps later still cannot cost a store.
+
+    The load-finished notice moves the buffered block to the tail, but no
+    step schedules the request yet. Another admission takes the queue head
+    and a finished request's cached blocks queue up behind the block, so
+    when the resumed request finally allocates, its chunk reaches the block.
+    The drain in between must store it.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=10)
+    manager.on_admission(
+        "new", TOKENS_PER_BLOCK + ADMISSION_TOKENS, 0, TOKENS_PER_BLOCK, load_async=True
+    )
+    pool.get_new_blocks(2 * (1 + 2))
+    manager.on_loads_finished({"new"})
+
+    other_tokens = 6 * TOKENS_PER_BLOCK
+    manager.on_admission("other", other_tokens, 0, 0, load_async=False)
+    finished = pool.get_new_blocks(2 * (6 + 2))
+    for i, block in enumerate(finished):
+        block.set_block_hash(
+            make_block_hash_with_group_id(BlockHash(bytes([100 + i]) * 32), 0)
+        )
+    pool.free_blocks(finished)
+    stores = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert stores != []
 
 
 def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
@@ -257,7 +424,7 @@ def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
     manager = _manager(pool, configs={}, receipts=_Receipts())
-    manager.on_admission("running", 2 * TOKENS_PER_BLOCK)
+    manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
     for request_id, block_id in (("first", ids[0]), ("second", ids[2])):
         store = _store([[block_id], [null]])
         store.request_id = request_id
@@ -270,6 +437,30 @@ def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
 
     stored = first.stores_to_submit + second.stores_to_submit
     assert {store.request_id for store in stored} == {"first", "second"}
+
+
+def test_admission_counts_the_local_hit_it_takes_from_the_queue() -> None:
+    """A local prefix hit does not pull a buffered block into the allocation.
+
+    vLLM touches the hit blocks, taking them out of the free queue, before
+    it allocates from the head: every hit block ahead of the buffered one
+    brings it one place closer.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    hit = 2 * TOKENS_PER_BLOCK
+    new_blocks = 2 * (2 + 2)
+    block = ids[new_blocks + 1]
+    manager = _manager(pool, configs={}, receipts=_Receipts())
+    manager.add_store_candidate(_op(0, [[block], [null]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+
+    manager.on_admission("new", hit + 2 * TOKENS_PER_BLOCK, hit, 0, load_async=False)
+    pool.touch([pool.blocks[block_id] for block_id in ids[:2]])
+    allocated = pool.get_new_blocks(new_blocks)
+
+    assert block not in {allocated_block.block_id for allocated_block in allocated}
 
 
 def test_token_budget_caps_the_window() -> None:
@@ -288,7 +479,7 @@ def test_token_budget_caps_the_window() -> None:
     )
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
-        manager.on_admission(request_id, 100)
+        manager.on_admission(request_id, 100, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 4]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -315,7 +506,7 @@ def test_mamba_group_takes_one_block_per_step(position: int, stored: bool) -> No
     manager = _manager(
         pool, configs={}, receipts=_Receipts(), mamba_groups={0: 0, 1: 0}
     )
-    manager.on_admission("running", 100)
+    manager.on_admission("running", 100, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[MAMBA_RESERVE + position]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -347,7 +538,7 @@ def test_scratch_group_adds_no_reach(position: int, stored: bool) -> None:
         mamba_groups={0: 0, 2: 0},
     )
     manager.bind_block_pool(pool)
-    manager.on_admission("running", 100)
+    manager.on_admission("running", 100, 0, 0, load_async=False)
     manager.add_store_candidate(
         _op(0, [[ids[MAMBA_RESERVE + position]], [null], [null]])
     )
@@ -385,7 +576,7 @@ def test_aligned_prefill_crossing_costs_a_whole_block(
     )
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
-        manager.on_admission(request_id, 100)
+        manager.on_admission(request_id, 100, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 4]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -417,7 +608,7 @@ def test_leftover_tokens_short_of_a_crossing_reach_at_most_one_block() -> None:
     )
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
-        manager.on_admission(request_id, 100)
+        manager.on_admission(request_id, 100, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 6]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -457,7 +648,7 @@ def test_lookahead_slots_count_within_the_token_budget(
     )
     running = [f"running-{index}" for index in range(2)]
     for request_id in running:
-        manager.on_admission(request_id, 100)
+        manager.on_admission(request_id, 100, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[reserve + position]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -490,7 +681,7 @@ def test_block_already_in_the_table_is_not_allocated_again(
     null = pool.null_block.block_id
     manager = _manager(pool, configs={}, receipts=_Receipts())
     num_tokens = 2 * TOKENS_PER_BLOCK
-    manager.on_admission("running", num_tokens)
+    manager.on_admission("running", num_tokens, 0, 0, load_async=False)
     manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -543,10 +734,7 @@ def test_block_another_group_held_counts_as_allocated() -> None:
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager = _manager(pool, configs={})
     num_tokens = TOKENS_PER_BLOCK
-    manager.on_admission(
-        "running",
-        num_tokens,
-    )
+    manager.on_admission("running", num_tokens, 0, 0, load_async=False)
     manager.on_scheduler_step(
         _step({"running": num_tokens}, tables={"running": ([1], [2])})
     )
@@ -576,10 +764,7 @@ def test_allocation_over_the_bound_is_reported(
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager = _manager(pool, configs={})
     num_tokens = 2 * TOKENS_PER_BLOCK
-    manager.on_admission(
-        "running",
-        num_tokens,
-    )
+    manager.on_admission("running", num_tokens, 0, 0, load_async=False)
     manager.on_scheduler_step(_step({"running": num_tokens}))
 
     with patch.object(eviction_aware.logger, "info") as mock_info:

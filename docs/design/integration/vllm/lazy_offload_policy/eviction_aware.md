@@ -136,7 +136,8 @@ the true vLLM hit instead of 0.
   several times what one step can schedule. Spec-decode rejections only
   lower `c`. Free-queue *position* alone is never a trigger -- an idle
   engine never drains.
-- The **danger depth** `D` adds `admission_blocks` to that bound. vLLM
+- The **danger depth** `D` adds `admission_blocks` and `resuming_blocks`
+  to that bound. vLLM
   allocates an admitted request's blocks before the step's drain, so the
   drain keeps enough of the head clear for one admission: a step's first
   admission recycles no buffered block. `admission_blocks` is derived from
@@ -144,18 +145,60 @@ the true vLLM hit instead of 0.
   allocates hold at most `max_model_len + 1 + L` tokens, and splitting them
   between the hit and the allocation costs a group at most one block (two
   for an align-mode Mamba group's hit state blocks). On Qwen3.5-122B-A10B
-  (`max_model_len` 262144, `L` 3) it is 86 of 2551 blocks. A second
-  admission in the same step, and an asynchronous load resuming without a
-  new lookup, can still reach past `D`. The EMA-and-burst-floor estimate
+  (`max_model_len` 262144, `L` 3) it is 86 of 2551 blocks.
+  `resuming_blocks` is the next chunk of every asynchronous load that
+  finished but no step has scheduled yet (see protection below). The
+  EMA-and-burst-floor estimate
   this replaced (`horizon_steps` x the smoothed allocation rate) lost 31 of
   5790 ops on Qwen3.5-122B-A10B, N=150, most of them to steps that
   allocated more than it predicted.
+- **Protection.** Two allocations reach past `D`: a second admission in
+  the same step, and an asynchronous load resuming, which vLLM schedules
+  without a new lookup. The manager protects buffered blocks from both
+  right before they allocate: `get_num_new_matched_tokens` reports an
+  admission to `LazyOffloadManager.on_admission`, and
+  `update_connector_output`'s `finished_recving` reports a finished load to
+  `on_loads_finished`. Each bounds its tokens: hit + one chunk + draft
+  lookahead, or the hit alone for an asynchronous load, whose rest the
+  load-finished notice bounds. Per KV group the blocks are those the tokens
+  span, plus a partial block at the start, one for a partial hit's
+  copy-on-write block or a Mamba checkpoint, and `L` Mamba speculative
+  state blocks on a request's first allocation (vLLM reserves one per
+  draft token in align mode). An align-mode Mamba group nulls every block
+  the tokens span but the state block, and `MambaManager` caps an
+  allocation at `1 + extra + L` blocks, so that is its count whatever the
+  hit's length; a resumed load's admission already allocated for its hit,
+  so `on_loads_finished` counts `1 + extra`. The local prefix hit adds its
+  own block count: vLLM touches those blocks before allocating, which takes
+  the free ones out of the queue and brings every block behind them closer
+  to the head. An align-mode Mamba hit is null blocks but its last, so it
+  adds at most one, and an external hit one more:
+  `allocate_external_computed_blocks` gives it a state block before the
+  capped allocation. Leaving that block out lost 6 of 5285 ops in a c150
+  run.
+  `protect(num_blocks)` walks the free queue until it has counted that many
+  blocks outside buffered ops. The ops met move to the free-queue **tail**
+  (`touch` then `free_blocks`, hash intact) and stay plainly buffered: the
+  window meets them again when the head reaches the tail. They are not
+  pinned: a pin shrinks the free queue the admission allocates from, and
+  when the rest no longer fits vLLM refuses the admission and every waiting
+  request behind it for that step. vLLM allocates for the running requests
+  before a resumed load, so the load-finished notice protects
+  `next_step_blocks` plus the resumed chunks; and it schedules a resumed
+  load only when its chunk fits, which with a full cache can be steps
+  later, while the head moves past the blocks the notice moved. Until a
+  step schedules it, each drain counts its chunk in `D`
+  (`resuming_blocks`). Protecting only at the notice lost 18 ops in one
+  event on Qwen3.5-122B-A10B, N=150: one op's three Mamba state blocks
+  were recycled while no admission exceeded its estimate and no step its
+  bound.
 - An op is **due** when the window walk below meets any covered block. Blocks
   not in the free queue (in use / resurrected) are not at risk.
 - Emitting a segment pins its blocks out of the free queue, moving every
   block behind them toward the head. The drain accounts for this shift by
   walking until it has counted `D` blocks outside buffered ops: every
-  buffered block met is due, so it leaves the queue and the blocks behind it
+  buffered block met is due, or protected, so it leaves the queue or moves
+  to the tail, and the blocks behind it
   are what the next step can reach. A due op that stays in the queue (its
   request has a batch in flight, or the drain budget is spent) only makes
   the walk reach further.
@@ -212,8 +255,9 @@ running requests allocated more blocks than the previous drain's
 wrong for this model or vLLM version. `bound_blocks` over
 `bound_allocated_blocks` is the bound's slack, how many blocks it reserves
 per one allocated. `dropped_evicted` is the quality sensor --
-data lost before we drained, meaning an allocation reached past the
-danger depth -- and
+data lost before we drained, meaning an allocation escaped both the
+running-request bound and the admission protection, so nonzero means a
+bound is wrong for this model or vLLM version -- and
 `emitted_overdue` is how much of `emitted` the deadline rather than the
 window released.
 
