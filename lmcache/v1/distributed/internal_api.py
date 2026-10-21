@@ -144,10 +144,13 @@ class L1ManagerListener(EventListener):
         """
         pass
 
-    def on_l1_out_of_memory(self) -> None:
+    def on_l1_out_of_memory(self, requested_bytes: int) -> None:
         """Notify the listener that a write reservation found L1 full.
 
         Not abstract: only listeners that free memory need it.
+
+        Args:
+            requested_bytes: Bytes the failed reservation asked for.
         """
         pass
 

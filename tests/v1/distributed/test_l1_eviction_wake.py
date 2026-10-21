@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""A write that finds L1 full gets space before the next periodic check."""
+"""A write burst that does not fit in L1 gets space, whatever the usage."""
 
 # Standard
 import time
@@ -28,19 +28,19 @@ CAPACITY = 8
 
 
 def _key(i: int) -> ObjectKey:
-    return ObjectKey(
-        chunk_hash=ObjectKey.IntHash2Bytes(i), model_name="m", kv_rank=0
-    )
+    return ObjectKey(chunk_hash=ObjectKey.IntHash2Bytes(i), model_name="m", kv_rank=0)
 
 
-def _write(manager: L1Manager, i: int) -> L1Error:
-    err, _ = manager.reserve_write([_key(i)], [False], LAYOUT)[_key(i)]
-    if err == L1Error.SUCCESS:
-        manager.finish_write([_key(i)])
-    return err
+def _write(manager: L1Manager, ids: list[int]) -> bool:
+    keys = [_key(i) for i in ids]
+    results = manager.reserve_write(keys, [False] * len(keys), LAYOUT)
+    if any(err != L1Error.SUCCESS for err, _ in results.values()):
+        return False
+    manager.finish_write(keys)
+    return True
 
 
-def test_write_into_full_l1_succeeds_before_the_next_periodic_check():
+def test_burst_that_does_not_fit_below_the_watermark_gets_space():
     manager = L1Manager(
         L1ManagerConfig(
             memory_config=L1MemoryManagerConfig(
@@ -61,14 +61,13 @@ def test_write_into_full_l1_succeeds_before_the_next_periodic_check():
     )
     controller.start()
     try:
-        # Let the first periodic check pass with L1 empty.
-        time.sleep(1.1)
-        for i in range(CAPACITY):
-            assert _write(manager, i) == L1Error.SUCCESS
-        start = time.monotonic()
-        assert _write(manager, CAPACITY) == L1Error.OUT_OF_MEMORY
-        while _write(manager, CAPACITY) != L1Error.SUCCESS:
-            assert time.monotonic() - start < 0.5
+        # 7 of 8 objects is below the watermark, so a periodic check alone
+        # would never evict, yet a two-object burst does not fit.
+        assert _write(manager, list(range(CAPACITY - 1)))
+        assert not _write(manager, [CAPACITY, CAPACITY + 1])
+        deadline = time.monotonic() + 5
+        while not _write(manager, [CAPACITY, CAPACITY + 1]):
+            assert time.monotonic() < deadline
             time.sleep(0.01)
     finally:
         controller.stop()

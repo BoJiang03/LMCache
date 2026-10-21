@@ -13,6 +13,7 @@ import weakref
 # First Party
 from lmcache.lmcache_native import TTLLock
 from lmcache.logging import init_logger
+from lmcache.utils import get_size_bytes
 from lmcache.v1.distributed.api import L1BackendType, MemoryLayoutDesc, ObjectKey
 from lmcache.v1.distributed.config import L1ManagerConfig, get_configured_capacity_bytes
 from lmcache.v1.distributed.error import L1Error, L1ReconfigureError
@@ -551,8 +552,11 @@ class L1Manager(L1ManagerInterface):
             # Free the memory if partial allocation succeeded
             if allocated_objs:
                 self._memory_manager.free(allocated_objs)
+            requested_bytes = get_size_bytes(
+                layout_desc.shapes, layout_desc.dtypes
+            ) * len(need_to_allocate)
             for listener in self._registered_listeners:
-                listener.on_l1_out_of_memory()
+                listener.on_l1_out_of_memory(requested_bytes)
 
         else:
             for (key, is_temp), mem_obj in zip(
