@@ -290,6 +290,7 @@ class StorageManager:
         self,
         keys: list[ObjectKey],
         layout_desc: MemoryLayoutDesc,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> dict[ObjectKey, MemoryObj]:
         """
         Reserve the object for writing into the storage manager.
@@ -298,6 +299,9 @@ class StorageManager:
             keys (list[ObjectKey]): List of object keys to reserve for writing.
             layout_desc (MemoryLayoutDesc): Description of the memory layout
                 for the objects to be reserved.
+            out_of_memory_keys: When given, extended with the keys no L1
+                could allocate. The other unreserved keys are already
+                resident or being written, so their data is not lost.
         Returns:
             dict[ObjectKey, MemoryObj]: A dictionary mapping object keys to their
                 reserved memory objects. Note that not all requested keys could be
@@ -344,6 +348,8 @@ class StorageManager:
         oom_keys = [
             k for k, (e, _) in reserve_result.items() if e == L1Error.OUT_OF_MEMORY
         ]
+        if out_of_memory_keys is not None:
+            out_of_memory_keys.extend(oom_keys)
         if oom_keys:
             self._event_bus.publish(
                 Event(

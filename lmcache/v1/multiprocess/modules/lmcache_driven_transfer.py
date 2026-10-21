@@ -580,11 +580,28 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
     ) -> tuple[bytes, bool]:
-        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask."""
+        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask.
+
+        Unlike ``store_with_chunk_mask``, a chunk no L1 had room for fails
+        the store: the caller holds no per-chunk mask, and without the
+        failure it would take that chunk for stored and let its GPU copy go.
+
+        Args:
+            key: The IPC key for the KV cache blocks.
+            instance_id: The GPU instance ID (such as PID).
+            gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
+                group index.
+            event_ipc_handle: The IPC handle of the event to wait on.
+
+        Returns:
+            The completion event's IPC handle, and whether every chunk was
+            stored or was already resident.
+        """
+        out_of_memory_keys: list[ObjectKey] = []
         handle, ok, _ = self.store_with_chunk_mask(
-            key, instance_id, gpu_block_ids, event_ipc_handle
+            key, instance_id, gpu_block_ids, event_ipc_handle, out_of_memory_keys
         )
-        return handle, ok
+        return handle, ok and not out_of_memory_keys
 
     def store_with_chunk_mask(
         self,
@@ -592,6 +609,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         instance_id: int,
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> tuple[bytes, bool, list[bool]]:
         """Store the GPU KV cache blocks to CPU.
 
@@ -602,6 +620,8 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
                 group index.
             event_ipc_handle: The IPC handle of the event to wait on.
+            out_of_memory_keys: When given, extended with the object keys
+                skipped because no L1 could allocate them.
 
         Returns:
             A tuple where the first element is the IPC handle of the event
@@ -777,7 +797,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         object_group_id=obj_group_id,
                     )
                     reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc
+                        keys_to_reserve, layout_desc, out_of_memory_keys
                     )
                     all_dict.update(reserved_dict)
                     if reserved_dict:
