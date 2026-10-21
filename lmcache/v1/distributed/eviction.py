@@ -180,8 +180,19 @@ class L1EvictionPolicy(L1ManagerListener):
     the policy logic decoupled from the listener interface.
     """
 
-    def __init__(self, policy: EvictionPolicy):
+    def __init__(
+        self,
+        policy: EvictionPolicy,
+        on_out_of_memory: Callable[[int], None] | None = None,
+    ) -> None:
+        """
+        Args:
+            policy: The eviction policy fed with L1 lifecycle events.
+            on_out_of_memory: Called with the requested bytes when a write
+                reservation finds L1 full; None ignores those events.
+        """
         self._policy = policy
+        self._on_out_of_memory = on_out_of_memory
 
     @property
     def policy(self) -> EvictionPolicy:
@@ -213,6 +224,15 @@ class L1EvictionPolicy(L1ManagerListener):
 
     def on_l1_keys_accessed(self, keys: list[ObjectKey]):
         self._policy.on_keys_touched(keys)
+
+    def on_l1_out_of_memory(self, requested_bytes: int) -> None:
+        """Forward a full-L1 write reservation to ``on_out_of_memory``.
+
+        Args:
+            requested_bytes: The bytes the rejected reservation asked for.
+        """
+        if self._on_out_of_memory is not None:
+            self._on_out_of_memory(requested_bytes)
 
 
 class L2EvictionPolicy(L2AdapterListener):
