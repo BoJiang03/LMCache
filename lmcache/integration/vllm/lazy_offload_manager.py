@@ -17,7 +17,7 @@ ones defined in ``lazy_offload_policy.base``:
 - **Pin**: the reference this class takes on a GPU block so that vLLM cannot
   recycle it while the worker is still reading it. The receipt releases it.
 - **Orphaned**: said of a batch whose generation ended before its receipt
-  arrived. Its pins are still released, but its failure is not charged to
+  arrived. Its pins are still released, but its failure is not retried for
   the generation now holding the id.
 - **Token ledger**: the one token-id list a request's buffered operations
   share. The tracker hands out a fresh copy of the whole sequence with every
@@ -35,6 +35,7 @@ from lmcache.integration.vllm.lazy_offload_policy.base import (
     ConfigValue,
     DrainSignals,
     OffloadPolicy,
+    PendingStoreItem,
 )
 from lmcache.integration.vllm.lazy_offload_state import LazyOffloadRequestRegistry
 from lmcache.integration.vllm.lmcache_mp_metadata import (
@@ -234,7 +235,11 @@ class LazyOffloadManager:
         """Buffer one STORE metadata produced by the request tracker.
 
         The block hashes are read here, at admission, so that the policy
-        holds the snapshot the data was stored under.
+        holds the snapshot the data was stored under. The null block is left
+        out: hybrid models (mamba align mode, sliding window) put it into
+        block tables at positions holding no data, it is never recycled, and
+        its hash is always None, which the policy would take for an evicted
+        block and reject the request's whole remaining prefix.
 
         One request's operations must be offered in token order, each
         starting where the previous one ended: they are submitted as one
@@ -253,6 +258,7 @@ class LazyOffloadManager:
         block_hashes: BlockHashes = {
             block_id: pool.blocks[block_id].block_hash
             for block_id in metadata.op.flat_block_ids
+            if not pool.blocks[block_id].is_null
         }
         self._require_policy().add(self._rebind_tokens(metadata), block_hashes)
 
@@ -288,8 +294,10 @@ class LazyOffloadManager:
     ) -> LazyOffloadActions:
         """Apply failed stores and fully aggregated completion receipts.
 
-        Failures go first, so dropping a finished request's held-back suffix
-        can make it releasable by the accompanying receipt. Stale receipts in
+        A failure only marks the in-flight batch: other workers may still be
+        reading its blocks. Once every worker has reported, a failed batch
+        that is not orphaned goes back to the policy to be retried; unpinned,
+        its blocks join the free-queue tail. Stale receipts in
         ``completed_store_counts`` are filtered here.
 
         Args:
@@ -304,19 +312,8 @@ class LazyOffloadManager:
         """
         pool = self._require_block_pool()
         for request_id in failed_request_ids:
-            if not self._requests.has_in_flight(request_id):
-                continue
-            if self._requests.in_flight_is_orphaned(request_id):
-                # A reset or id reuse detached the batch: it still owns its
-                # pins, but cannot break the current prefix chain.
-                continue
-            dropped = self._require_policy().mark_store_failed(request_id)
-            logger.warning(
-                "Store failed for request %s; dropped %d held-back store "
-                "op(s) that would lack their stored prefix",
-                request_id,
-                dropped,
-            )
+            if self._requests.has_in_flight(request_id):
+                self._requests.fail_in_flight(request_id)
         actions = LazyOffloadActions()
         for request_id, count in completed_store_counts.items():
             if not self._requests.has_in_flight(request_id):
@@ -332,6 +329,15 @@ class LazyOffloadManager:
                 continue
             batch = self._requests.complete_batch(request_id)
             pool.free_blocks([pool.blocks[block_id] for block_id in batch.block_ids])
+            if batch.failed and not batch.orphaned:
+                # The data is still on the GPU; a reset or id reuse would
+                # have detached the batch from the generation it belongs to.
+                logger.warning(
+                    "Store failed for request %s; retrying its %d store op(s)",
+                    request_id,
+                    len(batch.operations.metadatas),
+                )
+                self._require_policy().requeue_failed(batch.operations)
             if not self._require_policy().has_pending_request(
                 request_id
             ) and self._requests.can_end_session(request_id):
@@ -474,7 +480,7 @@ class LazyOffloadManager:
                     f"request {item.request_id!r} emitted while a store batch "
                     "is still in flight"
                 )
-            valid_metas: list[LMCacheMPRequestMetadata] = []
+            valid = PendingStoreItem(request_id=item.request_id)
             valid_block_ids: list[int] = []
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
@@ -495,12 +501,14 @@ class LazyOffloadManager:
                     )
                     pool.free_blocks(blocks)
                     break
-                valid_metas.append(metadata)
+                valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
-            if not valid_metas:
+            if not valid.metadatas:
                 continue
-            actions.stores_to_submit.append(_coalesce_store_metadata(valid_metas))
-            self._requests.register_batch(item.request_id, valid_block_ids)
+            actions.stores_to_submit.append(
+                _coalesce_store_metadata([meta for meta, _ in valid.metadatas])
+            )
+            self._requests.register_batch(item.request_id, valid_block_ids, valid)
         for request_id in drain.emptied_request_ids:
             if self._requests.can_end_session(request_id):
                 actions.sessions_to_end.append(request_id)

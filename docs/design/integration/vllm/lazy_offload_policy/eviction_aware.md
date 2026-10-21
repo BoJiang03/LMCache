@@ -37,11 +37,14 @@ lifecycle events to it.
    operation itself. Two are dropped here and logged:
    - A **hash-less covered block**. Its later eviction is undetectable
      (evicted-and-reallocated also reads `None`), so storing it risks filing
-     wrong bytes under a content-addressed key. Hybrid-attention models
-     (sliding window, mamba) put hash-less null blocks into block tables when
-     vLLM's own prefix cache serves a prefix whose out-of-window positions
-     hold no KV. The tracker has already advanced past the skipped range, so
-     the queue blacklists the request and drops its later chunks too.
+     wrong bytes under a content-addressed key. The tracker has already
+     advanced past the skipped range, so the queue blacklists the request and
+     drops its later chunks too. The null block is not offered: the manager
+     leaves it out of `block_hashes`. Hybrid models put it at positions that
+     hold no data -- every interior mamba block in `--mamba-cache-mode align`,
+     out-of-window sliding-window blocks -- and it is never recycled, so it
+     has nothing to validate. Counting it rejected every request of a
+     mamba-hybrid model (Qwen3.5-122B-A10B: 2 of ~5100 operations admitted).
    - A **broken prefix**: an earlier chunk of the request was dropped, so
      this one would be unreachable on retrieval.
 2. Once per step call `drain(signals)` with that step's `DrainSignals`.
@@ -66,11 +69,18 @@ lifecycle events to it.
    registered -- now marked orphaned -- and blocks new emission until its
    receipt. An abort is **not** a drop: its buffered ops remain storable
    until drained.
-7. On a failed receipt, check whether the submitted batch is orphaned. A
-   non-orphaned failure calls `mark_store_failed(id)`, which drops held-back
-   ops and marks the prefix broken; an orphaned batch's failure never enters
-   the policy, because it cannot break the prefix of the request generation
-   now using the id. Both paths complete the receipt and unpin.
+7. On a failed receipt, mark the in-flight batch failed and wait for the
+   rest of its receipts: another worker may still be reading its blocks.
+   Once the batch settles, unpin it; a failed batch that is not orphaned
+   goes back to the policy with `requeue_failed(item)`, ahead of the
+   request's later ops, and unpinning frees its blocks to the free-queue
+   tail. The data is still on the GPU, so the request's prefix chain stays
+   whole. An L1 rejection (out of memory) is the common cause, so the retry
+   waits for the window like any buffered op rather than being resubmitted
+   into the L1 that just refused it; a deadline, when set, still applies.
+   Keys already resident count as stored, so retrying a partly stored batch
+   is safe. An orphaned batch is never retried: the request generation now
+   using the id restarted from token zero or is a different request.
 8. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
@@ -160,14 +170,15 @@ Two log hooks:
 - A drain that dropped ops logs one aggregate INFO line naming up to 8 of the
   requests, and a drain whose counters changed re-logs the whole ledger as one
   greppable `key=value` line, throttled to one per 5 s. `pending` is the
-  custody depth at the same instant, which closes the line as an equation over
-  exactly five outcome counters:
+  custody depth at the same instant, which closes the line as an equation:
 
   ```
-  admitted == pending + emitted + dropped_evicted
-              + dropped_on_request_drop + dropped_failed_store
-              + dropped_id_reuse
+  admitted + requeued == pending + emitted + dropped_evicted
+                         + dropped_on_request_drop + dropped_id_reuse
   ```
+
+  `requeued` counts emitted ops whose store failed and came back to be
+  retried; each retry counts in `emitted` again.
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
   turned away before `admitted`), and `emitted_overdue` is a weight beside

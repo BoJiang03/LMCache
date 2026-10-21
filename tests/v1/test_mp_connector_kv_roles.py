@@ -187,7 +187,9 @@ def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         submit.return_value.query.return_value = True
         submit.return_value.result.return_value = True
     telemetry = MagicMock()
-    pool = MagicMock(blocks=[SimpleNamespace(block_hash=bytes([i])) for i in range(8)])
+    pool = MagicMock(
+        blocks=[SimpleNamespace(block_hash=bytes([i]), is_null=False) for i in range(8)]
+    )
     monkeypatch.setattr(
         connector_mod, "LMCacheMPSchedulerAdapter", lambda **kw: scheduler
     )
