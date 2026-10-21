@@ -9,9 +9,9 @@ deadline. Pure policy: it decides, ``LazyOffloadManager`` acts. See
 """
 
 # Standard
+from collections.abc import Container, Iterator
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, cast
-import math
 import time
 
 # First Party
@@ -28,6 +28,7 @@ from lmcache.utils import init_logger
 if TYPE_CHECKING:
     # Third Party
     from vllm.v1.core.block_pool import BlockPool
+    from vllm.v1.core.kv_cache_utils import KVCacheBlock
 
     # First Party
     from lmcache.integration.vllm.lmcache_mp_metadata import (
@@ -36,20 +37,70 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-DEFAULT_HORIZON_STEPS = 2.5
-
-# Smooths the per-step block-consumption EMA; the horizon is the tunable.
-_EMA_ALPHA = 0.3
-
 # Rank of a request released only by the deferral deadline. Sorts behind
 # every real rank (free-queue positions, bounded by the queue length), so a
-# deadline that has passed still makes the request due on a step whose danger
-# depth is zero, but never at the expense of a block about to be recycled:
+# deadline that has passed still makes the request due when none of its blocks
+# is in reach, but never at the expense of a block about to be recycled:
 # missing the deadline costs latency, missing an eviction costs the data.
 _OVERDUE_RANK = 1 << 62
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
 _DROP_LOG_SAMPLE_REQUESTS = 8  # Dropped requests named in the drop line.
+
+
+def _pending_item(request_id: str, ops: "list[PendingStoreOp]") -> PendingStoreItem:
+    """Hand one request's buffered ops to the manager, in prefix order.
+
+    Args:
+        request_id: The request the ops belong to.
+        ops: The ops, each paired in the item with its hash snapshot.
+
+    Returns:
+        The item carrying every op of ``ops``.
+    """
+    item = PendingStoreItem(request_id=request_id)
+    item.metadatas.extend((op.store_metadata, op.block_hashes) for op in ops)
+    return item
+
+
+def _min_rank(ops: "list[PendingStoreOp]", ranks: dict[int, int]) -> int | None:
+    """The most imminent rank any block of ``ops`` has.
+
+    Args:
+        ops: One request's buffered operations.
+        ranks: Block id to its position from the free-queue head.
+
+    Returns:
+        The lowest rank among the blocks of ``ops`` found in ``ranks``, or
+        None when none of them is there.
+    """
+    return min(
+        (
+            ranks[block_id]
+            for op in ops
+            for block_id in op.block_hashes
+            if block_id in ranks
+        ),
+        default=None,
+    )
+
+
+def _due_front_length(ops: "list[PendingStoreOp]", window: "Container[int]") -> int:
+    """Length of the front segment up to the last op with a block in ``window``.
+
+    Taking from the front keeps a stored operation's prefix stored.
+
+    Args:
+        ops: One request's buffered operations, in prefix order.
+        window: The block ids in reach. Only membership is read.
+
+    Returns:
+        How many leading ops of ``ops`` are due, zero when none of them is.
+    """
+    for index in range(len(ops) - 1, -1, -1):
+        if any(block_id in window for block_id in ops[index].block_hashes):
+            return index + 1
+    return 0
 
 
 @dataclass
@@ -77,9 +128,6 @@ class EvictionAwarePolicyConfig:
     """Tunables of the eviction-aware drain policy.
 
     Attributes:
-        horizon_steps: Scheduler steps of block consumption treated as
-            imminent eviction. It sets the danger depth: the free-queue
-            prefix the engine is expected to consume that soon.
         max_drain_per_step: Upper bound on the operations one drain emits,
             which caps the store work a single step can trigger.
         max_deferral_seconds: How long an operation may stay buffered before
@@ -90,7 +138,6 @@ class EvictionAwarePolicyConfig:
     ``docs/source/mp/configuration.rst``.
     """
 
-    horizon_steps: float = DEFAULT_HORIZON_STEPS
     max_drain_per_step: int = 64
     max_deferral_seconds: float = 0.0
 
@@ -118,15 +165,12 @@ class EvictionAwarePolicyConfig:
             return float(cast("str | int | float", configs.get(key, default)))
 
         return cls(
-            horizon_steps=number("horizon_steps", DEFAULT_HORIZON_STEPS),
             max_drain_per_step=int(number("max_drain_per_step", 64)),
             max_deferral_seconds=number("max_deferral_seconds", 0.0),
         )
 
     def __post_init__(self) -> None:
         """Validate field ranges, raising ValueError on any out of range."""
-        if self.horizon_steps <= 0:
-            raise ValueError(f"horizon_steps must be > 0, got {self.horizon_steps}")
         if self.max_drain_per_step < 1:
             raise ValueError(
                 f"max_drain_per_step must be >= 1, got {self.max_drain_per_step}"
@@ -143,7 +187,8 @@ class LazyOffloadCounters:
 
     The counts close as a ledger: ``admitted`` plus ``requeued`` equals the
     pending depth plus ``emitted`` plus every ``dropped_*`` counter.
-    ``emitted_overdue`` is a weight beside the equation, not a term in it.
+    ``emitted_overdue`` and the ``bound_*`` counters stand beside the
+    equation, not in it.
 
     Attributes:
         admitted: Operations taken into the buffer.
@@ -161,6 +206,15 @@ class LazyOffloadCounters:
             preempted the request and freed its blocks.
         requeued: Emitted operations whose store failed, buffered again to
             be retried. A retried operation counts as emitted once more.
+        bound_exceeded: Steps whose running requests allocated more blocks
+            than the previous drain bounded. Nonzero means the danger depth
+            is not a bound for this model, and buffered blocks may have
+            been recycled unseen.
+        bound_blocks: The previous drain's bound, summed over the steps it
+            was checked against. Over ``bound_allocated_blocks`` it is the
+            bound's slack: how many blocks it reserves per one allocated.
+        bound_allocated_blocks: Blocks the running requests allocated,
+            summed over the same steps.
         dropped_id_reuse: Buffered operations of a finished request
             discarded when a new request took over its id.
     """
@@ -169,6 +223,9 @@ class LazyOffloadCounters:
     emitted: int = 0
     emitted_overdue: int = 0
     requeued: int = 0
+    bound_exceeded: int = 0
+    bound_blocks: int = 0
+    bound_allocated_blocks: int = 0
     dropped_evicted: int = 0
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
@@ -179,11 +236,13 @@ class LazyOffloadCounters:
 class EvictionAwareStoreQueue(OffloadPolicy):
     """Buffers store operations and releases them by eviction imminence.
 
-    An operation is emitted when one of its blocks sits within the *danger
-    depth* of the free queue -- what the engine is expected to consume within
-    ``horizon_steps`` -- or when its request passes the deferral deadline. An
-    idle engine never drains; operations whose blocks are evicted before they
-    come due are dropped, never stored stale. Scheduler thread only.
+    One rule decides when to store: an operation is due once one of its
+    blocks sits within the *danger depth* of the free queue -- what the
+    running requests and one admission can allocate before the next drain
+    -- and nothing else makes it due but its request's deferral deadline.
+    An engine with no requests never drains; operations whose blocks are
+    evicted before they come due are dropped, never stored stale.
+    Scheduler thread only.
     """
 
     def __init__(self, config: EvictionAwarePolicyConfig, pool: "BlockPool") -> None:
@@ -201,9 +260,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._pending: dict[str, list[PendingStoreOp]] = {}
         # Prefix validity is policy; phase and batches are the manager's.
         self._broken_prefixes: set[str] = set()
-        self._blocks_per_step_ema = 0.0
-        self._ema_initialized = False
-        self._next_step_estimate = 0
+        # The last drain's bound, which this drain's allocations are checked
+        # against.
+        self._next_step_blocks = 0
         self._now = 0.0  # This step's clock, set at the top of drain().
         self._counters = LazyOffloadCounters()
         self._last_logged = LazyOffloadCounters()
@@ -275,6 +334,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         return request_id in self._pending
 
+    def buffered_block_ids(self) -> set[int]:
+        """Every GPU block a buffered operation covers.
+
+        Returns:
+            The block ids, possibly empty.
+        """
+        return {
+            block_id
+            for ops in self._pending.values()
+            for op in ops
+            for block_id in op.block_hashes
+        }
+
     def drop_request(self, request_id: str) -> int:
         """Discard buffered operations invalidated by a tracker reset.
 
@@ -344,40 +416,46 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """Record the step's block pressure and release what it made due.
 
         Per request: the suffix from the first op whose blocks were recycled
-        is dropped, then the front up to the last due op is released (prefix
-        closure). Requests in ``blocked_request_ids`` stay pending untouched:
-        the worker holds one in-flight batch per request. Requests are served
-        most imminent first until ``max_drain_per_step``; one whose deadline
-        passed while no block of it sits in the window is due anyway, but it
-        is served after every request holding one, so an expired backlog
-        cannot spend the budget that a block about to be recycled needs.
+        is dropped, then the front up to the last op with a block in the
+        danger window is released (prefix closure). Requests in
+        ``blocked_request_ids`` stay pending: the worker holds one in-flight
+        batch per request. Requests are served most imminent first until
+        ``max_drain_per_step``; one whose deadline passed while no block of
+        it sits in the window is due anyway, but it is served after every
+        request holding one, so an expired backlog cannot spend the budget
+        that a block about to be recycled needs.
 
         Args:
-            signals: This step's allocation pressure, which updates the
-                consumption estimate, plus the finished and blocked request
-                ids. Finished ids are not read by this policy: imminence
-                alone decides, whether or not the request is still running.
+            signals: The manager's bounds on the blocks the running
+                requests and one admission allocate before the next
+                drain, which set the danger depth, plus the
+                finished and blocked request ids. Finished ids are not read
+                by this policy: imminence alone decides, whether or not the
+                request is still running.
 
         Returns:
             The stores to submit and the requests left with nothing buffered.
         """
         self._now = time.monotonic()
-        if self._ema_initialized:
-            self._blocks_per_step_ema = (
-                _EMA_ALPHA * signals.new_blocks_allocated
-                + (1 - _EMA_ALPHA) * self._blocks_per_step_ema
+        self._counters.bound_blocks += self._next_step_blocks
+        self._counters.bound_allocated_blocks += signals.running_blocks_allocated
+        if signals.running_blocks_allocated > self._next_step_blocks:
+            self._counters.bound_exceeded += 1
+            logger.info(
+                "Lazy offload: running requests allocated %d blocks, over the "
+                "previous drain's bound of %d",
+                signals.running_blocks_allocated,
+                self._next_step_blocks,
             )
-        else:
-            self._blocks_per_step_ema = float(signals.new_blocks_allocated)
-            self._ema_initialized = True
-        self._next_step_estimate = signals.est_next_step_blocks
+        self._next_step_blocks = signals.next_step_blocks
         if not self._pending:
             self._maybe_log_stats()
             return LazyOffloadDrain()
 
+        depth = signals.next_step_blocks + signals.admission_blocks
         # Depth zero makes nothing due and the queue is not walked; the loss
         # check below reads hashes, not ranks, and still runs.
-        ranks = self._free_queue_ranks(self._danger_depth())
+        ranks = self._free_queue_ranks(depth, self.buffered_block_ids())
         overdue_cutoff = self._now - self._config.max_deferral_seconds
         drain = LazyOffloadDrain()
         dropped_ops = 0
@@ -388,8 +466,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # whole buffer, not just the segment sitting in the danger window.
         overdue_ids: set[str] = set()
         for order, request_id in enumerate(list(self._pending)):
-            if request_id in signals.blocked_request_ids:
-                continue
             ops = self._pending[request_id]
             surviving = self._drop_evicted_suffix(request_id, ops)
             if len(surviving) != len(ops):
@@ -400,17 +476,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                     drain.emptied_request_ids.append(request_id)
                     continue
                 self._pending[request_id] = surviving
-            overdue = (
-                self._config.max_deferral_seconds > 0.0
-                and surviving[0].admitted_at_time <= overdue_cutoff
-            )
-            in_window = [
-                rank
-                for op in surviving
-                for block_id in op.block_hashes
-                if (rank := ranks.get(block_id)) is not None
-            ]
-            if in_window:
+            if request_id in signals.blocked_request_ids:
+                continue
+            if (window_rank := _min_rank(surviving, ranks)) is not None:
                 # A block the engine is about to recycle outranks a passed
                 # deadline, and sizes the release too: a request past both
                 # emits its due front segment, which always holds the op that
@@ -423,8 +491,11 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # rather than being released when its data is about to go.
                 # Size the release per attention type: one due-predictor per
                 # mechanism, emit up to the last index any of them marks due.
-                candidates.append((min(in_window), order, request_id))
-            elif overdue:
+                candidates.append((window_rank, order, request_id))
+            elif (
+                self._config.max_deferral_seconds > 0.0
+                and surviving[0].admitted_at_time <= overdue_cutoff
+            ):
                 candidates.append((_OVERDUE_RANK, order, request_id))
                 overdue_ids.add(request_id)
         if dropped_ops:
@@ -439,22 +510,18 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             )
         candidates.sort()
         ops_left = self._config.max_drain_per_step
-        for rank, _, request_id in candidates:
+        for _, _, request_id in candidates:
             if ops_left <= 0:
                 break
             ops = self._pending[request_id]
             is_overdue = request_id in overdue_ids
-            due = ops if is_overdue else self._due_front_segment(ops, ranks)
-            emitted = due[:ops_left]
+            due = len(ops) if is_overdue else _due_front_length(ops, ranks)
+            emitted = ops[: min(due, ops_left)]
             ops_left -= len(emitted)
             self._counters.emitted += len(emitted)
             if is_overdue:
                 self._counters.emitted_overdue += len(emitted)
-            item = PendingStoreItem(request_id=request_id)
-            item.metadatas.extend(
-                (op.store_metadata, op.block_hashes) for op in emitted
-            )
-            drain.items.append(item)
+            drain.items.append(_pending_item(request_id, emitted))
             remaining = ops[len(emitted) :]
             if remaining:
                 self._pending[request_id] = remaining
@@ -464,33 +531,26 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._maybe_log_stats()
         return drain
 
-    def _danger_depth(self) -> int:
-        """Free-queue depth considered at risk within the horizon.
+    def _free_queue_ranks(
+        self, depth: int, pending_blocks: "Container[int]"
+    ) -> dict[int, int]:
+        """The free-queue head an allocation can recycle, id -> eviction rank.
 
-        Below half a block over the whole horizon counts as idle (depth 0):
-        the EMA decays asymptotically and would else pin a ceil'd 1 forever.
-
-        Returns:
-            The number of free-queue blocks the engine is expected to
-            consume within ``horizon_steps``, zero on an idle engine.
-        """
-        per_step = max(self._blocks_per_step_ema, float(self._next_step_estimate))
-        horizon_blocks = per_step * self._config.horizon_steps
-        return 0 if horizon_blocks < 0.5 else math.ceil(horizon_blocks)
-
-    def _free_queue_ranks(self, depth: int) -> dict[int, int]:
-        """The first ``depth`` free-queue blocks, block id -> eviction rank.
-
-        Walks the queue's links lazily rather than ``get_all_free_blocks()``,
-        which materialises the whole queue every step.
+        A buffered block met in the walk is due, so it leaves the queue and
+        every block behind it moves up:
+        the walk runs until ``depth`` blocks outside buffered ops are
+        counted. A buffered block that stays (its request is blocked, or the
+        drain budget ran out) only makes the walk reach further.
 
         Args:
-            depth: How many blocks to walk from the queue head. Zero or less
-                returns an empty mapping without touching the queue.
+            depth: How many blocks the allocation can take from the queue
+                head. Zero or less returns an empty mapping without
+                touching the queue.
+            pending_blocks: Every block a buffered op covers.
 
         Returns:
             Block id to its position from the head, lowest evicted first.
-            Shorter than ``depth`` if the queue is.
+            It ends early at the queue tail.
 
         Raises:
             RuntimeError: If the fake head has no successor.
@@ -498,13 +558,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         ranks: dict[int, int] = {}
         if depth <= 0:
             return ranks
-        block = self._pool.free_block_queue.fake_free_list_head.next_free_block
-        if block is None:
-            raise RuntimeError("free_block_queue.fake_free_list_head has no successor")
-        # The fake tail has no successor, which is what ends the walk.
-        while block.next_free_block is not None and len(ranks) < depth:
+        counted = 0
+        for block in self._free_blocks():
+            if counted >= depth:
+                break
             ranks[block.block_id] = len(ranks)
-            block = block.next_free_block
+            if block.block_id not in pending_blocks:
+                counted += 1
         return ranks
 
     def _drop_evicted_suffix(
@@ -535,26 +595,25 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._broken_prefixes.add(request_id)
         return ops[:first_lost]
 
-    def _due_front_segment(
-        self, ops: list[PendingStoreOp], ranks: dict[int, int]
-    ) -> list[PendingStoreOp]:
-        """The front segment up to the last op with a block in the window.
+    def _free_blocks(self) -> "Iterator[KVCacheBlock]":
+        """Walk the free queue from its eviction head, one block at a time.
 
-        Taking from the front keeps a stored operation's prefix stored.
+        Follows the queue's links rather than ``get_all_free_blocks()``,
+        which materialises the whole queue every step.
 
-        Args:
-            ops: One request's buffered operations, in prefix order.
-            ranks: The danger window, as returned by
-                :meth:`_free_queue_ranks`. Only membership is read here.
+        Yields:
+            Each free block, the next to be recycled first.
 
-        Returns:
-            The due prefix of ``ops``, empty when none of them is due.
+        Raises:
+            RuntimeError: If the fake head has no successor.
         """
-        last_due = -1
-        for index, op in enumerate(ops):
-            if any(block_id in ranks for block_id in op.block_hashes):
-                last_due = index
-        return ops[: last_due + 1]
+        block = self._pool.free_block_queue.fake_free_list_head.next_free_block
+        if block is None:
+            raise RuntimeError("free_block_queue.fake_free_list_head has no successor")
+        # The fake tail has no successor, which is what ends the walk.
+        while block.next_free_block is not None:
+            yield block
+            block = block.next_free_block
 
     def _snapshot_intact(self, op: PendingStoreOp) -> bool:
         """Whether every covered block still holds its admission-time hash.
