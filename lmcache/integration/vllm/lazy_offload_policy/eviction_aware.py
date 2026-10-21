@@ -44,9 +44,10 @@ logger = init_logger(__name__)
 # missing the deadline costs latency, missing an eviction costs the data.
 _OVERDUE_RANK = 1 << 62
 
-# Rank of an unblocked request whose front operations are held. Their data is
-# safe but pins GPU blocks, so they go after every block about to be recycled
-# and before a mere deadline.
+# Rank of an unblocked request whose front operations are held, or are due
+# from an earlier step: held ones pin GPU blocks, due ones were moved to the
+# tail to dodge an allocation. Either way their data is safe for now, so they
+# go after every block about to be recycled and before a mere deadline.
 _HELD_RANK = 1 << 61
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
@@ -163,8 +164,8 @@ class LazyOffloadCounters:
             batch in flight. Like ``emitted_overdue``, a weight beside the
             equation: a held operation is still pending until emitted.
         protected: Operations an admission would have recycled, moved to
-            the free-queue tail and left buffered. A weight beside the
-            equation too.
+            the free-queue tail and kept due until emitted. A weight beside
+            the equation too.
         squeezed_admissions: Admissions whose allocation would also have
             reached the free-queue tail, so every buffered operation was
             held instead; each may have been deferred by vLLM for the pins.
@@ -222,11 +223,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     operation that comes due while its request has a batch in flight is
     held instead: the manager pins its blocks, and it is emitted once the
     batch settles. An operation an admission is about to recycle is
-    protected: the manager moves its blocks to the free-queue tail, where
-    it stays buffered. A preempted request releases its whole buffer, which
-    its restart would discard. An engine with no requests never drains;
-    operations whose blocks are evicted before they come due are dropped,
-    never stored stale. Scheduler thread only.
+    protected: the manager moves its blocks to the free-queue tail, out of
+    the allocation's reach, and it stays due until emitted. A preempted
+    request releases its whole buffer, which its restart would discard. An
+    engine with no requests never drains; operations whose blocks are
+    evicted before they come due are dropped, never stored stale. Scheduler
+    thread only.
     """
 
     def __init__(self, config: EvictionAwarePolicyConfig, pool: "BlockPool") -> None:
@@ -246,6 +248,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._broken_prefixes: set[str] = set()
         # Request id -> length of the held prefix of its buffer.
         self._held: dict[str, int] = {}
+        # Request id -> length of the prefix of its buffer that came due on an
+        # earlier step and was moved to the tail rather than emitted. It stays
+        # due: the tail only buys time, and an op that went back to plain
+        # buffering would sit unseen behind the danger window until every
+        # free block is buffered and the whole buffer comes due at once.
+        self._due: dict[str, int] = {}
         self._next_step_blocks = 0
         self._resuming_blocks = 0
         self._now = 0.0  # This step's clock, set at the top of drain().
@@ -315,9 +323,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         one step, past any danger depth the drain can keep. The walk runs
         until ``num_blocks`` blocks outside buffered ops are counted: the ops
         it meets move to the tail, so the allocation reaches that much
-        further. They stay buffered, not due: at the tail they are as far
-        from eviction as any block, and the drain stores them once they
-        near the head again. Per request, the ops moved run up to the last
+        further. They reached the head, so they are due: the next drains
+        emit them within ``max_drain_per_step``, and the tail keeps them
+        safe meanwhile. Per request, the ops moved run up to the last
         op met, stopping at an op whose data is already gone, which the
         next drain drops.
 
@@ -371,6 +379,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 protection.holds.append(item)
             else:
                 self._counters.protected += end - start
+                self._due[request_id] = max(self._due.get(request_id, 0), end)
                 protection.to_tail.append(item)
         return protection
 
@@ -400,6 +409,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._held.pop(request_id, None)
+        self._due.pop(request_id, None)
         self._counters.dropped_on_request_drop += len(dropped)
         return len(dropped)
 
@@ -413,6 +423,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._held.pop(request_id, None)
+        self._due.pop(request_id, None)
         self._counters.dropped_id_reuse += len(dropped)
 
     def release_request(self, request_id: str) -> None:
@@ -441,6 +452,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         dropped = self._pending.pop(request_id, [])
         self._held.pop(request_id, None)
+        self._due.pop(request_id, None)
         self._counters.dropped_failed_store += len(dropped)
         self._broken_prefixes.add(request_id)
         return len(dropped)
@@ -459,8 +471,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         discards what is still buffered, so it is not held to the budget.
         Requests are served most imminent first until
         ``max_drain_per_step``; due ops past the budget move to the
-        free-queue tail, out of the running requests' reach, and stay
-        buffered until they near the head again. One whose deadline
+        free-queue tail, out of the running requests' reach, and stay due,
+        so the next drains emit them once the budget allows. One whose deadline
         passed while no block of it sits in the window is due anyway, but it
         is served after every request holding one, so an expired backlog
         cannot spend the budget that a block about to be recycled needs.
@@ -524,9 +536,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 dropped_ids.append(request_id)
                 if not surviving:
                     del self._pending[request_id]
+                    self._due.pop(request_id, None)
                     drain.emptied_request_ids.append(request_id)
                     continue
                 self._pending[request_id] = surviving
+                if self._due.get(request_id, 0) > len(surviving):
+                    self._due[request_id] = len(surviving)
             held = self._held.get(request_id, 0)
             if request_id in signals.blocked_request_ids:
                 # Pin what an unblocked request would release now; the rest
@@ -568,7 +583,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # Size the release per attention type: one due-predictor per
                 # mechanism, emit up to the last index any of them marks due.
                 candidates.append((min(in_window), order, request_id))
-            elif held or request_id in signals.preempted_request_ids or reaches_tail:
+            elif (
+                held
+                or request_id in self._due
+                or request_id in signals.preempted_request_ids
+                or reaches_tail
+            ):
                 candidates.append((_HELD_RANK, order, request_id))
             elif overdue:
                 candidates.append((_OVERDUE_RANK, order, request_id))
@@ -599,10 +619,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # Only the deadline made it due: it can wait in place.
                 continue
             held = self._held.pop(request_id, 0)
+            due = self._due.pop(request_id, 0)
             if request_id in release_all_ids:
                 due_ops = ops
             else:
-                due_ops = ops[: max(held, len(self._due_front_segment(ops, ranks)))]
+                due_ops = ops[
+                    : max(held, due, len(self._due_front_segment(ops, ranks)))
+                ]
             if request_id in signals.preempted_request_ids:
                 emitted = due_ops
             else:
@@ -620,6 +643,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                     self._counters.held += len(moved)
                     drain.holds.append(_pending_item(request_id, moved))
                 elif moved:
+                    self._due[request_id] = len(due_ops) - len(emitted)
                     drain.to_tail.append(_pending_item(request_id, moved))
             if not emitted:
                 continue

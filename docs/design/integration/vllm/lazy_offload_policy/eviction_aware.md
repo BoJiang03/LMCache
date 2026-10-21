@@ -98,8 +98,13 @@ lifecycle events to it.
    `protect(num_blocks)` walks the free queue until it has counted that
    many blocks outside buffered ops. The ops met move to the
    free-queue **tail** (`touch` then `free_blocks`, hash intact) and stay
-   buffered: at the tail they are as far from eviction as any block, so
-   the drain stores them once they near the head again. They are not
+   **due** until a drain emits them, within `max_drain_per_step`. The
+   tail only buys time. An op sent back to plain buffering would sit
+   behind the danger window, unseen, while allocations use up the free
+   blocks outside buffered ops. Once every free block is buffered, the
+   whole buffer comes due at once. In a c100 run with a 150 GiB L1 that
+   meant bursts of about 600 ops every 3 to 6 minutes, which L1 eviction
+   could not absorb, so most of each burst was rejected. They are not
    pinned: a pin shrinks the free queue the admission allocates from, and
    when the rest no longer fits vLLM refuses the admission and every
    waiting request behind it for that step. Only when the walk reaches the
@@ -223,7 +228,7 @@ the true vLLM hit instead of 0.
   buffered ops: every buffered block met is due, so it leaves the queue
   (or moves to the tail) and the blocks behind it are what the next step
   can reach. Due ops past `max_drain_per_step` move to the free-queue
-  tail, out of the next step's reach, and stay buffered like protected
+  tail, out of the next step's reach, and stay due like protected
   ops -- unless the walk reached the tail before counting the danger
   depth (`squeezed_drains`): the next step may then take the whole queue,
   and every block freed before it allocates, so every buffered op comes
@@ -253,8 +258,8 @@ the true vLLM hit instead of 0.
   bounds the per-step D2H burst in operations. The cap may split a request's
   due segment but only ever emits a front slice of it, so within-request
   prefix order is preserved. Due ops past the cap are not lost: they move
-  to the free-queue tail (held instead on a squeezed drain) and wait for a
-  later drain, so a low cap delays stores and reorders GPU prefix-cache
+  to the free-queue tail (held instead on a squeezed drain) and stay due
+  for the next drain, so a low cap delays stores and reorders GPU prefix-cache
   eviction; `configuration.rst` states the rule.
 - **Idle consequences**: receipts travel in worker metadata, which flows on
   every step, including steps that schedule no tokens. Those steps drain as

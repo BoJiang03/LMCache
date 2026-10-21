@@ -326,9 +326,9 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
     """An admission recycling past a buffered block does not cost a store.
 
     Only the admission notice can save the block, and the notice must not
-    shrink the free queue the admission allocates from. Out of reach, the
-    block stays buffered rather than stored; releasing the buffer, as the
-    request's preemption does, still finds it intact.
+    shrink the free queue the admission allocates from. Moved out of reach,
+    the block has still reached the head, so it stays due: the next drain
+    stores it intact, though no running request presses on the queue.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager, _, _ = _buffered_block_in_queue(pool, position=5)
@@ -338,8 +338,7 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
         manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
         assert pool.get_num_free_blocks() == num_free
     pool.get_new_blocks(ADMISSION_BLOCKS)
-    assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = manager.on_scheduler_step(_step())
 
     assert bool(actions.stores_to_submit) is admitted
 
@@ -376,7 +375,7 @@ def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
     Each Mamba group takes one block for the external hit and one state
     block for the chunk, four in all, which reach the buffered block third
     in the queue. Saved by the admission notice, it is still intact when
-    the request's preemption releases it.
+    the next drain stores it.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager, _, _ = _buffered_block_in_queue(
@@ -387,8 +386,7 @@ def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
         "new", 20 * TOKENS_PER_BLOCK, 0, 10 * TOKENS_PER_BLOCK, load_async=False
     )
     pool.get_new_blocks(4)
-    assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = manager.on_scheduler_step(_step())
 
     assert actions.stores_to_submit != []
 
@@ -529,8 +527,8 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
 
     Two requests have a block at the free-queue head and a running request
     is about to take two blocks; one drain stores only one op. The other
-    moves out of reach and stays buffered, still intact once the running
-    request has allocated.
+    moves out of reach and stays due, so the next drain stores it, intact
+    though the running request has allocated and nothing presses on it.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -549,8 +547,7 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
 
     first = manager.on_scheduler_step(_step({"running": 2 * TOKENS_PER_BLOCK}))
     pool.get_new_blocks(2)
-    assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    second = manager.on_scheduler_step(_step(preempted={"second"}))
+    second = manager.on_scheduler_step(_step())
 
     assert [store.request_id for store in first.stores_to_submit] == ["first"]
     assert [store.request_id for store in second.stores_to_submit] == ["second"]
