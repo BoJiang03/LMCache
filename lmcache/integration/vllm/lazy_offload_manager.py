@@ -16,6 +16,8 @@ ones defined in ``lazy_offload_policy.base``:
   success or in failure. The batch settles once every worker has reported.
 - **Pin**: the reference this class takes on a GPU block so that vLLM cannot
   recycle it while the worker is still reading it. The receipt releases it.
+  A held operation (see ``lazy_offload_policy.base``) is pinned before its
+  submission; the submitted batch takes that pin over.
 - **Orphaned**: said of a batch whose generation ended before its receipt
   arrived. Its pins are still released, but its failure is not retried for
   the generation now holding the id.
@@ -211,6 +213,11 @@ class LazyOffloadManager:
         self._requests = LazyOffloadRequestRegistry()
         # One token ledger per request whose operations are buffered.
         self._token_ledgers: dict[str, list[int]] = {}
+        # Blocks pinned for held operations, per request, until submission.
+        self._held_block_ids: dict[str, set[int]] = {}
+        # Pinned blocks that sat in the free queue when pinned: unpinning
+        # returns them to its head, where eviction order had them.
+        self._pinned_while_free: set[int] = set()
         # Token counts of admitted requests and, once scheduled, the tokens
         # they will have computed after their last scheduled step: what
         # bounds the blocks they can allocate before the next drain.
@@ -304,10 +311,12 @@ class LazyOffloadManager:
     def on_scheduler_step(
         self, scheduler_output: "SchedulerOutput"
     ) -> LazyOffloadActions:
-        """Drain stores made due by one token-producing scheduler step.
+        """Drain stores made due by one scheduler step.
 
-        A zero-token step returns no actions: vLLM takes its no-forward path
-        and would discard metadata produced by that step.
+        A step that schedules no tokens drains too: vLLM's no-forward path
+        still calls ``wait_for_save``, which submits the stores. It happens
+        when blocks run out for every waiting request, and the pins a
+        squeezed admission left are then what must be stored to free them.
 
         Args:
             scheduler_output: The step's schedule, supplying the block
@@ -322,8 +331,6 @@ class LazyOffloadManager:
             RuntimeError: If the policy emitted for a request that
                 already has a store batch in flight.
         """
-        if not scheduler_output.total_num_scheduled_tokens:
-            return LazyOffloadActions()
         return self._drain(scheduler_output, self._require_block_pool())
 
     def on_admission(
@@ -342,7 +349,8 @@ class LazyOffloadManager:
         allocates its whole prefix at once, which no danger depth predicts.
         Pinning those blocks would shrink the free queue the allocation
         draws from and could refuse it, so they move to the tail instead,
-        still allocatable and still buffered.
+        still allocatable and still buffered. Only when the allocation would
+        reach the tail too are they pinned now.
 
         Args:
             request_id: The request being admitted.
@@ -411,9 +419,9 @@ class LazyOffloadManager:
 
         A failure only marks the in-flight batch: other workers may still be
         reading its blocks. Once every worker has reported, a failed batch
-        that is not orphaned goes back to the policy to be retried; unpinned,
-        its blocks join the free-queue tail. Stale receipts in
-        ``completed_store_counts`` are filtered here.
+        that is not orphaned goes back to the policy to be retried, and its
+        blocks move to the free-queue tail instead of the head. Stale
+        receipts in ``completed_store_counts`` are filtered here.
 
         Args:
             failed_request_ids: Requests whose submitted store failed on at
@@ -425,7 +433,6 @@ class LazyOffloadManager:
         Returns:
             Sessions made releasable by completed batches.
         """
-        pool = self._require_block_pool()
         for request_id in failed_request_ids:
             if self._requests.has_in_flight(request_id):
                 self._requests.fail_in_flight(request_id)
@@ -443,7 +450,7 @@ class LazyOffloadManager:
             ):
                 continue
             batch = self._requests.complete_batch(request_id)
-            pool.free_blocks([pool.blocks[block_id] for block_id in batch.block_ids])
+            self._unpin(list(batch.block_ids))
             if batch.failed and not batch.orphaned:
                 # The data is still on the GPU; a reset or id reuse would
                 # have detached the batch from the generation it belongs to.
@@ -453,6 +460,7 @@ class LazyOffloadManager:
                     len(batch.operations.metadatas),
                 )
                 self._require_policy().requeue_failed(batch.operations)
+                self._move_to_tail([batch.operations])
             if not self._require_policy().has_pending_request(
                 request_id
             ) and self._requests.can_end_session(request_id):
@@ -493,6 +501,7 @@ class LazyOffloadManager:
         self._token_ledgers.pop(request_id, None)
         self._forget_progress(request_id)
         dropped = self._require_policy().drop_request(request_id)
+        self._release_holds(request_id)
         if dropped:
             logger.info(
                 "Lazy offload: dropped %d buffered store op(s) of preempted request %s",
@@ -521,6 +530,7 @@ class LazyOffloadManager:
         if not reused_finished_id:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
+        self._release_holds(request_id)
         self._token_ledgers.pop(request_id, None)
         if predecessor_in_flight:
             return LazyOffloadActions()
@@ -558,10 +568,11 @@ class LazyOffloadManager:
     ) -> LazyOffloadActions:
         """Apply one policy-neutral drain plan and its GPU side effects.
 
-        Each emitted operation is re-validated against the hash snapshot the
-        policy kept, pinned, and coalesced into one submission per request.
-        A request whose snapshot no longer matches loses that operation and
-        every later one of the same drain.
+        Released holds are unpinned and new holds pinned first. Each emitted
+        operation is re-validated against the hash snapshot the policy kept,
+        pinned unless it was held, and coalesced into one submission per
+        request. A request whose snapshot no longer matches loses that
+        operation and every later one of the same drain.
 
         Args:
             scheduler_output: The step's schedule, converted into the
@@ -587,9 +598,13 @@ class LazyOffloadManager:
                 admission_blocks=self._admission_blocks,
                 finished_request_ids=self._requests.finished_request_ids(),
                 blocked_request_ids=self._requests.in_flight_request_ids(),
+                preempted_request_ids=set(scheduler_output.preempted_req_ids or ()),
                 running_blocks_allocated=running_blocks_allocated,
             )
         )
+        for request_id in drain.releases:
+            self._release_holds(request_id)
+        self._pin_holds(drain.holds)
         actions = LazyOffloadActions()
         for item in drain.items:
             if self._requests.has_in_flight(item.request_id):
@@ -597,12 +612,15 @@ class LazyOffloadManager:
                     f"request {item.request_id!r} emitted while a store batch "
                     "is still in flight"
                 )
+            held = self._held_block_ids.pop(item.request_id, set())
             valid = PendingStoreItem(request_id=item.request_id)
             valid_block_ids: list[int] = []
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
-                blocks = [pool.blocks[block_id] for block_id in gpu_block_ids]
-                pool.touch(blocks)
+                self._pin(
+                    [block_id for block_id in gpu_block_ids if block_id not in held]
+                )
+                held.difference_update(gpu_block_ids)
                 new_block_hashes = {
                     block_id: pool.blocks[block_id].block_hash
                     for block_id in gpu_block_ids
@@ -616,10 +634,13 @@ class LazyOffloadManager:
                         "dropping its remaining store operations",
                         item.request_id,
                     )
-                    pool.free_blocks(blocks)
+                    self._unpin(gpu_block_ids)
                     break
                 valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
+            if held:
+                # Held ops the drain budget left buffered keep their pins.
+                self._held_block_ids[item.request_id] = held
             if not valid.metadatas:
                 continue
             actions.stores_to_submit.append(
@@ -914,7 +935,9 @@ class LazyOffloadManager:
         Args:
             num_blocks: Upper bound on the blocks the allocation consumes.
         """
-        self._move_to_tail(self._require_policy().protect(num_blocks).to_tail)
+        protection = self._require_policy().protect(num_blocks)
+        self._move_to_tail(protection.to_tail)
+        self._pin_holds(protection.holds)
 
     def _move_to_tail(self, items: list[PendingStoreItem]) -> None:
         """Move buffered blocks to the free-queue tail, unpinned.
@@ -944,6 +967,83 @@ class LazyOffloadManager:
         self._resuming.pop(request_id, None)
         self._handed_blocks.pop(request_id, None)
         self._table_lengths.pop(request_id, None)
+
+    def _pin_holds(self, holds: list[PendingStoreItem]) -> None:
+        """Pin the blocks of operations the policy just marked held.
+
+        The policy checked these snapshots in the same call, and nothing
+        allocates between its check and this pin.
+
+        Args:
+            holds: The policy's new holds, one entry per request.
+        """
+        for hold in holds:
+            held = self._held_block_ids.setdefault(hold.request_id, set())
+            for _, block_hashes in hold.metadatas:
+                self._pin(list(block_hashes))
+                held.update(block_hashes)
+
+    def _release_holds(self, request_id: str) -> None:
+        """Unpin the blocks of a request's held operations.
+
+        The policy releases holds it dropped and squeeze holds it no longer
+        needs; either way the operations stay buffered or are gone.
+
+        Args:
+            request_id: The request whose holds end.
+        """
+        self._unpin(list(self._held_block_ids.pop(request_id, set())))
+
+    def _pin(self, block_ids: list[int]) -> None:
+        """Pin blocks, remembering which ones were waiting for eviction.
+
+        Args:
+            block_ids: The blocks to pin, in eviction order.
+        """
+        pool = self._require_block_pool()
+        blocks = [pool.blocks[block_id] for block_id in block_ids]
+        self._pinned_while_free.update(
+            block_id
+            for block_id, block in zip(block_ids, blocks, strict=True)
+            if block.ref_cnt == 0
+        )
+        pool.touch(blocks)
+
+    def _unpin(self, block_ids: list[int]) -> None:
+        """Release pins, returning formerly free blocks to the queue head.
+
+        ``BlockPool.free_blocks`` appends a cached block to the tail as if
+        just used; a block this manager pinned out of the free queue was
+        near the head, so the head is closer to its place in eviction order.
+        A block another request still owns stays wherever vLLM puts it, and
+        so does one a buffered operation still covers: a request sharing the
+        prefix buffered it too, and at the head it would sit inside the danger
+        window after the drain walked the queue, so the next allocation would
+        recycle it unseen.
+
+        Args:
+            block_ids: The pinned blocks to release, in eviction order.
+        """
+        pool = self._require_block_pool()
+        blocks = [pool.blocks[block_id] for block_id in block_ids]
+        pool.free_blocks(blocks)
+        was_free = [
+            (block_id, block)
+            for block_id, block in zip(block_ids, blocks, strict=True)
+            if block_id in self._pinned_while_free
+        ]
+        if not was_free:
+            return
+        self._pinned_while_free.difference_update(block_id for block_id, _ in was_free)
+        buffered = self._require_policy().buffered_block_ids()
+        returned = [
+            block
+            for block_id, block in was_free
+            if block.ref_cnt == 0 and block_id not in buffered
+        ]
+        for block in returned:
+            pool.free_block_queue.remove(block)
+        pool.free_block_queue.prepend_n(returned)
 
     def _release_session(self, request_id: str) -> None:
         """Clear policy and registry state for a settled request.

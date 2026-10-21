@@ -1037,15 +1037,18 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
    * - ``lmcache.mp.lazy_offload_max_drain_per_step``
      - ``64``
      - ``EVICTION_AWARE`` only: maximum store operations emitted per
-       scheduler step. A value below the concurrent prefill admission rate
-       can lose buffered operations to eviction.
+       scheduler step. Due operations past the limit keep their GPU blocks
+       pinned and wait for a later step, so a low value delays stores and
+       holds those blocks out of the GPU prefix cache's free queue
+       meanwhile.
    * - ``lmcache.mp.lazy_offload_max_deferral_seconds``
      - ``0.0``
      - ``EVICTION_AWARE`` only: how long a buffered operation may wait before
-       it is emitted regardless of eviction pressure. Not a hard bound: no
-       drain runs on a step that schedules no tokens, a request whose store
-       is already in flight is skipped, and due operations that do not fit
-       in ``max_drain_per_step`` wait for a later step. Zero leaves emission
+       it is emitted regardless of eviction pressure. Not a hard bound: a
+       drain runs only when vLLM schedules a step, a request whose store is
+       already in flight waits for it (its due blocks are pinned meanwhile),
+       and due operations that do not fit in ``max_drain_per_step`` wait for
+       a later step. Zero leaves emission
        entirely to the danger window. Set it below the reuse interval the
        workload has to beat.
    * - ``lmcache.mp.lazy_offload_threshold``
