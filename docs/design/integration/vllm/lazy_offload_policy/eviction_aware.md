@@ -80,6 +80,15 @@ squeezed drain made every op due. On a replay of the c100 run (simulated),
 tail, against 0.2-1% from the window; with the rule above every emitted op
 is in the window or prefix-closed behind one.
 
+Storing a request's last full block at once was tried and dropped. With
+MTP, vLLM drops the last matched block of every local prefix hit, so that
+block never serves a later request from GPU and deferring it looked like
+pure recompute. But its presence is what lets the block before it hit:
+stored early, it lost its tail position, was recycled first, and every
+continuation's local hit ended one block sooner. On the c100 run (measured,
+two runs each) local hits fell from 33.4-34.6% to 25.0-25.2% of prompt
+tokens and TTFT p50 rose from 31.0-38.0 s to 42.9-60.6 s.
+
 ## Per-step protocol (policy-caller obligations)
 
 `LazyOffloadManager` is the production caller; the connector only forwards
