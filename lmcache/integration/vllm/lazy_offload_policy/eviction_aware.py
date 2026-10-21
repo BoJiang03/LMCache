@@ -501,9 +501,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         in the queue: vLLM frees blocks of running requests (align-mode
         Mamba drops older states) before the next step allocates, and they
         join a tail already in reach. So every op this drain leaves buffered
-        is held, not just the due ones. Those holds are released, unpinned,
-        by the first drain whose window stops short of the tail: their
-        blocks then join the tail behind every block the window counts.
+        is held, not just the due ones. If the next drain stops short of the
+        tail, it releases those holds unpinned: their blocks then join the
+        tail behind every block the window counts. If it reaches the tail
+        too, the pins are what keeps the queue short, so the held ops are
+        due like any other hold; otherwise a lasting squeeze would pin the
+        whole pool without storing any of it.
 
         Args:
             signals: The manager's bounds on the blocks the running
@@ -543,6 +546,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         drain = LazyOffloadDrain()
         if reaches_tail:
             self._counters.squeezed_drains += 1
+            # A squeeze hold bets the squeeze passes by the next drain. Lost,
+            # the pins are what keeps the queue short, so they come due.
+            self._squeeze_held.clear()
         else:
             # Pinned, these blocks were not walked; unpinned, they join the
             # tail, past the depth just counted.

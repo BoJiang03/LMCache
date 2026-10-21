@@ -1110,9 +1110,8 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     vLLM frees a running request's older blocks, as align-mode Mamba drops
     past states, before the next step allocates; they join a tail already
     in reach. The op on such a block is not due, but it is pinned while its
-    request still owns it, so it survives the whole queue being allocated.
-    The pin lasts until a drain whose window stops short of the tail, which
-    leaves the op buffered: its request's preemption stores it intact.
+    request still owns it, so it survives the whole queue being allocated,
+    and its request's preemption stores it intact.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -1132,15 +1131,42 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     first = manager.on_scheduler_step(_step({"running": 2 * TOKENS_PER_BLOCK}))
     pool.free_blocks([pool.blocks[ids[5]]])
     allocated = pool.get_new_blocks(pool.get_num_free_blocks())
-    squeezed = manager.on_scheduler_step(_step())
     pool.free_blocks(allocated + [pool.blocks[block_id] for block_id in ids[6:]])
-    released = manager.on_scheduler_step(_step())
     preempted = manager.on_scheduler_step(_step(preempted={"owned"}))
 
     assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert squeezed.stores_to_submit == []
-    assert released.stores_to_submit == []
     assert [store.request_id for store in preempted.stores_to_submit] == ["owned"]
+
+
+def test_lasting_squeeze_stores_what_it_pinned() -> None:
+    """A squeeze that outlasts a drain makes its own pins due.
+
+    The pinned blocks are out of the free queue, so no window can reach
+    them; a squeeze they help keep up would otherwise pin the pool forever
+    without storing any of it.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    manager = _manager(
+        pool,
+        configs={"lmcache.mp.lazy_offload_max_drain_per_step": 1},
+        receipts=_Receipts(),
+    )
+    manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
+    for request_id, block_id in (("first", ids[0]), ("owned", ids[5])):
+        store = _store([[block_id], [null]])
+        store.request_id = request_id
+        manager.add_store_candidate(store)
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids[:2]])
+
+    first = manager.on_scheduler_step(_step({"running": 2 * TOKENS_PER_BLOCK}))
+    pool.free_blocks([pool.blocks[ids[5]]])
+    pool.get_new_blocks(pool.get_num_free_blocks())
+    still_squeezed = manager.on_scheduler_step(_step())
+
+    assert [store.request_id for store in first.stores_to_submit] == ["first"]
+    assert [store.request_id for store in still_squeezed.stores_to_submit] == ["owned"]
 
 
 def test_squeezed_admission_pins_a_block_its_request_still_owns() -> None:

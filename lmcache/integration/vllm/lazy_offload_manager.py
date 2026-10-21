@@ -981,10 +981,13 @@ class LazyOffloadManager:
                 held.update(block_hashes)
 
     def _release_holds(self, request_id: str) -> None:
-        """Unpin the blocks of a request's held operations the policy dropped.
+        """Unpin the blocks of a request's held operations.
+
+        The policy releases holds it dropped and squeeze holds it no longer
+        needs; either way the operations stay buffered or are gone.
 
         Args:
-            request_id: The request whose held operations were discarded.
+            request_id: The request whose holds end.
         """
         self._unpin(list(self._held_block_ids.pop(request_id, set())))
 

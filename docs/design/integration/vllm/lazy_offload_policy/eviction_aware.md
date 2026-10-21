@@ -58,8 +58,11 @@ earlier**:
    the ops it would reach to the tail, still buffered.
 3. A walk that reaches the tail first (`squeezed_drains`) means blocks freed
    before the next step join a tail already in reach, so every op the drain
-   does not emit is held; the first drain that stops short of the tail
-   releases those holds, unpinned, onto the tail.
+   does not emit is held. If the next drain stops short of the tail, it
+   releases those holds, unpinned, onto the tail; if it reaches the tail
+   too, the pins are what keeps the queue short, so the held ops come due
+   like any other hold. A lasting squeeze otherwise pins the pool without
+   storing any of it.
 4. A failed store is buffered again and its blocks go to the tail.
 5. A stored block returns to the head on unpin unless an op still buffers it.
 
@@ -341,7 +344,8 @@ the true vLLM hit instead of 0.
   every step, including steps that schedule no tokens. Those steps drain as
   well, which a squeezed admission needs: its pins can leave no waiting
   request room to run, and with nothing running only storing the pinned ops
-  frees the blocks. hold8 (Qwen3.5-122B-A10B, N=150) deadlocked there after
+  frees the blocks; a squeezed drain's holds come due for the same reason
+  once the next drain is squeezed too (rule 3). hold8 (Qwen3.5-122B-A10B, N=150) deadlocked there after
   19 minutes when zero-token steps returned no actions. Pins, in-flight
   sessions, and finished requests whose ops never come due all settle on the
   next activity -- nothing leaks permanently. An engine that is not stepping
