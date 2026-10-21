@@ -104,7 +104,11 @@ lifecycle events to it.
    blocks outside buffered ops. Once every free block is buffered, the
    whole buffer comes due at once. In a c100 run with a 150 GiB L1 that
    meant bursts of about 600 ops every 3 to 6 minutes, which L1 eviction
-   could not absorb, so most of each burst was rejected. They are not
+   could not absorb, so most of each burst was rejected. Due ops at the
+   tail are safe until the head reaches them again, so they are paced:
+   each drain emits as many of their blocks as the free blocks outside
+   buffered ops shrank by since the last drain. Stores then follow what
+   allocations consume instead of one protection's size. They are not
    pinned: a pin shrinks the free queue the admission allocates from, and
    when the rest no longer fits vLLM refuses the admission and every
    waiting request behind it for that step. Only when the walk reaches the

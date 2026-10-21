@@ -343,6 +343,26 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
     assert bool(actions.stores_to_submit) is admitted
 
 
+def test_protected_op_waits_at_the_tail_until_allocations_take_blocks() -> None:
+    """A protected op is due but paced by what allocations consume.
+
+    The admission notice moves the buffered block to the tail. While no
+    free block has been taken since, the drain leaves it buffered, so one
+    large protection is not stored in a single burst; once the admission
+    allocates, the drain stores it intact.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=5)
+    manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
+
+    waiting = manager.on_scheduler_step(_step()).stores_to_submit
+    pool.get_new_blocks(ADMISSION_BLOCKS)
+    stored = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert waiting == []
+    assert stored != []
+
+
 @pytest.mark.parametrize(
     ("mamba_groups", "pinned"),
     [(None, True), ({0: 0, 1: 0}, False)],
