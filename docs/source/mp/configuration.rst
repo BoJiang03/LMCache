@@ -1034,12 +1034,6 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
      - Lazy drain policy. ``EVICTION_AWARE`` drains blocks near the GPU free
        queue's eviction head. Set ``FIFO`` explicitly to keep the
        count-triggered behavior.
-   * - ``lmcache.mp.lazy_offload_horizon_steps``
-     - ``2.5``
-     - ``EVICTION_AWARE`` only: estimated scheduler steps of block
-       consumption treated as imminent eviction. Must be greater than zero.
-       Larger values store earlier and reduce eviction losses, but may store
-       GPU-resident hot content and increase lower-tier eviction pressure.
    * - ``lmcache.mp.lazy_offload_max_drain_per_step``
      - ``64``
      - ``EVICTION_AWARE`` only: maximum store operations emitted per

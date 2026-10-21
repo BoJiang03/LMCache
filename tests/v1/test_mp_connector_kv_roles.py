@@ -102,12 +102,16 @@ def _config(transfer_config: KVTransferConfig) -> VllmConfig:
     return cast(
         VllmConfig,
         SimpleNamespace(
-            model_config=SimpleNamespace(model="test-model", use_mla=False),
+            model_config=SimpleNamespace(
+                model="test-model", use_mla=False, max_model_len=4096
+            ),
             parallel_config=SimpleNamespace(
                 world_size=1, rank=0, tensor_parallel_size=1, pipeline_parallel_size=1
             ),
             cache_config=SimpleNamespace(block_size=4, enable_prefix_caching=True),
-            scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=True),
+            scheduler_config=SimpleNamespace(
+                disable_hybrid_kv_cache_manager=True, max_num_batched_tokens=16
+            ),
             kv_transfer_config=transfer_config,
         ),
     )
@@ -131,11 +135,12 @@ def _request(request_id: str = "request") -> Request:
 def _schedule(
     request_id: str = "request",
     num_tokens: int = 0,
-    block_ids: tuple[list[int], ...] = (),
+    block_ids: tuple[list[int], ...] = ([],),
     *,
     new: bool = False,
     num_computed_tokens: int = 0,
 ) -> SchedulerOutput:
+    # vLLM hands one block-id list per KV-cache group; this config has one.
     return cast(
         SchedulerOutput,
         SimpleNamespace(
@@ -160,6 +165,8 @@ def _schedule(
             ),
             num_scheduled_tokens={request_id: num_tokens} if num_tokens else {},
             total_num_scheduled_tokens=num_tokens,
+            finished_req_ids=set(),
+            preempted_req_ids=None,
         ),
     )
 
