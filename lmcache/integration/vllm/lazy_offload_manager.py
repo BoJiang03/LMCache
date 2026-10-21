@@ -964,7 +964,11 @@ class LazyOffloadManager:
         ``BlockPool.free_blocks`` appends a cached block to the tail as if
         just used; a block this manager pinned out of the free queue was
         near the head, so the head is closer to its place in eviction order.
-        A block another request still owns stays wherever vLLM puts it.
+        A block another request still owns stays wherever vLLM puts it, and
+        so does one a buffered operation still covers: a request sharing the
+        prefix buffered it too, and at the head it would sit inside the danger
+        window after the drain walked the queue, so the next allocation would
+        recycle it unseen.
 
         Args:
             block_ids: The pinned blocks to release, in eviction order.
@@ -972,12 +976,13 @@ class LazyOffloadManager:
         pool = self._require_block_pool()
         blocks = [pool.blocks[block_id] for block_id in block_ids]
         pool.free_blocks(blocks)
+        buffered = self._require_policy().buffered_block_ids()
         returned = []
         for block_id, block in zip(block_ids, blocks, strict=True):
             if block_id not in self._pinned_while_free:
                 continue
             self._pinned_while_free.discard(block_id)
-            if block.ref_cnt == 0:
+            if block.ref_cnt == 0 and block_id not in buffered:
                 pool.free_block_queue.remove(block)
                 returned.append(block)
         pool.free_block_queue.prepend_n(returned)

@@ -592,6 +592,38 @@ def test_stored_block_returns_to_queue_head() -> None:
     assert pool.get_new_blocks(1)[0].block_id == block
 
 
+def test_stored_block_another_request_buffered_is_not_recycled_next() -> None:
+    """A shared prefix block stays out of reach after one request stores it.
+
+    Two requests buffered the same block, at the free-queue head; one drain
+    stores only the first. Once that store settles, the block is still
+    buffered by the second, so the next allocation takes another block and
+    the second request's op is stored intact.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    manager = _manager(
+        pool,
+        configs={**CONFIGS, "lmcache.mp.lazy_offload_max_drain_per_step": 1},
+        receipts=_Receipts(),
+    )
+    for request_id in ("first", "second"):
+        store = _store([[ids[0]], [null]])
+        store.request_id = request_id
+        manager.add_store_candidate(store)
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+
+    first = manager.on_scheduler_step(_step())
+    manager.on_store_results(set(), {"first": 1})
+    allocated = pool.get_new_blocks(1)[0].block_id
+    second = manager.on_scheduler_step(_step())
+
+    assert [store.request_id for store in first.stores_to_submit] == ["first"]
+    assert allocated != ids[0]
+    assert [store.request_id for store in second.stores_to_submit] == ["second"]
+
+
 def test_preemption_unpins_held_blocks() -> None:
     """A reset discards held ops, and with them their pins."""
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)

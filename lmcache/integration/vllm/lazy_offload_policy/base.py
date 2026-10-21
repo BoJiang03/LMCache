@@ -232,6 +232,18 @@ class OffloadPolicy(ABC):
         """
 
     @abstractmethod
+    def buffered_block_ids(self) -> set[int]:
+        """Every GPU block a buffered operation covers, of any request.
+
+        Requests that share a prefix share its blocks, so a block one
+        request's store just released can still back another request's
+        buffered operation.
+
+        Returns:
+            The block ids, possibly empty.
+        """
+
+    @abstractmethod
     def drop_request(self, request_id: str) -> int:
         """Discard operations invalidated by a preemption reset.
 

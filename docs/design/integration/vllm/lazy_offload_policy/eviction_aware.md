@@ -136,8 +136,13 @@ lifecycle events to it.
    **head**, in order: `free_blocks` would append it as most recently used,
    while eviction order had it next, so every lazy store would otherwise
    refresh the GPU prefix cache's LRU. A block a request still owns is left
-   to vLLM. End the session only when the registry says the request is
-   finished and the policy has nothing pending.
+   to vLLM, and so is one another request's op still buffers
+   (`buffered_block_ids()`): requests sharing a prefix share its blocks, and
+   at the head the block would land inside the danger window after the
+   drain walked the queue, so the next allocation would recycle it and drop
+   that request's op and its whole suffix. At the tail it waits for the
+   window like any buffered block. End the session only when the registry
+   says the request is finished and the policy has nothing pending.
 5. On `request_finished`, record `FINISHED` in the registry; end immediately
    only under the same predicate, otherwise a later drain or receipt applies
    it.

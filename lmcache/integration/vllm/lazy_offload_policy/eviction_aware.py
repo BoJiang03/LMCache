@@ -402,6 +402,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         return request_id in self._pending
 
+    def buffered_block_ids(self) -> set[int]:
+        """Every GPU block a buffered operation covers.
+
+        Returns:
+            The block ids, possibly empty.
+        """
+        return {
+            block_id
+            for ops in self._pending.values()
+            for op in ops
+            for block_id in op.block_hashes
+        }
+
     def drop_request(self, request_id: str) -> int:
         """Discard buffered operations invalidated by a tracker reset.
 
