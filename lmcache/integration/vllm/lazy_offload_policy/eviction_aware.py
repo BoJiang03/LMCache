@@ -156,9 +156,9 @@ class EvictionAwarePolicyConfig:
 class LazyOffloadCounters:
     """Cumulative policy counters for observability.
 
-    The counts close as a ledger: ``admitted`` equals the pending depth plus
-    ``emitted`` plus every ``dropped_*`` counter. ``emitted_overdue`` is a
-    weight beside the equation, not a term in it.
+    The counts close as a ledger: ``admitted`` plus ``requeued`` equals the
+    pending depth plus ``emitted`` plus every ``dropped_*`` counter.
+    ``emitted_overdue`` is a weight beside the equation, not a term in it.
 
     Attributes:
         admitted: Operations taken into the buffer.
@@ -195,8 +195,8 @@ class LazyOffloadCounters:
             request's prefix chain was already broken.
         dropped_on_request_drop: Buffered operations discarded when vLLM
             preempted the request and freed its blocks.
-        dropped_failed_store: Buffered operations discarded when a submitted
-            store of the same request failed.
+        requeued: Emitted operations whose store failed, buffered again to
+            be retried. A retried operation counts as emitted once more.
         dropped_id_reuse: Buffered operations of a finished request
             discarded when a new request took over its id.
     """
@@ -204,6 +204,7 @@ class LazyOffloadCounters:
     admitted: int = 0
     emitted: int = 0
     emitted_overdue: int = 0
+    requeued: int = 0
     held: int = 0
     protected: int = 0
     squeezed_admissions: int = 0
@@ -215,7 +216,6 @@ class LazyOffloadCounters:
     rejected_unhashed: int = 0
     rejected_prefix_broken: int = 0
     dropped_on_request_drop: int = 0
-    dropped_failed_store: int = 0
     dropped_id_reuse: int = 0
 
 
@@ -445,25 +445,35 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         self._broken_prefixes.discard(request_id)
 
-    def mark_store_failed(self, request_id: str) -> int:
-        """Break the request's prefix chain; see ``OffloadPolicy``.
+    def requeue_failed(self, item: PendingStoreItem) -> None:
+        """Buffer a failed batch ahead of its request's later ops, due.
 
-        The manager filters out orphaned batches first: a failure that
-        predates a preemption reset or id reuse cannot break the prefix of
-        the request generation now using the id.
+        The manager moves the ops' blocks to the free-queue tail, so they
+        are paced like any due op at the tail rather than resubmitted at
+        once into an L1 that just rejected them. A held prefix of the later
+        ops grows by the requeued ops, which precede it.
 
         Args:
-            request_id: The request whose submitted store failed.
-
-        Returns:
-            The number of buffered operations dropped.
+            item: The failed batch's operations, in token order. The
+                manager filters out orphaned batches first.
         """
-        dropped = self._pending.pop(request_id, [])
-        self._held.pop(request_id, None)
-        self._due.pop(request_id, None)
-        self._counters.dropped_failed_store += len(dropped)
-        self._broken_prefixes.add(request_id)
-        return len(dropped)
+        request_id = item.request_id
+        now = time.monotonic()
+        ops = [
+            PendingStoreOp(
+                store_metadata=meta,
+                block_hashes=block_hashes,
+                # A fresh deadline: the retry is paced by allocations, and
+                # an op made overdue would be resubmitted on the next drain.
+                admitted_at_time=now,
+            )
+            for meta, block_hashes in item.metadatas
+        ]
+        self._pending[request_id] = ops + self._pending.get(request_id, [])
+        if request_id in self._held:
+            self._held[request_id] += len(ops)
+        self._due[request_id] = self._due.get(request_id, 0) + len(ops)
+        self._counters.requeued += len(ops)
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
@@ -609,13 +619,15 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 candidates.append((min(in_window), order, request_id))
             elif held or request_id in signals.preempted_request_ids or reaches_tail:
                 candidates.append((_HELD_RANK, order, request_id))
-            elif request_id in self._due:
-                candidates.append((_DUE_RANK, order, request_id))
-                paced_ids.add(request_id)
             elif overdue:
+                # Before the pacing below: a deadline holds even when no
+                # allocation consumes free blocks.
                 candidates.append((_OVERDUE_RANK, order, request_id))
                 overdue_ids.add(request_id)
                 release_all_ids.add(request_id)
+            elif request_id in self._due:
+                candidates.append((_DUE_RANK, order, request_id))
+                paced_ids.add(request_id)
             if request_id in signals.preempted_request_ids or reaches_tail:
                 # A window reaching the tail covers blocks not yet in the
                 # queue too: vLLM frees blocks of running requests (align-mode
@@ -669,7 +681,11 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             if is_paced and len(due_ops) > len(emitted):
                 # Already at the tail: it stays there, and stays due.
                 self._due[request_id] = len(due_ops) - len(emitted)
-            elif not is_overdue and len(due_ops) > len(emitted):
+            elif is_overdue:
+                if due > len(emitted):
+                    # Over budget, the ops that were due before stay due.
+                    self._due[request_id] = due - len(emitted)
+            elif len(due_ops) > len(emitted):
                 # Over budget, yet the running requests may recycle these
                 # before the next drain: move them out of reach.
                 moved = due_ops[max(held, len(emitted)) :]

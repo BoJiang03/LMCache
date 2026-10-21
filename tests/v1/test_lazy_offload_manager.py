@@ -1075,3 +1075,89 @@ def test_squeezed_admission_pins_a_block_its_request_still_owns() -> None:
     actions = manager.on_scheduler_step(_step())
 
     assert len(actions.stores_to_submit) == 1
+
+
+class _TwoWorkerReceipts:
+    """A batch settles on its second receipt, as with two workers."""
+
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def update_pending_store_count(self, request_id: str, count: int, /) -> bool:
+        """Add ``count`` receipts; True once the request has two."""
+        self._counts[request_id] = self._counts.get(request_id, 0) + count
+        if self._counts[request_id] < 2:
+            return False
+        del self._counts[request_id]
+        return True
+
+
+def test_failed_store_is_submitted_again_ahead_of_later_ops() -> None:
+    """A store the worker rejected is retried with the request's next op.
+
+    The data is still on the GPU, so the failed range is buffered again in
+    front of the op that arrived while it was in flight, and the request's
+    prefix chain stays whole.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    first, second = _hashed_blocks(pool, 2)
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_op(0, [[first], [null]]))
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[second], [null]]))
+
+    manager.on_store_results({"req"}, {"req": 1})
+    retried = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert len(retried) == 1
+    assert (retried[0].op.start, retried[0].op.end) == (0, 2 * TOKENS_PER_BLOCK)
+    assert retried[0].op.block_ids[0] == [first, second]
+
+
+def test_failed_store_waits_for_every_worker_before_its_retry() -> None:
+    """One worker's failure does not resubmit while another still reads.
+
+    The worker accepts one store per request, and the other worker may
+    still be reading the pinned blocks, so the retry waits for the batch to
+    settle; the settled retry leaves no pin behind.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    (block,) = _hashed_blocks(pool, 1)
+    manager = _manager(pool, receipts=_TwoWorkerReceipts())
+    manager.add_store_candidate(_op(0, [[block], [null]]))
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    pool.free_blocks([pool.blocks[block]])
+
+    manager.on_store_results({"req"}, {"req": 1})
+    unsettled = manager.on_scheduler_step(_step()).stores_to_submit
+    manager.on_store_results(set(), {"req": 1})
+    retried = manager.on_scheduler_step(_step()).stores_to_submit
+    manager.on_store_results(set(), {"req": 2})
+
+    assert unsettled == []
+    assert len(retried) == 1
+    assert retried[0].op.block_ids[0] == [block]
+    assert pool.blocks[block].ref_cnt == 0
+
+
+def test_failed_store_of_a_preempted_request_is_not_retried() -> None:
+    """A reset detaches the failed batch from the restarted request.
+
+    The restart recomputes from token zero, so the old range would be stored
+    from blocks the request no longer owns; its receipt only unpins them.
+    """
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    (block,) = _hashed_blocks(pool, 1)
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_op(0, [[block], [null]]))
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    pool.free_blocks([pool.blocks[block]])
+
+    manager.on_request_reset("req")
+    manager.on_store_results({"req"}, {"req": 1})
+
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert pool.blocks[block].ref_cnt == 0

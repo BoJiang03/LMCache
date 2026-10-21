@@ -363,8 +363,11 @@ and records those block ids in the request's manager-owned state until
 every worker rank reports completion. Each request id has at most one
 submitted batch. A preemption reset or a finished-id reuse marks an
 outstanding batch orphaned: its receipt still releases its pins, but its
-failure is never charged to the request generation now using the id, and the
-receipt does not end the successor's shared session prematurely.
+failure is never retried for the request generation now using the id, and the
+receipt does not end the successor's shared session prematurely. The record
+also keeps the batch's operations: a batch that failed and is not orphaned
+goes back to the policy once every rank has reported, and is stored again,
+because its blocks were pinned and still hold the data.
 Overlapping emission remains a logic error because worker receipts are keyed
 only by request id. The completion receipt balances the pins with
 `free_blocks()`, returning the blocks to vLLM's own placement for a freed

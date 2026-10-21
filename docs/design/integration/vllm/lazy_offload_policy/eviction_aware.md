@@ -107,7 +107,8 @@ lifecycle events to it.
    could not absorb, so most of each burst was rejected. Due ops at the
    tail are safe until the head reaches them again, so they are paced:
    each drain emits as many of their blocks as the free blocks outside
-   buffered ops shrank by since the last drain. Stores then follow what
+   buffered ops shrank by since the last drain (a passed deadline still
+   emits them, ahead of the pacing). Stores then follow what
    allocations consume instead of one protection's size. They are not
    pinned: a pin shrinks the free queue the admission allocates from, and
    when the rest no longer fits vLLM refuses the admission and every
@@ -142,16 +143,23 @@ lifecycle events to it.
    it.
 6. On preemption tracker reset, call `drop_request(id)`: buffered ops and
    prefix-validity state are discarded, and the manager unpins held ops (as
-   it does when `mark_store_failed` or `discard_for_reuse` drops them); an
+   it does when `discard_for_reuse` drops them); an
    already submitted batch stays
    registered -- now marked orphaned -- and blocks new emission until its
    receipt. An abort is **not** a drop: its buffered ops remain storable
    until drained.
-7. On a failed receipt, check whether the submitted batch is orphaned. A
-   non-orphaned failure calls `mark_store_failed(id)`, which drops held-back
-   ops and marks the prefix broken; an orphaned batch's failure never enters
-   the policy, because it cannot break the prefix of the request generation
-   now using the id. Both paths complete the receipt and unpin.
+7. On a failed receipt, mark the in-flight batch failed and wait for the
+   rest of its receipts: another worker may still be reading its blocks.
+   Once the batch settles, unpin it; a failed batch that is not orphaned
+   goes back to the policy with `requeue_failed(item)`, ahead of the
+   request's later ops and due, and its blocks move to the free-queue tail.
+   The data is still on the GPU, so the request's prefix chain stays whole.
+   An L1 rejection (out of memory) is the common cause, so the retry is
+   paced like any due op at the tail rather than resubmitted into the L1
+   that just refused it; a deadline, when set, still applies. Keys already
+   resident count as stored, so retrying a partly stored batch is safe. An
+   orphaned batch is never retried: the request generation now using the id
+   restarted from token zero or is a different request.
 8. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
@@ -312,14 +320,15 @@ Two log hooks:
 - A drain that dropped ops logs one aggregate INFO line naming up to 8 of the
   requests, and a drain whose counters changed re-logs the whole ledger as one
   greppable `key=value` line, throttled to one per 5 s. `pending` is the
-  custody depth at the same instant, which closes the line as an equation over
-  exactly five outcome counters:
+  custody depth at the same instant, which closes the line as an equation:
 
   ```
-  admitted == pending + emitted + dropped_evicted
-              + dropped_on_request_drop + dropped_failed_store
-              + dropped_id_reuse
+  admitted + requeued == pending + emitted + dropped_evicted
+                         + dropped_on_request_drop + dropped_id_reuse
   ```
+
+  `requeued` counts emitted ops whose store failed and came back to be
+  retried; each retry counts in `emitted` again.
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
   turned away before `admitted`), and `emitted_overdue` is a weight beside
