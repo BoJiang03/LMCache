@@ -44,16 +44,10 @@ logger = init_logger(__name__)
 # missing the deadline costs latency, missing an eviction costs the data.
 _OVERDUE_RANK = 1 << 62
 
-# Rank of an unblocked request whose front operations are held, or are due
-# from an earlier step: held ones pin GPU blocks, due ones were moved to the
-# tail to dodge an allocation. Either way their data is safe for now, so they
-# go after every block about to be recycled and before a mere deadline.
+# Rank of an unblocked request whose front operations are held because they
+# came due earlier: their pinned blocks are safe for now, so they go after
+# every block about to be recycled and before a mere deadline.
 _HELD_RANK = 1 << 61
-
-# Rank of a request whose only due ops came due on an earlier step and sit at
-# the tail. They are safe until the head reaches them again, so they are
-# paced (see drain()) and go after held ops.
-_DUE_RANK = 3 << 60
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
 _DROP_LOG_SAMPLE_REQUESTS = 8  # Dropped requests named in the drop line.
@@ -169,14 +163,14 @@ class LazyOffloadCounters:
             batch in flight. Like ``emitted_overdue``, a weight beside the
             equation: a held operation is still pending until emitted.
         protected: Operations an admission would have recycled, moved to
-            the free-queue tail and kept due until emitted. A weight beside
-            the equation too.
+            the free-queue tail and left buffered. A weight beside the
+            equation too.
         squeezed_admissions: Admissions whose allocation would also have
             reached the free-queue tail, so every buffered operation was
             held instead; each may have been deferred by vLLM for the pins.
         squeezed_drains: Drains whose window reached the free-queue tail,
-            so every buffered operation came due and those past the budget
-            were held rather than moved there.
+            so every buffered operation the drain did not emit was held,
+            until the next drain whose window stops short of the tail.
         bound_exceeded: Steps whose running requests allocated more blocks
             than the previous drain bounded. Nonzero means the danger depth
             is not a bound for this model, and buffered blocks may have
@@ -222,18 +216,22 @@ class LazyOffloadCounters:
 class EvictionAwareStoreQueue(OffloadPolicy):
     """Buffers store operations and releases them by eviction imminence.
 
-    An operation is emitted when one of its blocks sits within the *danger
-    depth* of the free queue -- what the running requests can allocate before
-    the next drain -- or when its request passes the deferral deadline. An
-    operation that comes due while its request has a batch in flight is
-    held instead: the manager pins its blocks, and it is emitted once the
-    batch settles. An operation an admission is about to recycle is
-    protected: the manager moves its blocks to the free-queue tail, out of
-    the allocation's reach, and it stays due until emitted. A preempted
-    request releases its whole buffer, which its restart would discard. An
-    engine with no requests never drains; operations whose blocks are
-    evicted before they come due are dropped, never stored stale. Scheduler
-    thread only.
+    One rule decides when to store: an operation is due once one of its
+    blocks sits within the *danger depth* of the free queue -- what the
+    running requests, the resumed loads and one admission can allocate
+    before the next drain -- and nothing else makes it due but its request's
+    deferral deadline or preemption. A due operation is emitted, or, when
+    its request has a batch in flight or the drain budget is spent, held:
+    the manager pins its blocks until a later drain emits it. When the
+    window reaches the free-queue tail, every block freed before the next
+    step is in reach, so every operation the drain does not emit is held
+    too, and released unpinned by the next drain whose window stops short
+    of the tail. A second admission in one step reaches past the window;
+    the operations it would recycle are moved to the free-queue tail and
+    stay buffered. A preempted request releases its whole buffer, which its
+    restart would discard. An engine with no requests never drains;
+    operations whose blocks are evicted before they come due are dropped,
+    never stored stale. Scheduler thread only.
     """
 
     def __init__(self, config: EvictionAwarePolicyConfig, pool: "BlockPool") -> None:
@@ -253,17 +251,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._broken_prefixes: set[str] = set()
         # Request id -> length of the held prefix of its buffer.
         self._held: dict[str, int] = {}
-        # Request id -> length of the prefix of its buffer that came due on an
-        # earlier step and was moved to the tail rather than emitted. It stays
-        # due: the tail only buys time, and an op that went back to plain
-        # buffering would sit unseen behind the danger window until every
-        # free block is buffered and the whole buffer comes due at once.
-        self._due: dict[str, int] = {}
-        # Free blocks outside buffered ops at the last drain, which paces the
-        # emission of due ops sitting at the tail.
-        self._unbuffered_free: int | None = None
+        # Requests whose held prefix a squeezed drain pinned without it being
+        # due: the next unsqueezed drain releases it rather than emitting it.
+        self._squeeze_held: set[str] = set()
         self._next_step_blocks = 0
         self._resuming_blocks = 0
+        self._admission_blocks = 0
         self._now = 0.0  # This step's clock, set at the top of drain().
         self._counters = LazyOffloadCounters()
         self._last_logged = LazyOffloadCounters()
@@ -327,15 +320,14 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     def protect(self, num_blocks: int) -> AdmissionProtection:
         """Protect the buffered ops an admission's allocation would recycle.
 
-        One admission with a long prefix hit allocates its whole prefix in
-        one step, past any danger depth the drain can keep. The walk runs
-        until ``num_blocks`` blocks outside buffered ops are counted: the ops
-        it meets move to the tail, so the allocation reaches that much
-        further. They reached the head, so they are due: the next drains
-        emit them within ``max_drain_per_step``, and the tail keeps them
-        safe meanwhile. Per request, the ops moved run up to the last
-        op met, stopping at an op whose data is already gone, which the
-        next drain drops.
+        The danger depth covers one admission, so the first admission of a
+        step meets no buffered block; a second one reaches past the window.
+        The walk runs until ``num_blocks`` blocks outside buffered ops are
+        counted: the ops it meets move to the tail, so the allocation
+        reaches that much further. They stay buffered, and the window meets
+        them again once the head reaches the tail. Per request, the ops moved
+        run up to the last op met, stopping at an op whose data is already
+        gone, which the next drain drops.
 
         A walk that reaches the queue tail first means the allocation would
         recycle the tail as well, and with it any block freed before the
@@ -387,7 +379,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 protection.holds.append(item)
             else:
                 self._counters.protected += end - start
-                self._due[request_id] = max(self._due.get(request_id, 0), end)
                 protection.to_tail.append(item)
         return protection
 
@@ -430,7 +421,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._held.pop(request_id, None)
-        self._due.pop(request_id, None)
+        self._squeeze_held.discard(request_id)
         self._counters.dropped_on_request_drop += len(dropped)
         return len(dropped)
 
@@ -444,7 +435,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
         self._held.pop(request_id, None)
-        self._due.pop(request_id, None)
+        self._squeeze_held.discard(request_id)
         self._counters.dropped_id_reuse += len(dropped)
 
     def release_request(self, request_id: str) -> None:
@@ -459,12 +450,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._broken_prefixes.discard(request_id)
 
     def requeue_failed(self, item: PendingStoreItem) -> None:
-        """Buffer a failed batch ahead of its request's later ops, due.
+        """Buffer a failed batch ahead of its request's later ops.
 
         The manager moves the ops' blocks to the free-queue tail, so they
-        are paced like any due op at the tail rather than resubmitted at
-        once into an L1 that just rejected them. A held prefix of the later
-        ops grows by the requeued ops, which precede it.
+        come due again when the head reaches them, rather than being
+        resubmitted at once into an L1 that just rejected them. A held
+        prefix of the later ops grows by the requeued ops, which precede it.
 
         Args:
             item: The failed batch's operations, in token order. The
@@ -476,8 +467,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             PendingStoreOp(
                 store_metadata=meta,
                 block_hashes=block_hashes,
-                # A fresh deadline: the retry is paced by allocations, and
-                # an op made overdue would be resubmitted on the next drain.
+                # A fresh deadline: an op made overdue would be resubmitted
+                # on the next drain.
                 admitted_at_time=now,
             )
             for meta, block_hashes in item.metadatas
@@ -485,43 +476,46 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._pending[request_id] = ops + self._pending.get(request_id, [])
         if request_id in self._held:
             self._held[request_id] += len(ops)
-        self._due[request_id] = self._due.get(request_id, 0) + len(ops)
         self._counters.requeued += len(ops)
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
 
         Per request: the suffix from the first op whose blocks were recycled
-        is dropped, then the front up to the last due op is released (prefix
-        closure). Requests in ``blocked_request_ids`` stay pending, since the
-        worker holds one in-flight batch per request; the ops they would
-        have released are held instead, so a slow store cannot let them be
-        recycled. Once unblocked, a request with held ops is due, up to the
-        last of them. A request in ``preempted_request_ids`` releases its
-        whole buffer: its tracker restarts when it is scheduled again, which
-        discards what is still buffered, so it is not held to the budget.
-        Requests are served most imminent first until
-        ``max_drain_per_step``; due ops past the budget move to the
-        free-queue tail, out of the running requests' reach, and stay due.
-        A due op at the tail is safe until the head reaches it again, so it
-        is paced: each drain emits such ops covering as many blocks as the
-        free blocks outside buffered ops shrank by since the last drain.
-        Storing them at the rate allocations consume keeps that count, and
-        so the free queue's buffered share, from creeping up, without
-        emitting a large protected batch in a single burst. One whose deadline
-        passed while no block of it sits in the window is due anyway, but it
-        is served after every request holding one, so an expired backlog
-        cannot spend the budget that a block about to be recycled needs.
+        is dropped, then the front up to the last op with a block in the
+        danger window is due (prefix closure). Requests in
+        ``blocked_request_ids`` stay pending, since the worker holds one
+        in-flight batch per request; their due ops are held instead, so a
+        slow store cannot let them be recycled. Once unblocked, a request
+        with held ops is due, up to the last of them. A request in
+        ``preempted_request_ids`` releases its whole buffer: its tracker
+        restarts when it is scheduled again, which discards what is still
+        buffered, so it is not held to the budget. Requests are served most
+        imminent first until ``max_drain_per_step``; due ops past the budget
+        are held. One whose deadline passed while no block of it sits in the
+        window is due anyway, but it is served after every request holding
+        one, so an expired backlog cannot spend the budget that a block
+        about to be recycled needs.
+
+        A window that reaches the free-queue tail also covers blocks not yet
+        in the queue: vLLM frees blocks of running requests (align-mode
+        Mamba drops older states) before the next step allocates, and they
+        join a tail already in reach. So every op this drain leaves buffered
+        is held, not just the due ones. Those holds are released, unpinned,
+        by the first drain whose window stops short of the tail: their
+        blocks then join the tail behind every block the window counts.
 
         Args:
-            signals: The manager's bound on the blocks the running requests
-                allocate before the next drain, which sets the danger
-                depth, plus the finished, blocked and preempted request
-                ids. Finished ids are not read by this policy: imminence
-                alone decides, whether or not the request is still running.
+            signals: The manager's bounds on the blocks the running
+                requests, the resumed loads and one admission allocate
+                before the next drain, which set the danger depth, plus the
+                finished, blocked and preempted request ids. Finished ids
+                are not read by this policy: imminence alone decides,
+                whether or not the request is still running.
 
         Returns:
-            The stores to submit and the requests left with nothing buffered.
+            The stores to submit, the holds to pin and release, and the
+            requests left with nothing buffered.
         """
         self._now = time.monotonic()
         self._counters.bound_blocks += self._next_step_blocks
@@ -536,21 +530,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             )
         self._next_step_blocks = signals.next_step_blocks
         self._resuming_blocks = signals.resuming_blocks
-        pending_blocks = {
-            block_id
-            for pending_ops in self._pending.values()
-            for pending_op in pending_ops
-            for block_id in pending_op.block_hashes
-        }
-        unbuffered_free = self._pool.get_num_free_blocks() - sum(
-            1 for block_id in pending_blocks if self._pool.blocks[block_id].ref_cnt == 0
-        )
-        pace = (
-            0
-            if self._unbuffered_free is None
-            else self._unbuffered_free - unbuffered_free
-        )
-        self._unbuffered_free = unbuffered_free
+        self._admission_blocks = signals.admission_blocks
         if not self._pending:
             self._maybe_log_stats()
             return LazyOffloadDrain()
@@ -558,12 +538,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # Depth zero makes nothing due and the queue is not walked; the loss
         # check below reads hashes, not ranks, and still runs.
         ranks, reaches_tail = self._free_queue_ranks(
-            self._danger_depth(), pending_blocks
+            self._danger_depth(), self.buffered_block_ids()
         )
+        drain = LazyOffloadDrain()
         if reaches_tail:
             self._counters.squeezed_drains += 1
+        else:
+            # Pinned, these blocks were not walked; unpinned, they join the
+            # tail, past the depth just counted.
+            for request_id in self._squeeze_held:
+                if self._held.pop(request_id, 0):
+                    drain.releases.append(request_id)
+            self._squeeze_held.clear()
         overdue_cutoff = self._now - self._config.max_deferral_seconds
-        drain = LazyOffloadDrain()
         dropped_ops = 0
         dropped_ids: list[str] = []
         # Due now, as (imminence rank, admission order, request id).
@@ -571,10 +558,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # Of those, the ones the deadline alone made due: they release their
         # whole buffer, not just the segment sitting in the danger window.
         overdue_ids: set[str] = set()
-        # Requests releasing their whole buffer, overdue or preempted.
-        release_all_ids: set[str] = set()
-        # Of those due, the ones whose only due ops sit at the tail.
-        paced_ids: set[str] = set()
         for order, request_id in enumerate(list(self._pending)):
             ops = self._pending[request_id]
             surviving = self._drop_evicted_suffix(request_id, ops)
@@ -583,12 +566,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 dropped_ids.append(request_id)
                 if not surviving:
                     del self._pending[request_id]
-                    self._due.pop(request_id, None)
                     drain.emptied_request_ids.append(request_id)
                     continue
                 self._pending[request_id] = surviving
-                if self._due.get(request_id, 0) > len(surviving):
-                    self._due[request_id] = len(surviving)
             held = self._held.get(request_id, 0)
             if request_id in signals.blocked_request_ids:
                 # Pin what an unblocked request would release now; the rest
@@ -605,11 +585,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                     drain.holds.append(
                         _pending_item(request_id, surviving[held:target])
                     )
+                if reaches_tail:
+                    self._squeeze_held.add(request_id)
                 continue
-            overdue = (
-                self._config.max_deferral_seconds > 0.0
-                and surviving[0].admitted_at_time <= overdue_cutoff
-            )
             in_window = [
                 rank
                 for op in surviving
@@ -630,23 +608,16 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # Size the release per attention type: one due-predictor per
                 # mechanism, emit up to the last index any of them marks due.
                 candidates.append((min(in_window), order, request_id))
-            elif held or request_id in signals.preempted_request_ids or reaches_tail:
+            elif (
+                held and request_id not in self._squeeze_held
+            ) or request_id in signals.preempted_request_ids:
                 candidates.append((_HELD_RANK, order, request_id))
-            elif overdue:
-                # Before the pacing below: a deadline holds even when no
-                # allocation consumes free blocks.
+            elif (
+                self._config.max_deferral_seconds > 0.0
+                and surviving[0].admitted_at_time <= overdue_cutoff
+            ):
                 candidates.append((_OVERDUE_RANK, order, request_id))
                 overdue_ids.add(request_id)
-                release_all_ids.add(request_id)
-            elif request_id in self._due:
-                candidates.append((_DUE_RANK, order, request_id))
-                paced_ids.add(request_id)
-            if request_id in signals.preempted_request_ids or reaches_tail:
-                # A window reaching the tail covers blocks not yet in the
-                # queue too: vLLM frees blocks of running requests (align-mode
-                # Mamba drops older states) before the next step allocates,
-                # and they join a tail already in reach.
-                release_all_ids.add(request_id)
         if dropped_ops:
             # INFO, not DEBUG: each drop is a unit of cache-quality loss and
             # production rarely runs at DEBUG. One line per drain, so a burst
@@ -659,57 +630,34 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             )
         candidates.sort()
         ops_left = self._config.max_drain_per_step
-        for rank, _, request_id in candidates:
+        for _, _, request_id in candidates:
             ops = self._pending[request_id]
             is_overdue = request_id in overdue_ids
-            is_paced = request_id in paced_ids
-            if (is_overdue or is_paced) and ops_left <= 0:
+            if is_overdue and ops_left <= 0:
                 # Nothing about to be recycled made it due: it waits in place.
                 continue
-            if is_paced and pace <= 0:
-                # Safe at the tail: it waits for allocations to make room.
-                continue
             held = self._held.pop(request_id, 0)
-            due = self._due.pop(request_id, 0)
-            if request_id in release_all_ids:
+            # A squeeze hold is not due; only the window makes its ops due.
+            due_held = 0 if request_id in self._squeeze_held else held
+            if request_id in signals.preempted_request_ids or is_overdue:
                 due_ops = ops
             else:
-                due_ops = ops[
-                    : max(held, due, len(self._due_front_segment(ops, ranks)))
-                ]
+                due_ops = ops[: max(due_held, len(self._due_front_segment(ops, ranks)))]
             if request_id in signals.preempted_request_ids:
                 emitted = due_ops
-            elif is_paced:
-                emitted = []
-                for op in due_ops[:ops_left]:
-                    if pace <= 0:
-                        break
-                    emitted.append(op)
-                    pace -= len(op.block_hashes)
             else:
                 emitted = due_ops[: max(ops_left, 0)]
             ops_left -= len(emitted)
-            if held > len(emitted):
-                self._held[request_id] = held - len(emitted)
-            if is_paced and len(due_ops) > len(emitted):
-                # Already at the tail: it stays there, and stays due.
-                self._due[request_id] = len(due_ops) - len(emitted)
-            elif is_overdue:
-                if due > len(emitted):
-                    # Over budget, the ops that were due before stay due.
-                    self._due[request_id] = due - len(emitted)
-            elif len(due_ops) > len(emitted):
+            kept_held = held
+            if not is_overdue and len(due_ops) > max(held, len(emitted)):
                 # Over budget, yet the running requests may recycle these
-                # before the next drain: move them out of reach.
+                # before the next drain: pin them.
                 moved = due_ops[max(held, len(emitted)) :]
-                if moved and reaches_tail:
-                    # The next step may take the tail too: pin instead.
-                    self._held[request_id] = len(due_ops) - len(emitted)
-                    self._counters.held += len(moved)
-                    drain.holds.append(_pending_item(request_id, moved))
-                elif moved:
-                    self._due[request_id] = len(due_ops) - len(emitted)
-                    drain.to_tail.append(_pending_item(request_id, moved))
+                kept_held = len(due_ops)
+                self._counters.held += len(moved)
+                drain.holds.append(_pending_item(request_id, moved))
+            if kept_held > len(emitted):
+                self._held[request_id] = kept_held - len(emitted)
             if not emitted:
                 continue
             self._counters.emitted += len(emitted)
@@ -722,22 +670,33 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             else:
                 del self._pending[request_id]
                 drain.emptied_request_ids.append(request_id)
+        if reaches_tail:
+            for request_id, ops in self._pending.items():
+                if request_id in signals.blocked_request_ids:
+                    continue
+                held = self._held.get(request_id, 0)
+                if len(ops) > held:
+                    self._held[request_id] = len(ops)
+                    self._counters.held += len(ops) - held
+                    self._squeeze_held.add(request_id)
+                    drain.holds.append(_pending_item(request_id, ops[held:]))
         self._maybe_log_stats()
         return drain
 
     def _danger_depth(self) -> int:
         """Free-queue depth at risk before the next drain.
 
-        Admissions and resumed loads allocate further, but the manager
-        protects buffered blocks from those right before they do. A resumed
+        A second admission in one step allocates further, but the manager
+        protects buffered blocks from it right before it does. A resumed
         load that is still unscheduled was protected for a step that has
         passed, so its allocation counts here.
 
         Returns:
-            The manager's bound on the blocks the running requests and the
-            unscheduled resumed loads can allocate before the next drain.
+            The manager's bound on the blocks the running requests, the
+            unscheduled resumed loads and one admission can allocate before
+            the next drain.
         """
-        return self._next_step_blocks + self._resuming_blocks
+        return self._next_step_blocks + self._resuming_blocks + self._admission_blocks
 
     def _free_queue_ranks(
         self, depth: int, pending_blocks: "Container[int]"

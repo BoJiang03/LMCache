@@ -27,6 +27,59 @@ operation whose blocks come under eviction pressure.
   request's ops in token order.
 - **`EvictionAwareStoreQueue`** -- the policy object, one per connector.
 
+## The invariant, and the one rule built on it
+
+> A buffered block is recycled only if an allocation pops it from the
+> free-queue head.
+
+Every way this vLLM version changes the free queue, and what it does to a
+buffered block:
+
+| change                      | who                                  | buffered block                         |
+|-----------------------------|--------------------------------------|----------------------------------------|
+| `popleft_n` (allocation)    | running requests, admissions, loads  | the only way one is lost               |
+| `append_n` (free, cached)   | vLLM `free_blocks`, `unpin_blocks`   | joins the tail                         |
+| `prepend_n` (free, no hash) | vLLM `free_blocks`                   | never buffered (`add()` rejects it)    |
+| `remove` (touch)            | prefix hit, our pin                  | leaves the queue                       |
+| head return on unpin        | `LazyOffloadManager._unpin`          | stored blocks only, never a buffered one (step 4) |
+| tail move                   | `LazyOffloadManager._move_to_tail`   | joins the tail                         |
+
+So nothing is lost if, before every allocation of `n` blocks, the first
+`n` blocks of the queue hold no buffered block. The policy keeps that with
+one rule -- **store an op when an allocation can reach it, and no
+earlier**:
+
+1. Each drain walks the queue from the head until it has counted `D` blocks
+   outside buffered ops, `D` = running requests' bound + unscheduled
+   resumed loads + one admission (`admission_blocks`). Every op met is due:
+   emitted, or held (pinned) when its request has a batch in flight or the
+   drain budget is spent.
+2. A second admission in the same step reaches past `D`; `protect()` moves
+   the ops it would reach to the tail, still buffered.
+3. A walk that reaches the tail first (`squeezed_drains`) means blocks freed
+   before the next step join a tail already in reach, so every op the drain
+   does not emit is held; the first drain that stops short of the tail
+   releases those holds, unpinned, onto the tail.
+4. A failed store is buffered again and its blocks go to the tail.
+5. A stored block returns to the head on unpin unless an op still buffers it.
+
+The proof obligations are then: `D` is an upper bound on what can allocate
+before the next drain (`bound_exceeded`, step 2 and the decision rule
+below), and no path moves a buffered block toward the head (the table).
+`admission_blocks` is derived from `max_model_len`, not tuned: an
+admission's local hit plus the slots it allocates hold at most
+`max_model_len + 1 + L` tokens, and splitting them between the hit and the
+allocation costs a group at most one block (two for an align-mode Mamba
+group's hit state blocks). On Qwen3.5-122B-A10B (`max_model_len` 262144,
+`L` 3) it is 86 of 2551 blocks.
+
+An earlier version stored far earlier than this rule asks: ops protected
+from an admission stayed *due* at the tail and were paced out, and a
+squeezed drain made every op due. On a replay of the c100 run (simulated),
+58% of emitted ops were stored in such a squeeze flush and 37-41% from the
+tail, against 0.2-1% from the window; with the rule above every emitted op
+is in the window or prefix-closed behind one.
+
 ## Per-step protocol (policy-caller obligations)
 
 `LazyOffloadManager` is the production caller; the connector only forwards
@@ -95,21 +148,15 @@ lifecycle events to it.
    on Qwen3.5-122B-A10B (3 Mamba groups of 4) count about 116 blocks for
    at most about 47, and every admission past the free blocks outside
    buffered ops is squeezed.
-   `protect(num_blocks)` walks the free queue until it has counted that
-   many blocks outside buffered ops. The ops met move to the
-   free-queue **tail** (`touch` then `free_blocks`, hash intact) and stay
-   **due** until a drain emits them, within `max_drain_per_step`. The
-   tail only buys time. An op sent back to plain buffering would sit
-   behind the danger window, unseen, while allocations use up the free
-   blocks outside buffered ops. Once every free block is buffered, the
-   whole buffer comes due at once. In a c100 run with a 150 GiB L1 that
-   meant bursts of about 600 ops every 3 to 6 minutes, which L1 eviction
-   could not absorb, so most of each burst was rejected. Due ops at the
-   tail are safe until the head reaches them again, so they are paced:
-   each drain emits as many of their blocks as the free blocks outside
-   buffered ops shrank by since the last drain (a passed deadline still
-   emits them, ahead of the pacing). Stores then follow what
-   allocations consume instead of one protection's size. They are not
+   The drain keeps `admission_blocks` of the head clear, so a step's first
+   admission meets no buffered block. `protect(num_blocks)` covers the
+   rest: it walks the free queue until it has counted that many blocks
+   outside buffered ops. The ops met move to the free-queue **tail**
+   (`touch` then `free_blocks`, hash intact) and stay plainly buffered:
+   the window meets them again when the head reaches the tail. Without
+   the reserve almost every admission walked into buffered ops: on a
+   closed-loop replay of the c100 workload (simulated, 3 seeds), 18-20
+   squeezed admissions per run against 3-6 with it. The moved ops are not
    pinned: a pin shrinks the free queue the admission allocates from, and
    when the rest no longer fits vLLM refuses the admission and every
    waiting request behind it for that step. Only when the walk reaches the
@@ -157,11 +204,11 @@ lifecycle events to it.
    rest of its receipts: another worker may still be reading its blocks.
    Once the batch settles, unpin it; a failed batch that is not orphaned
    goes back to the policy with `requeue_failed(item)`, ahead of the
-   request's later ops and due, and its blocks move to the free-queue tail.
+   request's later ops, and its blocks move to the free-queue tail.
    The data is still on the GPU, so the request's prefix chain stays whole.
-   An L1 rejection (out of memory) is the common cause, so the retry is
-   paced like any due op at the tail rather than resubmitted into the L1
-   that just refused it; a deadline, when set, still applies. Keys already
+   An L1 rejection (out of memory) is the common cause, so the retry waits
+   for the window like any buffered op rather than being resubmitted into
+   the L1 that just refused it; a deadline, when set, still applies. Keys already
    resident count as stored, so retrying a partly stored batch is safe. An
    orphaned batch is never retried: the request generation now using the id
    restarted from token zero or is a different request.
@@ -219,7 +266,9 @@ the true vLLM hit instead of 0.
   request, several times what one step can schedule. Spec-decode
   rejections only lower `c`. Free-queue *position* alone is never a
   trigger -- an idle engine never drains.
-- The bound excludes the two allocations the scheduler makes for requests
+- The danger depth adds `admission_blocks` to that bound, so the first
+  admission of a step finds the head clear. The running-request bound
+  itself excludes the two allocations the scheduler makes for requests
   that are not yet running, which the manager protects right before they
   happen (step 2): admissions, via `get_num_new_matched_tokens`, and
   asynchronous loads resuming, via `update_connector_output`'s
@@ -243,16 +292,18 @@ the true vLLM hit instead of 0.
   block behind them toward the head. The drain accounts for this
   shift by walking until it has counted `danger depth` blocks outside
   buffered ops: every buffered block met is due, so it leaves the queue
-  (or moves to the tail) and the blocks behind it are what the next step
-  can reach. Due ops past `max_drain_per_step` move to the free-queue
-  tail, out of the next step's reach, and stay due like protected
-  ops -- unless the walk reached the tail before counting the danger
-  depth (`squeezed_drains`): the next step may then take the whole queue,
-  and every block freed before it allocates, so every buffered op comes
-  due and those past the budget are held (pinned) instead, the same trade
-  as a squeezed admission. In a c150 benchmark run the ops still lost
-  matched this path: only Mamba groups, requests still running, and
-  every loss during a burst of squeezed walks.
+  and the blocks behind it are what the next step can reach. Due ops past
+  `max_drain_per_step` are held (pinned), and later drains emit them
+  first. A walk that reaches the tail before counting the danger depth
+  (`squeezed_drains`) means the next step may take the whole queue, and
+  every block freed before it allocates. Every op the drain does not emit
+  is then held, due or not; the holds of ops that were not due are
+  released by the first drain whose walk stops short of the tail, and
+  their blocks join the tail behind everything that walk counted. In a
+  c150 benchmark run the ops lost before squeezes held were: only Mamba
+  groups, requests still running, and every loss during a burst of
+  squeezed walks. Making every op due there instead stored the whole
+  buffer in one burst.
 - **Deferral deadline (`max_deferral_seconds`)**: the danger window is a
   *spatial* signal -- how close a block sits to the free-queue head -- which
   answers when the block dies on the GPU, not when the conversation comes
@@ -274,10 +325,9 @@ the true vLLM hit instead of 0.
 - Cross-request drain order = min due rank ascending; `max_drain_per_step`
   bounds the per-step D2H burst in operations. The cap may split a request's
   due segment but only ever emits a front slice of it, so within-request
-  prefix order is preserved. Due ops past the cap are not lost: they move
-  to the free-queue tail (held instead on a squeezed drain) and stay due
-  for the next drain, so a low cap delays stores and reorders GPU prefix-cache
-  eviction; `configuration.rst` states the rule.
+  prefix order is preserved. Due ops past the cap are not lost: they are
+  held for the next drain, so a low cap delays stores and keeps their
+  blocks pinned meanwhile; `configuration.rst` states the rule.
 - **Idle consequences**: receipts travel in worker metadata, which flows on
   every step, including steps that schedule no tokens. Those steps drain as
   well, which a squeezed admission needs: its pins can leave no waiting

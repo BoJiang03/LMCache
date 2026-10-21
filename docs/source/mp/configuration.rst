@@ -1037,9 +1037,10 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
    * - ``lmcache.mp.lazy_offload_max_drain_per_step``
      - ``64``
      - ``EVICTION_AWARE`` only: maximum store operations emitted per
-       scheduler step. Due operations past the limit are moved to the end
-       of the GPU free queue and wait for a later step, so a low value
-       delays stores and reorders GPU prefix-cache eviction.
+       scheduler step. Due operations past the limit keep their GPU blocks
+       pinned and wait for a later step, so a low value delays stores and
+       holds those blocks out of the GPU prefix cache's free queue
+       meanwhile.
    * - ``lmcache.mp.lazy_offload_max_deferral_seconds``
      - ``0.0``
      - ``EVICTION_AWARE`` only: how long a buffered operation may wait before

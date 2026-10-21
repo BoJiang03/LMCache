@@ -169,6 +169,7 @@ class LazyOffloadManager:
         completion_tracker: StoreCompletionTracker,
         max_step_tokens: int,
         num_lookahead_tokens: int,
+        max_model_len: int,
         mamba_groups: dict[int, int] | None = None,
         prefill_alignment: int = 0,
     ) -> None:
@@ -185,6 +186,8 @@ class LazyOffloadManager:
             num_lookahead_tokens: Slots vLLM allocates past the scheduled
                 tokens for speculative decoding, which is also the number of
                 draft tokens a decode step schedules.
+            max_model_len: vLLM's ``max_model_len``: the most tokens one
+                request holds, which bounds what one admission allocates.
             mamba_groups: Align-mode Mamba groups -> the blocks a running
                 request's step can take beyond its one state block: a
                 prefill checkpoint block and a partial-hit copy, where the
@@ -228,12 +231,26 @@ class LazyOffloadManager:
         # The last drain's bound, which the next schedule's running
         # requests allocate before a resumed load does.
         self._next_step_blocks = 0
+        self._admission_blocks = self._admission_bound(max_model_len)
         # Per group, block ids each scheduled request has been handed, to
         # tell what a step allocated from blocks vLLM only moved within its
         # table, and its table length, which counts the lookahead slots the
         # last allocation covered too.
         self._handed_blocks: dict[str, list[set[int]]] = {}
         self._table_lengths: dict[str, list[int]] = {}
+
+    @property
+    def admission_blocks(self) -> int:
+        """Free-queue head each drain keeps clear of buffered blocks for one
+        admission: the most blocks one admission can allocate, from
+        ``max_model_len``. It deepens the danger window beyond the running
+        requests' bound, so a step's first admission recycles no buffered
+        block.
+
+        Returns:
+            The bound, in blocks summed over the cacheable groups.
+        """
+        return self._admission_blocks
 
     def bind_block_pool(self, gpu_block_pool: "BlockPool") -> None:
         """Bind the scheduler's GPU block pool and build the policy.
@@ -550,11 +567,11 @@ class LazyOffloadManager:
     ) -> LazyOffloadActions:
         """Apply one policy-neutral drain plan and its GPU side effects.
 
-        Held operations are pinned first. Each emitted operation is
-        re-validated against the hash snapshot the policy kept, pinned unless
-        it was held, and coalesced into one submission per request. A request
-        whose snapshot no longer matches loses that operation and every later
-        one of the same drain.
+        Released holds are unpinned and new holds pinned first. Each emitted
+        operation is re-validated against the hash snapshot the policy kept,
+        pinned unless it was held, and coalesced into one submission per
+        request. A request whose snapshot no longer matches loses that
+        operation and every later one of the same drain.
 
         Args:
             scheduler_output: The step's schedule, converted into the
@@ -577,14 +594,16 @@ class LazyOffloadManager:
             DrainSignals(
                 next_step_blocks=self._next_step_blocks,
                 resuming_blocks=sum(self._resuming.values()),
+                admission_blocks=self._admission_blocks,
                 finished_request_ids=self._requests.finished_request_ids(),
                 blocked_request_ids=self._requests.in_flight_request_ids(),
                 preempted_request_ids=set(scheduler_output.preempted_req_ids or ()),
                 running_blocks_allocated=running_blocks_allocated,
             )
         )
+        for request_id in drain.releases:
+            self._release_holds(request_id)
         self._pin_holds(drain.holds)
-        self._move_to_tail(drain.to_tail)
         actions = LazyOffloadActions()
         for item in drain.items:
             if self._requests.has_in_flight(item.request_id):
@@ -879,6 +898,32 @@ class LazyOffloadManager:
             else -(-num_tokens // tokens_per_block) + extra
             for group_idx, tokens_per_block in enumerate(self._group_tokens_per_block)
             if tokens_per_block > 0
+        )
+
+    def _admission_bound(self, max_model_len: int) -> int:
+        """Bound what :meth:`on_admission` protects for any one admission.
+
+        An admission's local hit plus the slots it allocates hold at most
+        ``max_model_len`` tokens, plus the recomputed last token of a full
+        hit and the lookahead slots. Splitting them between the hit and the
+        allocation costs a group at most one block more than allocating them
+        all: two partial blocks instead of one. An align-mode Mamba group's
+        hit is at most its local and its external state block.
+
+        Args:
+            max_model_len: The most tokens one request holds.
+
+        Returns:
+            The bound, in blocks summed over the cacheable groups.
+        """
+        split_blocks = sum(
+            2 if group_idx in self._mamba_groups else 1
+            for group_idx, tokens_per_block in enumerate(self._group_tokens_per_block)
+            if tokens_per_block > 0
+        )
+        return (
+            self._span_blocks(max_model_len + 1 + self._num_lookahead_tokens)
+            + split_blocks
         )
 
     def _protect(self, num_blocks: int) -> None:

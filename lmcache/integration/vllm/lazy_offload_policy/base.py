@@ -86,6 +86,11 @@ class DrainSignals:
             can allocate before the next drain. Admissions and resumed
             loads are not in it: the manager protects buffered blocks from
             those right before they allocate.
+        admission_blocks: Upper bound on the blocks one admission can
+            allocate, from the model's maximum length. A policy that keeps
+            this much of the free-queue head clear of buffered blocks leaves
+            the admission protection nothing to move for the first
+            admission of a step.
         resuming_blocks: Upper bound on the blocks that requests whose load
             finished, but that no step has scheduled yet, allocate once
             scheduled. The protection when their load finished assumed the
@@ -108,6 +113,7 @@ class DrainSignals:
 
     next_step_blocks: int
     resuming_blocks: int
+    admission_blocks: int
     finished_request_ids: set[str]
     blocked_request_ids: set[str]
     preempted_request_ids: set[str]
@@ -125,19 +131,17 @@ class LazyOffloadDrain:
             operations. This is a buffer fact only: the manager combines it
             with the request's phase and in-flight batch before tearing a
             session down.
-        holds: Operations of blocked requests whose blocks the manager must
-            pin now, one entry per request. Each entry extends the request's
-            held operations, which always form a prefix of its buffer. They
-            stay buffered and are emitted by a later drain.
-        to_tail: Operations at risk that ``max_drain_per_step`` left
-            buffered, whose blocks the manager must move to the free-queue
-            tail now. They are due, and a later drain emits them.
+        holds: Operations whose blocks the manager must pin now, one entry
+            per request. Each entry extends the request's held operations,
+            which always form a prefix of its buffer. They stay buffered.
+        releases: Requests whose held operations the manager must unpin
+            before pinning ``holds``. They stay buffered, unheld.
     """
 
     items: list[PendingStoreItem] = field(default_factory=list)
     emptied_request_ids: list[str] = field(default_factory=list)
     holds: list[PendingStoreItem] = field(default_factory=list)
-    to_tail: list[PendingStoreItem] = field(default_factory=list)
+    releases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -147,8 +151,8 @@ class AdmissionProtection:
     Attributes:
         to_tail: Operations to move to the free-queue tail, one entry per
             request, in prefix order. They stay allocatable, so the
-            admission is not refused for them, and the next drain emits
-            them unless their request is blocked, which holds them.
+            admission is not refused for them, and stay buffered: the
+            danger window meets them again when the head reaches the tail.
         holds: Operations to pin, because the allocation would reach the
             tail too. Like ``LazyOffloadDrain.holds``, each entry extends
             the request's held prefix; pinning may make vLLM defer the

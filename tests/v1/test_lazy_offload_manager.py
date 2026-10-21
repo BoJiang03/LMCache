@@ -36,6 +36,17 @@ TOKENS_PER_BLOCK = 4
 MAX_STEP_TOKENS = 1024
 # Emit every buffered operation on the next drain, by its deferral deadline.
 CONFIGS = {"lmcache.mp.lazy_offload_max_deferral_seconds": 1e-9}
+# The free-queue head every drain keeps clear for one admission, with the
+# test manager's max_model_len of one block and no draft tokens. Per group:
+# the five slots of that block plus a recomputed token span two blocks, plus
+# a partial block at the start and a copy-on-write block; plus one block per
+# group for a split between a hit and an allocation. Admissions here are
+# longer on purpose: they reach past the reserve, as a step's second
+# admission does.
+ADMISSION_RESERVE = 2 * (2 + 2) + 2
+# The same over two align-mode Mamba groups: per group, the state block, plus
+# a local and an external hit state block.
+MAMBA_RESERVE = 2 * (1 + 2)
 
 
 class _NoReceipts:
@@ -94,6 +105,7 @@ def _manager(
     mamba_groups: dict[int, int] | None = None,
     prefill_alignment: int = 0,
     num_lookahead_tokens: int = 0,
+    max_model_len: int = TOKENS_PER_BLOCK,
 ) -> LazyOffloadManager:
     """Build a two-group manager bound to ``pool``."""
     manager = LazyOffloadManager(
@@ -102,6 +114,7 @@ def _manager(
         receipts or _NoReceipts(),
         max_step_tokens=max_step_tokens,
         num_lookahead_tokens=num_lookahead_tokens,
+        max_model_len=max_model_len,
         mamba_groups=mamba_groups,
         prefill_alignment=prefill_alignment,
     )
@@ -180,7 +193,8 @@ def test_decode_crossing_a_block_boundary_deepens_the_window(
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     manager = _manager(pool, configs={})
     manager.on_admission("running", num_tokens, 0, 0, load_async=False)
-    manager.add_store_candidate(_store([ids[:1], [pool.null_block.block_id]]))
+    block = ids[ADMISSION_RESERVE]
+    manager.add_store_candidate(_store([[block], [pool.null_block.block_id]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(_step({"running": num_tokens}))
@@ -235,8 +249,9 @@ def _blocked_with_freed_successor(
 def test_blocked_request_pins_only_blocks_in_reach() -> None:
     """An in-flight store leaves the request's other free blocks unpinned.
 
-    No request runs, so nothing can recycle the next op's block before the
-    next drain: pinning it would only cost a free block.
+    No request runs, so only an admission can allocate before the next
+    drain, and the next op's block sits past its reserve: pinning it would
+    only cost a free block.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     null = pool.null_block.block_id
@@ -244,7 +259,8 @@ def test_blocked_request_pins_only_blocks_in_reach() -> None:
     manager = _manager(pool, receipts=_Receipts())
     manager.add_store_candidate(_op(0, [[ids[0]], [null]]))
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
-    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[ids[1]], [null]]))
+    next_block = ids[1 + ADMISSION_RESERVE]
+    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[next_block], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids[1:]])
     num_free = pool.get_num_free_blocks()
 
@@ -274,9 +290,10 @@ def test_freed_block_of_blocked_request_survives_until_its_batch_settles() -> No
 
 # An admission of this many tokens allocates at most this many blocks over
 # the manager's two groups: per group, a partial block at each end and one
-# for a copy-on-write or checkpoint block (no draft tokens here).
-ADMISSION_TOKENS = 4 * TOKENS_PER_BLOCK
-ADMISSION_BLOCKS = 2 * (4 + 2)
+# for a copy-on-write or checkpoint block (no draft tokens here). It reaches
+# past the admission reserve.
+ADMISSION_TOKENS = 8 * TOKENS_PER_BLOCK
+ADMISSION_BLOCKS = 2 * (8 + 2)
 
 
 def _buffered_block_in_queue(
@@ -288,8 +305,8 @@ def _buffered_block_in_queue(
 ) -> tuple[LazyOffloadManager, int, list[int]]:
     """A buffered block at ``position`` of a free queue of cached blocks.
 
-    No request runs, so the danger depth is zero and the drain leaves it
-    buffered.
+    No request runs, so the danger depth is the admission reserve, and the
+    drain leaves a block past it buffered.
 
     Args:
         pool: The block pool, with every block free.
@@ -325,42 +342,70 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
 ) -> None:
     """An admission recycling past a buffered block does not cost a store.
 
+    The block sits past the admission reserve, where an admission longer
+    than ``max_model_len`` (as a step's second admission) still reaches.
     Only the admission notice can save the block, and the notice must not
-    shrink the free queue the admission allocates from. Moved out of reach,
-    the block has still reached the head, so it stays due: the next drain
-    stores it intact, though no running request presses on the queue.
+    shrink the free queue the admission allocates from. Moved to the tail,
+    the block survives the allocation, still buffered: preempting its
+    request stores it intact.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
-    manager, _, _ = _buffered_block_in_queue(pool, position=5)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
     num_free = pool.get_num_free_blocks()
 
     if admitted:
         manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
         assert pool.get_num_free_blocks() == num_free
     pool.get_new_blocks(ADMISSION_BLOCKS)
-    actions = manager.on_scheduler_step(_step())
+    actions = manager.on_scheduler_step(_step(preempted={"req"}))
 
     assert bool(actions.stores_to_submit) is admitted
 
 
-def test_protected_op_waits_at_the_tail_until_allocations_take_blocks() -> None:
-    """A protected op is due but paced by what allocations consume.
+def test_protected_op_waits_at_the_tail_until_the_head_reaches_it() -> None:
+    """A protected op is stored when it is about to be recycled, not before.
 
-    The admission notice moves the buffered block to the tail. While no
-    free block has been taken since, the drain leaves it buffered, so one
-    large protection is not stored in a single burst; once the admission
-    allocates, the drain stores it intact.
+    The admission notice moves the buffered block to the tail. The drain
+    leaves it buffered there, so one large protection is not stored in a
+    single burst; once allocations bring it within the reserve of the
+    head, the drain stores it intact.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
-    manager, _, _ = _buffered_block_in_queue(pool, position=5)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
     manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
 
     waiting = manager.on_scheduler_step(_step()).stores_to_submit
-    pool.get_new_blocks(ADMISSION_BLOCKS)
+    pool.get_new_blocks(pool.get_num_free_blocks() - ADMISSION_RESERVE)
     stored = manager.on_scheduler_step(_step()).stores_to_submit
 
     assert waiting == []
     assert stored != []
+
+
+def test_one_admission_after_a_drain_moves_no_buffered_block() -> None:
+    """The drain keeps one ``max_model_len`` admission clear of buffered blocks.
+
+    The buffered block sits right past the reserve, and the admission is as
+    long as the model allows: it neither moves nor pins the block, and its
+    allocation leaves the block where it was, buffered and intact.
+    """
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    manager = _manager(
+        pool, configs={}, receipts=_Receipts(), max_model_len=ADMISSION_TOKENS
+    )
+    block = ids[manager.admission_blocks]
+    manager.add_store_candidate(_op(0, [[block], [null]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
+    allocated = pool.get_new_blocks(ADMISSION_BLOCKS)
+    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+
+    assert block not in {allocated_block.block_id for allocated_block in allocated}
+    assert [store.request_id for store in actions.stores_to_submit] == ["req"]
 
 
 @pytest.mark.parametrize(
@@ -393,20 +438,22 @@ def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
     """vLLM gives an external hit a Mamba state block before allocating.
 
     Each Mamba group takes one block for the external hit and one state
-    block for the chunk, four in all, which reach the buffered block third
-    in the queue. Saved by the admission notice, it is still intact when
-    the next drain stores it.
+    block for the chunk, four in all. An earlier admission of the step has
+    taken the reserve, which leaves the buffered block third in the queue,
+    in reach. Saved by the admission notice, it is still intact when its
+    request's preemption stores it.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager, _, _ = _buffered_block_in_queue(
-        pool, position=2, mamba_groups={0: 0, 1: 0}
+        pool, position=MAMBA_RESERVE + 2, mamba_groups={0: 0, 1: 0}
     )
+    pool.get_new_blocks(MAMBA_RESERVE)
 
     manager.on_admission(
         "new", 20 * TOKENS_PER_BLOCK, 0, 10 * TOKENS_PER_BLOCK, load_async=False
     )
     pool.get_new_blocks(4)
-    actions = manager.on_scheduler_step(_step())
+    actions = manager.on_scheduler_step(_step(preempted={"req"}))
 
     assert actions.stores_to_submit != []
 
@@ -444,8 +491,8 @@ def test_squeezed_admission_pins_rather_than_loses_the_store() -> None:
     The tail is no refuge when the allocation reaches it, so the block is
     pinned: vLLM gets the rest of the queue, and the next drain stores it.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
-    manager, _, others = _buffered_block_in_queue(pool, position=5)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, others = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
 
     manager.on_admission(
         "new", TOKENS_PER_BLOCK * (len(others) + 1), 0, 0, load_async=False
@@ -463,8 +510,8 @@ def test_step_scheduling_nothing_stores_what_a_squeezed_admission_pinned() -> No
     request runs, the next steps schedule nothing. Waiting for a step that
     schedules tokens would keep the pin, and the admission, waiting forever.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
-    manager, _, others = _buffered_block_in_queue(pool, position=5)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, others = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
     manager.on_admission(
         "new", TOKENS_PER_BLOCK * (len(others) + 1), 0, 0, load_async=False
     )
@@ -496,7 +543,9 @@ def test_resumed_load_keeps_buffered_block_its_allocation_would_recycle(
     """
     pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
     hit_blocks = 2 * (1 + 2)
-    manager, _, _ = _buffered_block_in_queue(pool, position=hit_blocks + 2)
+    manager, _, _ = _buffered_block_in_queue(
+        pool, position=ADMISSION_RESERVE + hit_blocks + 2
+    )
 
     manager.on_admission(
         "new", TOKENS_PER_BLOCK + ADMISSION_TOKENS, 0, TOKENS_PER_BLOCK, load_async=True
@@ -547,7 +596,7 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
 
     Two requests have a block at the free-queue head and a running request
     is about to take two blocks; one drain stores only one op. The other
-    moves out of reach and stays due, so the next drain stores it, intact
+    is held, so the next drain stores it first, intact
     though the running request has allocated and nothing presses on it.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
@@ -582,7 +631,7 @@ def test_stored_block_returns_to_queue_head() -> None:
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     running = 2 * TOKENS_PER_BLOCK
     manager, block, _ = _buffered_block_in_queue(
-        pool, position=0, running_tokens=running
+        pool, position=ADMISSION_RESERVE, running_tokens=running
     )
     stores = manager.on_scheduler_step(_step({"running": running}))
     assert len(stores.stores_to_submit) == 1
@@ -668,8 +717,8 @@ def test_preempted_request_releases_its_whole_buffer() -> None:
     Rescheduled, the request starts over from token zero, which discards
     its buffer; storing it at preemption keeps what eager offload stores.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
-    manager, _, _ = _buffered_block_in_queue(pool, position=5)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, _, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
 
     actions = manager.on_scheduler_step(_step(preempted={"req"}))
 
@@ -718,7 +767,7 @@ def test_token_budget_caps_the_window() -> None:
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
         manager.on_admission(request_id, 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[4]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 4]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -736,7 +785,7 @@ def test_mamba_group_takes_one_block_per_step(position: int, stored: bool) -> No
 
     The prefilling request could cross many blocks of an attention group
     in one chunk, but each Mamba group takes a single block: two groups
-    reach two blocks into the queue, and no further.
+    reach two blocks past the admission reserve, and no further.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -745,7 +794,7 @@ def test_mamba_group_takes_one_block_per_step(position: int, stored: bool) -> No
         pool, configs={}, receipts=_Receipts(), mamba_groups={0: 0, 1: 0}
     )
     manager.on_admission("running", 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[position]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[MAMBA_RESERVE + position]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(_step({"running": TOKENS_PER_BLOCK}))
@@ -772,11 +821,14 @@ def test_scratch_group_adds_no_reach(position: int, stored: bool) -> None:
         _Receipts(),
         max_step_tokens=MAX_STEP_TOKENS,
         num_lookahead_tokens=0,
+        max_model_len=TOKENS_PER_BLOCK,
         mamba_groups={0: 0, 2: 0},
     )
     manager.bind_block_pool(pool)
     manager.on_admission("running", 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[position]], [null], [null]]))
+    manager.add_store_candidate(
+        _op(0, [[ids[MAMBA_RESERVE + position]], [null], [null]])
+    )
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -812,7 +864,7 @@ def test_aligned_prefill_crossing_costs_a_whole_block(
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
         manager.on_admission(request_id, 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[4]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 4]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -829,10 +881,10 @@ def test_leftover_tokens_short_of_a_crossing_reach_at_most_one_block() -> None:
     new one, and the step has room for two crossings and one token more.
     No schedule takes a third block per group with that token, but the
     bound takes its crossings fractionally and rounds the last one up, so
-    it counts three per group: the fifth and sixth queue positions are
-    the slack, and the seventh is out of reach.
+    it counts three per group: the fifth and sixth queue positions past
+    the admission reserve are the slack, and the seventh is out of reach.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
     manager = _manager(
@@ -844,7 +896,7 @@ def test_leftover_tokens_short_of_a_crossing_reach_at_most_one_block() -> None:
     running = [f"running-{index}" for index in range(4)]
     for request_id in running:
         manager.on_admission(request_id, 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[6]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE + 6]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -865,11 +917,13 @@ def test_lookahead_slots_count_within_the_token_budget(
     Two prefilling requests have computed one block and, with four
     lookahead slots, hold a second. One token each puts their slots into a
     third block; the six-token step then has four tokens left, one block's
-    worth, for one more crossing. That is three blocks per group: the
-    sixth queue position is in reach, the seventh is not. Counting the
-    scheduled tokens alone would reach two per group.
+    worth, for one more crossing. That is three blocks per group: past
+    the admission reserve, the sixth queue position is in reach, the
+    seventh is not. Counting the scheduled tokens alone would reach two per
+    group. The reserve itself spans the draft slots too, four per group.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(num_gpu_blocks=48, enable_caching=True, hash_block_size=4)
+    reserve = ADMISSION_RESERVE + 2 * (1 + TOKENS_PER_BLOCK)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
     manager = _manager(
@@ -882,7 +936,7 @@ def test_lookahead_slots_count_within_the_token_budget(
     running = [f"running-{index}" for index in range(2)]
     for request_id in running:
         manager.on_admission(request_id, 100, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[position]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[reserve + position]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -906,7 +960,8 @@ def test_block_already_in_the_table_is_not_allocated_again(
     The request has computed two blocks' worth of tokens, so its next token
     crosses into a third block, unless the table already holds it (as
     lookahead slots of an earlier step leave it). Then the step allocates
-    nothing, and the buffered block at the queue head is out of reach.
+    nothing, and the buffered block right past the admission reserve is out
+    of reach.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -914,7 +969,7 @@ def test_block_already_in_the_table_is_not_allocated_again(
     manager = _manager(pool, configs={}, receipts=_Receipts())
     num_tokens = 2 * TOKENS_PER_BLOCK
     manager.on_admission("running", num_tokens, 0, 0, load_async=False)
-    manager.add_store_candidate(_op(0, [[ids[0]], [null]]))
+    manager.add_store_candidate(_op(0, [[ids[ADMISSION_RESERVE]], [null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
     actions = manager.on_scheduler_step(
@@ -1054,8 +1109,10 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
 
     vLLM frees a running request's older blocks, as align-mode Mamba drops
     past states, before the next step allocates; they join a tail already
-    in reach. Past the drain budget, the op on such a block is pinned while
-    its request still owns it, so it survives to the next drain.
+    in reach. The op on such a block is not due, but it is pinned while its
+    request still owns it, so it survives the whole queue being allocated.
+    The pin lasts until a drain whose window stops short of the tail, which
+    leaves the op buffered: its request's preemption stores it intact.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -1074,11 +1131,16 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
 
     first = manager.on_scheduler_step(_step({"running": 2 * TOKENS_PER_BLOCK}))
     pool.free_blocks([pool.blocks[ids[5]]])
-    pool.get_new_blocks(pool.get_num_free_blocks())
-    second = manager.on_scheduler_step(_step())
+    allocated = pool.get_new_blocks(pool.get_num_free_blocks())
+    squeezed = manager.on_scheduler_step(_step())
+    pool.free_blocks(allocated + [pool.blocks[block_id] for block_id in ids[6:]])
+    released = manager.on_scheduler_step(_step())
+    preempted = manager.on_scheduler_step(_step(preempted={"owned"}))
 
     assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert [store.request_id for store in second.stores_to_submit] == ["owned"]
+    assert squeezed.stores_to_submit == []
+    assert released.stores_to_submit == []
+    assert [store.request_id for store in preempted.stores_to_submit] == ["owned"]
 
 
 def test_squeezed_admission_pins_a_block_its_request_still_owns() -> None:

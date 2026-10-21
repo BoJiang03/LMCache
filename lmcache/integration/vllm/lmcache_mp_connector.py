@@ -937,6 +937,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     num_lookahead_tokens=(
                         (spec_config.num_speculative_tokens or 0) if spec_config else 0
                     ),
+                    max_model_len=vllm_config.model_config.max_model_len,
                     mamba_groups=mamba_groups,
                     prefill_alignment=get_prefill_alignment(
                         vllm_config, kv_cache_config, mamba_groups
