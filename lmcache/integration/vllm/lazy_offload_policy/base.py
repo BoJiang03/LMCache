@@ -19,6 +19,10 @@ Terms used throughout this package:
   one store the worker accepts per request. A batch is *in flight* from its
   submission until every worker has reported it, and the request's later
   operations stay buffered for as long as that lasts.
+- **Requeued**: an emitted operation whose store failed, handed back to the
+  policy once its batch settled. Its blocks were pinned in flight, so its
+  hash snapshot still holds, and it is buffered again ahead of the
+  request's later operations.
 - **Session**: the LMCache-side state a request owns while it is storing.
   ``LazyOffloadManager`` ends it once the request has finished and has
   nothing buffered and nothing in flight.
@@ -208,20 +212,19 @@ class OffloadPolicy(ABC):
         """
 
     @abstractmethod
-    def mark_store_failed(self, request_id: str) -> int:
-        """Break the request's prefix chain after a failed store.
+    def requeue_failed(self, item: PendingStoreItem) -> None:
+        """Buffer again the operations of a store batch that failed.
 
-        The failed range will never be stored, and the request's tracker
-        only moves forward, so every later range of this request would be
-        unreachable on retrieval. A policy that keeps prefix-chain state
-        drops those ranges and refuses the request's further operations; one
-        that drains a request whole has nothing left to drop and returns 0.
+        The worker rejected the store (L1 was out of space, or the server
+        was unhealthy), but the data is still on the GPU: the batch pinned
+        its blocks until every worker reported. Every later operation of the
+        request depends on this prefix, so the policy buffers ``item`` ahead
+        of them and submits it again. A store of keys that are already
+        resident succeeds, so a retry of a partly stored batch is safe.
 
         Args:
-            request_id: The request whose submitted store failed.
-
-        Returns:
-            The number of buffered operations dropped.
+            item: The failed batch's operations in token order, with the
+                hash snapshots taken when they were first buffered.
         """
 
     @abstractmethod
