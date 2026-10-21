@@ -917,6 +917,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             # Whether vLLM called get_kv_connector_kv_cache_events this step; it
             # never does for a MultiConnector child (see build_connector_worker_meta).
             self._kv_events_hook_called = False
+            # The bound metadata whose stores wait_for_save already submitted.
+            self._saved_metadata: KVConnectorMetadata | None = None
             if self.transfer_intermediate_tensors:
                 # First Party
                 from lmcache.integration.vllm.experimental import (
@@ -1155,9 +1157,16 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         from save_kv_layer is complete before finishing the forward.
 
         This prevents overwrites of paged KV buffer before saving done.
+
+        Submits the bound metadata's stores once: ``get_finished`` calls it
+        too on steps that schedule no tokens, for vLLM releases whose
+        no-forward path skips it.
         """
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, LMCacheMPConnectorMetadata)
+        if metadata is self._saved_metadata:
+            return
+        self._saved_metadata = metadata
 
         request_ids = []
         ops = []
@@ -1227,6 +1236,15 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             The finished saves/sends req ids must belong to a set provided in a
             call to this method (this call or a prior one).
         """
+        metadata = self._connector_metadata
+        if (
+            isinstance(metadata, LMCacheMPConnectorMetadata)
+            and metadata.schedules_no_tokens
+        ):
+            # vLLM 0.18 to 0.30 skip wait_for_save on steps that schedule no
+            # tokens, which still carry lazy-offload stores. Other steps may
+            # defer it past the draft model's forward, so they are left alone.
+            self.wait_for_save()
         if self.lazy_offload:
             val = self.worker_adapter.get_finished_with_lazy_offload()
         else:
@@ -1745,6 +1763,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         """
         metadata = LMCacheMPConnectorMetadata()
         metadata.need_flush_before_forward = _has_preemption_reqs(scheduler_output)
+        metadata.schedules_no_tokens = not scheduler_output.total_num_scheduled_tokens
 
         self._process_retrieve_requests(metadata)
         self._process_new_requests(scheduler_output, metadata)
@@ -1881,8 +1900,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         Returns:
             True when scheduler-side lazy offload has submitted stores waiting
             for worker completion. Queued stores are intentionally excluded:
-            they require a model-token step for submission and cannot progress
-            during a connector-only step. Non-lazy mode uses vLLM's normal
+            they may stay buffered until block pressure or their deadline
+            releases them, and their hash snapshot, not a delayed free, keeps
+            them from storing stale blocks. Non-lazy mode uses vLLM's normal
             delayed-free path and does not need this keepalive.
         """
         if self.role != KVConnectorRole.SCHEDULER or not self.lazy_offload:
