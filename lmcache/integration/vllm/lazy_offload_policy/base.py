@@ -19,6 +19,10 @@ Terms used throughout this package:
   one store the worker accepts per request. A batch is *in flight* from its
   submission until every worker has reported it, and the request's later
   operations stay buffered for as long as that lasts.
+- **Protected**: a buffered operation an imminent admission would recycle.
+  The manager moves its blocks to the free-queue tail instead of pinning
+  them, so the admission still has every free block to allocate from, and
+  the danger window meets it again when the head reaches the tail.
 - **Requeued**: an emitted operation whose store failed, handed back to the
   policy once its batch settled. Its blocks were pinned in flight, so its
   hash snapshot still holds, and it is buffered again ahead of the
@@ -74,11 +78,19 @@ class DrainSignals:
 
     Attributes:
         next_step_blocks: Upper bound on the blocks the requests now running
-            can allocate before the next drain. Admissions are not in it.
+            can allocate before the next drain. Admissions and resumed
+            loads are not in it: the manager protects buffered blocks from
+            those right before they allocate.
         admission_blocks: Upper bound on the blocks one admission can
             allocate, from the model's maximum length. A policy that keeps
-            this much of the free-queue head clear of buffered blocks loses
-            none of them to the first admission of a step.
+            this much of the free-queue head clear of buffered blocks leaves
+            the admission protection nothing to move for the first
+            admission of a step.
+        resuming_blocks: Upper bound on the blocks that requests whose load
+            finished, but that no step has scheduled yet, allocate once
+            scheduled. The protection when their load finished assumed the
+            next step; until a step schedules them, the head moves on and
+            the danger depth counts them too.
         finished_request_ids: Requests whose generation has ended. Their
             buffered operations are still storable; the id is reported so a
             policy may treat them differently from running requests.
@@ -91,6 +103,7 @@ class DrainSignals:
     """
 
     next_step_blocks: int
+    resuming_blocks: int
     admission_blocks: int
     finished_request_ids: set[str]
     blocked_request_ids: set[str]
@@ -112,6 +125,20 @@ class LazyOffloadDrain:
 
     items: list[PendingStoreItem] = field(default_factory=list)
     emptied_request_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AdmissionProtection:
+    """What the manager must do before an admission allocates.
+
+    Attributes:
+        to_tail: Operations to move to the free-queue tail, one entry per
+            request, in prefix order. They stay allocatable, so the
+            admission is not refused for them, and stay buffered: the
+            danger window meets them again when the head reaches the tail.
+    """
+
+    to_tail: list[PendingStoreItem] = field(default_factory=list)
 
 
 class OffloadPolicy(ABC):
@@ -159,6 +186,21 @@ class OffloadPolicy(ABC):
         Returns:
             The stores to submit and the requests left with nothing buffered.
         """
+
+    def protect(self, num_blocks: int) -> AdmissionProtection:
+        """Protect what an imminent allocation of ``num_blocks`` would recycle.
+
+        Called right before vLLM allocates blocks for a request it admits,
+        which evicts from the free-queue head before the step's drain runs.
+        A policy that never lets buffered blocks be recycled returns nothing.
+
+        Args:
+            num_blocks: Upper bound on the blocks the allocation consumes.
+
+        Returns:
+            The operations to move to the tail.
+        """
+        return AdmissionProtection()
 
     @abstractmethod
     def has_pending_request(self, request_id: str) -> bool:

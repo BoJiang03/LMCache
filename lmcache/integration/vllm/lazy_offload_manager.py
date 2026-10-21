@@ -216,6 +216,15 @@ class LazyOffloadManager:
         # bounds the blocks they can allocate before the next drain.
         self._num_tokens: dict[str, int] = {}
         self._num_computed: dict[str, int] = {}
+        # Requests loading asynchronously -> tokens left after the load.
+        self._load_remaining: dict[str, int] = {}
+        # Requests whose load finished but that are not yet scheduled -> the
+        # blocks their first chunk allocates. vLLM schedules them only when
+        # their chunk fits, which can be steps later.
+        self._resuming: dict[str, int] = {}
+        # The last drain's bound, which the next schedule's running
+        # requests allocate before a resumed load does.
+        self._next_step_blocks = 0
         self._admission_blocks = self._admission_bound(max_model_len)
         # Per group, block ids each scheduled request has been handed, to
         # tell what a step allocated from blocks vLLM only moved within its
@@ -317,18 +326,81 @@ class LazyOffloadManager:
             return LazyOffloadActions()
         return self._drain(scheduler_output, self._require_block_pool())
 
-    def on_admission(self, request_id: str, num_tokens: int) -> None:
-        """Record an admitted request's token count.
+    def on_admission(
+        self,
+        request_id: str,
+        num_tokens: int,
+        num_computed_tokens: int,
+        num_external_tokens: int,
+        load_async: bool,
+    ) -> None:
+        """Protect buffered blocks an admission is about to recycle.
 
-        The count bounds what the request allocates once it runs: a prefill
-        chunk stops at its last token, and a decode step takes one token
-        and its drafts.
+        vLLM allocates an admitted request's blocks right after asking the
+        connector for its external hit, evicting from the free-queue head
+        before this step's drain can emit anything there. A long hit
+        allocates its whole prefix at once, which no danger depth predicts.
+        Pinning those blocks would shrink the free queue the allocation
+        draws from and could refuse it, so they move to the tail instead,
+        still allocatable and still buffered.
 
         Args:
             request_id: The request being admitted.
             num_tokens: Its tokens, prompt and any output so far.
+            num_computed_tokens: Its local prefix hit, in tokens.
+            num_external_tokens: Its external hit, in tokens.
+            load_async: Whether the hit loads asynchronously. vLLM then
+                allocates for the hit alone and schedules the rest once the
+                load finishes, which :meth:`on_loads_finished` covers.
         """
         self._num_tokens[request_id] = num_tokens
+        remaining = num_tokens - num_computed_tokens - num_external_tokens
+        if load_async:
+            self._load_remaining[request_id] = remaining
+            num_new_tokens = num_external_tokens
+        else:
+            num_new_tokens = num_external_tokens + self._chunk_tokens(remaining)
+        # vLLM touches the local hit before allocating, which takes its free
+        # blocks out of the queue, so the allocation reaches that much further.
+        # An align-mode Mamba hit is null blocks but its last state block, and
+        # an external hit gets one state block of its own before the
+        # allocation, outside the allocation's cap.
+        num_hit_blocks = sum(
+            min(1, num_computed_tokens) + min(1, num_external_tokens)
+            if group_idx in self._mamba_groups
+            else -(-num_computed_tokens // tokens_per_block)
+            for group_idx, tokens_per_block in enumerate(self._group_tokens_per_block)
+            if tokens_per_block > 0
+        )
+        self._protect(self._span_blocks(num_new_tokens) + num_hit_blocks)
+
+    def on_loads_finished(self, request_ids: set[str]) -> None:
+        """Protect buffered blocks that resuming finished loads will recycle.
+
+        A request whose asynchronous load finished is scheduled again
+        without asking the connector for a hit, so this is the last call
+        before it allocates for the rest of its tokens. The next schedule's
+        running requests allocate first, so their bound counts too. A full
+        cache can keep the request waiting for several steps, while the
+        free-queue head moves past the protected blocks; each drain until it
+        is scheduled counts its allocation in the danger depth.
+
+        Args:
+            request_ids: Requests whose load the workers reported finished.
+                Ids without an asynchronous load are ignored.
+        """
+        resumed = {
+            request_id: self._span_blocks(
+                self._chunk_tokens(self._load_remaining.pop(request_id)),
+                first_allocation=False,
+            )
+            for request_id in request_ids
+            if request_id in self._load_remaining
+        }
+        if not resumed:
+            return
+        self._resuming.update(resumed)
+        self._protect(self._next_step_blocks + sum(resumed.values()))
 
     def on_store_results(
         self,
@@ -505,9 +577,13 @@ class LazyOffloadManager:
                 receipts ambiguous.
         """
         running_blocks_allocated = self._running_blocks_allocated(scheduler_output)
+        self._next_step_blocks = self._running_blocks_bound(scheduler_output)
+        for request_id in scheduler_output.num_scheduled_tokens:
+            self._resuming.pop(request_id, None)
         drain = self._require_policy().drain(
             DrainSignals(
-                next_step_blocks=self._running_blocks_bound(scheduler_output),
+                next_step_blocks=self._next_step_blocks,
+                resuming_blocks=sum(self._resuming.values()),
                 admission_blocks=self._admission_blocks,
                 finished_request_ids=self._requests.finished_request_ids(),
                 blocked_request_ids=self._requests.in_flight_request_ids(),
@@ -768,11 +844,27 @@ class LazyOffloadManager:
                 break
         return bound
 
-    def _span_blocks(self, num_tokens: int) -> int:
-        """Bound the blocks a request's first allocation of ``num_tokens`` takes.
+    def _chunk_tokens(self, remaining: int) -> int:
+        """Bound the slots one scheduled chunk of a request allocates.
+
+        Args:
+            remaining: The request's tokens not yet computed. A full hit
+                leaves none, and vLLM then recomputes the last token.
+
+        Returns:
+            One step's worth of those tokens, plus the lookahead slots.
+        """
+        chunk = min(max(remaining, 1), self._max_step_tokens)
+        return chunk + self._num_lookahead_tokens
+
+    def _span_blocks(self, num_tokens: int, first_allocation: bool = True) -> int:
+        """Bound the blocks an allocation of ``num_tokens`` slots takes.
 
         Args:
             num_tokens: The slots allocated, starting anywhere in a block.
+            first_allocation: Whether the request holds no blocks yet. An
+                asynchronous load's admission allocated for its hit, so its
+                resumed allocation is not the first.
 
         Returns:
             Per group, summed over the groups: the blocks the slots fill, a
@@ -780,11 +872,13 @@ class LazyOffloadManager:
             block or a Mamba checkpoint, and the Mamba state blocks a
             request's first allocation reserves, one per draft token. An
             align-mode Mamba group nulls the blocks the slots fill but its
-            state block, so its allocation is capped whatever their number.
+            state block, so its allocation is capped whatever their number,
+            and only a first allocation's cap adds the draft-token blocks.
         """
         extra = 2 + self._num_lookahead_tokens
+        mamba_draft_blocks = self._num_lookahead_tokens if first_allocation else 0
         return sum(
-            1 + self._mamba_groups[group_idx] + self._num_lookahead_tokens
+            1 + self._mamba_groups[group_idx] + mamba_draft_blocks
             if group_idx in self._mamba_groups
             else -(-num_tokens // tokens_per_block) + extra
             for group_idx, tokens_per_block in enumerate(self._group_tokens_per_block)
@@ -792,7 +886,7 @@ class LazyOffloadManager:
         )
 
     def _admission_bound(self, max_model_len: int) -> int:
-        """Bound the blocks any one admission allocates.
+        """Bound what :meth:`on_admission` protects for any one admission.
 
         An admission's local hit plus the slots it allocates hold at most
         ``max_model_len`` tokens, plus the recomputed last token of a full
@@ -817,6 +911,30 @@ class LazyOffloadManager:
             + split_blocks
         )
 
+    def _protect(self, num_blocks: int) -> None:
+        """Move or pin the buffered blocks an allocation would recycle.
+
+        Args:
+            num_blocks: Upper bound on the blocks the allocation consumes.
+        """
+        self._move_to_tail(self._require_policy().protect(num_blocks).to_tail)
+
+    def _move_to_tail(self, items: list[PendingStoreItem]) -> None:
+        """Move buffered blocks to the free-queue tail, unpinned.
+
+        A cached block is freed to the tail with its hash intact; a block a
+        request still owns stays out of the queue.
+
+        Args:
+            items: The operations whose blocks move, in prefix order.
+        """
+        pool = self._require_block_pool()
+        for item in items:
+            for _, block_hashes in item.metadatas:
+                blocks = [pool.blocks[block_id] for block_id in block_hashes]
+                pool.touch(blocks)
+                pool.free_blocks(blocks)
+
     def _forget_progress(self, request_id: str) -> None:
         """Stop counting a request toward the running requests' bound.
 
@@ -825,6 +943,8 @@ class LazyOffloadManager:
         """
         self._num_tokens.pop(request_id, None)
         self._num_computed.pop(request_id, None)
+        self._load_remaining.pop(request_id, None)
+        self._resuming.pop(request_id, None)
         self._handed_blocks.pop(request_id, None)
         self._table_lengths.pop(request_id, None)
 
