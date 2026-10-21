@@ -622,6 +622,43 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
     assert [store.request_id for store in second.stores_to_submit] == ["second"]
 
 
+@pytest.mark.parametrize(
+    ("budget", "stored"), [(1, [["a"], ["b"], []]), (64, [[], [], []])]
+)
+def test_backlog_the_budget_cannot_keep_up_with_starts_early(
+    budget: int, stored: list[list[str]]
+) -> None:
+    """Ops just past the window are stored early only if the budget is short.
+
+    Three ops sit right behind the blocks one admission can take, so the
+    next drain's allocations reach all three. One op per drain cannot store
+    them in that one drain, so the drains before it store one each until
+    the last fits the drain that reaches it; a budget that stores all three
+    at once leaves them deferred.
+    """
+    pool = BlockPool(num_gpu_blocks=40, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    null = pool.null_block.block_id
+    manager = _manager(
+        pool,
+        configs={"lmcache.mp.lazy_offload_max_drain_per_step": budget},
+        receipts=_Receipts(),
+        max_step_tokens=TOKENS_PER_BLOCK,
+    )
+    # One admission reaches 10 blocks with this model length and two groups.
+    for request_id, block_id in zip("abc", ids[10:13], strict=True):
+        store = _store([[block_id], [null]])
+        store.request_id = request_id
+        manager.add_store_candidate(store)
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+
+    drains = [manager.on_scheduler_step(_step()) for _ in range(3)]
+
+    assert [
+        [store.request_id for store in drain.stores_to_submit] for drain in drains
+    ] == stored
+
+
 def test_stored_block_returns_to_queue_head() -> None:
     """Storing a free block does not refresh it in vLLM's eviction order.
 

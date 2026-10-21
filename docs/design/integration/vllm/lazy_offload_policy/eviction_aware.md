@@ -53,7 +53,12 @@ earlier**:
    outside buffered ops, `D` = running requests' bound + unscheduled
    resumed loads + one admission (`admission_blocks`). Every op met is due:
    emitted, or held (pinned) when its request has a batch in flight or the
-   drain budget is spent.
+   drain budget is spent. The budget stores at most `B` ops per drain, so
+   the window also widens when it would fall behind: if the first `m`
+   buffered ops in queue order lie within `k` drains' allocations
+   (`k * D` blocks outside buffered ops), `m - (k - 1) * B` of them are
+   due now. Those past `D` only take budget the window left over and are
+   never held, since no allocation reaches them before the next drain.
 2. A second admission in the same step reaches past `D`; `protect()` moves
    the ops it would reach to the tail, still buffered.
 3. A walk that reaches the tail first (`squeezed_drains`) means blocks freed
