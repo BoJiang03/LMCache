@@ -374,8 +374,8 @@ sat in the free queue when it was pinned goes back to the queue head, where
 eviction order had it, unless another request's op still buffers it (step 4
 of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)). Failed stores
 are reported alongside completion receipts, so the scheduler requeues a
-failed range ahead of the request's later chunks and its prefix chain stays
-whole.
+failed range in token order among the request's buffered chunks and its
+prefix chain stays whole.
 
 Configuration in `kv_connector_extra_config`:
 

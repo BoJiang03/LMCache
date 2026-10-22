@@ -30,8 +30,8 @@ Terms used throughout this package:
   too are they held instead.
 - **Requeued**: an emitted operation whose store failed, handed back to the
   policy once its batch settled. Its blocks were pinned in flight, so its
-  hash snapshot still holds, and it is buffered again ahead of the
-  request's later operations.
+  hash snapshot still holds, and it is buffered again in token order among
+  the request's buffered operations.
 - **Readmitted**: a stored operation the manager buffers again because
   vLLM's GPU prefix cache still held its blocks when it was emitted, so
   exclusive retrieve stored it at L1's evict-first end. The manager keeps it
@@ -143,8 +143,8 @@ class LazyOffloadDrain:
             with the request's phase and in-flight batch before tearing a
             session down.
         holds: Operations whose blocks the manager must pin now, one entry
-            per request. Each entry extends the request's held operations,
-            which always form a prefix of its buffer. They stay buffered.
+            per request. Each entry adds to the request's held operations,
+            which need not be a prefix of its buffer. They stay buffered.
         releases: Requests whose held operations the manager must unpin
             before pinning ``holds``. They stay buffered, unheld.
         reaches_tail: Whether the next step can allocate the whole free
@@ -170,8 +170,8 @@ class AdmissionProtection:
             admission is not refused for them, and stay buffered: the
             danger window meets them again when the head reaches the tail.
         holds: Operations to pin, because the allocation would reach the
-            tail too. Like ``LazyOffloadDrain.holds``, each entry extends
-            the request's held prefix; pinning may make vLLM defer the
+            tail too. Like ``LazyOffloadDrain.holds``, each entry adds to
+            the request's held operations; pinning may make vLLM defer the
             admission, which is cheaper than losing the store.
     """
 
@@ -314,9 +314,9 @@ class OffloadPolicy(ABC):
         The worker rejected the store (L1 was out of space, or the server
         was unhealthy), but the data is still on the GPU: the batch pinned
         its blocks until every worker reported. Every later operation of the
-        request depends on this prefix, so the policy buffers ``item`` ahead
-        of them and submits it again. A store of keys that are already
-        resident succeeds, so a retry of a partly stored batch is safe.
+        request depends on this range, so the policy buffers ``item`` in
+        token order among them and submits it again. A store of keys that are
+        already resident succeeds, so a retry of a partly stored batch is safe.
 
         Args:
             item: The failed batch's operations in token order, with the

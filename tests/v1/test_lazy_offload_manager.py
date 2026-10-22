@@ -20,6 +20,7 @@ from vllm.v1.core.kv_cache_coordinator import (  # noqa: E402
 )
 from vllm.v1.core.kv_cache_utils import (  # noqa: E402
     BlockHash,
+    KVCacheBlock,
     make_block_hash_with_group_id,
 )
 from vllm.v1.kv_cache_interface import (  # noqa: E402
@@ -1379,12 +1380,13 @@ def _exclusive_op(block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
     return op
 
 
-def _coordinator(mamba: bool = False) -> KVCacheCoordinator:
-    """vLLM's own coordinator over 16 blocks of one chunk each.
+def _coordinator(mamba: bool = False, num_blocks: int = 16) -> KVCacheCoordinator:
+    """vLLM's own coordinator over blocks of one chunk each.
 
     Args:
         mamba: Whether an align-mode Mamba group (group 1) follows the full
             attention group (group 0).
+        num_blocks: Blocks of its pool, the null block included.
     """
     groups = [
         KVCacheGroupSpec(
@@ -1410,7 +1412,9 @@ def _coordinator(mamba: bool = False) -> KVCacheCoordinator:
             )
         )
     return get_kv_cache_coordinator(
-        KVCacheConfig(num_blocks=16, kv_cache_tensors=[], kv_cache_groups=groups),
+        KVCacheConfig(
+            num_blocks=num_blocks, kv_cache_tensors=[], kv_cache_groups=groups
+        ),
         max_model_len=16 * TOKENS_PER_BLOCK,
         max_in_flight_tokens=MAX_STEP_TOKENS,
         use_eagle=False,
@@ -1667,3 +1671,189 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
         for block_id in (attention[chunk], mamba[chunk])
         if block_id != null
     )
+
+
+# Chunks of the anchored request below whose op holds a Mamba state.
+ANCHORS = (1, 4)
+NUM_CHUNKS = 5
+
+
+def _filler(pool: BlockPool) -> list[KVCacheBlock]:
+    """Take every free block, hashed apart from any request's chain.
+
+    vLLM frees a block without a hash to the queue head, so only hashed
+    blocks keep the order they are freed in.
+    """
+    blocks = pool.get_new_blocks(pool.get_num_free_blocks())
+    for i, block in enumerate(blocks):
+        block.set_block_hash(
+            make_block_hash_with_group_id(BlockHash(b"\xff" * 30 + bytes([0, i])), 0)
+        )
+    return blocks
+
+
+def _anchored_request(
+    pool: BlockPool, manager: LazyOffloadManager
+) -> tuple[list[int], list[int]]:
+    """Buffer one op per chunk of "req", Mamba states (group 1) at ``ANCHORS``.
+
+    Attention blocks stay in use; the states are freed, as align mode frees
+    a running request's older ones: chunk 4's at the queue head, chunk 1's
+    past the admission reserve.
+
+    Returns:
+        Per chunk, the attention block and the Mamba block (null for none).
+    """
+    null = pool.null_block.block_id
+    attention = _hashed_blocks(pool, NUM_CHUNKS)
+    mamba = [null] * NUM_CHUNKS
+    for chunk in ANCHORS:
+        (mamba[chunk],) = _hashed_blocks(pool, 1)
+    for chunk in range(NUM_CHUNKS):
+        manager.add_store_candidate(
+            _op(chunk * TOKENS_PER_BLOCK, [[attention[chunk]], [mamba[chunk]]])
+        )
+    filler = _filler(pool)
+    pool.free_blocks([pool.blocks[mamba[4]], *filler[:20], pool.blocks[mamba[1]]])
+    pool.free_blocks(filler[20:])
+    return attention, mamba
+
+
+def _bring_to_head(pool: BlockPool, block_id: int) -> None:
+    """Allocate every free block ahead of ``block_id``."""
+    queue = [block.block_id for block in pool.free_block_queue.get_all_free_blocks()]
+    pool.get_new_blocks(queue.index(block_id))
+
+
+def _span(store: LMCacheMPRequestMetadata) -> tuple[int, int]:
+    """The chunks a store covers, as ``(first, end)``."""
+    return store.op.start // TOKENS_PER_BLOCK, store.op.end // TOKENS_PER_BLOCK
+
+
+def test_due_anchor_stores_only_the_chunks_past_the_earlier_anchor() -> None:
+    """vLLM serves chunks 0..1 from the GPU through chunk 1's state, so the
+    due state of chunk 4 stores chunks 2..4 only."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, configs={}, receipts=_Receipts(), mamba_groups={1: 0})
+    attention, mamba = _anchored_request(pool, manager)
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(store) == (2, NUM_CHUNKS)
+    assert store.op.block_ids == [attention[2:], mamba[2:]]
+
+
+def test_earlier_segment_is_stored_once_its_anchor_is_due() -> None:
+    """Chunks 0..1 stay buffered until chunk 1's state is due, then go; every
+    op is stored once and none is dropped."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, configs={}, receipts=_Receipts(), mamba_groups={1: 0})
+    attention, mamba = _anchored_request(pool, manager)
+    (later,) = manager.on_scheduler_step(_step()).stores_to_submit
+    manager.on_store_results(set(), {"req": 1})
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    _bring_to_head(pool, mamba[1])
+    (earlier,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(earlier) == (0, 2)
+    assert earlier.op.block_ids == [attention[:2], mamba[:2]]
+    assert sorted([_span(later), _span(earlier)]) == [(0, 2), (2, NUM_CHUNKS)]
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    assert f"admitted={NUM_CHUNKS} emitted={NUM_CHUNKS} " in line
+    assert " dropped_evicted=0 " in line
+    assert " pending=0" in line
+
+
+def test_attention_only_model_stores_the_whole_front() -> None:
+    """Without Mamba groups no block is a state: the due op stores every op
+    in front of it."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, configs={}, receipts=_Receipts())
+    attention, mamba = _anchored_request(pool, manager)
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(store) == (0, NUM_CHUNKS)
+    assert store.op.block_ids == [attention, mamba]
+
+
+def test_failed_later_segment_is_buffered_behind_the_earlier_ops() -> None:
+    """A failed store of chunks 2..4 goes back behind chunks 0..1, so a
+    release of the whole buffer stores the chunks in order."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, configs={}, receipts=_Receipts(), mamba_groups={1: 0})
+    attention, mamba = _anchored_request(pool, manager)
+    (failed,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert _span(failed) == (2, NUM_CHUNKS)
+
+    manager.on_store_results({"req"}, {"req": 1})
+    (retried,) = manager.on_scheduler_step(_step(preempted={"req"})).stores_to_submit
+
+    assert _span(retried) == (0, NUM_CHUNKS)
+    assert retried.op.block_ids == [attention, mamba]
+
+
+def test_segment_due_while_a_batch_is_in_flight_is_held() -> None:
+    """Chunk 1's state comes due while chunks 2..4 are in flight: chunks 0..1
+    are pinned, survive an allocation of the whole queue, and are stored
+    once the batch settles."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, configs={}, receipts=_Receipts(), mamba_groups={1: 0})
+    attention, mamba = _anchored_request(pool, manager)
+    (later,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert _span(later) == (2, NUM_CHUNKS)
+
+    _bring_to_head(pool, mamba[1])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    pool.get_new_blocks(pool.get_num_free_blocks())
+    manager.on_store_results(set(), {"req": 1})
+    (earlier,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(earlier) == (0, 2)
+    assert earlier.op.block_ids == [attention[:2], mamba[:2]]
+
+
+def test_engine_held_chunk_of_a_segment_is_parked_and_stored_again() -> None:
+    """In a segment, a chunk vLLM still serves is hinted and parked, and once
+    its holder releases it, stored again in order with the ops left buffered.
+
+    Every chunk has a state; chunks 1 and 3 have theirs freed to the queue
+    head, so chunks 1..3 are due and chunk 0, served through its state, is
+    not stored. vLLM's hit from blocks in use ends at chunk 2's state, so
+    chunk 2 is engine-held.
+    """
+    coordinator = _coordinator(mamba=True, num_blocks=64)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(4)
+    attention = [block.block_id for block in pool.get_new_blocks(4)]
+    mamba = [block.block_id for block in pool.get_new_blocks(4)]
+    _cache(pool, chain, [attention, mamba])
+    manager = _manager(pool, configs={}, receipts=_Receipts(), mamba_groups={1: 0})
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    for chunk in range(4):
+        op = _op(chunk * TOKENS_PER_BLOCK, [[attention[chunk]], [mamba[chunk]]])
+        op.request_configs = {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True}
+        manager.add_store_candidate(op)
+    filler = _filler(pool)
+    pool.free_blocks([pool.blocks[mamba[1]], pool.blocks[mamba[3]], *filler])
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert _span(store) == (1, 4)
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted(
+        [attention[2], mamba[2]]
+    )
+    manager.on_store_results(set(), {"req": 1})
+    pool.free_blocks([pool.blocks[attention[2]]])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    (flushed,) = manager.on_scheduler_step(_step(preempted={"req"})).stores_to_submit
+
+    assert _span(flushed) == (0, 3)
+    assert flushed.op.block_ids == [
+        [attention[0], null, attention[2]],
+        [mamba[0], null, mamba[2]],
+    ]

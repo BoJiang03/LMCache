@@ -333,6 +333,24 @@ def test_server_honors_the_lookup_key_start():
     plain_ctx.storage_manager.touch_cached_keys.assert_not_called()
 
 
+def test_prefetch_from_the_key_start_reads_no_chunk_below_it():
+    """A lookup starting at chunk 2 prefetches chunks 2..3 alone.
+
+    So a stored suffix is served whether or not L1 holds the chunks below
+    the engine's own hit, as a lazy store that skips them relies on.
+    """
+    # First Party
+    from lmcache.v1.multiprocess.modules.lookup import LookupModule
+
+    ctx = _lookup_ctx(4)
+    LookupModule(ctx).lookup(_make_key(4, start_chunks=2), 1)
+
+    (spec,) = ctx.storage_manager.submit_prefetch_task.call_args.args
+    assert [[key.chunk_hash for key in row.keys] for row in spec.key_groups] == [
+        [bytes([2]) * 4, bytes([3]) * 4]
+    ]
+
+
 def test_end_session_refreshes_both_tiers():
     """``end_session``'s unified touch must reach L2, not just L1.
 

@@ -22,9 +22,10 @@ operation whose blocks come under eviction pressure.
   whole queue -- nothing at danger depth 0.
 - **`PendingStoreOp`** -- one deferred store: opaque `store_metadata` (the
   ready `LMCacheMPRequestMetadata`), the covered blocks' hash snapshot taken
-  at admission, and its admission timestamp. Its request id and token range
-  are not copied out: the buffer is keyed by request id and holds each
-  request's ops in token order.
+  at admission, its admission timestamp, whether it holds a real block of an
+  anchor group (`has_anchor`, see the anchor rule) and whether it is held.
+  Its request id and token range are not copied out: the buffer is keyed by
+  request id and holds each request's ops in token order.
 - **`EvictionAwareStoreQueue`** -- the policy object, one per connector.
 
 ## The invariant, and the one rule built on it
@@ -122,7 +123,7 @@ lifecycle events to it.
    the point of lazy offload. Every drain revalidates every pending request's
    hash snapshots, including those of requests blocked by a submitted batch.
    A blocked request is never emitted -- the worker accepts one store future
-   per request -- but the ops it would release now (its due front segment)
+   per request -- but the ops it would release now (its due segment)
    are returned in
    `LazyOffloadDrain.holds`: the manager pins those blocks so they cannot be
    recycled while the batch is in flight, and once the receipt arrives the
@@ -221,8 +222,8 @@ lifecycle events to it.
 7. On a failed receipt, mark the in-flight batch failed and wait for the
    rest of its receipts: another worker may still be reading its blocks.
    Once the batch settles, unpin it; a failed batch that is not orphaned
-   goes back to the policy with `requeue_failed(item)`, ahead of the
-   request's later ops, and its blocks move to the free-queue tail.
+   goes back to the policy with `requeue_failed(item)`, in token order among the
+   request's buffered ops, and its blocks move to the free-queue tail.
    The data is still on the GPU, so the request's prefix chain stays whole.
    An L1 rejection (out of memory) is the common cause, so the retry waits
    for the window like any buffered op rather than being resubmitted into
@@ -343,6 +344,31 @@ the true vLLM hit instead of 0.
   through the last due one; a data-loss drop (hash mismatch) drops from the
   first lost op through the tail and blacklists the request's later chunks;
   the intact stored prefix stays pending and stays valuable.
+- **Anchor segments** (align-mode Mamba hybrids): vLLM resumes a hit at `p`
+  only with the attention KV of `[0, p)` and the Mamba state block at `p`
+  (the *anchor*), so chunks up to a cached anchor `p'` are still a GPU hit
+  and front closure only copied them from L0 into L1 (0.10-0.16 of L1 bytes
+  on a hybrid run). An op with a real block in a Mamba group
+  (`anchor_groups`) is an anchor op; with `f` the first due op, the segment
+  starts past the last anchor op before `f`, whose blocks are all outside
+  the window, and ends at the first anchor op at or after the last due op
+  (a segment not ending at an anchor cannot be hit), else at the last due
+  op. The ops before it stay buffered and come due on their own blocks: the
+  rule changes when they are stored, not whether. A suffix store is
+  servable because the server looks up from vLLM's hit (`key.start`) and
+  chunk keys hash from token zero. Attention-only models have no anchors and
+  keep front closure; so does a request past its deadline.
+
+  ```
+  ops      0    1*   2    3    4*        * = anchor op
+  window                       ##        chunk 4's state is due
+  emitted            [2 .. 4]            0..1 served from L0 via 1*
+  later         ##                       chunk 1's state is due
+  emitted  [0 .. 1]
+  ```
+
+  Holds are per op (`PendingStoreOp.held`), not a front prefix, and a
+  requeued or readmitted op is inserted where its start sorts.
 - Cross-request drain order = min due rank ascending; `max_drain_per_step`
   bounds the per-step D2H burst in operations. The cap may split a request's
   due segment but only ever emits a front slice of it, so within-request

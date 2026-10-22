@@ -356,7 +356,9 @@ class LazyOffloadManager:
                 "would discard the buffered store operations"
             )
         self._gpu_block_pool = gpu_block_pool
-        self._policy = create_offload_policy(self._configs, gpu_block_pool)
+        self._policy = create_offload_policy(
+            self._configs, gpu_block_pool, frozenset(self._mamba_groups)
+        )
 
     def bind_cache_coordinator(self, coordinator: "KVCacheCoordinator") -> None:
         """Bind the scheduler's KV cache coordinator, whose hit decides which
