@@ -74,6 +74,10 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# Chunk states of :meth:`LazyOffloadManager._chunk_state` the code branches on.
+_HELD = "held"
+_NOT_HELD_STATE_FREE = "not_held_attn_inuse_state_free"
+
 
 class StoreCompletionTracker(Protocol):
     """Aggregate per-worker completion counts for one submitted store."""
@@ -778,11 +782,11 @@ class LazyOffloadManager:
                     break
                 valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
-                chunks_held, parked = self._engine_held_part(
+                chunk_states, parked = self._engine_held_part(
                     metadata, old_block_hashes, vllm_held, servable_tokens
                 )
                 self._count_chunks(
-                    diagnostics, item.request_id, chunks_held, trigger_kind
+                    diagnostics, item.request_id, chunk_states, trigger_kind
                 )
                 if parked is not None and _requests_exclusive_retrieve(metadata):
                     engine_held.append(parked)
@@ -1192,7 +1196,10 @@ class LazyOffloadManager:
         block_hashes: BlockHashes,
         vllm_held: set[int],
         servable_tokens: Callable[[], int],
-    ) -> tuple[list[bool | None], tuple[LMCacheMPRequestMetadata, BlockHashes] | None]:
+    ) -> tuple[
+        list[tuple[str, int] | None],
+        tuple[LMCacheMPRequestMetadata, BlockHashes] | None,
+    ]:
         """Split off the chunks of one emitted op that vLLM still holds.
 
         A chunk is engine-held when every block of it but the null block,
@@ -1217,8 +1224,9 @@ class LazyOffloadManager:
                 blocks are all in ``vllm_held``.
 
         Returns:
-            Per chunk of the op, whether it is engine-held, ``None`` for a
-            chunk with only null blocks (nothing to store); and the op to
+            Per chunk of the op, its :meth:`_chunk_state` and its number of
+            real full-attention blocks, ``None`` for a chunk with only null
+            blocks (nothing to store); and the op to
             park, with the blocks of every chunk that is not engine-held
             replaced by the null block and the snapshot of the blocks it
             keeps, or ``None`` when it keeps none.
@@ -1230,24 +1238,43 @@ class LazyOffloadManager:
         # a scratch group, which stores nothing.
         chunk_of: list[list[int] | None] = []
         real_blocks: list[list[int]] = [[] for _ in range(num_chunks)]
+        attention_blocks: list[list[int]] = [[] for _ in range(num_chunks)]
         for group_idx, group_block_ids in enumerate(op.block_ids):
             tokens_per_block = self._group_tokens_per_block[group_idx]
             if not tokens_per_block:
                 chunk_of.append(None)
                 continue
+            full_attention = (
+                self._group_kinds[group_idx] == "attention"
+                and group_idx not in self._mamba_groups
+            )
             blocks_per_chunk = self._chunk_size // tokens_per_block
             chunks = [pos // blocks_per_chunk for pos in range(len(group_block_ids))]
             chunk_of.append(chunks)
             for chunk_idx, block_id in zip(chunks, group_block_ids, strict=True):
                 if block_id != null_block_id:
                     real_blocks[chunk_idx].append(block_id)
-        chunks_held: list[bool | None] = [
-            all(block_id in vllm_held for block_id in real)
-            and min(op.start + (chunk_idx + 1) * self._chunk_size, op.end)
-            <= servable_tokens()
+                    if full_attention:
+                        attention_blocks[chunk_idx].append(block_id)
+        chunk_states: list[tuple[str, int] | None] = [
+            (
+                self._chunk_state(
+                    real,
+                    attention,
+                    vllm_held,
+                    min(op.start + (chunk_idx + 1) * self._chunk_size, op.end),
+                    servable_tokens,
+                ),
+                len(attention),
+            )
             if real
             else None
-            for chunk_idx, real in enumerate(real_blocks)
+            for chunk_idx, (real, attention) in enumerate(
+                zip(real_blocks, attention_blocks, strict=True)
+            )
+        ]
+        chunks_held = [
+            None if state is None else state[0] == _HELD for state in chunk_states
         ]
         parked_block_ids: list[list[int]] = []
         for chunks, group_block_ids in zip(chunk_of, op.block_ids, strict=True):
@@ -1267,9 +1294,50 @@ class LazyOffloadManager:
             if block_id != null_block_id
         }
         if not parked_hashes:
-            return chunks_held, None
+            return chunk_states, None
         parked = replace(metadata, op=replace(op, block_ids=parked_block_ids))
-        return chunks_held, (parked, parked_hashes)
+        return chunk_states, (parked, parked_hashes)
+
+    def _chunk_state(
+        self,
+        real: list[int],
+        attention: list[int],
+        vllm_held: set[int],
+        chunk_end: int,
+        servable_tokens: Callable[[], int],
+    ) -> str:
+        """Name whether a chunk is engine-held and, if not, the first reason.
+
+        The reasons split the chunks that are not held, so they add up to
+        ``emitted_chunks_not_held``. A chunk with no real full-attention
+        block, as in a model without attention, counts a block not in use
+        as ``not_held_attn_free``.
+
+        Args:
+            real: The chunk's non-null blocks over every non-scratch group.
+            attention: Those of its full-attention groups: not recurrent,
+                not sliding window.
+            vllm_held: The op's blocks vLLM references beyond this class's
+                pins.
+            chunk_end: The token the chunk ends at.
+            servable_tokens: As in :meth:`_engine_held_part`; called only
+                when every block of ``real`` is in ``vllm_held``.
+
+        Returns:
+            ``"held"`` for an engine-held chunk; else
+            ``"not_held_past_servable"`` when every block is in use but the
+            chunk ends past the servable prefix, ``"not_held_attn_free"``
+            when an attention block is not in use, and
+            ``"not_held_attn_inuse_state_free"`` when every attention block
+            is but a recurrent or sliding-window one is not.
+        """
+        if all(block_id in vllm_held for block_id in real):
+            if chunk_end <= servable_tokens():
+                return _HELD
+            return "not_held_past_servable"
+        if not attention or not all(block_id in vllm_held for block_id in attention):
+            return "not_held_attn_free"
+        return _NOT_HELD_STATE_FREE
 
     def _servable_tokens(self, request_id: str) -> int:
         """Return how much of a request's prefix vLLM serves from blocks it keeps.
@@ -1335,7 +1403,7 @@ class LazyOffloadManager:
         self,
         diagnostics: "Counter[str]",
         request_id: str,
-        chunks_held: list[bool | None],
+        chunk_states: list[tuple[str, int] | None],
         trigger_kind: str,
     ) -> None:
         """Count one emitted op's chunks by engine-held state and trigger.
@@ -1349,17 +1417,24 @@ class LazyOffloadManager:
         Args:
             diagnostics: The drain's counts, updated in place.
             request_id: The emitting request.
-            chunks_held: Per chunk of the op, whether it is engine-held;
-                ``None`` skips a chunk with nothing to store.
+            chunk_states: Per chunk of the op, its :meth:`_chunk_state` and
+                its real full-attention blocks; ``None`` skips a chunk with
+                nothing to store. A chunk not held counts under its reason
+                too, and under ``not_held_attn_inuse_state_free`` its
+                attention blocks also count, as ``..._attn_blocks``.
             trigger_kind: What :meth:`_block_group_kind` named for its item.
         """
         handed = self._handed_blocks.get(request_id)
-        for chunk_held in chunks_held:
-            if chunk_held is None:
+        for chunk_state in chunk_states:
+            if chunk_state is None:
                 continue
+            state, num_attention_blocks = chunk_state
             diagnostics[f"emitted_chunks_trigger_{trigger_kind}"] += 1
-            if not chunk_held:
+            if state != _HELD:
                 diagnostics["emitted_chunks_not_held"] += 1
+                diagnostics[state] += 1
+                if state == _NOT_HELD_STATE_FREE:
+                    diagnostics[f"{state}_attn_blocks"] += num_attention_blocks
             elif handed:
                 diagnostics["emitted_chunks_held_by_self"] += 1
             else:

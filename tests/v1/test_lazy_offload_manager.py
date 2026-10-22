@@ -134,6 +134,7 @@ def _manager(
     prefill_alignment: int = 0,
     num_lookahead_tokens: int = 0,
     max_model_len: int = TOKENS_PER_BLOCK,
+    group_kinds: tuple[str, str] = ("attention", "attention"),
 ) -> LazyOffloadManager:
     """Build a two-group manager bound to ``pool``.
 
@@ -148,7 +149,7 @@ def _manager(
         num_lookahead_tokens=num_lookahead_tokens,
         max_model_len=max_model_len,
         chunk_size=TOKENS_PER_BLOCK,
-        group_kinds=["attention", "attention"],
+        group_kinds=list(group_kinds),
         mamba_groups=mamba_groups,
         prefill_alignment=prefill_alignment,
     )
@@ -1670,6 +1671,73 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
         for chunk in held_chunks
         for block_id in (attention[chunk], mamba[chunk])
         if block_id != null
+    )
+
+
+NOT_HELD_REASONS = (
+    "not_held_attn_inuse_state_free",
+    "not_held_attn_free",
+    "not_held_past_servable",
+)
+
+
+@pytest.mark.parametrize(
+    ("states", "freed_attention", "freed_states", "reasons"),
+    [
+        # Chunk 2's own state is free while its attention is in use; the
+        # hit vLLM can serve stops at token zero, past which chunks 0, 1 end.
+        ([2], [], [2], ["not_held_past_servable"] * 2 + [NOT_HELD_REASONS[0]]),
+        # Chunk 2's attention is free; the state at chunk 1 serves 0 and 1.
+        ([1], [2], [], [None, None, "not_held_attn_free"]),
+        # A free attention block names the chunk, though its state is free.
+        ([2], [2], [2], ["not_held_past_servable"] * 2 + ["not_held_attn_free"]),
+    ],
+    ids=["own_state_free", "attention_free", "both_free"],
+)
+def test_chunks_not_held_are_counted_by_reason(
+    states: list[int],
+    freed_attention: list[int],
+    freed_states: list[int],
+    reasons: list[str | None],
+) -> None:
+    """Every emitted chunk vLLM does not hold counts under exactly one
+    reason, and a chunk whose attention is in use but whose own state is
+    free also counts its attention blocks."""
+    coordinator = _coordinator(mamba=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(3)
+    attention = [block.block_id for block in pool.get_new_blocks(3)]
+    mamba = [null] * 3
+    for chunk in states:
+        mamba[chunk] = pool.get_new_blocks(1)[0].block_id
+    _cache(pool, chain, [attention, mamba])
+    pool.free_blocks(
+        [pool.blocks[attention[chunk]] for chunk in freed_attention]
+        + [pool.blocks[mamba[chunk]] for chunk in freed_states]
+    )
+    manager = _manager(
+        pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
+    )
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_exclusive_op([attention, mamba]))
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    counts = {
+        name: int(value) for name, value in (field.split("=") for field in line.split())
+    }
+    for reason in NOT_HELD_REASONS:
+        assert counts.get(reason, 0) == reasons.count(reason)
+    assert counts.get(f"{NOT_HELD_REASONS[0]}_attn_blocks", 0) == reasons.count(
+        NOT_HELD_REASONS[0]
+    )
+    assert (
+        sum(counts.get(reason, 0) for reason in NOT_HELD_REASONS)
+        == (counts["emitted_chunks_not_held"])
     )
 
 
