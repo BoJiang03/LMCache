@@ -30,6 +30,10 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
     LoadStoreOp,
 )
+from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
+    ENGINE_HELD_BLOCKS_HINT,
+    EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+)
 
 TOKENS_PER_BLOCK = 4
 # Large enough that every admission here is scheduled in one chunk.
@@ -115,6 +119,8 @@ def _manager(
         max_step_tokens=max_step_tokens,
         num_lookahead_tokens=num_lookahead_tokens,
         max_model_len=max_model_len,
+        chunk_size=TOKENS_PER_BLOCK,
+        group_kinds=["attention", "attention"],
         mamba_groups=mamba_groups,
         prefill_alignment=prefill_alignment,
     )
@@ -237,7 +243,7 @@ def test_coalesced_store_keeps_the_request_configs() -> None:
     assert len(actions.stores_to_submit) == 1
     stored = actions.stores_to_submit[0]
     assert stored.op.block_ids[0] == ids
-    assert stored.request_configs == configs
+    assert configs.items() <= stored.request_configs.items()
 
 
 def _blocked_with_freed_successor(
@@ -879,6 +885,8 @@ def test_scratch_group_adds_no_reach(position: int, stored: bool) -> None:
         max_step_tokens=MAX_STEP_TOKENS,
         num_lookahead_tokens=0,
         max_model_len=TOKENS_PER_BLOCK,
+        chunk_size=TOKENS_PER_BLOCK,
+        group_kinds=["recurrent", "attention", "recurrent"],
         mamba_groups={0: 0, 2: 0},
     )
     manager.bind_block_pool(pool)
@@ -1333,3 +1341,147 @@ def test_failed_store_of_a_preempted_request_is_not_retried() -> None:
 
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
     assert pool.blocks[block].ref_cnt == 0
+
+
+def _exclusive_op(block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
+    """A store op from token zero of an exclusive-retrieve request."""
+    op = _op(0, block_ids)
+    op.request_configs = {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True}
+    return op
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_held_chunk_is_stored_again_once_its_holder_releases_it(
+    exclusive: bool,
+) -> None:
+    """A chunk vLLM still holds when its op is emitted is reported in the
+    store's hint and, under exclusive retrieve, stored once more after its
+    holder releases it, and only then; the request's session waits for that
+    store. A plain request stores each chunk once and sends no hint."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    first, second = _hashed_blocks(pool, 2)
+    manager = _manager(pool, receipts=_Receipts())
+    op = _exclusive_op([[first, second], [null, null]]) if exclusive else None
+    manager.add_store_candidate(op or _op(0, [[first, second], [null, null]]))
+    pool.free_blocks([pool.blocks[first]])
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert store.op.block_ids[0] == [first, second]
+    assert (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT) == (
+        [second] if exclusive else None
+    )
+    manager.on_store_results(set(), {"req": 1})
+    finished = manager.on_request_finished("req")
+    assert finished.sessions_to_end == ([] if exclusive else ["req"])
+    # Held, the chunk is not stored again however often the manager drains.
+    for _ in range(4):
+        assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    pool.free_blocks([pool.blocks[second]])
+    restores = manager.on_scheduler_step(_step()).stores_to_submit
+    settled = manager.on_store_results(set(), {"req": 1} if restores else {})
+
+    if not exclusive:
+        assert restores == []
+        return
+    (restore,) = restores
+    assert (restore.op.start, restore.op.end) == (0, 2 * TOKENS_PER_BLOCK)
+    assert restore.op.block_ids == [[null, second], [null, null]]
+    assert ENGINE_HELD_BLOCKS_HINT not in (restore.request_configs or {})
+    assert settled.sessions_to_end == ["req"]
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert pool.blocks[second].ref_cnt == 0
+
+
+def test_released_held_chunk_is_stored_before_the_queue_reaches_it() -> None:
+    """A released held chunk is buffered again under the policy's window: it
+    waits while the free queue is long and is stored once an allocation
+    could take it."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    manager = _manager(pool, configs={}, receipts=_Receipts())
+    manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids if block_id != ids[1]])
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == [ids[1]]
+    manager.on_store_results(set(), {"req": 1})
+
+    # Released to the tail of a free queue longer than the reserve.
+    pool.free_blocks([pool.blocks[ids[1]]])
+    assert pool.get_num_free_blocks() > ADMISSION_RESERVE
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    pool.get_new_blocks(pool.get_num_free_blocks() - ADMISSION_RESERVE)
+    (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert restore.op.block_ids[0] == [null, ids[1]]
+
+
+def test_held_chunk_is_pinned_while_an_allocation_can_take_the_whole_queue() -> None:
+    """When the next step may take every free block, a block its holder frees
+    first could be recycled before the next drain: the parked chunk's blocks
+    are pinned, and its store follows the release."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    manager = _manager(pool, configs={}, receipts=_Receipts())
+    manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
+    pool.free_blocks([pool.blocks[ids[0]], pool.blocks[ids[2]]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    manager.on_store_results(set(), {"req": 1})
+
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert pool.blocks[ids[1]].ref_cnt == 2
+    pool.free_blocks([pool.blocks[ids[1]]])
+    assert pool.blocks[ids[1]].ref_cnt == 1
+    (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert restore.op.block_ids[0] == [null, ids[1]]
+
+
+def test_reset_drops_a_parked_chunk() -> None:
+    """A preempted request's parked chunk keeps its stored copy; its later
+    store is dropped and counted, and the session ends."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    first, second = _hashed_blocks(pool, 2)
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+    pool.free_blocks([pool.blocks[first]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    manager.on_store_results(set(), {"req": 1})
+
+    manager.on_request_reset("req")
+    pool.free_blocks([pool.blocks[second]])
+
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    assert " held_ops_parked=1" in line
+    assert " held_ops_dropped=1" in line
+
+
+def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
+    """The ledger counts every emitted chunk by whether vLLM held it and by
+    the kind of the group whose block made the op due."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    first, second = _hashed_blocks(pool, 2)
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+    pool.free_blocks([pool.blocks[first]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    manager.on_store_results(set(), {"req": 1})
+    pool.free_blocks([pool.blocks[second]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    # First drain: two chunks, one held; the re-store: the one chunk.
+    assert " emitted_chunks_not_held=2" in line
+    assert " emitted_chunks_held_by_other=1" in line
+    assert " held_ops_parked=1" in line
+    assert " readmitted=1 " in line

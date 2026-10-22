@@ -29,6 +29,8 @@ no-op re-store there.
 | vLLM local prefix hit, including another request's hit on a prefix L0 already holds | demoted after allocation (rule 8); the lookup does not touch it |
 | Lazy re-store at L0 eviction, L1 copy still resident | touched to most recently used (rule 6) |
 | Lazy re-store at L0 eviction, L1 copy gone | written again |
+| Lazy store of a chunk L0 still holds (another block of the op made it due) | committed or touched demoted, and buffered again for its own eviction (rule 9) |
+| `end_session` | no L1 touch (rule 4) |
 
 1. **Demote after a fully successful retrieve.** The server's retrieve
    submits a `demote_l1_keys` host callback on the transfer stream right after
@@ -44,8 +46,12 @@ no-op re-store there.
    before the prefixes they extend. IsolatedLRU does the same per cache salt;
    ARC moves the key to the LRU end of T1; noop ignores it. Each L1 manager
    (multi-L1) demotes only the keys it owns.
-4. **`end_session` does not undo it.** `end_session` touches every key of the
-   request; the session records the demoted keys and skips them.
+4. **`end_session` does not undo it.** For an exclusive request
+   `end_session` touches no L1 key, only L2: every L1 copy that is not
+   demoted was made MRU by its own store or lookup, so a session-end touch
+   would only promote chunks L0 still holds. A plain request's `end_session`
+   still touches its keys in L1 and L2, skipping the ones the session
+   recorded as demoted.
 5. **Re-store from token 0.** When vLLM allocates the request's blocks (the
    `PREFETCHING` transition of `update_state_after_alloc`) the scheduler sets
    `num_stored_tokens` to 0, so the loaded chunks and the local-hit prefix
@@ -78,6 +84,39 @@ no-op re-store there.
 
    The other keys (earlier Mamba states, which vLLM no longer holds) are the
    only copy and keep their L1 position.
+9. **A store of a chunk L0 still holds is demoted.** Lazy offload makes an
+   op due when any of its blocks nears vLLM's eviction head, and an op spans
+   every cache group, so a due op can carry chunks whose blocks vLLM still
+   references (an align-mode Mamba group frees older state blocks while the
+   attention blocks stay held). At emission the connector reads, per chunk
+   and cache group, whether every non-null block has
+   `ref_cnt > LMCache's own pins`, and sends those block ids as
+   `request_configs["lmcache.hint.engine_held_blocks"]` on the STORE. The
+   server's store demotes, chunk by chunk through
+   `StorageManager.demote_cached_keys`, the keys of the object groups whose
+   every non-null block is listed: a resident key is demoted instead of
+   touched; a new key is admitted demoted when its write finishes
+   (`L1Manager.demote_keys` marks a staged key, and `finish_write` demotes
+   it after marking the write MRU). A chunk held only in part is stored as
+   before.
+
+   The connector keeps the held part of each emitted op outside the policy
+   ("parked"), with every chunk and group that was not held replaced by the
+   null block, and hands it back to the policy once vLLM drops a reference
+   to one of its blocks (`ref_cnt <= LMCache's pins`). From then on it is an
+   ordinary candidate: stored at its own eviction, touched or written to
+   MRU. A parked op does not ride along with later ops of its request, so
+   each release re-stores it at most once; it keeps the request's session
+   open.
+
+```text
+op due (Mamba state block at the free-queue head)
+   │  attention chunk blocks still referenced by vLLM
+   ├─> STORE [s, e), hint engine_held_blocks = attention blocks
+   │      server: held keys -> demote_cached_keys (new: demoted at commit)
+   └─> park the held part (non-held chunks nulled)
+          vLLM frees one of its blocks -> back to the policy -> store at eviction
+```
 
 ```text
 LOOKUP (start = APC-covered)    no touch of [0, start) for an exclusive key
@@ -141,8 +180,12 @@ would have no copy re-entering L1.
 - **Another request's touch promotes a key L0 still holds.** A touch by a
   different request moves the key back to most recently used while L0 still
   holds it: for example the lazy re-store of the same chunk from another
-  request's GPU blocks that vLLM is evicting, or the `end_session` of a
-  request that did not demote it. This costs L1 capacity, never data.
+  request's GPU blocks that vLLM is evicting, or the `end_session` of a plain
+  request. This costs L1 capacity, never data.
+- **A release is not an eviction.** A parked chunk is handed back to the
+  policy when any holder drops a reference, which can be one of several
+  requests sharing the prefix; the policy then stores it at its eviction,
+  which may still be later than the release.
 - **Shared prefixes are re-stored once per request.** Every exclusive
   request holding a local-hit prefix buffers its own lazy store for it; the
   first one touches or writes the key, the later ones touch it again.
@@ -158,9 +201,15 @@ request, never wrong KV:
   candidate exists then, so the demoted L1 copy is the next victim and
   nothing re-stores it.
 - **Preemption.** A preempted request's lazy candidates are dropped with its
-  blocks, so its demoted chunks (loaded or local-hit) are not re-stored.
+  blocks, so its demoted chunks (loaded, local-hit or stored while held) are
+  not re-stored. Its parked ops are dropped too (counted as
+  `held_ops_dropped`).
 - **Stale block hash.** A candidate whose block was reused before the drain is
-  skipped by the lazy hash check, as for any lazy store.
+  skipped by the lazy hash check, as for any lazy store; so is a parked op
+  whose block was reused before its release was seen (counted as
+  `held_ops_lost`). When the next step may allocate every free block, the
+  drain pins parked blocks, so a release in that step cannot recycle them
+  before the next drain.
 - **Mixed hybrid chunk before the tail.** Without `--separate-object-groups`,
   one object holds attention and align-mode Mamba slices, and vLLM leaves a
   loaded chunk's Mamba blocks null except at the tail. The re-store skips a
@@ -185,6 +234,14 @@ The held prefix travels only on the post-allocation FREE_LOOKUP_LOCKS:
 LMCacheMPRequestTracker.num_vllm_hit_tokens
   -> request_configs["lmcache.hint.engine_held_tokens"]   (FREE_LOOKUP_LOCKS)
   -> IPCCacheServerKey.engine_held_tokens() on the server
+```
+
+The held blocks of a lazy store travel only on that STORE:
+
+```text
+LazyOffloadManager drain (xr ops; ref_cnt > own pins)
+  -> request_configs["lmcache.hint.engine_held_blocks"]   (STORE)
+  -> IPCCacheServerKey.engine_held_block_ids() on the server
 ```
 
 `END_SESSION` carries only the request id, which is why the demoted keys are

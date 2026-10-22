@@ -143,6 +143,52 @@ def all_null_chunk_masks(
     return masks
 
 
+def engine_held_chunk_masks(
+    block_ids: Sequence[Sequence[int]],
+    object_groups: Sequence[ObjectGroupInfo],
+    blocks_per_chunk: Sequence[int],
+    num_chunks: int,
+    held_block_ids: frozenset[int],
+    null_block_id: int = 0,
+) -> list[list[bool]]:
+    """Mark, per object group, the chunks vLLM's prefix cache still holds.
+
+    A chunk is held for an object group when every block id that is not the
+    null block, over every kernel group of the object group, is in
+    ``held_block_ids``, and there is at least one. A chunk held only in part
+    is not: the engine cannot serve it, so its L1 copy is the one needed.
+
+    Args:
+        block_ids: Raw per-kernel-group engine block ids, indexed by
+            kernel-group index.
+        object_groups: The object groups, indexed by object-group id.
+        blocks_per_chunk: Blocks in one chunk per kernel group.
+        num_chunks: Number of chunks in the request.
+        held_block_ids: The block ids the engine reported holding.
+        null_block_id: Server-wide block ID denoting absent data.
+
+    Returns:
+        ``mask[g][i]`` is True iff object group ``g`` of chunk ``i`` is held.
+    """
+    masks: list[list[bool]] = []
+    for group in object_groups:
+        chunk_held: list[bool] = []
+        for i in range(num_chunks):
+            real = [
+                block
+                for kg in group.kernel_group_indices
+                for block in block_ids[kg][
+                    i * blocks_per_chunk[kg] : (i + 1) * blocks_per_chunk[kg]
+                ]
+                if block != null_block_id
+            ]
+            chunk_held.append(
+                bool(real) and all(block in held_block_ids for block in real)
+            )
+        masks.append(chunk_held)
+    return masks
+
+
 @dataclass
 class ContextEntry:
     """Registered cache context metadata for a single worker instance.
@@ -743,6 +789,26 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 null_block_id,
                 skip_partly_null=key.requests_exclusive_retrieve(),
             )
+            # Chunks vLLM's prefix cache still holds: under exclusive retrieve
+            # their L1 copy goes to the evict-first end, and the engine stores
+            # them again before it evicts them.
+            held_block_ids = (
+                key.engine_held_block_ids()
+                if key.requests_exclusive_retrieve()
+                else frozenset()
+            )
+            held_chunks = (
+                engine_held_chunk_masks(
+                    gpu_block_ids,
+                    cache_context.kv_layer_groups_manager.object_groups,
+                    blocks_per_chunk,
+                    num_chunks,
+                    held_block_ids,
+                    null_block_id,
+                )
+                if held_block_ids
+                else None
+            )
 
             block_ids_per_group_gpu = downsample_and_stage_block_ids(
                 cache_context, gpu_block_ids
@@ -799,6 +865,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             # Keys neither reserved nor out of memory: already resident (or
             # being written), touched below for an exclusive-retrieve request.
             resident_keys: list[ObjectKey] = []
+            # Per object group, chunk index -> key of a chunk the engine
+            # holds, reserved or resident: demoted instead of made MRU.
+            held_keys_by_group: list[dict[int, ObjectKey]] = [
+                {} for _ in range(num_object_groups)
+            ]
             total_bytes: int = 0
             store_succeeded = False
             try:
@@ -825,6 +896,14 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         for k in keys_to_reserve
                         if k not in reserved_dict and k not in oom_set
                     )
+                    if held_chunks is not None:
+                        held_keys_by_group[obj_group_id] = {
+                            i: k
+                            for i, k in enumerate(obj_keys)
+                            if held_chunks[obj_group_id][i]
+                            and not skip_mask[i]
+                            and k not in oom_set
+                        }
                     all_dict.update(reserved_dict)
                     if reserved_dict:
                         total_bytes += next(
@@ -855,13 +934,29 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                     if all_dict
                     else []
                 )
-                # An exclusive retrieve demoted these keys when it loaded
-                # them; the engine stores them again only when it is about to
-                # drop its GPU copy, so the L1 copy becomes the primary again.
-                if resident_keys and key.requests_exclusive_retrieve():
-                    self._ctx.storage_manager.touch_cached_keys(
-                        resident_keys, "lazy_touch"
-                    )
+                if key.requests_exclusive_retrieve():
+                    # An exclusive retrieve demoted these keys when it loaded
+                    # them; the engine stores them again when it is about to
+                    # drop its GPU copy, so the L1 copy becomes the primary
+                    # again. A chunk the engine still holds is not about to
+                    # be dropped (another block of the store made it due),
+                    # so it stays demoted, a new key too once its write
+                    # finishes; the engine stores it again later.
+                    # Chunk order, so a suffix is evicted before its prefix.
+                    held_keys = [
+                        group_keys[i]
+                        for i in range(num_chunks)
+                        for group_keys in held_keys_by_group
+                        if i in group_keys
+                    ]
+                    held_set = set(held_keys)
+                    touched = [k for k in resident_keys if k not in held_set]
+                    if touched:
+                        self._ctx.storage_manager.touch_cached_keys(
+                            touched, "lazy_touch"
+                        )
+                    if held_keys:
+                        self._ctx.storage_manager.demote_cached_keys(held_keys)
                 store_succeeded = True
             except Exception:
                 logger.exception("Cannot store keys due to exception")

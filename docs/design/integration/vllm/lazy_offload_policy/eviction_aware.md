@@ -399,12 +399,28 @@ Two log hooks:
   custody depth at the same instant, which closes the line as an equation:
 
   ```
-  admitted + requeued == pending + emitted + dropped_evicted
+  admitted + requeued + readmitted == pending + emitted + dropped_evicted
                          + dropped_on_request_drop + dropped_id_reuse
   ```
 
   `requeued` counts emitted ops whose store failed and came back to be
-  retried; each retry counts in `emitted` again.
+  retried; each retry counts in `emitted` again. `readmitted` counts ops
+  the manager hands back after parking them: under exclusive retrieve, the
+  part of an emitted op vLLM still held is stored demoted and parked
+  outside the policy until vLLM drops a reference to one of its blocks
+  (see `docs/design/integration/vllm/exclusive_retrieve.md`, rule 9).
+
+  After `pending` the line carries the manager's diagnostic counts, which
+  stand outside the equation: `emitted_chunks_not_held`,
+  `emitted_chunks_held_by_self` and `emitted_chunks_held_by_other` (each
+  emitted chunk with a non-null block, by whether vLLM held all its blocks
+  in some cache group, and whether the emitting request was still running);
+  `emitted_chunks_trigger_<kind>` (the same chunks, by the kind of cache
+  group, `attention`, `recurrent` or `sliding_window`, whose block made the
+  op due; `none` when the deadline did); and `held_ops_parked`,
+  `held_ops_dropped` (parked ops a reset or id reuse discarded) and
+  `held_ops_lost` (parked ops whose block was reused first). A count
+  appears once it is nonzero.
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
   turned away before `admitted`), and `emitted_overdue` is a weight beside

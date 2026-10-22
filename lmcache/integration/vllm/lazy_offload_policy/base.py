@@ -32,6 +32,12 @@ Terms used throughout this package:
   policy once its batch settled. Its blocks were pinned in flight, so its
   hash snapshot still holds, and it is buffered again ahead of the
   request's later operations.
+- **Readmitted**: a stored operation the manager buffers again because
+  vLLM's GPU prefix cache still held its blocks when it was emitted, so
+  exclusive retrieve stored it at L1's evict-first end. The manager keeps it
+  aside, unpinned, until the holder releases one of its blocks, and then
+  hands it back to the policy, which stores it again like any other
+  operation before that block is recycled.
 - **Session**: the LMCache-side state a request owns while it is storing.
   ``LazyOffloadManager`` ends it once the request has finished and has
   nothing buffered and nothing in flight.
@@ -69,12 +75,17 @@ class PendingStoreItem:
             the block-hash snapshot taken when it was buffered. The manager
             re-reads the hashes before submitting to prove the blocks still
             hold the same data.
+        trigger_block_id: The block whose eviction imminence made a drain
+            emit the item, read only for diagnostics; ``None`` when nothing
+            in the free queue did (a hold, a preemption, a deadline) or the
+            policy does not tell.
     """
 
     request_id: str
     metadatas: list[tuple["LMCacheMPRequestMetadata", BlockHashes]] = field(
         default_factory=list
     )
+    trigger_block_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -136,12 +147,17 @@ class LazyOffloadDrain:
             which always form a prefix of its buffer. They stay buffered.
         releases: Requests whose held operations the manager must unpin
             before pinning ``holds``. They stay buffered, unheld.
+        reaches_tail: Whether the next step can allocate the whole free
+            queue, so blocks freed before it are in reach too. The manager
+            then pins what it keeps aside for readmission until the next
+            drain.
     """
 
     items: list[PendingStoreItem] = field(default_factory=list)
     emptied_request_ids: list[str] = field(default_factory=list)
     holds: list[PendingStoreItem] = field(default_factory=list)
     releases: list[str] = field(default_factory=list)
+    reaches_tail: bool = False
 
 
 @dataclass
@@ -305,6 +321,32 @@ class OffloadPolicy(ABC):
         Args:
             item: The failed batch's operations in token order, with the
                 hash snapshots taken when they were first buffered.
+        """
+
+    @abstractmethod
+    def readmit(self, item: PendingStoreItem) -> None:
+        """Buffer again stored operations whose blocks vLLM still held.
+
+        Exclusive retrieve stored them at L1's evict-first end because
+        vLLM's GPU prefix cache held their blocks; the holder has since
+        released one of them, so they are stored again, like any buffered
+        operation, before that block is recycled. They precede every
+        operation of the request emitted after them, so the policy buffers
+        them in token order among the request's buffered operations; ranges
+        between them may be missing.
+
+        Args:
+            item: The operations, in token order, each with the hash
+                snapshot of the blocks it still covers.
+        """
+
+    @abstractmethod
+    def record_diagnostics(self, counts: dict[str, int]) -> None:
+        """Add the manager's diagnostic counts to the policy's ledger.
+
+        Args:
+            counts: Counter name -> increment. A policy without a ledger
+                ignores them.
         """
 
     @abstractmethod

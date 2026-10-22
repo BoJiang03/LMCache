@@ -576,7 +576,9 @@ class LookupModule(DiscoverableModule):
 
         Touches every key of the request in L1 and L2, except the keys an
         exclusive-retrieve request demoted (loaded by its retrieve, or held
-        by vLLM's prefix cache when its blocks were allocated).
+        by vLLM's prefix cache when its blocks were allocated). An
+        exclusive-retrieve request touches L2 only: its lazy stores already
+        set each key's L1 position.
 
         Args:
             request_id: The request ID whose session should be removed.
@@ -612,6 +614,12 @@ class LookupModule(DiscoverableModule):
         demoted = session.get_demoted_keys()
         if demoted:
             obj_keys = [obj_key for obj_key in obj_keys if obj_key not in demoted]
+        if session.lookup_ipc_key.requests_exclusive_retrieve():
+            # The engine stores each key again when it is about to drop its
+            # GPU copy, which makes it MRU then; a touch now would promote
+            # chunks the engine still holds over the ones only L1 has.
+            self._ctx.storage_manager.touch_l2_keys(obj_keys)
+            return
         # unified touch of all keys, which include retrieved and stored keys
         # TODO(chunxiaozheng): when l2 is enabled, the prefetched keys from l2 are temp
         #  and will be deleted after finish_read_prefetched, when we touch all keys,

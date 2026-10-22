@@ -39,6 +39,12 @@ EXCLUSIVE_RETRIEVE_REQUEST_CONFIG = "lmcache.mp.exclusive_retrieve"
 # prefix vLLM's GPU prefix cache holds for it, whose L1 copies are demoted.
 ENGINE_HELD_TOKENS_HINT = "lmcache.hint.engine_held_tokens"
 
+# Request config an exclusive-retrieve connector sets on a lazy STORE: the GPU
+# block ids of the store that vLLM's GPU prefix cache still held when the
+# store was emitted. The chunks whose every block is listed are committed or
+# touched demoted, since the engine re-stores them before it evicts them.
+ENGINE_HELD_BLOCKS_HINT = "lmcache.hint.engine_held_blocks"
+
 
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
@@ -188,7 +194,9 @@ class IPCCacheServerKey:
         Under exclusive retrieve the server demotes the L1 copy of every
         chunk it loads into GPU memory or vLLM's prefix cache already holds,
         and touches chunks a store finds already resident (the engine
-        re-stores those chunks before evicting them).
+        re-stores those chunks before evicting them). A store's chunks that
+        ``ENGINE_HELD_BLOCKS_HINT`` reports the engine still holds are
+        demoted instead, whether resident or newly written.
 
         Returns:
             True when ``request_configs`` sets
@@ -206,6 +214,15 @@ class IPCCacheServerKey:
             it is not set.
         """
         return int((self.request_configs or {}).get(ENGINE_HELD_TOKENS_HINT, 0))
+
+    def engine_held_block_ids(self) -> frozenset[int]:
+        """Return the GPU block ids a store reported vLLM still held.
+
+        Returns:
+            ``request_configs[ENGINE_HELD_BLOCKS_HINT]`` as a set, empty when
+            it is not set.
+        """
+        return frozenset((self.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT, ()))
 
     def no_worker_id_version(self) -> "IPCCacheServerKey":
         """Create a copy with worker_id=None for lookup requests."""

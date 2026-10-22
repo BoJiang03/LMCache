@@ -10,6 +10,10 @@
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
 - Those local-hit demotions count as demoted in the L1 committed usage.
+- A store's chunks whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists (the engine
+  still holds them) are committed or touched demoted, a new key too when its
+  write finishes after the demote; only under exclusive retrieve.
+- Under exclusive retrieve ``end_session`` touches no L1 key.
 
 Only pinned-memory and device calls are replaced; host callbacks run through
 the production dispatcher, drained when the module closes.
@@ -47,6 +51,7 @@ from lmcache.v1.distributed.storage_manager import StorageManager
 from lmcache.v1.kv_layer_groups import ObjectGroupInfo
 from lmcache.v1.multiprocess import native_completion
 from lmcache.v1.multiprocess.custom_types import (
+    ENGINE_HELD_BLOCKS_HINT,
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
     IPCCacheServerKey,
@@ -74,7 +79,14 @@ OTHER_KEY = ObjectKey(ObjectKey.IntHash2Bytes(7), "model", 0)
 LATER_KEY = ObjectKey(ObjectKey.IntHash2Bytes(8), "model", 0)
 
 
-def _ipc_key(exclusive: bool) -> IPCCacheServerKey:
+def _ipc_key(
+    exclusive: bool, held_block_ids: list[int] | None = None
+) -> IPCCacheServerKey:
+    configs: dict[str, Any] = {}
+    if exclusive:
+        configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
+    if held_block_ids is not None:
+        configs[ENGINE_HELD_BLOCKS_HINT] = held_block_ids
     return IPCCacheServerKey.from_token_ids(
         model_name="model",
         world_size=1,
@@ -83,9 +95,7 @@ def _ipc_key(exclusive: bool) -> IPCCacheServerKey:
         start=0,
         end=CHUNK * NUM_CHUNKS,
         request_id="req",
-        request_configs=(
-            {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if exclusive else None
-        ),
+        request_configs=configs or None,
     )
 
 
@@ -202,9 +212,11 @@ class _Server:
         self.drain_callbacks()
         return ok
 
-    def store(self, exclusive: bool) -> bool:
+    def store(self, exclusive: bool, held_block_ids: list[int] | None = None) -> bool:
         """Store the request's three chunks and run the host callbacks."""
-        _, ok = self.module.store(_ipc_key(exclusive), 1, RETRIEVE_BLOCKS, b"p")
+        _, ok = self.module.store(
+            _ipc_key(exclusive, held_block_ids), 1, RETRIEVE_BLOCKS, b"p"
+        )
         self.drain_callbacks()
         return ok
 
@@ -642,3 +654,86 @@ def test_local_hit_demotion_shows_as_demoted_in_committed_usage(
     usage = server.storage.get_l1_committed_usage(keys, "model")
     assert usage.matched_demoted_objects == 0
     assert usage.matched_mru_objects["lookup_touch"] == len(keys)
+
+
+def test_store_of_held_resident_chunks_demotes_them(server: _Server) -> None:
+    """Resident chunks the engine still holds are demoted, last chunk first;
+    the store's other resident chunks are touched to the MRU end."""
+    full, recurrent = server.keys()
+
+    # Blocks 1 and 2 are full-attention chunks 0 and 1.
+    assert server.store(exclusive=True, held_block_ids=[1, 2])
+
+    victims = server.victims()
+    assert victims[:2] == [full[1], full[0]]
+    assert set(victims[-2:]) == {full[2], recurrent[2]}
+    assert set(_demoted(server, full + recurrent)) == {full[0], full[1]}
+
+
+def test_store_of_held_new_chunks_commits_them_demoted(server: _Server) -> None:
+    """New keys of held chunks are admitted demoted, although the demote is
+    issued before their write finishes; the unheld new key is written MRU."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    # Block 5 is the recurrent state of chunk 2; block 3 is left unheld.
+    assert server.store(exclusive=True, held_block_ids=[1, 2, 5])
+
+    stored = full + recurrent[2:]
+    assert server.storage.get_l1_committed_usage(stored, "model").matched_objects == 4
+    assert set(_demoted(server, stored)) == {full[0], full[1], recurrent[2]}
+    victims = server.victims()
+    assert set(victims[:3]) == {full[0], full[1], recurrent[2]}
+    assert victims[-1] == full[2]
+
+
+def test_held_hint_without_exclusive_retrieve_changes_nothing(
+    server: _Server,
+) -> None:
+    """A plain store ignores the hint: resident keys keep their order and new
+    keys are written MRU."""
+    full, recurrent = server.keys()
+    before = server.victims()
+
+    assert server.store(exclusive=False, held_block_ids=[1, 2, 3, 5])
+
+    assert server.victims() == before
+    server.storage.delete_l1_keys(full + recurrent)
+    assert server.store(exclusive=False, held_block_ids=[1, 2, 3, 5])
+    assert _demoted(server, full + recurrent) == []
+
+
+def test_partly_held_chunk_is_not_demoted(server: _Server) -> None:
+    """A hint that lists only some blocks of a chunk leaves it unheld."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    # A chunk of two blocks per kernel group, only the first one held.
+    blocks = [[1, 2, 3, 4, 5, 6], [-1, -1, -1, -1, 7, 8]]
+    cache_context = server.module.get_and_touch_context_entry(1).cache_context
+    cache_context.calculate_num_blocks.return_value = 2
+    _, ok = server.module.store(_ipc_key(True, [1, 2, 3, 5, 7]), 1, blocks, b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert set(_demoted(server, full + recurrent)) == {full[0]}
+
+
+def test_exclusive_end_session_touches_no_l1_key(server: _Server) -> None:
+    """Under exclusive retrieve ``end_session`` leaves the L1 order as is: a
+    chunk that is not demoted was made MRU by its own store or lookup."""
+    session = server.sessions.get("req")
+    assert session is not None
+    session.lookup_ipc_key = _ipc_key(True).no_worker_id_version()
+    server.commit([LATER_KEY])
+    before = server.victims()
+    lookup_ctx = MagicMock()
+    lookup_ctx.session_manager = server.sessions
+    lookup_ctx.storage_manager = server.storage
+    lookup_ctx.layout_desc_registry.find_attn_desc.return_value = SimpleNamespace(
+        num_object_groups=2
+    )
+
+    LookupModule(lookup_ctx).end_session("req")
+
+    assert server.victims() == before

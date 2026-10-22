@@ -144,11 +144,26 @@ def test_untracked_and_staging_keys_get_no_state(
     l1, store = storage
     stage(l1, C)
     store.touch_cached_keys([C], "lookup_touch")
-    store.demote_l1_keys([(l1.l1_manager_id, [C])])
     assert _usage(store, C).matched_objects == 0
-    # The commit after a touch or demote of the staging object is a write.
+    # The commit after a touch of the staging object is a write.
     l1.finish_write([C])
     assert _state(_usage(store, C)) == {"write": 1}
+
+
+def test_demote_of_a_staging_key_lands_at_its_commit(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    """A demote that overtakes the write it targets is not lost: the store's
+    commit, which would mark the key MRU, admits it demoted instead."""
+    l1, store = storage
+    stage(l1, C)
+    store.demote_l1_keys([(l1.l1_manager_id, [C])])
+    assert _usage(store, C).matched_objects == 0
+    l1.finish_write([C])
+    assert _state(_usage(store, C)) == {"demoted": 1}
+    # A later touch of the resident key promotes it again.
+    store.touch_cached_keys([C], "lazy_touch")
+    assert _state(_usage(store, C)) == {"lazy_touch": 1}
 
 
 def test_l2_prefetch_commit_is_other(

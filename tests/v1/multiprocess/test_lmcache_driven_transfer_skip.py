@@ -303,6 +303,7 @@ def test_mixed_object_group_store_skips_partly_null_chunks_only_when_exclusive(
             request_id="req",
             worker_id=1,
             requests_exclusive_retrieve=lambda: exclusive,
+            engine_held_block_ids=frozenset,
         ),
         1,
         [[0, 1, 2, 3], [-1, -1, 0, 1]],

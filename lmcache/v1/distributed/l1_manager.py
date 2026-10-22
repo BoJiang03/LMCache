@@ -121,7 +121,9 @@ class L1ObjectState:
 
     demoted: bool = False
     """ Demoted by ``demote_keys`` and not touched or rewritten since;
-    guarded by the recency lock. """
+    guarded by the recency lock. On a staging object: a demote arrived
+    before the write finished, so ``finish_write`` admits it demoted;
+    guarded by ``_lock``. """
 
 
 def l1_mgr_synchronized(func):
@@ -221,8 +223,8 @@ class L1Manager(L1ManagerInterface):
         # Serializes each recency change (touch, demote, admission) with its
         # listener notification, so an object's ``mru_cause``/``demoted``
         # agree with the eviction order. Lock order: ``_lock`` ->
-        # ``_recency_lock`` -> listener locks; touch and demote take only
-        # the latter two.
+        # ``_recency_lock`` -> listener locks; touch takes only the latter
+        # two, and so does demote unless a key is still being written.
         self._recency_lock = threading.Lock()
 
         # Resident objects: readable, never write-locked.
@@ -671,10 +673,15 @@ class L1Manager(L1ManagerInterface):
         self._memory_manager.free(discarded)
 
         if notification_keys:
+            demote_pending = [
+                key for key in notification_keys if self._objects[key].demoted
+            ]
             with self._recency_lock:
                 self._mark_mru(notification_keys, "write")
                 for listener in self._registered_listeners:
                     listener.on_l1_keys_write_finished(notification_keys)
+                if demote_pending:
+                    self._demote_resident(demote_pending)
             self._event_bus.publish(
                 Event(
                     event_type=EventType.L1_WRITE_FINISHED,
@@ -918,19 +925,34 @@ class L1Manager(L1ManagerInterface):
         ``StorageManager.demote_cached_keys``. The objects stay resident and
         readable; only their eviction order changes, and each resident key
         is marked demoted until its next touch or write. Like
-        :meth:`touch_keys`, this takes only the recency lock.
+        :meth:`touch_keys`, this takes only the recency lock while every key
+        is resident.
+
+        A key that is only being written (staged, not yet resident) is
+        demoted when its write finishes: a store that finishes after the
+        demote must not leave it at the MRU end.
 
         Args:
             keys: The keys to demote, in request order. Later keys are
-                evicted first; keys that are not tracked are ignored.
+                evicted first; keys that are neither resident nor staged are
+                ignored.
         """
         with self._recency_lock:
-            for key in keys:
-                entry = self._objects.get(key)
-                if entry is not None:
-                    entry.demoted = True
-            for listener in self._registered_listeners:
-                listener.on_l1_keys_demoted(keys)
+            self._demote_resident(keys)
+            staged_keys = [key for key in keys if key not in self._objects]
+        if not staged_keys:
+            return
+        # The L1 lock orders this against finish_write: a key either is
+        # still staged, and its write admits it demoted, or was admitted in
+        # between, and is demoted here.
+        with self._lock:
+            admitted = [key for key in staged_keys if key in self._objects]
+            for key in staged_keys:
+                for staged in self._staging.get(key, {}).values():
+                    staged.demoted = True
+            if admitted:
+                with self._recency_lock:
+                    self._demote_resident(admitted)
 
     @l1_mgr_synchronized
     def clear(self, force: bool = False) -> None:
@@ -1420,6 +1442,22 @@ class L1Manager(L1ManagerInterface):
             del self._staging[key]
         self._staging_bytes -= entry.memory_obj.get_size()
         return entry
+
+    def _demote_resident(self, keys: list[ObjectKey]) -> None:
+        """Mark resident keys demoted and move them to the evict-first end.
+
+        Caller holds ``_recency_lock``; keys that are not resident are
+        skipped by the mark and ignored by the listeners.
+
+        Args:
+            keys: The keys to demote, in request order.
+        """
+        for key in keys:
+            entry = self._objects.get(key)
+            if entry is not None:
+                entry.demoted = True
+        for listener in self._registered_listeners:
+            listener.on_l1_keys_demoted(keys)
 
     def _mark_mru(self, keys: list[ObjectKey], cause: L1RecencyCause) -> None:
         """Record ``cause`` as the last MRU event of each resident key.

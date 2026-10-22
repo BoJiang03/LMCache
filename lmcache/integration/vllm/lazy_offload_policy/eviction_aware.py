@@ -12,6 +12,7 @@ deadline. Pure policy: it decides, ``LazyOffloadManager`` acts. See
 from collections.abc import Container, Iterator
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, cast
+import bisect
 import time
 
 # First Party
@@ -75,20 +76,22 @@ def _pending_item(request_id: str, ops: "list[PendingStoreOp]") -> PendingStoreI
     return item
 
 
-def _min_rank(ops: "list[PendingStoreOp]", ranks: dict[int, int]) -> int | None:
-    """The most imminent rank any block of ``ops`` has.
+def _min_rank(
+    ops: "list[PendingStoreOp]", ranks: dict[int, int]
+) -> tuple[int, int] | None:
+    """The most imminent rank any block of ``ops`` has, and that block.
 
     Args:
         ops: One request's buffered operations.
         ranks: Block id to its position from the free-queue head.
 
     Returns:
-        The lowest rank among the blocks of ``ops`` found in ``ranks``, or
-        None when none of them is there.
+        The lowest rank among the blocks of ``ops`` found in ``ranks`` and
+        the block id holding it, or None when none of them is there.
     """
     return min(
         (
-            ranks[block_id]
+            (ranks[block_id], block_id)
             for op in ops
             for block_id in op.block_hashes
             if block_id in ranks
@@ -197,8 +200,9 @@ class EvictionAwarePolicyConfig:
 class LazyOffloadCounters:
     """Cumulative policy counters for observability.
 
-    The counts close as a ledger: ``admitted`` plus ``requeued`` equals the
-    pending depth plus ``emitted`` plus every ``dropped_*`` counter.
+    The counts close as a ledger: ``admitted`` plus ``requeued`` plus
+    ``readmitted`` equals the pending depth plus ``emitted`` plus every
+    ``dropped_*`` counter.
     ``emitted_overdue`` and the ``bound_*`` counters stand beside the
     equation, not in it.
 
@@ -218,6 +222,9 @@ class LazyOffloadCounters:
             preempted the request and freed its blocks.
         requeued: Emitted operations whose store failed, buffered again to
             be retried. A retried operation counts as emitted once more.
+        readmitted: Stored operations buffered again because vLLM's GPU
+            prefix cache held their blocks when they were emitted (see
+            ``OffloadPolicy.readmit``). Each counts as emitted once more.
         bound_exceeded: Steps whose running requests allocated more blocks
             than the previous drain bounded. Nonzero means the danger depth
             is not a bound for this model, and buffered blocks may have
@@ -235,6 +242,7 @@ class LazyOffloadCounters:
     emitted: int = 0
     emitted_overdue: int = 0
     requeued: int = 0
+    readmitted: int = 0
     bound_exceeded: int = 0
     bound_blocks: int = 0
     bound_allocated_blocks: int = 0
@@ -292,6 +300,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._now = 0.0  # This step's clock, set at the top of drain().
         self._counters = LazyOffloadCounters()
         self._last_logged = LazyOffloadCounters()
+        # The manager's diagnostic counts, appended to the ledger line.
+        self._diagnostics: dict[str, int] = {}
+        self._last_logged_diagnostics: dict[str, int] = {}
         self._last_stats_log_time = 0.0
 
     def add(
@@ -507,6 +518,45 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             self._held[request_id] += len(ops)
         self._counters.requeued += len(ops)
 
+    def readmit(self, item: PendingStoreItem) -> None:
+        """Buffer stored ops again in token order; see ``OffloadPolicy``.
+
+        Each op gets a fresh deadline and goes where its start sorts among
+        the request's buffered ops. One that lands inside the held prefix
+        grows it, as a requeued op does, so the prefix stays a front segment.
+
+        Args:
+            item: The ops, in token order, with the snapshots of the blocks
+                they still cover.
+        """
+        request_id = item.request_id
+        ops = self._pending.setdefault(request_id, [])
+        now = time.monotonic()
+        for meta, block_hashes in item.metadatas:
+            index = bisect.bisect_right(
+                [op.store_metadata.op.start for op in ops], meta.op.start
+            )
+            ops.insert(
+                index,
+                PendingStoreOp(
+                    store_metadata=meta,
+                    block_hashes=block_hashes,
+                    admitted_at_time=now,
+                ),
+            )
+            if index < self._held.get(request_id, 0):
+                self._held[request_id] += 1
+        self._counters.readmitted += len(item.metadatas)
+
+    def record_diagnostics(self, counts: dict[str, int]) -> None:
+        """Add the manager's diagnostic counts to the ledger line.
+
+        Args:
+            counts: Counter name -> increment.
+        """
+        for name, increment in counts.items():
+            self._diagnostics[name] = self._diagnostics.get(name, 0) + increment
+
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
 
@@ -564,10 +614,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 self._next_step_blocks,
             )
         self._next_step_blocks = signals.next_step_blocks
-        if not self._pending:
-            self._maybe_log_stats()
-            return LazyOffloadDrain()
-
         # A second admission in one step allocates further, but the manager
         # protects buffered blocks from it right before it does. A resumed
         # load still unscheduled was protected for a step that has passed, so
@@ -577,10 +623,17 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             + signals.resuming_blocks
             + signals.admission_blocks
         )
+        if not self._pending:
+            self._maybe_log_stats()
+            # With nothing buffered the walk would count every free block.
+            return LazyOffloadDrain(
+                reaches_tail=0 < depth
+                and self._pool.free_block_queue.num_free_blocks < depth
+            )
         # Depth zero makes nothing due and the queue is not walked; the loss
         # check below reads hashes, not ranks, and still runs.
         ranks, reaches_tail = self._free_queue_ranks(depth, self.buffered_block_ids())
-        drain = LazyOffloadDrain()
+        drain = LazyOffloadDrain(reaches_tail=reaches_tail)
         ranks_ahead: dict[int, int] = {}
         if reaches_tail:
             # A squeeze hold bets the squeeze passes by the next drain. Lost,
@@ -599,6 +652,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped_ids: list[str] = []
         # Due now, as (imminence rank, admission order, request id).
         candidates: list[tuple[int, int, str]] = []
+        # The block whose imminence made each candidate due, for diagnostics.
+        triggers: dict[str, int] = {}
         # Of those, the ones the deadline alone made due: they release their
         # whole buffer, not just the segment sitting in the danger window.
         overdue_ids: set[str] = set()
@@ -631,7 +686,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 if reaches_tail:
                     self._squeeze_held.add(request_id)
                 continue
-            if (window_rank := _min_rank(surviving, ranks)) is not None:
+            if (imminent := _min_rank(surviving, ranks)) is not None:
                 # A block the engine is about to recycle outranks a passed
                 # deadline, and sizes the release too: a request past both
                 # emits its due front segment, which always holds the op that
@@ -644,13 +699,15 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # rather than being released when its data is about to go.
                 # Size the release per attention type: one due-predictor per
                 # mechanism, emit up to the last index any of them marks due.
-                candidates.append((window_rank, order, request_id))
+                candidates.append((imminent[0], order, request_id))
+                triggers[request_id] = imminent[1]
             elif (
                 self._held.get(request_id, 0) and request_id not in self._squeeze_held
             ) or request_id in signals.preempted_request_ids:
                 candidates.append((_HELD_RANK, order, request_id))
-            elif (ahead_rank := _min_rank(surviving, ranks_ahead)) is not None:
-                candidates.append((_AHEAD_RANK + ahead_rank, order, request_id))
+            elif (ahead := _min_rank(surviving, ranks_ahead)) is not None:
+                candidates.append((_AHEAD_RANK + ahead[0], order, request_id))
+                triggers[request_id] = ahead[1]
                 ahead_ids.add(request_id)
             elif (
                 self._config.max_deferral_seconds > 0.0
@@ -700,7 +757,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             self._counters.emitted += len(emitted)
             if is_overdue:
                 self._counters.emitted_overdue += len(emitted)
-            drain.items.append(_pending_item(request_id, emitted))
+            item = _pending_item(request_id, emitted)
+            item.trigger_block_id = triggers.get(request_id)
+            drain.items.append(item)
             if remaining:
                 self._pending[request_id] = remaining
             else:
@@ -905,19 +964,25 @@ class EvictionAwareStoreQueue(OffloadPolicy):
 
     def _maybe_log_stats(self) -> None:
         """Log the counter ledger if it changed and the throttle allows."""
-        if self._counters == self._last_logged:
+        if (
+            self._counters == self._last_logged
+            and self._diagnostics == self._last_logged_diagnostics
+        ):
             return
         if self._now - self._last_stats_log_time < _STATS_LOG_INTERVAL_S:
             return
         logger.info("Lazy offload counters: %s", self._ledger_line())
         self._last_logged = replace(self._counters)
+        self._last_logged_diagnostics = dict(self._diagnostics)
         self._last_stats_log_time = self._now
 
     def _ledger_line(self) -> str:
         """Render the ledger as one greppable ``key=value`` line body.
 
-        Ends with the pending depth, so the counts close as
-        ``admitted + requeued == pending + emitted + every dropped_* counter``.
+        Then the pending depth, so the counts close as ``admitted + requeued
+        + readmitted == pending + emitted + every dropped_* counter``, then
+        the manager's diagnostic counts (see ``record_diagnostics``), which
+        stand outside that equation.
 
         Returns:
             The counter names and values, space separated.
@@ -926,4 +991,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             f"{name}={value}" for name, value in asdict(self._counters).items()
         )
         pending = sum(len(ops) for ops in self._pending.values())
-        return f"{fields} pending={pending}"
+        diagnostics = "".join(
+            f" {name}={value}" for name, value in self._diagnostics.items()
+        )
+        return f"{fields} pending={pending}{diagnostics}"

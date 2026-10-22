@@ -37,7 +37,10 @@ promotion was the waste. Cache contents are unchanged; only placement is.
 split above gives one request two recencies — the covered prefix is touched
 when the lookup runs, the retrieved tail when it is read — so an L1-only
 refresh at the end would leave the prefix the older L2 entry and make the
-most-shared data the first thing L2 evicts.
+most-shared data the first thing L2 evicts. Under exclusive retrieve
+`end_session` touches only L2: in L1, the request's own stores and lookups
+already placed each key, and a touch would promote chunks the GPU still
+holds (see `docs/design/integration/vllm/exclusive_retrieve.md`, rule 4).
 
 ## The shrink race
 

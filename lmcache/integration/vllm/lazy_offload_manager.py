@@ -24,9 +24,16 @@ ones defined in ``lazy_offload_policy.base``:
 - **Token ledger**: the one token-id list a request's buffered operations
   share. The tracker hands out a fresh copy of the whole sequence with every
   operation, which deferral would otherwise retain once per operation.
+- **Engine-held**: said of a chunk, per KV-cache group, whose every block
+  vLLM's GPU prefix cache references beyond this class's own pins when the
+  chunk is emitted. Under exclusive retrieve the server stores such a chunk
+  at L1's evict-first end, so the manager *parks* it: it keeps the chunk's
+  engine-held blocks aside, unpinned, and readmits it to the policy once the
+  holder releases one of them, to be stored again before vLLM recycles it.
 """
 
 # Standard
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
@@ -45,6 +52,10 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (
     LoadStoreOp,
 )
 from lmcache.utils import init_logger
+from lmcache.v1.multiprocess.custom_types import (
+    ENGINE_HELD_BLOCKS_HINT,
+    EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+)
 
 if TYPE_CHECKING:
     # Third Party
@@ -97,23 +108,30 @@ class LazyOffloadActions:
 
 def _coalesce_store_metadata(
     request_metas: list[LMCacheMPRequestMetadata],
+    group_tokens_per_block: list[int],
+    null_block_id: int,
 ) -> LMCacheMPRequestMetadata:
-    """Merge one request's contiguous STORE metadata, in prefix order, into one.
+    """Merge one request's STORE metadata, in prefix order, into one.
 
     The worker tracks one in-flight store future per request, so a drained
-    batch must be submitted as a single operation.
+    batch must be submitted as a single operation. A readmitted operation
+    (see ``lazy_offload_policy.base``) can leave a range between two
+    operations unbuffered, since it was stored already; that range gets the
+    null block, whose chunks the server never stores.
 
     Args:
         request_metas: One request's buffered STORE metadata, in prefix
-            order, each covering the token range that follows the one
-            before it.
+            order, each starting at or after the end of the one before it.
+        group_tokens_per_block: Tokens per block of each cache group, which
+            sizes a gap's null blocks; scratch groups report ``0``.
+        null_block_id: vLLM's null block, which fills a gap.
 
     Returns:
         A single STORE metadata spanning the whole range, carrying the
         concatenated block ids of every cache group.
 
     Raises:
-        ValueError: If the input is empty, non-contiguous, or changes cache
+        ValueError: If the input is empty, overlapping, or changes cache
             group count mid-batch.
     """
     if not request_metas:
@@ -125,16 +143,22 @@ def _coalesce_store_metadata(
     merged_block_ids: list[list[int]] = [list(group) for group in first.op.block_ids]
     expected_start = first.op.end
     for meta in request_metas[1:]:
-        if meta.op.start != expected_start:
+        if meta.op.start < expected_start:
             raise ValueError(
-                f"non-contiguous store ops for request {first.request_id}: "
-                f"expected start {expected_start}, got {meta.op.start}"
+                f"overlapping store ops for request {first.request_id}: "
+                f"expected start {expected_start} or later, got {meta.op.start}"
             )
         if len(meta.op.block_ids) != len(merged_block_ids):
             raise ValueError(
                 f"cache-group count changed within store batch for request "
                 f"{first.request_id}"
             )
+        gap = meta.op.start - expected_start
+        for group_idx, tokens_per_block in enumerate(group_tokens_per_block):
+            if tokens_per_block:
+                merged_block_ids[group_idx].extend(
+                    [null_block_id] * (gap // tokens_per_block)
+                )
         expected_start = meta.op.end
         for group_idx, group_ids in enumerate(meta.op.block_ids):
             merged_block_ids[group_idx].extend(group_ids)
@@ -150,6 +174,20 @@ def _coalesce_store_metadata(
         op=merged_op,
         cache_salt=first.cache_salt,
         request_configs=first.request_configs,
+    )
+
+
+def _requests_exclusive_retrieve(metadata: LMCacheMPRequestMetadata) -> bool:
+    """Whether the operation's request asked for exclusive retrieve.
+
+    Args:
+        metadata: A store operation, whose request configs the connector set.
+
+    Returns:
+        True when its request configs enable exclusive retrieve.
+    """
+    return bool(
+        (metadata.request_configs or {}).get(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, False)
     )
 
 
@@ -171,6 +209,8 @@ class LazyOffloadManager:
         max_step_tokens: int,
         num_lookahead_tokens: int,
         max_model_len: int,
+        chunk_size: int,
+        group_kinds: list[str],
         mamba_groups: dict[int, int] | None = None,
         prefill_alignment: int = 0,
     ) -> None:
@@ -190,6 +230,12 @@ class LazyOffloadManager:
                 draft tokens a decode step schedules.
             max_model_len: vLLM's ``max_model_len``: the most tokens one
                 request holds, which bounds what one admission allocates.
+            chunk_size: LMCache's tokens per chunk, a multiple of every
+                group's tokens per block: the unit the server stores and the
+                engine-held state is decided per.
+            group_kinds: Per KV-cache group, ``"attention"``,
+                ``"recurrent"`` or ``"sliding_window"``, read only for the
+                diagnostic counts.
             mamba_groups: Align-mode Mamba groups -> the blocks a running
                 request's step can take beyond its one state block: a
                 prefill checkpoint block and a partial-hit copy, where the
@@ -203,6 +249,8 @@ class LazyOffloadManager:
         """
         self._configs = dict(configs or {})
         self._group_tokens_per_block = list(group_tokens_per_block)
+        self._chunk_size = chunk_size
+        self._group_kinds = list(group_kinds)
         self._max_step_tokens = max_step_tokens
         self._num_lookahead_tokens = num_lookahead_tokens
         self._mamba_groups = dict(mamba_groups or {})
@@ -219,6 +267,21 @@ class LazyOffloadManager:
         # Pinned blocks that sat in the free queue when pinned: unpinning
         # returns them to its head, where eviction order had them.
         self._pinned_while_free: set[int] = set()
+        # This class's references per block, which a block's ref_cnt
+        # counts too: the rest are vLLM's.
+        self._pin_counts: Counter[int] = Counter()
+        # Per request, the engine-held part of each op of its in-flight
+        # batch, parked once the batch is stored.
+        self._held_in_flight: dict[
+            str, list[tuple[LMCacheMPRequestMetadata, BlockHashes]]
+        ] = {}
+        # Per request, parked ops in token order: the engine-held blocks of
+        # stored ops, each with its hash snapshot, waiting for the holder to
+        # release one of them.
+        self._parked: dict[str, list[tuple[LMCacheMPRequestMetadata, BlockHashes]]] = {}
+        # Blocks of parked ops pinned by a drain whose window reached the
+        # free-queue tail, until the next drain.
+        self._parked_pins: list[int] = []
         # Token counts of admitted requests and, once scheduled, the tokens
         # they will have computed after their last scheduled step: what
         # bounds the blocks they can allocate before the next drain.
@@ -381,6 +444,7 @@ class LazyOffloadManager:
             for group_idx, tokens_per_block in enumerate(self._group_tokens_per_block)
             if tokens_per_block > 0
         )
+        self._readmit_released()
         self._protect(self._span_blocks(num_new_tokens) + num_hit_blocks)
 
     def on_loads_finished(self, request_ids: set[str]) -> None:
@@ -409,6 +473,7 @@ class LazyOffloadManager:
         if not resumed:
             return
         self._resuming.update(resumed)
+        self._readmit_released()
         self._protect(self._next_step_blocks + sum(resumed.values()))
 
     def on_store_results(
@@ -451,6 +516,18 @@ class LazyOffloadManager:
             ):
                 continue
             batch = self._requests.complete_batch(request_id)
+            # A failed batch is retried whole, which decides again what the
+            # engine holds.
+            held = self._held_in_flight.pop(request_id, [])
+            if held and batch.orphaned:
+                self._require_policy().record_diagnostics(
+                    {"held_ops_dropped": len(held)}
+                )
+            elif held and not batch.failed:
+                self._parked.setdefault(request_id, []).extend(held)
+                self._require_policy().record_diagnostics(
+                    {"held_ops_parked": len(held)}
+                )
             self._unpin(list(batch.block_ids))
             if batch.failed and not batch.orphaned:
                 # The data is still on the GPU; a reset or id reuse would
@@ -462,9 +539,9 @@ class LazyOffloadManager:
                 )
                 self._require_policy().requeue_failed(batch.operations)
                 self._move_to_tail([batch.operations])
-            if not self._require_policy().has_pending_request(
+            if not self._has_buffered(request_id) and self._requests.can_end_session(
                 request_id
-            ) and self._requests.can_end_session(request_id):
+            ):
                 actions.sessions_to_end.append(request_id)
                 self._release_session(request_id)
         return actions
@@ -481,7 +558,7 @@ class LazyOffloadManager:
         """
         self._requests.finish(request_id)
         self._forget_progress(request_id)
-        if self._require_policy().has_pending_request(request_id):
+        if self._has_buffered(request_id):
             return LazyOffloadActions()
         if self._requests.has_in_flight(request_id):
             return LazyOffloadActions()
@@ -503,6 +580,7 @@ class LazyOffloadManager:
         self._forget_progress(request_id)
         dropped = self._require_policy().drop_request(request_id)
         self._release_holds(request_id)
+        self._drop_parked(request_id)
         if dropped:
             logger.info(
                 "Lazy offload: dropped %d buffered store op(s) of preempted request %s",
@@ -532,6 +610,7 @@ class LazyOffloadManager:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
         self._release_holds(request_id)
+        self._drop_parked(request_id)
         self._token_ledgers.pop(request_id, None)
         if predecessor_in_flight:
             return LazyOffloadActions()
@@ -569,11 +648,16 @@ class LazyOffloadManager:
     ) -> LazyOffloadActions:
         """Apply one policy-neutral drain plan and its GPU side effects.
 
-        Released holds are unpinned and new holds pinned first. Each emitted
-        operation is re-validated against the hash snapshot the policy kept,
-        pinned unless it was held, and coalesced into one submission per
-        request. A request whose snapshot no longer matches loses that
-        operation and every later one of the same drain.
+        Parked ops a holder released are readmitted first, and the previous
+        drain's pins on parked ops released. Then released holds are
+        unpinned and new holds pinned. Each emitted operation is
+        re-validated against the hash snapshot the policy kept, pinned
+        unless it was held, and coalesced into one submission per request. A
+        request whose snapshot no longer matches loses that operation and
+        every later one of the same drain. Under exclusive retrieve the
+        submission names the blocks vLLM still holds, and their ops are
+        parked once it is stored. If the window reaches the free-queue tail,
+        the parked ops are pinned until the next drain.
 
         Args:
             scheduler_output: The step's schedule, converted into the
@@ -592,6 +676,13 @@ class LazyOffloadManager:
         self._next_step_blocks = self._running_blocks_bound(scheduler_output)
         for request_id in scheduler_output.num_scheduled_tokens:
             self._resuming.pop(request_id, None)
+        actions = LazyOffloadActions()
+        for request_id in self._readmit_released(drop_lost=True):
+            if self._requests.can_end_session(request_id):
+                actions.sessions_to_end.append(request_id)
+                self._release_session(request_id)
+        self._unpin(self._parked_pins)
+        self._parked_pins = []
         drain = self._require_policy().drain(
             DrainSignals(
                 next_step_blocks=self._next_step_blocks,
@@ -606,7 +697,7 @@ class LazyOffloadManager:
         for request_id in drain.releases:
             self._release_holds(request_id)
         self._pin_holds(drain.holds)
-        actions = LazyOffloadActions()
+        diagnostics: Counter[str] = Counter()
         for item in drain.items:
             if self._requests.has_in_flight(item.request_id):
                 raise RuntimeError(
@@ -616,8 +707,17 @@ class LazyOffloadManager:
             held = self._held_block_ids.pop(item.request_id, set())
             valid = PendingStoreItem(request_id=item.request_id)
             valid_block_ids: list[int] = []
+            engine_held: list[tuple[LMCacheMPRequestMetadata, BlockHashes]] = []
+            engine_held_block_ids: list[int] = []
+            trigger_kind = self._block_group_kind(item)
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
+                # Read before this op's own pin, which is not vLLM's.
+                vllm_held = {
+                    block_id
+                    for block_id in gpu_block_ids
+                    if pool.blocks[block_id].ref_cnt > self._pin_counts[block_id]
+                }
                 self._pin(
                     [block_id for block_id in gpu_block_ids if block_id not in held]
                 )
@@ -639,19 +739,54 @@ class LazyOffloadManager:
                     break
                 valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
+                chunks_held, parked = self._engine_held_part(
+                    metadata, old_block_hashes, vllm_held
+                )
+                self._count_chunks(
+                    diagnostics, item.request_id, chunks_held, trigger_kind
+                )
+                if parked is not None and _requests_exclusive_retrieve(metadata):
+                    engine_held.append(parked)
+                    engine_held_block_ids.extend(parked[1])
             if held:
                 # Held ops the drain budget left buffered keep their pins.
                 self._held_block_ids[item.request_id] = held
             if not valid.metadatas:
                 continue
-            actions.stores_to_submit.append(
-                _coalesce_store_metadata([meta for meta, _ in valid.metadatas])
+            store = _coalesce_store_metadata(
+                [meta for meta, _ in valid.metadatas],
+                self._group_tokens_per_block,
+                pool.null_block.block_id,
             )
+            if engine_held:
+                store = replace(
+                    store,
+                    request_configs={
+                        **(store.request_configs or {}),
+                        ENGINE_HELD_BLOCKS_HINT: sorted(engine_held_block_ids),
+                    },
+                )
+                self._held_in_flight[item.request_id] = engine_held
+            actions.stores_to_submit.append(store)
             self._requests.register_batch(item.request_id, valid_block_ids, valid)
+        if diagnostics:
+            self._require_policy().record_diagnostics(dict(diagnostics))
         for request_id in drain.emptied_request_ids:
-            if self._requests.can_end_session(request_id):
+            if not self._has_buffered(request_id) and self._requests.can_end_session(
+                request_id
+            ):
                 actions.sessions_to_end.append(request_id)
                 self._release_session(request_id)
+        if drain.reaches_tail:
+            # The next step may allocate blocks a holder frees before it, so
+            # parked blocks are pinned: still held, they cost no free block.
+            self._parked_pins = [
+                block_id
+                for entries in self._parked.values()
+                for _, block_hashes in entries
+                for block_id in block_hashes
+            ]
+            self._pin(self._parked_pins)
         return actions
 
     def _rebind_tokens(
@@ -998,6 +1133,195 @@ class LazyOffloadManager:
         """
         self._unpin(list(self._held_block_ids.pop(request_id, set())))
 
+    def _has_buffered(self, request_id: str) -> bool:
+        """Whether the request has ops buffered by the policy or parked.
+
+        Args:
+            request_id: The request to query.
+
+        Returns:
+            True while either holds one of its ops.
+        """
+        return (
+            self._require_policy().has_pending_request(request_id)
+            or request_id in self._parked
+        )
+
+    def _engine_held_part(
+        self,
+        metadata: LMCacheMPRequestMetadata,
+        block_hashes: BlockHashes,
+        vllm_held: set[int],
+    ) -> tuple[list[bool | None], tuple[LMCacheMPRequestMetadata, BlockHashes] | None]:
+        """Split off the chunks of one emitted op that vLLM still holds.
+
+        Per chunk and cache group, the chunk is engine-held when every one
+        of its blocks there but the null block is in ``vllm_held``, and it
+        has one. A chunk held in part is not: vLLM cannot serve it whole, so
+        it is stored like any other, and parking it would keep blocks
+        already in the free queue, which could make it due at every drain.
+
+        Args:
+            metadata: The emitted op.
+            block_hashes: Its hash snapshot, keyed by its non-null blocks.
+            vllm_held: Its blocks vLLM references beyond this class's pins.
+
+        Returns:
+            Per chunk of the op, whether some cache group of it is
+            engine-held, ``None`` for a chunk with only null blocks (nothing
+            to store); and the op to park, with the blocks of every chunk
+            and group that is not engine-held replaced by the null block and
+            the snapshot of the blocks it keeps, or ``None`` when it keeps
+            none.
+        """
+        null_block_id = self._require_block_pool().null_block.block_id
+        op = metadata.op
+        num_chunks = -(-(op.end - op.start) // self._chunk_size)
+        chunks_held: list[bool | None] = [None] * num_chunks
+        parked_block_ids: list[list[int]] = []
+        for group_idx, group_block_ids in enumerate(op.block_ids):
+            tokens_per_block = self._group_tokens_per_block[group_idx]
+            kept = [null_block_id] * len(group_block_ids)
+            if tokens_per_block:
+                blocks_per_chunk = self._chunk_size // tokens_per_block
+                for chunk_idx in range(num_chunks):
+                    begin = chunk_idx * blocks_per_chunk
+                    chunk = group_block_ids[begin : begin + blocks_per_chunk]
+                    real = [block for block in chunk if block != null_block_id]
+                    if not real:
+                        continue
+                    if all(block in vllm_held for block in real):
+                        chunks_held[chunk_idx] = True
+                        kept[begin : begin + len(chunk)] = chunk
+                    elif not chunks_held[chunk_idx]:
+                        chunks_held[chunk_idx] = False
+            parked_block_ids.append(kept)
+        parked_hashes = {
+            block_id: block_hashes[block_id]
+            for group in parked_block_ids
+            for block_id in group
+            if block_id != null_block_id
+        }
+        if not parked_hashes:
+            return chunks_held, None
+        parked = replace(metadata, op=replace(op, block_ids=parked_block_ids))
+        return chunks_held, (parked, parked_hashes)
+
+    def _block_group_kind(self, item: PendingStoreItem) -> str:
+        """Name the cache-group kind of the block that made ``item`` due.
+
+        Args:
+            item: An emitted item.
+
+        Returns:
+            The kind of the group whose block list holds the item's trigger
+            block, or ``"none"`` when the policy named no trigger.
+        """
+        if item.trigger_block_id is None:
+            return "none"
+        for metadata, _ in item.metadatas:
+            for group_idx, group_block_ids in enumerate(metadata.op.block_ids):
+                if item.trigger_block_id in group_block_ids:
+                    return self._group_kinds[group_idx]
+        return "none"
+
+    def _count_chunks(
+        self,
+        diagnostics: "Counter[str]",
+        request_id: str,
+        chunks_held: list[bool | None],
+        trigger_kind: str,
+    ) -> None:
+        """Count one emitted op's chunks by engine-held state and trigger.
+
+        A held chunk counts as held by the emitting request while that
+        request runs, and by another one once it finished: a running request
+        references every full-attention block it was handed, but a block it
+        freed (a sliding-window one) may be held by another, so the split is
+        approximate.
+
+        Args:
+            diagnostics: The drain's counts, updated in place.
+            request_id: The emitting request.
+            chunks_held: Per chunk of the op, whether it is engine-held;
+                ``None`` skips a chunk with nothing to store.
+            trigger_kind: What :meth:`_block_group_kind` named for its item.
+        """
+        handed = self._handed_blocks.get(request_id)
+        for chunk_held in chunks_held:
+            if chunk_held is None:
+                continue
+            diagnostics[f"emitted_chunks_trigger_{trigger_kind}"] += 1
+            if not chunk_held:
+                diagnostics["emitted_chunks_not_held"] += 1
+            elif handed:
+                diagnostics["emitted_chunks_held_by_self"] += 1
+            else:
+                diagnostics["emitted_chunks_held_by_other"] += 1
+
+    def _readmit_released(self, drop_lost: bool = False) -> list[str]:
+        """Hand back to the policy parked ops a holder released a block of.
+
+        A parked op whose snapshot no longer matches lost a block before it
+        could be readmitted (its L1 copy stays, demoted); only a drain drops
+        it, since only a drain can end the session it leaves empty.
+
+        Args:
+            drop_lost: Whether to drop parked ops whose snapshot broke.
+
+        Returns:
+            Requests left with nothing buffered or parked because their
+            last parked ops were dropped.
+        """
+        pool = self._require_block_pool()
+        emptied: list[str] = []
+        lost = 0
+        for request_id in list(self._parked):
+            kept: list[tuple[LMCacheMPRequestMetadata, BlockHashes]] = []
+            readmitted = PendingStoreItem(request_id=request_id)
+            for metadata, block_hashes in self._parked[request_id]:
+                blocks = [pool.blocks[block_id] for block_id in block_hashes]
+                if any(
+                    block.block_hash != block_hashes[block.block_id] for block in blocks
+                ):
+                    if drop_lost:
+                        lost += 1
+                    else:
+                        kept.append((metadata, block_hashes))
+                elif any(
+                    block.ref_cnt <= self._pin_counts[block.block_id]
+                    for block in blocks
+                ):
+                    readmitted.metadatas.append((metadata, block_hashes))
+                else:
+                    kept.append((metadata, block_hashes))
+            if readmitted.metadatas:
+                self._require_policy().readmit(readmitted)
+            if kept:
+                self._parked[request_id] = kept
+                continue
+            del self._parked[request_id]
+            if not self._require_policy().has_pending_request(request_id):
+                emptied.append(request_id)
+        if lost:
+            self._require_policy().record_diagnostics({"held_ops_lost": lost})
+        return emptied
+
+    def _drop_parked(self, request_id: str) -> None:
+        """Forget a request's parked ops, whose generation ended.
+
+        Their chunks keep their demoted L1 copy; only the later store that
+        would promote it is lost.
+
+        Args:
+            request_id: The reset or reused request id.
+        """
+        dropped = self._parked.pop(request_id, [])
+        if dropped:
+            self._require_policy().record_diagnostics(
+                {"held_ops_dropped": len(dropped)}
+            )
+
     def _pin(self, block_ids: list[int]) -> None:
         """Pin blocks, remembering which ones were waiting for eviction.
 
@@ -1012,6 +1336,7 @@ class LazyOffloadManager:
             if block.ref_cnt == 0
         )
         pool.touch(blocks)
+        self._pin_counts.update(block_ids)
 
     def _unpin(self, block_ids: list[int]) -> None:
         """Release pins, returning formerly free blocks to the queue head.
@@ -1031,6 +1356,10 @@ class LazyOffloadManager:
         pool = self._require_block_pool()
         blocks = [pool.blocks[block_id] for block_id in block_ids]
         pool.free_blocks(blocks)
+        for block_id in block_ids:
+            self._pin_counts[block_id] -= 1
+            if not self._pin_counts[block_id]:
+                del self._pin_counts[block_id]
         was_free = [
             (block_id, block)
             for block_id, block in zip(block_ids, blocks, strict=True)
