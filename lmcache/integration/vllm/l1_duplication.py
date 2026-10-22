@@ -24,6 +24,7 @@ from lmcache.integration.vllm.kv_cache_groups import (
 )
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import window_tokens_to_chunks
+from lmcache.v1.distributed.internal_api import L1_RECENCY_CAUSES
 from lmcache.v1.multiprocess.futures import MessagingFuture
 from lmcache.v1.multiprocess.protocols.l1_residency import (
     L1_RESIDENCY_QUERY_METHOD,
@@ -174,6 +175,17 @@ class DuplicationSample:
             ``matched_objects - matched_inuse_objects``, sits only in vLLM's
             free queue, still hashed.
         matched_inuse_bytes: Their bytes.
+        matched_demoted_objects: The part of ``matched_objects`` at L1's
+            evict-first end: demoted by an exclusive retrieve, not touched
+            or rewritten since.
+        matched_demoted_bytes: Their bytes.
+        matched_mru_<cause>_objects: The rest of ``matched_objects``, by the
+            event that last made the key MRU (``L1RecencyCause``): a store
+            commit (``write``), a store finding it resident
+            (``lazy_touch``), a lookup (``lookup_touch``), ``end_session``
+            (``end_session_touch``) or anything else (``other``). Demoted
+            plus every cause equals ``matched_objects`` (``*_bytes`` alike).
+        matched_mru_<cause>_bytes: Their bytes.
     """
 
     matched_objects: int
@@ -182,6 +194,18 @@ class DuplicationSample:
     model_bytes: int
     matched_inuse_objects: int
     matched_inuse_bytes: int
+    matched_demoted_objects: int = 0
+    matched_demoted_bytes: int = 0
+    matched_mru_write_objects: int = 0
+    matched_mru_write_bytes: int = 0
+    matched_mru_lazy_touch_objects: int = 0
+    matched_mru_lazy_touch_bytes: int = 0
+    matched_mru_lookup_touch_objects: int = 0
+    matched_mru_lookup_touch_bytes: int = 0
+    matched_mru_end_session_touch_objects: int = 0
+    matched_mru_end_session_touch_bytes: int = 0
+    matched_mru_other_objects: int = 0
+    matched_mru_other_bytes: int = 0
 
     @property
     def byte_ratio(self) -> float:
@@ -767,6 +791,14 @@ class L1DuplicationMeter:
             replies.append(reply)
         if not self._adopt_object_groups(replies):
             return
+        by_cause: dict[str, int] = {}
+        for cause in L1_RECENCY_CAUSES:
+            by_cause[f"matched_mru_{cause}_objects"] = sum(
+                r.matched_mru_objects.get(cause, 0) for r in replies
+            )
+            by_cause[f"matched_mru_{cause}_bytes"] = sum(
+                r.matched_mru_bytes.get(cause, 0) for r in replies
+            )
         self._on_sample(
             DuplicationSample(
                 matched_objects=sum(r.matched_objects for r in replies),
@@ -775,6 +807,9 @@ class L1DuplicationMeter:
                 model_bytes=sum(r.model_bytes for r in replies),
                 matched_inuse_objects=sum(r.matched_inuse_objects for r in replies),
                 matched_inuse_bytes=sum(r.matched_inuse_bytes for r in replies),
+                matched_demoted_objects=sum(r.matched_demoted_objects for r in replies),
+                matched_demoted_bytes=sum(r.matched_demoted_bytes for r in replies),
+                **by_cause,
             )
         )
 

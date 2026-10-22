@@ -112,7 +112,7 @@ def test_touch_cached_keys_hits_both_tiers():
     keys = [ObjectKey(chunk_hash=ObjectKey.IntHash2Bytes(7), model_name="m", kv_rank=0)]
     StorageManager.touch_cached_keys(sm, keys)
 
-    l1.touch_keys.assert_called_once_with(keys)
+    l1.touch_keys.assert_called_once_with(keys, "other")
     l2_a.submit_touch.assert_called_once_with(keys)
     l2_b.submit_touch.assert_called_once_with(keys)
 

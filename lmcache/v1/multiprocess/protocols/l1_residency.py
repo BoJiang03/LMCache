@@ -121,6 +121,12 @@ class L1ResidencyReply(msgspec.Struct):
         matched_inuse_objects: Committed objects among the keys of the
             query's ``inuse_*`` chunks.
         matched_inuse_bytes: Their bytes.
+        matched_demoted_objects: The part of ``matched_objects`` an exclusive
+            retrieve demoted and nothing touched or rewrote since.
+        matched_demoted_bytes: Their bytes.
+        matched_mru_objects: The rest of ``matched_objects`` by the
+            ``L1RecencyCause`` that last made each key MRU.
+        matched_mru_bytes: Their bytes, by cause.
     """
 
     probe_hash: bytes
@@ -131,3 +137,7 @@ class L1ResidencyReply(msgspec.Struct):
     object_groups: list[GroupWindow]
     matched_inuse_objects: int
     matched_inuse_bytes: int
+    matched_demoted_objects: int = 0
+    matched_demoted_bytes: int = 0
+    matched_mru_objects: dict[str, int] = msgspec.field(default_factory=dict)
+    matched_mru_bytes: dict[str, int] = msgspec.field(default_factory=dict)

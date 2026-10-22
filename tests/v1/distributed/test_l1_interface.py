@@ -14,6 +14,7 @@ from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
 from lmcache.v1.distributed.config import L1ManagerConfig, L1MemoryManagerConfig
 from lmcache.v1.distributed.error import L1Error
 from lmcache.v1.distributed.internal_api import (
+    L1_RECENCY_CAUSES,
     L1CommittedUsage,
     L1ManagerInterface,
     L1ManagerListener,
@@ -160,6 +161,8 @@ def test_committed_usage_counts_resident_non_temporary_objects(
         matched_bytes=4096,
         model_objects=2,
         model_bytes=2 * 4096,
+        matched_mru_objects={**dict.fromkeys(L1_RECENCY_CAUSES, 0), "write": 1},
+        matched_mru_bytes={**dict.fromkeys(L1_RECENCY_CAUSES, 0), "write": 4096},
     )
     # Counting takes no read lock and notifies nobody.
     assert l1.unsafe_read([key(5)])[key(5)][0] is L1Error.KEY_NOT_READABLE

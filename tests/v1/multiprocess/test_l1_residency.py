@@ -301,3 +301,40 @@ def test_inuse_chunks_count_again_as_matched_inuse(
     assert merged.matched_inuse_bytes == OBJECT_BYTES
     assert (separated.matched_objects, separated.matched_inuse_objects) == (3, 2)
     assert separated.matched_inuse_bytes == 2 * OBJECT_BYTES
+
+
+def test_reply_splits_matched_by_demoted_state_and_last_mru_cause(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    keys = {h: object_key(h) for h in (b"a", b"b", b"c", b"d")}
+    commit(l1, *keys.values())
+    store.demote_l1_keys([(l1.l1_manager_id, [keys[b"a"], keys[b"b"]])])
+    store.touch_cached_keys([keys[b"b"]], "lazy_touch")
+    store.touch_cached_keys([keys[b"c"]], "lookup_touch")
+
+    reply = _query(
+        _module(store),
+        L1ResidencyQuery(
+            model_name="m",
+            world_size=1,
+            chunk_hashes_by_salt={"": list(keys)},
+        ),
+    )
+
+    assert reply.matched_objects == 4
+    assert (reply.matched_demoted_objects, reply.matched_demoted_bytes) == (
+        1,
+        OBJECT_BYTES,
+    )
+    assert reply.matched_mru_objects == {
+        "write": 1,
+        "lazy_touch": 1,
+        "lookup_touch": 1,
+        "end_session_touch": 0,
+        "other": 0,
+    }
+    assert reply.matched_demoted_objects + sum(reply.matched_mru_objects.values()) == 4
+    assert reply.matched_demoted_bytes + sum(reply.matched_mru_bytes.values()) == (
+        reply.matched_bytes
+    )

@@ -45,6 +45,18 @@ empty) name a subset of the queried chunks; the server expands them the same
 way and answers their committed count as `matched_inuse_*`, in a second
 `get_l1_committed_usage` call (so a second lock pass and model scan).
 
+The reply also splits `matched_*` by recency state (dev measurement):
+`matched_demoted_*` counts keys an exclusive retrieve demoted
+(`demote_keys`) and nothing touched or rewrote since; `matched_mru_*`
+maps every other matched key to the `L1RecencyCause` that last made it
+MRU: `write` (store commit), `lazy_touch` (a store found it resident),
+`lookup_touch`, `end_session_touch`, or `other` (any other touch, or a
+commit by an L2 prefetch). Demoted plus all causes equals `matched_*`.
+Each `L1ObjectState` carries the state, so it is dropped with the object;
+`touch_keys`, `demote_keys` and admission update it together with the
+listener call under the L1 manager's recency lock, so it agrees with the
+eviction order.
+
 `probe_hash` is the server's `TokenHasher` hash of a fixed probe chunk
 (`compute_probe_hash`). A client that hashes the same probe differently
 (another `hash_algorithm`, or another `PYTHONHASHSEED` for a non-blake3 one)

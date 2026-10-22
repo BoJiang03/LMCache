@@ -76,7 +76,45 @@ def test_duplication_sample_is_a_latest_value() -> None:
         "LMCache MP L1 dup model_bytes": 1200,
         "LMCache MP L1 dup matched_inuse_objects": 2,
         "LMCache MP L1 dup matched_inuse_bytes": 200,
+        "LMCache MP L1 dup matched_demoted_objects": 0,
+        "LMCache MP L1 dup matched_demoted_bytes": 0,
+        **{
+            f"LMCache MP L1 dup matched_mru_{cause}_{unit}": 0
+            for cause in (
+                "write",
+                "lazy_touch",
+                "lookup_touch",
+                "end_session_touch",
+                "other",
+            )
+            for unit in ("objects", "bytes")
+        },
     }
+
+
+def test_duplication_sample_logs_demoted_and_mru_causes() -> None:
+    stats = LMCacheMPConnectorStats()
+    stats.record_l1_duplication(
+        DuplicationSample(
+            matched_objects=4,
+            matched_bytes=400,
+            model_objects=8,
+            model_bytes=800,
+            matched_inuse_objects=1,
+            matched_inuse_bytes=100,
+            matched_demoted_objects=1,
+            matched_demoted_bytes=100,
+            matched_mru_write_objects=2,
+            matched_mru_write_bytes=200,
+            matched_mru_lazy_touch_objects=1,
+            matched_mru_lazy_touch_bytes=100,
+        )
+    )
+    summary = stats.reduce()
+    assert summary["LMCache MP L1 dup matched_demoted_bytes"] == 100
+    assert summary["LMCache MP L1 dup matched_mru_write_objects"] == 2
+    assert summary["LMCache MP L1 dup matched_mru_lazy_touch_bytes"] == 100
+    assert summary["LMCache MP L1 dup matched_mru_other_objects"] == 0
 
 
 def test_prometheus_observes_lookup_duration() -> None:

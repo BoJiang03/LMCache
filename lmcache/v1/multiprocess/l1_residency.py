@@ -229,6 +229,12 @@ class L1ResidencyModule(DiscoverableModule):
                 object_groups=object_groups,
                 matched_inuse_objects=inuse_usage.matched_objects,
                 matched_inuse_bytes=inuse_usage.matched_bytes,
+                matched_demoted_objects=usage.matched_demoted_objects,
+                matched_demoted_bytes=usage.matched_demoted_bytes,
+                matched_mru_objects={
+                    c: n for c, n in usage.matched_mru_objects.items()
+                },
+                matched_mru_bytes={c: n for c, n in usage.matched_mru_bytes.items()},
             )
         )
 

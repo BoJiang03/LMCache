@@ -1647,7 +1647,7 @@ class PrefetchController(StorageControllerInterface):
             # Notify the eviction module
             hit_keys = _gather_keys(request.key_groups, locked & hit_cells)
             if hit_keys:
-                self._l1_managers[l1_idx].touch_keys(hit_keys)
+                self._l1_managers[l1_idx].touch_keys(hit_keys, "lookup_touch")
 
         if len(request.l2_loaded_cells) > 0:
             l2_hit_cells = hit_cells & request.l2_loaded_cells

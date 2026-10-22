@@ -25,11 +25,13 @@ from lmcache.v1.distributed.api import (
 from lmcache.v1.distributed.config import L1ManagerConfig, get_configured_capacity_bytes
 from lmcache.v1.distributed.error import L1Error, L1ReconfigureError
 from lmcache.v1.distributed.internal_api import (
+    L1_RECENCY_CAUSES,
     L1CommittedUsage,
     L1ManagerInterface,
     L1ManagerListener,
     L1ObjectMeta,
     L1OperationResult,
+    L1RecencyCause,
 )
 from lmcache.v1.distributed.memory_manager import (
     GDSL1MemoryManager,
@@ -113,6 +115,13 @@ class L1ObjectState:
 
     is_temporary: bool
     """ Whether the object is temporary (need to be deleted after read). """
+
+    mru_cause: L1RecencyCause = "write"
+    """ The event that last made the key MRU; guarded by the recency lock. """
+
+    demoted: bool = False
+    """ Demoted by ``demote_keys`` and not touched or rewritten since;
+    guarded by the recency lock. """
 
 
 def l1_mgr_synchronized(func):
@@ -209,6 +218,12 @@ class L1Manager(L1ManagerInterface):
         self._config = config
         self._l1_manager_id = next_l1_manager_id()
         self._lock = threading.Lock()
+        # Serializes each recency change (touch, demote, admission) with its
+        # listener notification, so an object's ``mru_cause``/``demoted``
+        # agree with the eviction order. Lock order: ``_lock`` ->
+        # ``_recency_lock`` -> listener locks; touch and demote take only
+        # the latter two.
+        self._recency_lock = threading.Lock()
 
         # Resident objects: readable, never write-locked.
         self._objects: dict[ObjectKey, L1ObjectState] = {}
@@ -656,8 +671,10 @@ class L1Manager(L1ManagerInterface):
         self._memory_manager.free(discarded)
 
         if notification_keys:
-            for listener in self._registered_listeners:
-                listener.on_l1_keys_write_finished(notification_keys)
+            with self._recency_lock:
+                self._mark_mru(notification_keys, "write")
+                for listener in self._registered_listeners:
+                    listener.on_l1_keys_write_finished(notification_keys)
             self._event_bus.publish(
                 Event(
                     event_type=EventType.L1_WRITE_FINISHED,
@@ -742,8 +759,11 @@ class L1Manager(L1ManagerInterface):
         if resident_keys:
             self._report_read_reserved(resident_keys)
 
-        for listener in self._registered_listeners:
-            listener.on_l1_keys_finish_write_and_reserve_read(successful_keys)
+        with self._recency_lock:
+            # A commit loaded from L2, not stored by the engine.
+            self._mark_mru(successful_keys, "other")
+            for listener in self._registered_listeners:
+                listener.on_l1_keys_finish_write_and_reserve_read(successful_keys)
         self._event_bus.publish(
             Event(
                 event_type=EventType.L1_WRITE_FINISHED_AND_READ_RESERVED,
@@ -866,14 +886,23 @@ class L1Manager(L1ManagerInterface):
         self._report_staging_gone(gone_keys)
         return ret
 
-    def touch_keys(self, keys: list[ObjectKey]):
+    def touch_keys(
+        self, keys: list[ObjectKey], cause: L1RecencyCause = "other"
+    ) -> None:
         """Touch the given keys, marking the keys as accessed(retrieved or stored).
+
+        Takes no L1 lock, only the recency lock, so the recorded cause and
+        the listeners' eviction order change together.
 
         Args:
             keys: The list of object keys to touch.
+            cause: Why the keys are touched; recorded as each resident
+                key's ``mru_cause``, and clears its demoted state.
         """
-        for listener in self._registered_listeners:
-            listener.on_l1_keys_accessed(keys)
+        with self._recency_lock:
+            self._mark_mru(keys, cause)
+            for listener in self._registered_listeners:
+                listener.on_l1_keys_accessed(keys)
         if self._event_bus.has_subscribers(EventType.L1_KEYS_ACCESSED):
             self._event_bus.publish(
                 Event(
@@ -887,15 +916,19 @@ class L1Manager(L1ManagerInterface):
 
         Called by ``StorageManager.demote_l1_keys``. The objects stay
         resident and readable; only their eviction order changes. Like
-        :meth:`touch_keys`, this takes no lock: the listeners
-        serialize their own state.
+        :meth:`touch_keys`, this takes only the recency lock.
 
         Args:
             keys: The keys to demote, in request order. Later keys are
                 evicted first; keys that are not tracked are ignored.
         """
-        for listener in self._registered_listeners:
-            listener.on_l1_keys_demoted(keys)
+        with self._recency_lock:
+            for key in keys:
+                entry = self._objects.get(key)
+                if entry is not None:
+                    entry.demoted = True
+            for listener in self._registered_listeners:
+                listener.on_l1_keys_demoted(keys)
 
     @l1_mgr_synchronized
     def clear(self, force: bool = False) -> None:
@@ -1275,8 +1308,9 @@ class L1Manager(L1ManagerInterface):
         """Count the committed objects among ``keys`` and of ``model_name``.
 
         Both counts are taken under one lock acquisition; the model count
-        scans every resident object, like :meth:`report_status`. No read
-        lock, recency update, listener call or event.
+        scans every resident object, like :meth:`report_status`. The matched
+        keys are split by demoted state and last MRU cause under the recency
+        lock too. No read lock, recency update, listener call or event.
 
         Args:
             keys: Keys to look up; each occurrence counts, so pass distinct keys.
@@ -1287,12 +1321,24 @@ class L1Manager(L1ManagerInterface):
         """
         matched_objects = 0
         matched_bytes = 0
-        for key in keys:
-            entry = self._objects.get(key, None)
-            if entry is None or entry.is_temporary:
-                continue
-            matched_objects += 1
-            matched_bytes += entry.memory_obj.get_size()
+        demoted_objects = 0
+        demoted_bytes = 0
+        mru_objects = dict.fromkeys(L1_RECENCY_CAUSES, 0)
+        mru_bytes = dict.fromkeys(L1_RECENCY_CAUSES, 0)
+        with self._recency_lock:
+            for key in keys:
+                entry = self._objects.get(key, None)
+                if entry is None or entry.is_temporary:
+                    continue
+                size = entry.memory_obj.get_size()
+                matched_objects += 1
+                matched_bytes += size
+                if entry.demoted:
+                    demoted_objects += 1
+                    demoted_bytes += size
+                else:
+                    mru_objects[entry.mru_cause] += 1
+                    mru_bytes[entry.mru_cause] += size
         model_objects = 0
         model_bytes = 0
         for key, entry in self._objects.items():
@@ -1305,6 +1351,10 @@ class L1Manager(L1ManagerInterface):
             matched_bytes=matched_bytes,
             model_objects=model_objects,
             model_bytes=model_bytes,
+            matched_demoted_objects=demoted_objects,
+            matched_demoted_bytes=demoted_bytes,
+            matched_mru_objects=mru_objects,
+            matched_mru_bytes=mru_bytes,
         )
 
     # Debugging APIs
@@ -1368,6 +1418,25 @@ class L1Manager(L1ManagerInterface):
             del self._staging[key]
         self._staging_bytes -= entry.memory_obj.get_size()
         return entry
+
+    def _mark_mru(self, keys: list[ObjectKey], cause: L1RecencyCause) -> None:
+        """Record ``cause`` as the last MRU event of each resident key.
+
+        Clears the demoted state. Caller holds ``_recency_lock``; keys that
+        are not resident (missing or only staged) are skipped. Touch paths
+        call this without ``_lock``: ``_objects`` is only looked up, never
+        iterated or changed, so a concurrent delete at worst updates an
+        entry that is already gone.
+
+        Args:
+            keys: The keys made MRU.
+            cause: The event that made them MRU.
+        """
+        for key in keys:
+            entry = self._objects.get(key)
+            if entry is not None:
+                entry.mru_cause = cause
+                entry.demoted = False
 
     def _take_staging(
         self,

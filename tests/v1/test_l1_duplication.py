@@ -361,6 +361,8 @@ def test_ratio_is_over_committed_l1_of_the_model_for_the_request_salt(
             model_bytes=2 * OBJECT_BYTES,
             matched_inuse_objects=0,
             matched_inuse_bytes=0,
+            matched_mru_write_objects=1,
+            matched_mru_write_bytes=OBJECT_BYTES,
         )
     ]
     assert samples[0].byte_ratio == pytest.approx(0.5)
@@ -390,6 +392,8 @@ def test_held_chunks_split_into_in_use_and_free_cached(
         model_bytes=3 * OBJECT_BYTES,
         matched_inuse_objects=2,
         matched_inuse_bytes=2 * OBJECT_BYTES,
+        matched_mru_write_objects=3,
+        matched_mru_write_bytes=3 * OBJECT_BYTES,
     )
 
     # Once every block is freed (ref_cnt 0, still cached), nothing is in use.
@@ -399,6 +403,43 @@ def test_held_chunks_split_into_in_use_and_free_cached(
     assert samples[-1].matched_objects == 3
     assert samples[-1].matched_inuse_objects == 0
     assert samples[-1].matched_inuse_bytes == 0
+
+
+def test_matched_splits_by_demoted_state_and_last_mru_cause(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    keys = [object_key(c) for c in CHUNK_HASHES]
+    commit(l1, *keys)
+    commit(l1, object_key(b"not-in-l0"))
+    # An exclusive retrieve demoted chunks 0 and 1; a lazy re-store then
+    # touched chunk 1, and end_session touched chunk 2.
+    store.demote_l1_keys([(l1.l1_manager_id, keys[:2])])
+    store.touch_cached_keys([keys[1]], "lazy_touch")
+    store.touch_cached_keys([keys[2]], "end_session_touch")
+    coordinator = _Coordinator()
+    meter, clock, samples = _meter(_Adapter(store), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    _cache(coordinator, TOKENS)
+
+    _sample(meter, clock)
+
+    sample = samples[-1]
+    assert sample.matched_objects == 3
+    assert (sample.matched_demoted_objects, sample.matched_demoted_bytes) == (
+        1,
+        OBJECT_BYTES,
+    )
+    assert sample.matched_mru_lazy_touch_objects == 1
+    assert sample.matched_mru_end_session_touch_objects == 1
+    assert sample.matched_mru_write_objects == 0
+    causes = ("write", "lazy_touch", "lookup_touch", "end_session_touch", "other")
+    for unit in ("objects", "bytes"):
+        fields = vars(sample)
+        parts = fields[f"matched_demoted_{unit}"] + sum(
+            fields[f"matched_mru_{cause}_{unit}"] for cause in causes
+        )
+        assert parts == fields[f"matched_{unit}"]
 
 
 def test_mamba_hit_holds_every_chunk_up_to_its_latest_state(
@@ -729,6 +770,8 @@ def test_separated_object_groups_hold_chunks_per_kv_cache_group(
             model_bytes=6 * OBJECT_BYTES,
             matched_inuse_objects=0,
             matched_inuse_bytes=0,
+            matched_mru_write_objects=5,
+            matched_mru_write_bytes=5 * OBJECT_BYTES,
         )
     ]
 

@@ -335,7 +335,8 @@ class LookupModule(DiscoverableModule):
                         list(range(attn_desc.num_object_groups)),
                     )
                     for obj_key in group_keys
-                ]
+                ],
+                "lookup_touch",
             )
 
         # Prefetch only [start, end); status offsets hits back to absolute.
@@ -615,7 +616,7 @@ class LookupModule(DiscoverableModule):
         # TODO(chunxiaozheng): when l2 is enabled, the prefetched keys from l2 are temp
         #  and will be deleted after finish_read_prefetched, when we touch all keys,
         #  these keys has been deleted and will not be touched.
-        self._ctx.storage_manager.touch_cached_keys(obj_keys)
+        self._ctx.storage_manager.touch_cached_keys(obj_keys, "end_session_touch")
 
     # -----------------------------------------------------------------
     # Internal helpers

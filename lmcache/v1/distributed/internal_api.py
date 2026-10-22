@@ -6,7 +6,7 @@ Class for distributed storage manager internal API data structures
 # Standard
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, get_args, runtime_checkable
 import enum
 
 # First Party
@@ -28,6 +28,21 @@ if TYPE_CHECKING:
     )
 
 L1OperationResult = tuple[L1Error, "MemoryObj | None"]
+
+L1RecencyCause = Literal[
+    "write", "lazy_touch", "lookup_touch", "end_session_touch", "other"
+]
+"""The event that last moved a resident L1 key to the MRU end.
+
+- ``write``: a store committed the key (``finish_write``).
+- ``lazy_touch``: a store found the key resident and touched it (the lazy
+  re-store of an exclusive-retrieve request).
+- ``lookup_touch``: a lookup touched the key (covered prefix or hit).
+- ``end_session_touch``: ``end_session`` touched the key.
+- ``other``: any other touch, or a commit by an L2 prefetch.
+"""
+
+L1_RECENCY_CAUSES: tuple[L1RecencyCause, ...] = get_args(L1RecencyCause)
 
 
 @dataclass(frozen=True)
@@ -77,12 +92,27 @@ class L1CommittedUsage:
         model_objects: Committed objects of the model, over every kv rank,
             object group and cache salt.
         model_bytes: Their logical size in bytes.
+        matched_demoted_objects: The part of ``matched_objects`` an exclusive
+            retrieve demoted and nothing touched since.
+        matched_demoted_bytes: Their bytes.
+        matched_mru_objects: The rest of ``matched_objects``, by the
+            :data:`L1RecencyCause` that last made each key MRU; every cause
+            of :data:`L1_RECENCY_CAUSES` is present.
+        matched_mru_bytes: Their bytes, by cause.
     """
 
     matched_objects: int
     matched_bytes: int
     model_objects: int
     model_bytes: int
+    matched_demoted_objects: int = 0
+    matched_demoted_bytes: int = 0
+    matched_mru_objects: dict[L1RecencyCause, int] = field(
+        default_factory=lambda: dict.fromkeys(L1_RECENCY_CAUSES, 0)
+    )
+    matched_mru_bytes: dict[L1RecencyCause, int] = field(
+        default_factory=lambda: dict.fromkeys(L1_RECENCY_CAUSES, 0)
+    )
 
 
 class EventListener(ABC):  # noqa: B024
@@ -366,12 +396,14 @@ class L1ManagerInterface(Protocol):
         """Delete resident objects."""
         ...
 
-    def touch_keys(self, keys: list[ObjectKey]) -> None:
-        """Record an access to the keys; takes no lock."""
+    def touch_keys(
+        self, keys: list[ObjectKey], cause: L1RecencyCause = "other"
+    ) -> None:
+        """Record an access to the keys, for ``cause``; takes no L1 lock."""
         ...
 
     def demote_keys(self, keys: list[ObjectKey]) -> None:
-        """Demote the keys to the front of the eviction order; takes no lock."""
+        """Move the keys to the front of the eviction order; takes no L1 lock."""
         ...
 
     def clear(self, force: bool = False) -> None:

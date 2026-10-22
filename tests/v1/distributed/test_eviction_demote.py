@@ -219,3 +219,25 @@ def test_storage_manager_demote_rejects_unknown_owner(
     storage, _managers, _policies = two_l1s
     with pytest.raises(ValueError, match="registered L1 owner"):
         storage.demote_l1_keys([(-1, [_key(1)])])
+
+
+def test_storage_manager_sums_demoted_and_causes_over_every_l1(
+    two_l1s: tuple[StorageManager, list[L1Manager], list[LRUEvictionPolicy]],
+) -> None:
+    storage, managers, _policies = two_l1s
+    _commit(managers[0], [_key(1), _key(2)])
+    _commit(managers[1], [_key(3), _key(4)])
+    storage.demote_l1_keys(
+        [(managers[0].l1_manager_id, [_key(1)]), (managers[1].l1_manager_id, [_key(3)])]
+    )
+    storage.touch_cached_keys([_key(3)], "lazy_touch")
+
+    usage = storage.get_l1_committed_usage([_key(i) for i in range(1, 5)], "m")
+
+    assert usage.matched_objects == 4
+    assert usage.matched_demoted_objects == 1
+    assert usage.matched_mru_objects["lazy_touch"] == 1
+    assert usage.matched_mru_objects["write"] == 2
+    assert usage.matched_demoted_bytes + sum(usage.matched_mru_bytes.values()) == (
+        usage.matched_bytes
+    )

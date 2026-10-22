@@ -859,7 +859,9 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 # them; the engine stores them again only when it is about to
                 # drop its GPU copy, so the L1 copy becomes the primary again.
                 if resident_keys and key.requests_exclusive_retrieve():
-                    self._ctx.storage_manager.touch_cached_keys(resident_keys)
+                    self._ctx.storage_manager.touch_cached_keys(
+                        resident_keys, "lazy_touch"
+                    )
                 store_succeeded = True
             except Exception:
                 logger.exception("Cannot store keys due to exception")

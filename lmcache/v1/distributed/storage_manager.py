@@ -33,10 +33,12 @@ from lmcache.v1.distributed.config import (
 )
 from lmcache.v1.distributed.error import L1Error, L1ReconfigureError, strerror
 from lmcache.v1.distributed.internal_api import (
+    L1_RECENCY_CAUSES,
     L1CommittedUsage,
     L1ManagerInterface,
     L1MemoryDesc,
     L1OperationResult,
+    L1RecencyCause,
     L2AdapterListener,
 )
 from lmcache.v1.distributed.l1_manager import L1Manager
@@ -706,7 +708,9 @@ class StorageManager:
             handle.prefetch_request_id, timeout
         )
 
-    def touch_cached_keys(self, keys: list[ObjectKey]) -> None:
+    def touch_cached_keys(
+        self, keys: list[ObjectKey], cause: L1RecencyCause = "other"
+    ) -> None:
         """Refresh eviction recency in L1 *and* L2, without I/O.
 
         A real load refreshes both tiers, so an L1-only touch would leave
@@ -714,9 +718,11 @@ class StorageManager:
 
         Args:
             keys (list[ObjectKey]): List of object keys to touch.
+            cause: Why the keys are touched, recorded per resident L1 key
+                for the L1 residency query.
         """
         for manager in self._l1_managers_by_id.values():
-            manager.touch_keys(keys)
+            manager.touch_keys(keys, cause)
         with self._adapters_lock:
             adapters = list(self._l2_adapters.values())
         for adapter in adapters:
@@ -957,6 +963,16 @@ class StorageManager:
             matched_bytes=sum(u.matched_bytes for u in usages),
             model_objects=sum(u.model_objects for u in usages),
             model_bytes=sum(u.model_bytes for u in usages),
+            matched_demoted_objects=sum(u.matched_demoted_objects for u in usages),
+            matched_demoted_bytes=sum(u.matched_demoted_bytes for u in usages),
+            matched_mru_objects={
+                c: sum(u.matched_mru_objects[c] for u in usages)
+                for c in L1_RECENCY_CAUSES
+            },
+            matched_mru_bytes={
+                c: sum(u.matched_mru_bytes[c] for u in usages)
+                for c in L1_RECENCY_CAUSES
+            },
         )
 
     # L1 reconfiguration APIs
