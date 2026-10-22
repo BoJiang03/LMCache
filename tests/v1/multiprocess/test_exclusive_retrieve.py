@@ -9,6 +9,7 @@
 - An exclusive request's lookup does not touch the prefix vLLM's prefix cache
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
+- Those local-hit demotions count as demoted in the L1 committed usage.
 
 Only pinned-memory and device calls are replaced; host callbacks run through
 the production dispatcher, drained when the module closes.
@@ -604,3 +605,40 @@ def test_engine_held_chunks(attn_desc: AttnWindowDesc, mid_chunk: range) -> None
     assert attn_desc.engine_held_chunks(0, 12, CHUNK) == range(3)
     assert attn_desc.engine_held_chunks(1, 12, CHUNK) == range(2, 3)
     assert attn_desc.engine_held_chunks(1, 11, CHUNK) == mid_chunk
+
+
+def _demoted(srv: _Server, keys: list[ObjectKey]) -> list[ObjectKey]:
+    """The keys the L1 committed usage reports as demoted."""
+    return [
+        k
+        for k in keys
+        if srv.storage.get_l1_committed_usage([k], "model").matched_demoted_objects
+    ]
+
+
+def test_local_hit_demotion_shows_as_demoted_in_committed_usage(
+    server: _Server,
+) -> None:
+    """The keys an exclusive local hit demotes count as demoted in the L1
+    committed usage, through ``end_session``; the rest keep their MRU cause,
+    and a plain local hit records its touch as ``lookup_touch``."""
+    lookup = _lookup_module(server, SEPARATE_GROUPS)
+    full, recurrent = server.keys()
+    keys = full + recurrent
+    assert _demoted(server, keys) == []
+
+    assert _look_up(lookup, True, 12) == NUM_CHUNKS
+    _free_after_alloc(lookup, True, 12, held_tokens=12)
+    held = [full[0], full[1], full[2], recurrent[2]]
+    assert set(_demoted(server, keys)) == set(held)
+    usage = server.storage.get_l1_committed_usage(keys, "model")
+    assert usage.matched_demoted_objects == len(held)
+    assert usage.matched_mru_objects["write"] == len(keys) - len(held)
+
+    lookup.end_session("req")
+    assert set(_demoted(server, keys)) == set(held)
+
+    assert _look_up(lookup, False, 12) == NUM_CHUNKS
+    usage = server.storage.get_l1_committed_usage(keys, "model")
+    assert usage.matched_demoted_objects == 0
+    assert usage.matched_mru_objects["lookup_touch"] == len(keys)
