@@ -220,6 +220,26 @@ def _op(start: int, block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
     )
 
 
+def test_coalesced_store_keeps_the_request_configs() -> None:
+    """Ops of one request stored in one drain carry the request's configs."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    ids = _hashed_blocks(pool, 2)
+    configs = {"lmcache.mp.exclusive_retrieve": True}
+    manager = _manager(pool)
+    for i, block in enumerate(ids):
+        op = _op(i * TOKENS_PER_BLOCK, [[block], [null]])
+        op.request_configs = configs
+        manager.add_store_candidate(op)
+
+    actions = manager.on_scheduler_step(_step())
+
+    assert len(actions.stores_to_submit) == 1
+    stored = actions.stores_to_submit[0]
+    assert stored.op.block_ids[0] == ids
+    assert stored.request_configs == configs
+
+
 def _blocked_with_freed_successor(
     pool: BlockPool,
 ) -> tuple[LazyOffloadManager, int]:
