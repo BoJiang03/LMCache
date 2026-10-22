@@ -220,6 +220,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             payload_type=L1WriteCompletion,
         )
         self._device_host_func_dispatcher.register(
+            "demote_l1_keys",
+            self._ctx.storage_manager.demote_l1_keys,
+            payload_type=L1WriteCompletion,
+        )
+        self._device_host_func_dispatcher.register(
             "release_imported_event",
             self._release_imported_event,
             payload_type=tuple[int, int],
@@ -780,6 +785,9 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
 
             reserved_dict: dict[ObjectKey, MemoryObj] = {}
             all_dict: dict[ObjectKey, MemoryObj] = {}
+            # Keys neither reserved nor out of memory: already resident (or
+            # being written), touched below for an exclusive-retrieve request.
+            resident_keys: list[ObjectKey] = []
             total_bytes: int = 0
             store_succeeded = False
             try:
@@ -794,8 +802,17 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         self._ctx.chunk_size,
                         object_group_id=obj_group_id,
                     )
+                    group_oom_keys: list[ObjectKey] = []
                     reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc, out_of_memory_keys
+                        keys_to_reserve, layout_desc, group_oom_keys
+                    )
+                    if out_of_memory_keys is not None:
+                        out_of_memory_keys.extend(group_oom_keys)
+                    oom_set = set(group_oom_keys)
+                    resident_keys.extend(
+                        k
+                        for k in keys_to_reserve
+                        if k not in reserved_dict and k not in oom_set
                     )
                     all_dict.update(reserved_dict)
                     if reserved_dict:
@@ -827,6 +844,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                     if all_dict
                     else []
                 )
+                # An exclusive retrieve demoted these keys when it loaded
+                # them; the engine stores them again only when it is about to
+                # drop its GPU copy, so the L1 copy becomes the primary again.
+                if resident_keys and key.requests_exclusive_retrieve():
+                    self._ctx.storage_manager.touch_cached_keys(resident_keys)
                 store_succeeded = True
             except Exception:
                 logger.exception("Cannot store keys due to exception")
@@ -1128,6 +1150,22 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         "finish_read_by_owner",
                         read_completion,
                     )
+                # A successful retrieve read every retained key, so
+                # read_completion holds exactly the loaded keys. Demoting
+                # after the copy keeps the L1 copy until the GPU has its own.
+                if (
+                    retrieve_succeeded
+                    and retained_keys
+                    and key.requests_exclusive_retrieve()
+                ):
+                    submit_callback_to_stream(
+                        cache_context.cupy_stream,
+                        "demote_l1_keys",
+                        read_completion,
+                    )
+                    self._ctx.session_manager.get_or_create(
+                        key.request_id
+                    ).record_demoted_keys(prefetched_keys)
                 num_tokens = (
                     num_chunks * self._ctx.chunk_size
                     if len(prefetched_keys) == expected_retained

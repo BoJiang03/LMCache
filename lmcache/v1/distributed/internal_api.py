@@ -149,6 +149,16 @@ class L1ManagerListener(EventListener):
         """
         pass
 
+    def on_l1_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Notify the listener that keys should be evicted first.
+
+        Not abstract: only eviction listeners keep a recency order.
+
+        Args:
+            keys: The keys to demote, in request order.
+        """
+        pass
+
     def on_l1_out_of_memory(self, requested_bytes: int) -> None:
         """Notify the listener that a write reservation found L1 full.
 
@@ -335,6 +345,10 @@ class L1ManagerInterface(Protocol):
 
     def touch_keys(self, keys: list[ObjectKey]) -> None:
         """Record an access to the keys; takes no lock."""
+        ...
+
+    def demote_keys(self, keys: list[ObjectKey]) -> None:
+        """Move the keys to the front of the eviction order; takes no lock."""
         ...
 
     def clear(self, force: bool = False) -> None:

@@ -29,6 +29,12 @@ Key Types:
 """
 
 
+# Request config the vLLM MP connector sets on every request when
+# ``lmcache.mp.exclusive_retrieve`` is enabled; see
+# docs/design/integration/vllm/exclusive_retrieve.md.
+EXCLUSIVE_RETRIEVE_REQUEST_CONFIG = "lmcache.mp.exclusive_retrieve"
+
+
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
     """Cache key for the IPC (multiprocess) protocol.
@@ -170,6 +176,22 @@ class IPCCacheServerKey:
                 "client."
             )
         return self.num_kv_readers
+
+    def requests_exclusive_retrieve(self) -> bool:
+        """Whether the request asked for exclusive retrieve.
+
+        Under exclusive retrieve the server demotes the L1 copy of every
+        chunk it loads into GPU memory, and touches chunks a store finds
+        already resident (the engine re-stores loaded chunks before evicting
+        them).
+
+        Returns:
+            True when ``request_configs`` sets
+            ``EXCLUSIVE_RETRIEVE_REQUEST_CONFIG`` to a true value.
+        """
+        return bool(
+            (self.request_configs or {}).get(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, False)
+        )
 
     def no_worker_id_version(self) -> "IPCCacheServerKey":
         """Create a copy with worker_id=None for lookup requests."""

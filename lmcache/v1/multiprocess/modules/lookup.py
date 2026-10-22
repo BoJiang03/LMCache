@@ -562,6 +562,9 @@ class LookupModule(DiscoverableModule):
     def end_session(self, request_id: str) -> None:
         """Remove the session for a finished request.
 
+        Touches every key of the request in L1 and L2, except the keys an
+        exclusive retrieve of the request demoted.
+
         Args:
             request_id: The request ID whose session should be removed.
         """
@@ -590,6 +593,11 @@ class LookupModule(DiscoverableModule):
 
         chunk_hashes = [TokenHasher.hash_to_bytes(h) for h in session.get_hashes(0)]
         obj_keys = self._all_object_keys(session.lookup_ipc_key, chunk_hashes)
+        # An exclusive retrieve demoted the keys it loaded; touching them here
+        # would undo that, and a re-store has already promoted any it found.
+        demoted = session.get_demoted_keys()
+        if demoted:
+            obj_keys = [obj_key for obj_key in obj_keys if obj_key not in demoted]
         # unified touch of all keys, which include retrieved and stored keys
         # TODO(chunxiaozheng): when l2 is enabled, the prefetched keys from l2 are temp
         #  and will be deleted after finish_read_prefetched, when we touch all keys,

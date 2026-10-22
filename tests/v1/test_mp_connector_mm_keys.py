@@ -234,6 +234,7 @@ def test_lookup_hint_carries_vllm_prefix_hit() -> None:
     connector.request_trackers = {}
     connector.scheduler_adapter = scheduler_adapter
     connector._reserve_last_token_for_lookup = False
+    connector.exclusive_retrieve = False
     connector.lazy_offload = False
     connector._hit_alignment_tokens = 64
 
@@ -253,6 +254,7 @@ def test_recurrent_lookup_reserves_final_prompt_token() -> None:
     connector.request_trackers = {}
     connector.scheduler_adapter = scheduler_adapter
     connector._reserve_last_token_for_lookup = True
+    connector.exclusive_retrieve = False
     connector._hit_alignment_tokens = 64
     connector._connector_stats = MagicMock()
     connector.lazy_offload = False

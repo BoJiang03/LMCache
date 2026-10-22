@@ -108,6 +108,26 @@ threshold of 20 and a select count of 10, the first trigger submits 10 requests
 and leaves 10 ready. Another 10 requests must finish before the count reaches
 20 and triggers the next batch. Configure both values as positive integers.
 
+Exclusive Retrieve
+------------------
+
+With ``lmcache.mp.exclusive_retrieve=true`` (requires lazy offload), a chunk
+loaded from L1 into GPU blocks does not stay at the most recently used end
+of L1. Its L1 copy moves to the front of the eviction order but stays
+readable, and the loaded chunk becomes a lazy store candidate again. When
+the GPU blocks approach eviction, the store either writes the chunk back or,
+if the L1 copy is still there, marks it recently used again. L1 capacity then
+holds KV that the GPU does not hold.
+
+.. code-block:: json
+
+   {"lmcache.mp.lazy_offload": true, "lmcache.mp.exclusive_retrieve": true}
+
+Lazy offload is required because it is what stores the loaded chunk again;
+without it, the connector raises ``ValueError`` at startup. If a request is
+aborted or preempted after its load, its demoted chunk can be evicted
+without being stored again, and a later request recomputes it.
+
 Tuning
 ------
 

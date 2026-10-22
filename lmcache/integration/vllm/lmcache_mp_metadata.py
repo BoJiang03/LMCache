@@ -146,6 +146,25 @@ class LMCacheMPRequestTracker:
             )
         )
 
+    def retrieve_start_token(self, lmcache_tokens_per_chunk: int) -> int:
+        """Return the first token a retrieve of this request loads.
+
+        The vLLM hit rounded down to an LMCache chunk boundary: the chunk
+        holding the hit's end is loaded whole (its APC-shared prefix is
+        skipped on write, see ``skip_first_n_tokens``).
+
+        Args:
+            lmcache_tokens_per_chunk: The number of tokens in an LMCache chunk.
+
+        Returns:
+            The retrieve's start token, a multiple of the chunk size.
+        """
+        return (
+            self.num_vllm_hit_tokens
+            // lmcache_tokens_per_chunk
+            * lmcache_tokens_per_chunk
+        )
+
     def is_ready_for_retrieving(self) -> bool:
         """Check whether the current request is ready for retrieving,
         will be used in process_loading_requests"""
@@ -439,11 +458,7 @@ class LMCacheMPRequestMetadata:
         # | lmcache chunk 1   | lmcache chunk 2   |
         #                     |  need to retrieve |
 
-        start_token_idx = (
-            tracker.num_vllm_hit_tokens
-            // lmcache_tokens_per_chunk
-            * lmcache_tokens_per_chunk
-        )
+        start_token_idx = tracker.retrieve_start_token(lmcache_tokens_per_chunk)
         end_token_idx = tracker.num_lmcache_hit_tokens
         assert end_token_idx % lmcache_tokens_per_chunk == 0, (
             "The number of LMCache hit tokens should be a multiple of the "

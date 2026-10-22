@@ -721,6 +721,26 @@ class StorageManager:
         for adapter in adapters:
             adapter.submit_touch(keys)
 
+    def demote_l1_keys(self, completion: L1WriteCompletion) -> None:
+        """Make loaded keys the next L1 eviction victims, without deleting them.
+
+        Used after a retrieve copied the keys into GPU memory: that copy is
+        then the primary one, so the L1 copy should go first under pressure
+        but stays readable while there is room. L2 recency is not changed.
+
+        Args:
+            completion: Owner/key groups of the read keys, as produced by
+                :meth:`prepare_read_completion`; each owner demotes only
+                its own keys, in the given order.
+
+        Raises:
+            ValueError: An owner is not registered.
+        """
+        if any(owner not in self._l1_managers_by_id for owner, _ in completion):
+            raise ValueError("Demotion requires a registered L1 owner")
+        for owner, keys in completion:
+            self._l1_managers_by_id[owner].demote_keys(keys)
+
     def delete_l1_keys(
         self, keys: list[ObjectKey], force: bool = False
     ) -> tuple[int, int]:

@@ -169,6 +169,28 @@ class ARCEvictionPolicy(EvictionPolicy):
                 elif key in self._t2:
                     self._t2.move_to_end(key)
 
+    def on_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Move resident keys to the victim end of the recent list ``T1``.
+
+        A demoted key gives up any ``T2`` (frequent) membership: its reuse
+        is now served by the GPU copy. Keys are moved in request order, so
+        the request's last key is ``T1``'s next victim. Whether ``T1`` or
+        ``T2`` yields the next victim still follows the adaptive target.
+
+        Args:
+            keys: The keys to demote, in request order. Keys that are not
+                resident are ignored.
+        """
+        if not keys:
+            return
+        with self._lock:
+            for key in keys:
+                if key in self._t2:
+                    del self._t2[key]
+                    self._t1[key] = None
+                if key in self._t1:
+                    self._t1.move_to_end(key, last=False)
+
     def on_keys_removed(self, keys: list[ObjectKey]) -> None:
         """Apply completed removals to resident and ghost state.
 

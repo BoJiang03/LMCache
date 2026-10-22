@@ -84,6 +84,7 @@ from lmcache.integration.vllm.utils import (
 )
 from lmcache.utils import CacheRemoveEvent
 from lmcache.utils import init_logger as lmcache_init_logger
+from lmcache.v1.multiprocess.custom_types import EXCLUSIVE_RETRIEVE_REQUEST_CONFIG
 
 try:
     # First Party
@@ -865,6 +866,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             raise ValueError(
                 "lmcache.mp.lazy_offload requires vLLM prefix caching "
                 "(enable_prefix_caching=True)"
+            )
+        # Exclusive retrieve: the server demotes the L1 copy of each chunk it
+        # loads, and the loaded chunks are stored again before vLLM evicts
+        # them. Only lazy offload guarantees that store, so it is required.
+        self.exclusive_retrieve = bool(
+            vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.exclusive_retrieve", False
+            )
+        )
+        if self.exclusive_retrieve and not self.lazy_offload:
+            raise ValueError(
+                "lmcache.mp.exclusive_retrieve requires lmcache.mp.lazy_offload: "
+                "a demoted chunk is kept only by storing its GPU copy again "
+                "before vLLM evicts it"
             )
 
         if self.role == KVConnectorRole.SCHEDULER:
@@ -1712,6 +1727,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 if condition
                 else LMCacheMPRequestState.READY
             )
+            if condition and self.exclusive_retrieve:
+                # The server demotes the chunks this retrieve loads, so their
+                # GPU copy becomes the primary one: store them again, lazily.
+                tracker.num_stored_tokens = tracker.retrieve_start_token(
+                    self.scheduler_adapter.lmcache_tokens_per_chunk
+                )
             # Clean up lookup future in scheduler adapter
             self.scheduler_adapter.cleanup_lookup_result(request.request_id)
 
@@ -2156,6 +2177,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 for session_id in actions.sessions_to_end:
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
+            # The connector alone decides exclusive retrieve: a request that
+            # set it without lazy offload would lose its demoted chunks.
+            request_configs = dict(new_tracker.request_configs or {})
+            request_configs.pop(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, None)
+            if self.exclusive_retrieve:
+                request_configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
+            new_tracker.request_configs = request_configs or None
             self.request_trackers[request_id] = new_tracker
         return self.request_trackers[request_id]
 
