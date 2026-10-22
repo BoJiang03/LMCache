@@ -83,7 +83,10 @@ def _commit(l1: L1Manager, keys: list[ObjectKey]) -> None:
 
 
 class TestPolicyDemotion:
+    """Each eviction policy's ``on_keys_demoted``."""
+
     def test_lru_demotes_request_with_its_last_key_first(self) -> None:
+        """LRU puts demoted keys first, the request's last key at the front."""
         policy = LRUEvictionPolicy()
         policy.on_keys_created([_key(i) for i in range(1, 6)])
         assert _victims(policy) == [5, 4, 3, 2, 1]
@@ -95,6 +98,7 @@ class TestPolicyDemotion:
         assert policy.get_num_tracked_keys() == 5
 
     def test_lru_demote_ignores_untracked_keys(self) -> None:
+        """LRU ignores keys it does not track."""
         policy = LRUEvictionPolicy()
         policy.on_keys_created([_key(1), _key(2)])
         policy.on_keys_demoted([_key(9), _key(1)])
@@ -102,6 +106,7 @@ class TestPolicyDemotion:
         assert policy.get_num_tracked_keys() == 2
 
     def test_touch_after_demote_promotes_again(self) -> None:
+        """A touch after a demotion makes the key most recently used again."""
         policy = LRUEvictionPolicy()
         policy.on_keys_created([_key(1), _key(2), _key(3)])
         policy.on_keys_demoted([_key(1)])
@@ -109,6 +114,7 @@ class TestPolicyDemotion:
         assert _victims(policy) == [3, 2, 1]
 
     def test_isolated_lru_demotes_within_each_salt(self) -> None:
+        """IsolatedLRU demotes each key within its own salt's bucket."""
         policy = IsolatedLRUEvictionPolicy()
         policy.on_keys_created([_key(1, "a"), _key(2, "a"), _key(3, "b")])
         policy.on_keys_demoted([_key(1, "a"), _key(3, "b")])
@@ -116,6 +122,7 @@ class TestPolicyDemotion:
         assert _victims(policy, "b") == [3]
 
     def test_arc_demotes_frequent_key_to_next_victim(self) -> None:
+        """ARC moves a frequent (T2) key to T1's victim end."""
         policy = ARCEvictionPolicy()
         policy.on_keys_created([_key(1), _key(2), _key(3)])
         policy.on_keys_touched([_key(1)])  # key 1 becomes frequent (T2)
@@ -127,13 +134,17 @@ class TestPolicyDemotion:
         assert policy.get_num_tracked_keys() == 3
 
     def test_noop_and_default_policies_ignore_demotion(self) -> None:
+        """The noop policy ignores demotion."""
         policy = NoOpEvictionPolicy()
         policy.on_keys_demoted([_key(1)])
         assert policy.get_eviction_actions(1.0) == []
 
 
 class TestL1Demotion:
+    """The L1 listener bridge and ``L1Manager.demote_keys``."""
+
     def test_listener_bridge_forwards_demotion(self) -> None:
+        """``L1EvictionPolicy`` forwards a demotion to its policy."""
         lru = LRUEvictionPolicy()
         listener = L1EvictionPolicy(lru)
         lru.on_keys_created([_key(1), _key(2)])
@@ -143,6 +154,7 @@ class TestL1Demotion:
 
     @pytest.mark.usefixtures("cpu_memory")
     def test_l1_manager_demote_keeps_keys_readable(self) -> None:
+        """A demoted key moves first in eviction order and stays readable."""
         l1 = _l1()
         lru = LRUEvictionPolicy()
         l1.register_listener(L1EvictionPolicy(lru))
@@ -185,6 +197,7 @@ def two_l1s(
 def test_storage_manager_demotes_each_key_on_its_owner(
     two_l1s: tuple[StorageManager, list[L1Manager], list[LRUEvictionPolicy]],
 ) -> None:
+    """Each L1 owner demotes only its own keys; nothing is deleted."""
     storage, managers, policies = two_l1s
     _commit(managers[0], [_key(1), _key(2)])
     _commit(managers[1], [_key(3), _key(4)])
@@ -202,6 +215,7 @@ def test_storage_manager_demotes_each_key_on_its_owner(
 def test_storage_manager_demote_rejects_unknown_owner(
     two_l1s: tuple[StorageManager, list[L1Manager], list[LRUEvictionPolicy]],
 ) -> None:
+    """An unregistered owner raises ``ValueError``."""
     storage, _managers, _policies = two_l1s
     with pytest.raises(ValueError, match="registered L1 owner"):
         storage.demote_l1_keys([(-1, [_key(1)])])

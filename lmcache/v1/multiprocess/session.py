@@ -184,6 +184,9 @@ class Session:
     def record_demoted_keys(self, keys: list[ObjectKey]) -> None:
         """Record keys whose L1 copies this request's retrieve demoted.
 
+        Called by an exclusive retrieve when it submits the demotion, so that
+        ``end_session`` can leave these keys out of its touch.
+
         Args:
             keys: The demoted keys.
         """
@@ -191,7 +194,13 @@ class Session:
             self._demoted_keys.update(keys)
 
     def get_demoted_keys(self) -> set[ObjectKey]:
-        """Snapshot the keys recorded by :meth:`record_demoted_keys`."""
+        """Snapshot the keys recorded by :meth:`record_demoted_keys`.
+
+        Called by ``end_session``.
+
+        Returns:
+            A copy of the demoted keys; empty when nothing was demoted.
+        """
         with self._lock:
             return self._demoted_keys.copy()
 

@@ -884,8 +884,9 @@ class L1Manager(L1ManagerInterface):
     def demote_keys(self, keys: list[ObjectKey]) -> None:
         """Make the given resident keys the next eviction victims.
 
-        The objects stay resident and readable; only their eviction order
-        changes. Like :meth:`touch_keys`, this takes no lock: the listeners
+        Called by ``StorageManager.demote_l1_keys``. The objects stay
+        resident and readable; only their eviction order changes. Like
+        :meth:`touch_keys`, this takes no lock: the listeners
         serialize their own state.
 
         Args:

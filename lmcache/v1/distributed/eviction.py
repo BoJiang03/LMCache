@@ -124,10 +124,11 @@ class EvictionPolicy:
     def on_keys_demoted(self, keys: list[ObjectKey]) -> None:
         """Notify the policy that keys should become the next eviction victims.
 
-        Called after a chunk was loaded back into GPU memory, whose copy is
-        then the primary one: the L1 copy stays resident but goes first under
-        pressure. Within ``keys``, later keys (a request's suffix chunks) are
-        evicted first, so an eviction never breaks the prefix chain early.
+        Called through ``L1Manager.demote_keys`` after an exclusive retrieve
+        copied the keys into GPU memory, whose copy is then the primary one:
+        the L1 copy stays resident but goes first under pressure. Within
+        ``keys``, later keys (a request's suffix chunks) are evicted first,
+        so an eviction never breaks the prefix chain early.
 
         The default is a no-op, for policies without a recency order.
 

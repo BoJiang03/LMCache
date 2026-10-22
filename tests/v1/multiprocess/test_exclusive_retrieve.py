@@ -204,6 +204,7 @@ class _Server:
         assert self.dispatcher.handler_exception_counts() == {}
 
     def close(self) -> None:
+        """Close the module, storage manager and sessions."""
         self.module.close()
         self.storage.close()
         self.sessions.close()
@@ -253,6 +254,7 @@ def _loaded(srv: _Server) -> list[ObjectKey]:
 
 
 def test_exclusive_retrieve_demotes_exactly_the_read_keys(server: _Server) -> None:
+    """A successful exclusive retrieve demotes exactly the keys it read."""
     loaded = _loaded(server)
     server.lock_for_read(loaded)
     before = server.victims()
@@ -272,6 +274,7 @@ def test_exclusive_retrieve_demotes_exactly_the_read_keys(server: _Server) -> No
 
 
 def test_plain_retrieve_keeps_the_eviction_order(server: _Server) -> None:
+    """A retrieve without the flag leaves the eviction order unchanged."""
     loaded = _loaded(server)
     server.lock_for_read(loaded)
     before = server.victims()
@@ -285,6 +288,7 @@ def test_plain_retrieve_keeps_the_eviction_order(server: _Server) -> None:
 
 
 def test_failed_exclusive_retrieve_demotes_nothing(server: _Server) -> None:
+    """A failed exclusive retrieve demotes nothing."""
     loaded = _loaded(server)
     # The recurrent chunk was never locked, so the read fails.
     server.lock_for_read(loaded[:-1])
@@ -296,6 +300,7 @@ def test_failed_exclusive_retrieve_demotes_nothing(server: _Server) -> None:
 
 
 def test_end_session_does_not_promote_demoted_keys(server: _Server) -> None:
+    """``end_session`` touches the request's keys except the demoted ones."""
     loaded = _loaded(server)
     server.lock_for_read(loaded)
     assert server.retrieve(exclusive=True)
@@ -321,6 +326,7 @@ def test_end_session_does_not_promote_demoted_keys(server: _Server) -> None:
 def test_restore_of_resident_keys_touches_them_only_when_exclusive(
     server: _Server, exclusive: bool
 ) -> None:
+    """A re-store touches resident keys only for an exclusive request."""
     loaded = _loaded(server)
     server.lock_for_read(loaded)
     assert server.retrieve(exclusive=True)

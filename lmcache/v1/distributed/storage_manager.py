@@ -724,9 +724,11 @@ class StorageManager:
     def demote_l1_keys(self, completion: L1WriteCompletion) -> None:
         """Make loaded keys the next L1 eviction victims, without deleting them.
 
-        Used after a retrieve copied the keys into GPU memory: that copy is
-        then the primary one, so the L1 copy should go first under pressure
-        but stays readable while there is room. L2 recency is not changed.
+        Called from the transfer stream's ``demote_l1_keys`` host callback,
+        which an exclusive retrieve submits after its copy into GPU memory and
+        its ``finish_read_by_owner``. The GPU copy is then the primary one,
+        so the L1 copy should go first under pressure but stays readable
+        while there is room. L2 recency is not changed.
 
         Args:
             completion: Owner/key groups of the read keys, as produced by
