@@ -186,6 +186,10 @@ class DuplicationSample:
             (``end_session_touch``) or anything else (``other``). Demoted
             plus every cause equals ``matched_objects`` (``*_bytes`` alike).
         matched_mru_<cause>_bytes: Their bytes.
+        matched_inuse_demoted_bytes: The demoted part of
+            ``matched_inuse_bytes``.
+        matched_inuse_mru_<cause>_bytes: The rest of ``matched_inuse_bytes``,
+            by the same causes.
     """
 
     matched_objects: int
@@ -206,6 +210,12 @@ class DuplicationSample:
     matched_mru_end_session_touch_bytes: int = 0
     matched_mru_other_objects: int = 0
     matched_mru_other_bytes: int = 0
+    matched_inuse_demoted_bytes: int = 0
+    matched_inuse_mru_write_bytes: int = 0
+    matched_inuse_mru_lazy_touch_bytes: int = 0
+    matched_inuse_mru_lookup_touch_bytes: int = 0
+    matched_inuse_mru_end_session_touch_bytes: int = 0
+    matched_inuse_mru_other_bytes: int = 0
 
     @property
     def byte_ratio(self) -> float:
@@ -799,6 +809,9 @@ class L1DuplicationMeter:
             by_cause[f"matched_mru_{cause}_bytes"] = sum(
                 r.matched_mru_bytes.get(cause, 0) for r in replies
             )
+            by_cause[f"matched_inuse_mru_{cause}_bytes"] = sum(
+                r.matched_inuse_mru_bytes.get(cause, 0) for r in replies
+            )
         self._on_sample(
             DuplicationSample(
                 matched_objects=sum(r.matched_objects for r in replies),
@@ -809,6 +822,9 @@ class L1DuplicationMeter:
                 matched_inuse_bytes=sum(r.matched_inuse_bytes for r in replies),
                 matched_demoted_objects=sum(r.matched_demoted_objects for r in replies),
                 matched_demoted_bytes=sum(r.matched_demoted_bytes for r in replies),
+                matched_inuse_demoted_bytes=sum(
+                    r.matched_inuse_demoted_bytes for r in replies
+                ),
                 **by_cause,
             )
         )

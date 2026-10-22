@@ -52,6 +52,8 @@ maps every other matched key to the `L1RecencyCause` that last made it
 MRU: `write` (store commit), `lazy_touch` (a store found it resident),
 `lookup_touch`, `end_session_touch`, or `other` (any other touch, or a
 commit by an L2 prefetch). Demoted plus all causes equals `matched_*`.
+The in-use subset is split the same way, in bytes only:
+`matched_inuse_demoted_bytes` and `matched_inuse_mru_bytes` (by cause).
 Each `L1ObjectState` carries the state, so it is dropped with the object;
 `touch_keys`, `demote_keys` and admission update it together with the
 listener call under the L1 manager's recency lock, so it agrees with the

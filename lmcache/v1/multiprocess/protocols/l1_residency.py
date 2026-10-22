@@ -127,6 +127,10 @@ class L1ResidencyReply(msgspec.Struct):
         matched_mru_objects: The rest of ``matched_objects`` by the
             ``L1RecencyCause`` that last made each key MRU.
         matched_mru_bytes: Their bytes, by cause.
+        matched_inuse_demoted_bytes: The demoted part of
+            ``matched_inuse_bytes``.
+        matched_inuse_mru_bytes: The rest of ``matched_inuse_bytes``, by
+            cause.
     """
 
     probe_hash: bytes
@@ -141,3 +145,5 @@ class L1ResidencyReply(msgspec.Struct):
     matched_demoted_bytes: int = 0
     matched_mru_objects: dict[str, int] = msgspec.field(default_factory=dict)
     matched_mru_bytes: dict[str, int] = msgspec.field(default_factory=dict)
+    matched_inuse_demoted_bytes: int = 0
+    matched_inuse_mru_bytes: dict[str, int] = msgspec.field(default_factory=dict)

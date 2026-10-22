@@ -394,6 +394,7 @@ def test_held_chunks_split_into_in_use_and_free_cached(
         matched_inuse_bytes=2 * OBJECT_BYTES,
         matched_mru_write_objects=3,
         matched_mru_write_bytes=3 * OBJECT_BYTES,
+        matched_inuse_mru_write_bytes=2 * OBJECT_BYTES,
     )
 
     # Once every block is freed (ref_cnt 0, still cached), nothing is in use.

@@ -42,7 +42,10 @@ state block at the chunk's end for Mamba), looked up with
 groups every vLLM KV cache group's blocks are read; with them, only the
 groups stored in that object group. `matched_* - matched_inuse_*` is held
 only by blocks in vLLM's free queue (`ref_cnt == 0`, still hashed), which
-vLLM may evict at any allocation.
+vLLM may evict at any allocation. `matched_inuse_demoted_bytes` and
+`matched_inuse_mru_<cause>_bytes` split `matched_inuse_bytes` like
+`matched_demoted_*` and `matched_mru_<cause>_*` split `matched_*`: an
+in-use chunk whose L1 copy is not demoted was made MRU by that cause.
 
 The denominator is L1 because the question is how much L1 capacity is
 wasted; a ratio over L0 would grow when L1 grows even if L1 wasted nothing.

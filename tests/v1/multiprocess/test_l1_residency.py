@@ -319,10 +319,15 @@ def test_reply_splits_matched_by_demoted_state_and_last_mru_cause(
             model_name="m",
             world_size=1,
             chunk_hashes_by_salt={"": list(keys)},
+            inuse_chunk_hashes_by_salt={"": [b"a", b"c"]},
         ),
     )
 
     assert reply.matched_objects == 4
+    # The in-use subset splits the same way, in bytes.
+    assert reply.matched_inuse_demoted_bytes == OBJECT_BYTES
+    assert reply.matched_inuse_mru_bytes["lookup_touch"] == OBJECT_BYTES
+    assert sum(reply.matched_inuse_mru_bytes.values()) == OBJECT_BYTES
     assert (reply.matched_demoted_objects, reply.matched_demoted_bytes) == (
         1,
         OBJECT_BYTES,

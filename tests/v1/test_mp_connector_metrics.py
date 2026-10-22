@@ -89,6 +89,17 @@ def test_duplication_sample_is_a_latest_value() -> None:
             )
             for unit in ("objects", "bytes")
         },
+        "LMCache MP L1 dup matched_inuse_demoted_bytes": 0,
+        **{
+            f"LMCache MP L1 dup matched_inuse_mru_{cause}_bytes": 0
+            for cause in (
+                "write",
+                "lazy_touch",
+                "lookup_touch",
+                "end_session_touch",
+                "other",
+            )
+        },
     }
 
 
