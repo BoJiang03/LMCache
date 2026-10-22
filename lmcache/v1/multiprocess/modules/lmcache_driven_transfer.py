@@ -143,22 +143,24 @@ def all_null_chunk_masks(
     return masks
 
 
-def engine_held_chunk_mask(
+def engine_held_chunk_masks(
     block_ids: Sequence[Sequence[int]],
     object_groups: Sequence[ObjectGroupInfo],
     blocks_per_chunk: Sequence[int],
     num_chunks: int,
     held_block_ids: frozenset[int],
     null_block_id: int = 0,
-) -> list[bool]:
-    """Mark the chunks vLLM's prefix cache still holds, in every object group.
+) -> list[list[bool]]:
+    """Mark, per object group, the chunks vLLM's prefix cache still holds.
 
-    A chunk is held when every block id that is not the null block, over
-    every kernel group of every object group, is in ``held_block_ids``, and
-    there is at least one. The engine reports whole chunks it can serve: in
-    a hybrid model a chunk whose attention blocks are held but whose hit
-    would end before it is not served from the GPU, so none of its L1 copies
-    may be demoted, and a chunk held only in part is not either.
+    A chunk is held for an object group when every block id that is not the
+    null block, over every kernel group of that object group, is in
+    ``held_block_ids``, and there is at least one. The engine lists only
+    blocks of chunks it can serve, and of those only the blocks it keeps: a
+    chunk whose attention is held but whose own Mamba state is about to be
+    dropped has its attention object demoted and its Mamba object stored as
+    usual. A mixed object group (attention and Mamba in one object) is held
+    only when both are.
 
     Args:
         block_ids: Raw per-kernel-group engine block ids, indexed by
@@ -170,21 +172,23 @@ def engine_held_chunk_mask(
         null_block_id: Server-wide block ID denoting absent data.
 
     Returns:
-        ``mask[i]`` is True iff chunk ``i`` is held, for every object group.
+        ``mask[g][i]`` is True iff chunk ``i`` is held for object group ``g``.
     """
-    kernel_groups = [kg for group in object_groups for kg in group.kernel_group_indices]
-    mask: list[bool] = []
-    for i in range(num_chunks):
-        real = [
-            block
-            for kg in kernel_groups
-            for block in block_ids[kg][
-                i * blocks_per_chunk[kg] : (i + 1) * blocks_per_chunk[kg]
+    masks: list[list[bool]] = []
+    for group in object_groups:
+        mask: list[bool] = []
+        for i in range(num_chunks):
+            real = [
+                block
+                for kg in group.kernel_group_indices
+                for block in block_ids[kg][
+                    i * blocks_per_chunk[kg] : (i + 1) * blocks_per_chunk[kg]
+                ]
+                if block != null_block_id
             ]
-            if block != null_block_id
-        ]
-        mask.append(bool(real) and all(block in held_block_ids for block in real))
-    return mask
+            mask.append(bool(real) and all(block in held_block_ids for block in real))
+        masks.append(mask)
+    return masks
 
 
 @dataclass
@@ -787,16 +791,16 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 null_block_id,
                 skip_partly_null=key.requests_exclusive_retrieve(),
             )
-            # Chunks vLLM's prefix cache still holds: under exclusive retrieve
-            # their L1 copy goes to the evict-first end, and the engine stores
-            # them again before it evicts them.
+            # Per object group, chunks vLLM's prefix cache still holds: under
+            # exclusive retrieve their L1 copy goes to the evict-first end, and
+            # the engine stores them again before it evicts them.
             held_block_ids = (
                 key.engine_held_block_ids()
                 if key.requests_exclusive_retrieve()
                 else frozenset()
             )
             held_chunks = (
-                engine_held_chunk_mask(
+                engine_held_chunk_masks(
                     gpu_block_ids,
                     cache_context.kv_layer_groups_manager.object_groups,
                     blocks_per_chunk,
@@ -898,7 +902,9 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         held_keys_by_group[obj_group_id] = {
                             i: k
                             for i, k in enumerate(obj_keys)
-                            if held_chunks[i] and not skip_mask[i] and k not in oom_set
+                            if held_chunks[obj_group_id][i]
+                            and not skip_mask[i]
+                            and k not in oom_set
                         }
                     all_dict.update(reserved_dict)
                     if reserved_dict:

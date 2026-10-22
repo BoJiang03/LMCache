@@ -10,8 +10,8 @@
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
 - Those local-hit demotions count as demoted in the L1 committed usage.
-- A store's chunks whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists in every
-  object group (the engine can serve and still holds them) are committed or
+- A store's keys whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists, per object
+  group (the engine can serve and still holds them) are committed or
   touched demoted, a new key too when its write finishes after the demote;
   only under exclusive retrieve.
 - Under exclusive retrieve ``end_session`` touches no L1 key.
@@ -686,20 +686,74 @@ def test_store_of_held_new_chunks_commits_them_demoted(server: _Server) -> None:
     assert set(server.victims()[:4]) == set(stored)
 
 
-def test_chunk_held_in_one_object_group_only_is_not_demoted(
-    server: _Server,
+@pytest.mark.parametrize(
+    ("held_block_ids", "held_chunk_2"),
+    [
+        # Chunk 2's attention is held, its own Mamba state is not.
+        ([1, 2, 3], "full"),
+        ([1, 2, 5], "recurrent"),
+    ],
+    ids=["attention_only", "state_only"],
+)
+def test_chunk_is_demoted_per_object_group(
+    server: _Server, held_block_ids: list[int], held_chunk_2: str
 ) -> None:
-    """A chunk is held as a whole: a hint listing chunk 2's recurrent state
-    but not its attention block demotes neither; both are written MRU."""
+    """Each object group of a chunk is demoted when the hint lists its
+    blocks; the chunk's other object group is written MRU."""
     full, recurrent = server.keys()
     server.storage.delete_l1_keys(full + recurrent)
 
-    assert server.store(exclusive=True, held_block_ids=[1, 2, 5])
+    assert server.store(exclusive=True, held_block_ids=held_block_ids)
 
-    assert set(_demoted(server, full + recurrent[2:])) == {full[0], full[1]}
-    victims = server.victims()
-    assert set(victims[:2]) == {full[0], full[1]}
-    assert set(victims[-2:]) == {full[2], recurrent[2]}
+    held, unheld = (
+        (full[2], recurrent[2]) if held_chunk_2 == "full" else (recurrent[2], full[2])
+    )
+    assert set(_demoted(server, full + recurrent[2:])) == {full[0], full[1], held}
+    assert server.victims()[-1] == unheld
+
+
+def _mix_object_groups(srv: _Server) -> list[ObjectKey]:
+    """Make the server's two kernel groups one mixed object group.
+
+    Returns:
+        The request's mixed keys, none of them resident.
+    """
+    full, recurrent = srv.keys()
+    srv.storage.delete_l1_keys(full + recurrent)
+    cache_context = srv.module.get_and_touch_context_entry(1).cache_context
+    cache_context.kv_layer_groups_manager = SimpleNamespace(
+        num_object_groups=1,
+        num_kernel_groups=2,
+        object_groups=[ObjectGroupInfo(kernel_group_indices=[0, 1])],
+    )
+    return full
+
+
+@pytest.mark.parametrize(
+    ("held_block_ids", "demoted"),
+    [([1, 2, 3], False), ([1, 2, 3, 5], True)],
+    ids=["state_free", "state_held"],
+)
+def test_mixed_chunk_is_demoted_only_with_its_state(
+    server: _Server, held_block_ids: list[int], demoted: bool
+) -> None:
+    """One mixed object group is demoted only when the hint lists its Mamba
+    state too. A re-store of the attention alone, the state nulled, skips
+    the chunk and leaves its copy resident: nothing is lost."""
+    mixed = _mix_object_groups(server)
+
+    assert server.store(exclusive=True, held_block_ids=held_block_ids)
+    assert server.storage.get_l1_committed_usage(mixed[2:], "model").matched_objects
+    assert _demoted(server, mixed) == ([mixed[2]] if demoted else [])
+    used = server.storage.get_l1_usage()[0]
+
+    _, ok = server.module.store(_ipc_key(True), 1, [[1, 2, 3], [-1, -1, -1]], b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert server.storage.get_l1_usage()[0] == used
+    usage = server.storage.get_l1_committed_usage(mixed[2:], "model")
+    assert usage.matched_objects == 1
 
 
 def test_held_hint_without_exclusive_retrieve_changes_nothing(

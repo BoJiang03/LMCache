@@ -1674,6 +1674,44 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
     )
 
 
+def test_attention_of_a_chunk_whose_own_state_is_freed_is_held() -> None:
+    """A chunk whose attention is in use and which vLLM serves through a
+    later state is held without its own freed state: the hint and the parked
+    op list its attention only, and the re-store after the release restores
+    that attention, losing nothing."""
+    coordinator = _coordinator(mamba=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(3)
+    attention = [block.block_id for block in pool.get_new_blocks(3)]
+    mamba = [null] + [block.block_id for block in pool.get_new_blocks(2)]
+    _cache(pool, chain, [attention, mamba])
+    pool.free_blocks([pool.blocks[mamba[1]]])
+    manager = _manager(
+        pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
+    )
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_exclusive_op([attention, mamba]))
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert store.op.block_ids == [attention, mamba]
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted(
+        [*attention, mamba[2]]
+    )
+    manager.on_store_results(set(), {"req": 1})
+    pool.free_blocks([pool.blocks[attention[1]]])
+    (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert restore.op.block_ids == [attention, [null, null, mamba[2]]]
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    assert " held_ops_parked=1" in line
+    assert "held_ops_lost" not in line
+    assert "held_ops_dropped" not in line
+
+
 NOT_HELD_REASONS = (
     "not_held_attn_inuse_state_free",
     "not_held_attn_free",
@@ -1891,7 +1929,7 @@ def test_engine_held_chunk_of_a_segment_is_parked_and_stored_again() -> None:
     Every chunk has a state; chunks 1 and 3 have theirs freed to the queue
     head, so chunks 1..3 are due and chunk 0, served through its state, is
     not stored. vLLM's hit from blocks in use ends at chunk 2's state, so
-    chunk 2 is engine-held.
+    chunk 2 is engine-held, and chunk 1's attention without its freed state.
     """
     coordinator = _coordinator(mamba=True, num_blocks=64)
     pool = coordinator.block_pool
@@ -1913,7 +1951,7 @@ def test_engine_held_chunk_of_a_segment_is_parked_and_stored_again() -> None:
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
     assert _span(store) == (1, 4)
     assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted(
-        [attention[2], mamba[2]]
+        [attention[1], attention[2], mamba[2]]
     )
     manager.on_store_results(set(), {"req": 1})
     pool.free_blocks([pool.blocks[attention[2]]])

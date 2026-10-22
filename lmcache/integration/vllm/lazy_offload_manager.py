@@ -1202,17 +1202,19 @@ class LazyOffloadManager:
     ]:
         """Split off the chunks of one emitted op that vLLM still holds.
 
-        A chunk is engine-held when every block of it but the null block,
-        over every cache group, is in ``vllm_held``, it has one, and it ends
-        within ``servable_tokens()``. A chunk held in part is not: vLLM
-        cannot serve it whole, so it is stored like any other, and parking it
-        would keep blocks already in the free queue, which could make it due
-        at every drain.
+        A chunk is engine-held when it has a block that is not the null
+        block, every such block of its full-attention groups (of every group
+        in a model without attention) is in ``vllm_held``, and it ends within
+        ``servable_tokens()``. The chunk's own recurrent or sliding-window
+        blocks need not be in use: the servable prefix already requires the
+        Mamba state or window that anchors the hit past the chunk, so vLLM
+        serves the chunk's attention from L0 while it is about to lose the
+        chunk's own state, whose copy is then stored as any other.
 
-        Requiring every block in use, rather than only cached, is what makes
-        the chunk one vLLM keeps: a block in the free queue still serves a
-        hit until vLLM recycles it, and an L1 copy demoted for it would be
-        gone when the next hit needs it.
+        Requiring blocks in use, rather than only cached, is what makes the
+        part one vLLM keeps: a block in the free queue still serves a hit
+        until vLLM recycles it, and an L1 copy demoted for it would be gone
+        when the next hit needs it.
 
         Args:
             metadata: The emitted op.
@@ -1221,15 +1223,18 @@ class LazyOffloadManager:
             servable_tokens: Returns the request's prefix vLLM could serve
                 from blocks it references, in tokens
                 (:meth:`_servable_tokens`); called only for a chunk whose
-                blocks are all in ``vllm_held``.
+                full-attention blocks are all in ``vllm_held``.
 
         Returns:
             Per chunk of the op, its :meth:`_chunk_state` and its number of
             real full-attention blocks, ``None`` for a chunk with only null
-            blocks (nothing to store); and the op to
-            park, with the blocks of every chunk that is not engine-held
-            replaced by the null block and the snapshot of the blocks it
-            keeps, or ``None`` when it keeps none.
+            blocks (nothing to store); and the op to park, keeping of each
+            engine-held chunk the blocks in ``vllm_held``, every other block
+            replaced by the null block, with the snapshot of the blocks it
+            keeps, or ``None`` when it keeps none. The server demotes an
+            object group of a chunk only when the hint, the kept blocks,
+            lists every block of that group, so a chunk's freed state is
+            stored to MRU.
         """
         null_block_id = self._require_block_pool().null_block.block_id
         op = metadata.op
@@ -1274,7 +1279,14 @@ class LazyOffloadManager:
             )
         ]
         chunks_held = [
-            None if state is None else state[0] == _HELD for state in chunk_states
+            all(block_id in vllm_held for block_id in attention or real)
+            and min(op.start + (chunk_idx + 1) * self._chunk_size, op.end)
+            <= servable_tokens()
+            if real
+            else None
+            for chunk_idx, (real, attention) in enumerate(
+                zip(real_blocks, attention_blocks, strict=True)
+            )
         ]
         parked_block_ids: list[list[int]] = []
         for chunks, group_block_ids in zip(chunk_of, op.block_ids, strict=True):
@@ -1283,7 +1295,9 @@ class LazyOffloadManager:
                 continue
             parked_block_ids.append(
                 [
-                    block_id if chunks_held[chunk_idx] else null_block_id
+                    block_id
+                    if chunks_held[chunk_idx] and block_id in vllm_held
+                    else null_block_id
                     for chunk_idx, block_id in zip(chunks, group_block_ids, strict=True)
                 ]
             )
@@ -1306,9 +1320,12 @@ class LazyOffloadManager:
         chunk_end: int,
         servable_tokens: Callable[[], int],
     ) -> str:
-        """Name whether a chunk is engine-held and, if not, the first reason.
+        """Name whether a chunk is held whole and, if not, the first reason.
 
-        The reasons split the chunks that are not held, so they add up to
+        Diagnostic only, by the whole-chunk rule that every block of the
+        chunk is in use: ``not_held_attn_inuse_state_free`` counts the chunks
+        whose attention :meth:`_engine_held_part` may still hold. The reasons
+        split the chunks not held whole, so they add up to
         ``emitted_chunks_not_held``. A chunk with no real full-attention
         block, as in a model without attention, counts a block not in use
         as ``not_held_attn_free``.
@@ -1406,12 +1423,13 @@ class LazyOffloadManager:
         chunk_states: list[tuple[str, int] | None],
         trigger_kind: str,
     ) -> None:
-        """Count one emitted op's chunks by engine-held state and trigger.
+        """Count one emitted op's chunks by whole-chunk held state and trigger.
 
-        A held chunk counts as held by the emitting request while that
-        request runs, and by another one once it finished: a running request
-        references every full-attention block it was handed, but a block it
-        freed (a sliding-window one) may be held by another, so the split is
+        Held means held whole (see :meth:`_chunk_state`). A held chunk counts
+        as held by the emitting request while that request runs, and by
+        another one once it finished: a running request references every
+        full-attention block it was handed, but a block it freed (a
+        sliding-window one) may be held by another, so the split is
         approximate.
 
         Args:

@@ -89,20 +89,25 @@ no-op re-store there.
    every cache group, so a due op can carry chunks whose blocks vLLM still
    references (an align-mode Mamba group frees older state blocks while the
    attention blocks stay held). At emission the connector counts chunk `k`
-   as engine-held, in every cache group at once, iff vLLM could serve it
-   and keeps it: vLLM's own `KVCacheCoordinator.find_longest_cache_hit` over
-   the request's `Request.block_hashes` (all KV cache groups, read-only),
-   restricted to blocks vLLM references, covers the chunk's end, and every
-   non-null block of the chunk, in every group, has
-   `ref_cnt > LMCache's own pins`. The restriction is applied by cutting:
+   as engine-held iff vLLM could serve it and keeps its attention: vLLM's
+   own `KVCacheCoordinator.find_longest_cache_hit` over the request's
+   `Request.block_hashes` (all KV cache groups, read-only), restricted to
+   blocks vLLM references, covers the chunk's end, and every non-null block
+   of the chunk's full-attention groups (of every group in a model without
+   attention) has `ref_cnt > LMCache's own pins`. The chunk's own Mamba or
+   sliding-window blocks need not be referenced: the hit already requires
+   the state or window that anchors it past the chunk. The restriction is applied by cutting:
    when a block the hit returns (an attention block below the hit end, the
    Mamba state or window that makes the end a hit point) has
    `ref_cnt <= LMCache's pins`, the lookup is repeated with the hit capped
-   at that block's start, until every returned block is referenced. It sends those block ids as
+   at that block's start, until every returned block is referenced. It sends
+   the held chunks' referenced block ids as
    `request_configs["lmcache.hint.engine_held_blocks"]` on the STORE. The
-   server's store demotes, chunk by chunk through
-   `StorageManager.demote_cached_keys`, the keys of the chunks whose every
-   non-null block, over every object group, is listed: a resident key is
+   server's store demotes, chunk by chunk and per object group through
+   `StorageManager.demote_cached_keys`, the keys whose every non-null block,
+   over the kernel groups of that object group, is listed, so a chunk's
+   freed Mamba object is written MRU while its attention object is demoted;
+   a mixed object group needs its Mamba block listed too, as before: a resident key is
    demoted instead of touched; a new key is admitted demoted when its write
    finishes (`L1Manager.demote_keys` marks a staged key, and `finish_write`
    demotes it after marking the write MRU). Any other chunk is stored as
@@ -115,13 +120,13 @@ no-op re-store there.
    Demoting those copies puts the copy the next hit needs first in L1's
    eviction order, which turns the hit into a recompute. A free-queue block
    still serves a hit until vLLM recycles it, so a chunk resting on one is
-   not counted either, whether the block is the chunk's own or the Mamba
-   state that anchors the hit past it: its demoted copy could be evicted
-   before that hit.
+   not counted either when it is the chunk's attention or the Mamba state
+   that anchors the hit past it: its demoted copy could be evicted before
+   that hit.
 
    The connector keeps the held part of each emitted op outside the policy
-   ("parked"), with every chunk that was not held replaced by the
-   null block, and hands it back to the policy once vLLM drops a reference
+   ("parked"), with every chunk that was not held, and every block of a
+   held chunk vLLM no longer references, replaced by the null block, and hands it back to the policy once vLLM drops a reference
    to one of its blocks (`ref_cnt <= LMCache's pins`). From then on it is an
    ordinary candidate: stored at its own eviction, touched or written to
    MRU. A parked op does not ride along with later ops of its request, so
@@ -241,6 +246,9 @@ request, never wrong KV:
   chunk that is null in any kernel group, rather than commit a null recurrent
   state under a valid key, so its demoted L1 copy may be evicted. Separate
   object groups avoid this: only the all-null Mamba object is skipped.
+  A chunk parked without its freed Mamba state costs a mixed object group a
+  park, its pins and a re-store that is skipped: the chunk was not demoted,
+  since its state was not listed, so its copy was already stored MRU.
 
 ## Flag plumbing
 
