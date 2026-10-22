@@ -86,12 +86,13 @@ GroupWindow("recurrent", 1)]` and `GroupHeldChunks(GroupWindow("recurrent",
 
 The module counts whatever chunks the client names; deciding which chunks
 another cache holds is the client's job. For vLLM's GPU prefix cache, the
-scheduler-side meter counts chunk `i` as in L0, in every object group, iff
-vLLM could serve it: its hit over all KV cache groups covers
-`(i + 1) * chunk_size` tokens. Deciding each object group on its own KV
-cache groups overcounted hybrid models: attention blocks cached past the
-last Mamba state serve no hit, so their L1 copies are the ones a later hit
-loads. See
+scheduler-side meter counts chunk `i` as in L0 in an object group iff vLLM
+could serve it, its hit over all KV cache groups covering
+`(i + 1) * chunk_size` tokens, and L0 caches the object's own data (the
+chunk's Mamba state or sliding window, where the object group has one).
+Deciding each object group on its own KV cache groups overcounted hybrid
+models: attention blocks cached past the last Mamba state serve no hit, so
+their L1 copies are the ones a later hit loads. See
 [l1_duplication.md](../../integration/vllm/l1_duplication.md#when-a-chunk-of-one-group-counts-as-in-l0)
 for the rule and an example.
 

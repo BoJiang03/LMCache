@@ -26,8 +26,9 @@ ones defined in ``lazy_offload_policy.base``:
   operation, which deferral would otherwise retain once per operation.
 - **Engine-held**: said of a chunk, when it is emitted, that vLLM could
   serve as a local prefix-cache hit and keeps: vLLM's hit over every
-  KV-cache group covers it, and every block of it, in every group, is
-  referenced beyond this class's own pins. In a hybrid model the hit ends at
+  KV-cache group, cut to the longest one whose every block is referenced
+  beyond this class's own pins, covers it, and so is every block of the
+  chunk, in every group. In a hybrid model the hit ends at
   the last position every group can resume from (a cached Mamba state, a
   full sliding window), so a chunk past it is not engine-held however many
   of its attention blocks are cached: the next hit loads them from L1. Under
@@ -744,7 +745,7 @@ class LazyOffloadManager:
             engine_held_block_ids: list[int] = []
             trigger_kind = self._block_group_kind(item)
             # Looked up at most once per item, and only for a chunk whose
-            # blocks are all in use.
+            # blocks are all in use; pins leave it unchanged.
             servable_tokens = cache(partial(self._servable_tokens, item.request_id))
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
@@ -1208,9 +1209,10 @@ class LazyOffloadManager:
             metadata: The emitted op.
             block_hashes: Its hash snapshot, keyed by its non-null blocks.
             vllm_held: Its blocks vLLM references beyond this class's pins.
-            servable_tokens: Returns the request's prefix vLLM could serve,
-                in tokens (:meth:`_servable_tokens`); called only for a
-                chunk whose blocks are all in ``vllm_held``.
+            servable_tokens: Returns the request's prefix vLLM could serve
+                from blocks it references, in tokens
+                (:meth:`_servable_tokens`); called only for a chunk whose
+                blocks are all in ``vllm_held``.
 
         Returns:
             Per chunk of the op, whether it is engine-held, ``None`` for a
@@ -1268,12 +1270,15 @@ class LazyOffloadManager:
         return chunks_held, (parked, parked_hashes)
 
     def _servable_tokens(self, request_id: str) -> int:
-        """Return how much of a request's prefix vLLM could serve locally now.
+        """Return how much of a request's prefix vLLM serves from blocks it keeps.
 
-        vLLM's own ``find_longest_cache_hit`` over every KV-cache group and
-        the request's whole hash chain: a Mamba state or sliding window
-        cached past a chunk can make the chunk servable. Read-only: it takes
-        no reference, touches no LRU order and emits no event.
+        The longest hit of vLLM's own ``find_longest_cache_hit`` over every
+        KV-cache group whose every block, the ones the hit returns, is
+        referenced beyond this class's pins. A hit relying on a block in the
+        free queue is cut below that block and looked up again, so a Mamba
+        state or sliding window that anchors the hit cannot be recycled while
+        a chunk it serves is parked. Read-only: the lookup takes no
+        reference, touches no LRU order and emits no event.
 
         Args:
             request_id: A request that arrived and whose session has not
@@ -1282,11 +1287,29 @@ class LazyOffloadManager:
         Returns:
             The hit length in tokens, the same for every cache group.
         """
+        coordinator = self._require_coordinator()
         chain = self._block_hash_chains[request_id]
-        _, hit_tokens, _ = self._require_coordinator().find_longest_cache_hit(
-            chain, len(chain) * self._require_block_pool().hash_block_size
-        )
-        return hit_tokens
+        max_tokens = len(chain) * self._require_block_pool().hash_block_size
+        while True:
+            hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
+                chain, max_tokens
+            )
+            # A hit past a free block's start relies on it.
+            max_tokens = min(
+                (
+                    position * manager.block_size
+                    for manager, blocks in zip(
+                        coordinator.single_type_managers, hit_blocks, strict=True
+                    )
+                    for position, block in enumerate(blocks)
+                    if position * manager.block_size < hit_tokens
+                    and not block.is_null
+                    and block.ref_cnt <= self._pin_counts[block.block_id]
+                ),
+                default=hit_tokens,
+            )
+            if max_tokens == hit_tokens:
+                return hit_tokens
 
     def _block_group_kind(self, item: PendingStoreItem) -> str:
         """Name the cache-group kind of the block that made ``item`` due.

@@ -116,6 +116,8 @@ def _step(
 class _EmptyPrefixCache:
     """A KV cache coordinator whose GPU prefix cache serves no hit."""
 
+    single_type_managers = ()
+
     def find_longest_cache_hit(
         self, block_hashes: list[BlockHash], max_cache_hit_length: int
     ) -> tuple[tuple[list, ...], int, int]:
@@ -1477,12 +1479,12 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     manager, (first, second) = _held_manager(coordinator, 2)
     op = _exclusive_op([[first, second], [null, null]]) if exclusive else None
     manager.add_store_candidate(op or _op(0, [[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[first]])
+    pool.free_blocks([pool.blocks[second]])
 
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
     assert store.op.block_ids[0] == [first, second]
     assert (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT) == (
-        [second] if exclusive else None
+        [first] if exclusive else None
     )
     manager.on_store_results(set(), {"req": 1})
     finished = manager.on_request_finished("req")
@@ -1491,7 +1493,7 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     for _ in range(4):
         assert manager.on_scheduler_step(_step()).stores_to_submit == []
 
-    pool.free_blocks([pool.blocks[second]])
+    pool.free_blocks([pool.blocks[first]])
     restores = manager.on_scheduler_step(_step()).stores_to_submit
     settled = manager.on_store_results(set(), {"req": 1} if restores else {})
 
@@ -1500,11 +1502,11 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
         return
     (restore,) = restores
     assert (restore.op.start, restore.op.end) == (0, 2 * TOKENS_PER_BLOCK)
-    assert restore.op.block_ids == [[null, second], [null, null]]
+    assert restore.op.block_ids == [[first, null], [null, null]]
     assert ENGINE_HELD_BLOCKS_HINT not in (restore.request_configs or {})
     assert settled.sessions_to_end == ["req"]
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    assert pool.blocks[second].ref_cnt == 0
+    assert pool.blocks[first].ref_cnt == 0
 
 
 def test_released_held_chunk_is_stored_before_the_queue_reaches_it() -> None:
@@ -1516,19 +1518,19 @@ def test_released_held_chunk_is_stored_before_the_queue_reaches_it() -> None:
     null = pool.null_block.block_id
     manager, ids = _held_manager(coordinator, pool.get_num_free_blocks(), {})
     manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
-    pool.free_blocks([pool.blocks[block_id] for block_id in ids if block_id != ids[1]])
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids if block_id != ids[0]])
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
-    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == [ids[1]]
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == [ids[0]]
     manager.on_store_results(set(), {"req": 1})
 
     # Released to the tail of a free queue longer than the reserve.
-    pool.free_blocks([pool.blocks[ids[1]]])
+    pool.free_blocks([pool.blocks[ids[0]]])
     assert pool.get_num_free_blocks() > ADMISSION_RESERVE
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
     pool.get_new_blocks(pool.get_num_free_blocks() - ADMISSION_RESERVE)
     (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    assert restore.op.block_ids[0] == [null, ids[1]]
+    assert restore.op.block_ids[0] == [ids[0], null]
 
 
 def test_held_chunk_is_pinned_while_an_allocation_can_take_the_whole_queue() -> None:
@@ -1540,17 +1542,17 @@ def test_held_chunk_is_pinned_while_an_allocation_can_take_the_whole_queue() -> 
     null = pool.null_block.block_id
     manager, ids = _held_manager(coordinator, pool.get_num_free_blocks(), {})
     manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
-    pool.free_blocks([pool.blocks[ids[0]], pool.blocks[ids[2]]])
+    pool.free_blocks([pool.blocks[ids[1]], pool.blocks[ids[2]]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_store_results(set(), {"req": 1})
 
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    assert pool.blocks[ids[1]].ref_cnt == 2
-    pool.free_blocks([pool.blocks[ids[1]]])
-    assert pool.blocks[ids[1]].ref_cnt == 1
+    assert pool.blocks[ids[0]].ref_cnt == 2
+    pool.free_blocks([pool.blocks[ids[0]]])
+    assert pool.blocks[ids[0]].ref_cnt == 1
     (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    assert restore.op.block_ids[0] == [null, ids[1]]
+    assert restore.op.block_ids[0] == [ids[0], null]
 
 
 def test_reset_drops_a_parked_chunk() -> None:
@@ -1561,12 +1563,12 @@ def test_reset_drops_a_parked_chunk() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[first]])
+    pool.free_blocks([pool.blocks[second]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_store_results(set(), {"req": 1})
 
     manager.on_request_reset("req")
-    pool.free_blocks([pool.blocks[second]])
+    pool.free_blocks([pool.blocks[first]])
 
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
     with patch.object(eviction_aware.logger, "info") as mock_info:
@@ -1584,10 +1586,10 @@ def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[first]])
+    pool.free_blocks([pool.blocks[second]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_store_results(set(), {"req": 1})
-    pool.free_blocks([pool.blocks[second]])
+    pool.free_blocks([pool.blocks[first]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     with patch.object(eviction_aware.logger, "info") as mock_info:
@@ -1600,6 +1602,21 @@ def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
     assert " readmitted=1 " in line
 
 
+def test_chunk_past_a_free_block_is_not_held() -> None:
+    """A chunk whose blocks vLLM still holds is not engine-held when the hit
+    reaching it relies on an earlier block in the free queue."""
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, (first, second) = _held_manager(coordinator, 2)
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+    pool.free_blocks([pool.blocks[first]])
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert ENGINE_HELD_BLOCKS_HINT not in (store.request_configs or {})
+
+
 @pytest.mark.parametrize(
     ("states", "freed_states", "held_chunks"),
     [
@@ -1608,17 +1625,25 @@ def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
         ([0], [], [0]),
         # A state at chunk 1's end: vLLM serves chunks 0 and 1.
         ([1], [], [0, 1]),
-        # The state at chunk 2's end serves all three chunks, but it sits in
-        # the free queue, where vLLM may recycle it: chunk 2 is not held.
-        ([2], [2], [0, 1]),
+        # The only state, at chunk 2's end, serves all three chunks, but it
+        # sits in the free queue, where vLLM may recycle it: none is held.
+        ([2], [2], []),
+        # With it free, the state at chunk 1's end still serves chunks 0, 1.
+        ([1, 2], [2], [0, 1]),
     ],
-    ids=["state_at_chunk_0", "state_at_chunk_1", "free_state_at_chunk_2"],
+    ids=[
+        "state_at_chunk_0",
+        "state_at_chunk_1",
+        "only_state_free",
+        "last_state_free",
+    ],
 )
 def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
     states: list[int], freed_states: list[int], held_chunks: list[int]
 ) -> None:
     """The hint lists a chunk's blocks only when vLLM's own hit over every
-    KV cache group covers the chunk and every block of it is in use."""
+    KV cache group, from blocks in use only, covers the chunk and every
+    block of it is in use."""
     coordinator = _coordinator(mamba=True)
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -1636,7 +1661,7 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
 
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted(
+    assert (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT, []) == sorted(
         block_id
         for chunk in held_chunks
         for block_id in (attention[chunk], mamba[chunk])

@@ -445,7 +445,7 @@ def test_matched_splits_by_demoted_state_and_last_mru_cause(
         assert parts == fields[f"matched_{unit}"]
 
 
-def test_mamba_hit_holds_every_chunk_up_to_its_latest_state(
+def test_mamba_hit_holds_only_the_chunks_whose_state_l0_keeps(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -453,12 +453,13 @@ def test_mamba_hit_holds_every_chunk_up_to_its_latest_state(
     coordinator = _Coordinator(attention=False, mamba=True)
     meter, clock, samples = _meter(_Adapter(store), coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
-    # Mamba keeps only the latest state; earlier ones were freed.
+    # Mamba keeps only the latest state; earlier ones were freed. vLLM
+    # serves all three chunks, but L0 has the data of the last one only.
     coordinator.mamba_states.add(_block_hashes(TOKENS)[-1])
 
     _sample(meter, clock)
 
-    assert _matched(samples) == 3
+    assert _matched(samples) == 1
 
 
 def test_hybrid_gap_holds_only_the_prefix_vllm_hits(
@@ -525,24 +526,17 @@ def test_finished_prefix_is_cut_to_what_l0_holds_then_dropped(
     assert [s.matched_objects for s in samples] == [3, 1, 1, 0, 0]
 
 
-@pytest.mark.parametrize(
-    "coordinator_kwargs",
-    [{"eagle": True}, {"attention": False, "mamba": True}],
-    ids=["eagle", "mamba"],
-)
 def test_finished_prefix_keeps_what_vllm_still_hits_from_its_prompt(
-    storage: tuple[L1Manager, StorageManager], coordinator_kwargs: dict[str, bool]
+    storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
     commit(l1, *(object_key(c) for c in CHUNK_HASHES))
-    coordinator = _Coordinator(**coordinator_kwargs)
+    coordinator = _Coordinator(eagle=True)
     meter, clock, samples = _meter(_Adapter(store), coordinator)
     # Two tokens past the last chunk: vLLM hits all three chunks from this
-    # prompt, but EAGLE would hit fewer from a list cut at chunk 2's end, and
-    # Mamba nothing, since its only state sits past the cut.
+    # prompt, but EAGLE would hit fewer from a list cut at chunk 2's end.
     tokens = [*TOKENS, 12, 13]
     _cache(coordinator, tokens)
-    coordinator.mamba_states.add(_block_hashes(tokens)[-1])
     meter.on_request_tracked(*_request("r", tokens))
     meter.on_request_finished("r")
 
@@ -746,7 +740,7 @@ def _commit_all_chunks(l1: L1Manager, *object_group_ids: int) -> None:
     )
 
 
-def test_separated_object_groups_hold_every_chunk_vllm_can_serve(
+def test_separated_object_groups_hold_only_objects_whose_data_l0_has(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -756,8 +750,8 @@ def test_separated_object_groups_hold_every_chunk_vllm_can_serve(
     meter, clock, samples = _meter(adapter, coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
     # Attention holds all three chunks; Mamba keeps states at the ends of
-    # chunks 0 and 2 only. vLLM serves all three, so chunk 1's Mamba object
-    # counts too, although its own state was freed.
+    # chunks 0 and 2 only. vLLM serves all three, but chunk 1's own state
+    # was freed, so its Mamba object is not in L0.
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [1, 5])
 
@@ -768,14 +762,14 @@ def test_separated_object_groups_hold_every_chunk_vllm_can_serve(
     assert adapter.calls == 2
     assert samples == [
         DuplicationSample(
-            matched_objects=6,
-            matched_bytes=6 * OBJECT_BYTES,
+            matched_objects=5,
+            matched_bytes=5 * OBJECT_BYTES,
             model_objects=6,
             model_bytes=6 * OBJECT_BYTES,
             matched_inuse_objects=0,
             matched_inuse_bytes=0,
-            matched_mru_write_objects=6,
-            matched_mru_write_bytes=6 * OBJECT_BYTES,
+            matched_mru_write_objects=5,
+            matched_mru_write_bytes=5 * OBJECT_BYTES,
         )
     ]
 
@@ -787,8 +781,8 @@ def test_separated_object_groups_hold_every_chunk_vllm_can_serve(
         # chunks 1 and 2 of the attention group are not in L0 either.
         (range(6), [1], 2),
         # A state at chunk 1's end, attention through chunk 1: chunks 0
-        # and 1 in both object groups, none of chunk 2.
-        (range(4), [3], 4),
+        # and 1 of attention, and of Mamba only chunk 1, whose state L0 has.
+        (range(4), [3], 3),
         # Attention holds chunk 0 only: Mamba's state at chunk 2's end serves
         # nothing.
         (range(2), [5], 0),
@@ -826,8 +820,8 @@ def test_separated_object_groups_split_in_use_by_their_own_blocks(
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [1, 5])
     # A running request holds chunk 2's attention blocks and the Mamba state
-    # at chunk 0's end; the other held objects are free-cached, chunk 1's
-    # Mamba object with no state block at all.
+    # at chunk 0's end; the other held objects are free-cached. Chunk 1's
+    # Mamba object, with no state block, is not held.
     hashes = _block_hashes(TOKENS)
     coordinator.block_pool.in_use.update(
         {(hashes[4], 0), (hashes[5], 0), (hashes[1], 1)}
@@ -836,7 +830,7 @@ def test_separated_object_groups_split_in_use_by_their_own_blocks(
     _sample(meter, clock)
     _sample(meter, clock)
 
-    assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (6, 2)
+    assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (5, 2)
     assert samples[-1].matched_inuse_bytes == 2 * OBJECT_BYTES
 
 
@@ -862,7 +856,7 @@ def test_object_group_of_several_kv_cache_groups_holds_the_whole_hit(
     assert _matched(samples) == 1
 
 
-def test_sliding_window_holds_every_chunk_before_the_hit_end(
+def test_sliding_window_holds_only_chunks_whose_window_l0_has(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -875,14 +869,15 @@ def test_sliding_window_holds_every_chunk_before_the_hit_end(
     meter, clock, samples = _meter(_Adapter(store, attn_desc=attn_desc), coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
     # Chunk 1's window is cached; chunk 2's only in part; chunk 0's not.
-    # vLLM serves through chunk 1, which needs no window at chunk 0's end.
+    # vLLM serves through chunk 1, which needs no window at chunk 0's end,
+    # but L0 has the window data of chunk 1 only.
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [2, 3, 5])
 
     _sample(meter, clock)
     _sample(meter, clock)
 
-    assert _matched(samples) == 2
+    assert _matched(samples) == 1
 
 
 def test_finished_prefix_keeps_each_object_group_its_held_chunks(
@@ -910,7 +905,7 @@ def test_finished_prefix_keeps_each_object_group_its_held_chunks(
     _cache_blocks(coordinator, 0, [0, 1])
     _sample(meter, clock)
 
-    assert [s.matched_objects for s in samples] == [6, 2, 2, 0, 0]
+    assert [s.matched_objects for s in samples] == [5, 2, 2, 0, 0]
 
 
 @pytest.mark.parametrize(

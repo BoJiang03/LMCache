@@ -91,9 +91,14 @@ no-op re-store there.
    attention blocks stay held). At emission the connector counts chunk `k`
    as engine-held, in every cache group at once, iff vLLM could serve it
    and keeps it: vLLM's own `KVCacheCoordinator.find_longest_cache_hit` over
-   the request's `Request.block_hashes` (all KV cache groups, read-only)
-   covers the chunk's end, and every non-null block of the chunk, in every
-   group, has `ref_cnt > LMCache's own pins`. It sends those block ids as
+   the request's `Request.block_hashes` (all KV cache groups, read-only),
+   restricted to blocks vLLM references, covers the chunk's end, and every
+   non-null block of the chunk, in every group, has
+   `ref_cnt > LMCache's own pins`. The restriction is applied by cutting:
+   when a block the hit returns (an attention block below the hit end, the
+   Mamba state or window that makes the end a hit point) has
+   `ref_cnt <= LMCache's pins`, the lookup is repeated with the hit capped
+   at that block's start, until every returned block is referenced. It sends those block ids as
    `request_configs["lmcache.hint.engine_held_blocks"]` on the STORE. The
    server's store demotes, chunk by chunk through
    `StorageManager.demote_cached_keys`, the keys of the chunks whose every
@@ -110,7 +115,9 @@ no-op re-store there.
    Demoting those copies puts the copy the next hit needs first in L1's
    eviction order, which turns the hit into a recompute. A free-queue block
    still serves a hit until vLLM recycles it, so a chunk resting on one is
-   not counted either: its demoted copy could be evicted before that hit.
+   not counted either, whether the block is the chunk's own or the Mamba
+   state that anchors the hit past it: its demoted copy could be evicted
+   before that hit.
 
    The connector keeps the held part of each emitted op outside the policy
    ("parked"), with every chunk that was not held replaced by the
@@ -222,10 +229,12 @@ request, never wrong KV:
   `held_ops_lost`). When the next step may allocate every free block, the
   drain pins parked blocks, so a release in that step cannot recycle them
   before the next drain.
-- **Hit shrinks under a parked chunk.** A parked op is readmitted when one
-  of its own blocks is released. A chunk vLLM served only through a Mamba
-  state cached past it stops being servable once vLLM recycles that state,
-  while its own blocks stay referenced and its L1 copy stays demoted.
+- **Anchor released before the chunk.** A parked op is readmitted when one
+  of its own blocks is released. The Mamba state that anchored its hit was
+  referenced at emission, and a request holds both until it ends, so they
+  are normally released together. If the anchor's last holder is a request
+  that does not hold the chunk's own blocks, vLLM can free and recycle the
+  anchor while the chunk stays parked, and its L1 copy stays demoted.
 - **Mixed hybrid chunk before the tail.** Without `--separate-object-groups`,
   one object holds attention and align-mode Mamba slices, and vLLM leaves a
   loaded chunk's Mamba blocks null except at the tail. The re-store skips a

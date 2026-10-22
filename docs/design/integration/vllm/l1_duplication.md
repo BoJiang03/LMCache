@@ -23,14 +23,17 @@ object_ratio = matched_objects / model_objects
   [l1_residency.md](../../v1/multiprocess/l1_residency.md#definitions)
   defines them. **matched_\***: the committed objects of the chunks L0
   holds.
-- **Held in L0** (servable): chunk `i` of a prefix is held, in every object
-  group, iff vLLM would hit at least `(i + 1) * chunk_size` tokens of that
-  prefix from the GPU now. The meter asks vLLM's own
+- **Held in L0**: chunk `i` of a prefix is held in an object group iff
+  vLLM would hit at least `(i + 1) * chunk_size` tokens of that prefix from
+  the GPU now, and L0 still caches the chunk's own data in that object
+  group: for each Mamba KV cache group the state block at the chunk's end,
+  for each sliding-window group the window ending there (full attention
+  is cached by the hit itself). The meter asks vLLM's own
   `KVCacheManager.coordinator.find_longest_cache_hit`, so every attention
-  type (full, sliding window, Mamba, hybrid) uses vLLM's rule. Past the
-  hit, LMCache loads from L1, so L1's copy is used, not wasted. With
-  `--separate-object-groups` each object group counts its own objects of
-  the held chunks (see below).
+  type (full, sliding window, Mamba, hybrid) uses vLLM's rule for the hit.
+  Past the hit, LMCache loads from L1, so L1's copy is used, not wasted.
+  With `--separate-object-groups` each object group is measured on its own
+  (see below).
 
 **In use vs free-cached.** `matched_inuse_*` is the part of `matched_*`
 whose chunk a running request holds: some block of the chunk (per vLLM KV
@@ -55,15 +58,18 @@ Example: a hybrid model, `chunk_size = 4`, one 12-token prefix `a0 a1 a2`
 only at the end of `a0` (vLLM freed the later ones). vLLM hits 4 tokens, so
 only `a0` is held: `matched = 1 object / 4 KiB`, `model = 4 objects /
 16 KiB`, both ratios 0.25. Had Mamba kept its state at the end of `a2` only,
-vLLM would hit all 12 tokens and `a0..a2` would all count, even with the
-earlier Mamba states freed.
+vLLM would hit all 12 tokens, but only `a2` would count: the objects of
+`a0` and `a1` carry Mamba states L0 no longer has, so L1's copies of them
+are the only full ones.
 
 ### When a chunk of one group counts as in L0
 
 With `--separate-object-groups`, LMCache stores chunk `i` as one object per
 object group, and each object group holds the layers of one or more vLLM KV
-cache groups. Chunk `i` counts as in L0 in every object group iff vLLM's
-whole hit covers it, as above; the object groups do not differ.
+cache groups. Chunk `i` counts as in L0 in an object group iff vLLM's whole
+hit covers it and that object group's KV cache groups cache its own data,
+as above: an attention object group needs only the hit, a recurrent one
+also the chunk's own state.
 
 An earlier rule decided each object group on its own KV cache groups (a
 full-attention group's own prefix hit, a sliding window cached at the
@@ -71,15 +77,18 @@ chunk's end, a Mamba state cached at the chunk's end). That overcounts
 hybrid models: vLLM's hit is the minimum over all groups and ends at the
 last cached Mamba state, so attention blocks past it serve nothing and the
 next hit loads that chunk's attention from L1, which is then not a
-duplicate.
+duplicate. Counting every object of a chunk inside the hit overcounts the
+other way: a Mamba object whose own state vLLM freed is not in L0, though a
+later state serves the hit.
 
 Example: the hybrid prefix above (`chunk_size = 4`, 4 KiB objects), with L1
 holding `a0..a2` in both object groups (attention id 0, Mamba id 1).
 Attention holds all three chunks; Mamba keeps states at the ends of `a0` and
-`a2`. vLLM hits 12 tokens, so `matched = 6 objects / 24 KiB` of
-`model = 6 objects / 24 KiB`. With Mamba's only state at the end of `a0`,
-vLLM hits 4 tokens and `matched = 2 objects` (`a0` in both groups), where
-the per-group rule counted 4 (`a0..a2` attention, `a0` Mamba).
+`a2`. vLLM hits 12 tokens, so `matched = 5 objects / 20 KiB` (`a0..a2`
+attention, `a0` and `a2` Mamba) of `model = 6 objects / 24 KiB`. With
+Mamba's only state at the end of `a0`, vLLM hits 4 tokens and
+`matched = 2 objects` (`a0` in both groups), where the per-group rule
+counted 4 (`a0..a2` attention, `a0` Mamba).
 
 **Object groups.** The scheduler names an object group by the key the
 server buckets KV cache groups by: kind (`attention` or `recurrent`) and
@@ -97,8 +106,8 @@ scheduler                                      MP server
   request tracked   -> follow its live Request.block_hashes
   request finished  -> keep only its chunks L0 holds now
   every 10 s, when no query is pending:
-    per prefix: held chunks = find_longest_cache_hit // chunk_size,
-      the same in every measured object group
+    per prefix: chunks < find_longest_cache_hit // chunk_size,
+      per measured object group those whose own state/window is cached
       (chunk hashes via TokenHasher)
       finished prefix: chunks cut to the held ones, dropped at 0 in all
     if servers are healthy, send model,
@@ -132,9 +141,9 @@ object groups, or vLLM prefix caching disabled stop the meter with an error.
   so finished prefixes are keyed by their last chunk, which bounds them by
   what L0 holds; one whose last chunk a longer prefix already holds is not
   looked up again (turn `t` of a conversation while turn `t + 1` runs).
-  With separated object groups a finished prefix keeps its held chunks per
-  object group, and skips the lookup only when every object group already
-  holds its last kept chunk. Of
+  A finished prefix keeps its held chunks per measured object group, and
+  skips the lookup only when every object group already holds all of them
+  (for an object group of full attention only, its last). Of
   two that end at one chunk the later-finished one stays: vLLM evicts freed
   blocks oldest first, so its blocks past that chunk outlive the other's.
 - vLLM's block hash and LMCache's chunk hash differ, so the scheduler hashes
@@ -169,8 +178,9 @@ GPU's capacity; held finished prefixes are bounded by what L0 holds. A step
 with no sample due costs ~0.1 µs. Finishing a request costs one lookup and
 hashes the chunks L0 holds (~0.7 ms for 60 chunks).
 
-With separated object groups, a prefix lookup costs the same one
-`find_longest_cache_hit`.
+A prefix lookup costs one `find_longest_cache_hit`, plus, per chunk inside
+the hit and object group, one `get_cached_block` per Mamba state or
+sliding-window block that holds the chunk's own data.
 
 The in-use split adds, per distinct held chunk and object group, one
 `get_cached_block` per block it reads, stopping at the first in-use block.
@@ -203,10 +213,6 @@ share of the shared L1 that this engine's GPU also holds. Do not sum
   the later one's, which vLLM's eviction order makes rare.
 - With separated object groups, the first sample (10 s after start) is
   dropped.
-- A chunk inside vLLM's hit counts in every object group, its Mamba object
-  too where vLLM freed that chunk's own state. Should vLLM then recycle the
-  state the hit ends at, a later hit may end at that chunk and load its
-  Mamba object from L1.
 - A server with `--separate-object-groups` and full sliding-window KV
   (`full_sw_kv`, set by the blend engine) refuses to load the module:
   every attention group then reports a full window, so the key no longer
