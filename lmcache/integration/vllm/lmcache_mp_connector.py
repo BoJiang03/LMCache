@@ -84,7 +84,10 @@ from lmcache.integration.vllm.utils import (
 )
 from lmcache.utils import CacheRemoveEvent
 from lmcache.utils import init_logger as lmcache_init_logger
-from lmcache.v1.multiprocess.custom_types import EXCLUSIVE_RETRIEVE_REQUEST_CONFIG
+from lmcache.v1.multiprocess.custom_types import (
+    ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+)
 
 try:
     # First Party
@@ -1727,12 +1730,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 if condition
                 else LMCacheMPRequestState.READY
             )
-            if condition and self.exclusive_retrieve:
-                # The server demotes the chunks this retrieve loads, so their
-                # GPU copy becomes the primary one: store them again, lazily.
-                tracker.num_stored_tokens = tracker.retrieve_start_token(
-                    self.scheduler_adapter.lmcache_tokens_per_chunk
-                )
+            if self.exclusive_retrieve:
+                # The server demotes the chunks this retrieve loads and the
+                # prefix vLLM's prefix cache holds (below the retrieve start),
+                # so the GPU copy of each is the primary one: store them all
+                # again, lazily.
+                tracker.num_stored_tokens = 0
             # Clean up lookup future in scheduler adapter
             self.scheduler_adapter.cleanup_lookup_result(request.request_id)
 
@@ -1754,13 +1757,25 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     free_end = tracker.num_vllm_hit_tokens
 
             if free_end > 0 or tracker.pending_free_ranges:
+                request_configs = tracker.request_configs
+                if self.exclusive_retrieve and tracker.num_vllm_hit_tokens > 0:
+                    # Sent only now that vLLM has allocated the blocks: the
+                    # held prefix is a lazy store candidate from here on, so
+                    # a demoted L1 copy is never the only copy left behind.
+                    # Every LMCache hit (even one only as long as the covered
+                    # prefix) reaches this FREE, as the lookup counts the
+                    # covered prefix as hit.
+                    request_configs = {
+                        **(request_configs or {}),
+                        ENGINE_HELD_TOKENS_HINT: tracker.num_vllm_hit_tokens,
+                    }
                 self.scheduler_adapter.free_lookup_locks(
                     packed_token_ids=tracker.packed_token_ids(),
                     start=0,
                     end=free_end,
                     request_id=request.request_id,
                     cache_salt=tracker.cache_salt,
-                    request_configs=tracker.request_configs,
+                    request_configs=request_configs,
                     extra_ranges=tuple(tracker.pending_free_ranges),
                 )
                 tracker.pending_free_ranges = []
@@ -2177,10 +2192,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 for session_id in actions.sessions_to_end:
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
-            # The connector alone decides exclusive retrieve: a request that
-            # set it without lazy offload would lose its demoted chunks.
+            # The connector alone decides exclusive retrieve and the held
+            # prefix it demotes: a request that set them without lazy offload
+            # behind it would lose its demoted chunks.
             request_configs = dict(new_tracker.request_configs or {})
             request_configs.pop(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, None)
+            request_configs.pop(ENGINE_HELD_TOKENS_HINT, None)
             if self.exclusive_retrieve:
                 request_configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
             new_tracker.request_configs = request_configs or None

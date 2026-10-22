@@ -182,9 +182,10 @@ class Session:
             self._prefetch_owners = dict(l1_owners) if l1_owners is not None else {}
 
     def record_demoted_keys(self, keys: list[ObjectKey]) -> None:
-        """Record keys whose L1 copies this request's retrieve demoted.
+        """Record keys whose L1 copies this request demoted.
 
-        Called by an exclusive retrieve when it submits the demotion, so that
+        Called by an exclusive retrieve when it submits the demotion, and by
+        ``free_lookup_locks`` when it demotes the engine-held prefix, so that
         ``end_session`` can leave these keys out of its touch.
 
         Args:

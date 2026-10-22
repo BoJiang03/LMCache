@@ -743,6 +743,22 @@ class StorageManager:
         for owner, keys in completion:
             self._l1_managers_by_id[owner].demote_keys(keys)
 
+    def demote_cached_keys(self, keys: list[ObjectKey]) -> None:
+        """Make resident keys the next L1 eviction victims, without I/O.
+
+        The counterpart of :meth:`touch_cached_keys` for keys whose GPU copy
+        is the primary one: an exclusive-retrieve request demotes the L1
+        copies of the prefix vLLM's prefix cache holds for it. Unlike
+        :meth:`demote_l1_keys` the keys need no read lock, so every L1
+        demotes the ones it tracks. L2 recency is not changed.
+
+        Args:
+            keys: The keys to demote, in request order. Later keys are
+                evicted first; keys no L1 tracks are ignored.
+        """
+        for manager in self._l1_managers_by_id.values():
+            manager.demote_keys(keys)
+
     def delete_l1_keys(
         self, keys: list[ObjectKey], force: bool = False
     ) -> tuple[int, int]:

@@ -34,6 +34,11 @@ Key Types:
 # docs/design/integration/vllm/exclusive_retrieve.md.
 EXCLUSIVE_RETRIEVE_REQUEST_CONFIG = "lmcache.mp.exclusive_retrieve"
 
+# Request config an exclusive-retrieve connector sets on the FREE_LOOKUP_LOCKS
+# it sends once vLLM has allocated the request's blocks: the length of the
+# prefix vLLM's GPU prefix cache holds for it, whose L1 copies are demoted.
+ENGINE_HELD_TOKENS_HINT = "lmcache.hint.engine_held_tokens"
+
 
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
@@ -181,9 +186,9 @@ class IPCCacheServerKey:
         """Whether the request asked for exclusive retrieve.
 
         Under exclusive retrieve the server demotes the L1 copy of every
-        chunk it loads into GPU memory, and touches chunks a store finds
-        already resident (the engine re-stores loaded chunks before evicting
-        them).
+        chunk it loads into GPU memory or vLLM's prefix cache already holds,
+        and touches chunks a store finds already resident (the engine
+        re-stores those chunks before evicting them).
 
         Returns:
             True when ``request_configs`` sets
@@ -192,6 +197,15 @@ class IPCCacheServerKey:
         return bool(
             (self.request_configs or {}).get(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, False)
         )
+
+    def engine_held_tokens(self) -> int:
+        """Return the engine-held prefix length the request reported.
+
+        Returns:
+            ``request_configs[ENGINE_HELD_TOKENS_HINT]`` in tokens, or 0 when
+            it is not set.
+        """
+        return int((self.request_configs or {}).get(ENGINE_HELD_TOKENS_HINT, 0))
 
     def no_worker_id_version(self) -> "IPCCacheServerKey":
         """Create a copy with worker_id=None for lookup requests."""

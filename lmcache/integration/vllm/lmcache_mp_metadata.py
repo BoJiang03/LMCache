@@ -152,8 +152,7 @@ class LMCacheMPRequestTracker:
         The vLLM hit rounded down to an LMCache chunk boundary: the chunk
         holding the hit's end is loaded whole (its APC-shared prefix is
         skipped on write, see ``skip_first_n_tokens``). Called when building
-        the RETRIEVE op and, under exclusive retrieve, at the
-        ``WAITING_FOR_LOAD`` transition to reset ``num_stored_tokens``.
+        the RETRIEVE op.
 
         Args:
             lmcache_tokens_per_chunk: The number of tokens in an LMCache chunk.
