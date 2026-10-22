@@ -52,6 +52,10 @@ from lmcache.v1.multiprocess.kv_event_subscriber import (
     KVEventStreamClosed,
     MPKVEventSubscriber,
 )
+from lmcache.v1.multiprocess.protocols.server_module import (
+    ServerModuleCallRequest,
+    ServerModuleCallResponse,
+)
 from lmcache.v1.multiprocess.token_codec import (
     TOKEN_STRIDE,
     num_packed_tokens,
@@ -754,6 +758,9 @@ class LMCacheMPSchedulerAdapter:
         self._nonblocking_lookup_status = (
             ExtraConfigDefault.nonblocking_lookup_status.default
         )
+        # lmcache.mp.hash_algorithm; a scheduler-side TokenHasher (the L1
+        # duplication meter) must use it so its chunk hashes match the servers'.
+        self.hash_algorithm: str = ExtraConfigDefault.hash_algorithm.default
         if extra_config is not None:
             cfg = _resolve_extra_config(extra_config)
             mq_timeout = cfg[ExtraConfigDefault.mq_timeout.name]
@@ -761,6 +768,7 @@ class LMCacheMPSchedulerAdapter:
             self._nonblocking_lookup_status = cfg[
                 ExtraConfigDefault.nonblocking_lookup_status.name
             ]
+            self.hash_algorithm = cfg[ExtraConfigDefault.hash_algorithm.name]
         self._mq_timeout = mq_timeout
         self._required_chunk_alignment = required_chunk_alignment
 
@@ -1166,6 +1174,27 @@ class LMCacheMPSchedulerAdapter:
             self.req_clients[url].report_block_allocation(
                 os.getpid(), self.model_name, records
             )
+
+    def server_module_call(
+        self, method: str, payload: bytes
+    ) -> dict[str, MessagingFuture[ServerModuleCallResponse]]:
+        """Send one server-module request to every server, without waiting.
+
+        The caller checks :attr:`is_healthy` first; this method does not.
+
+        Args:
+            method: The namespaced server-module method.
+            payload: The method's encoded request.
+
+        Returns:
+            The response future of each server, keyed by server URL. The
+            caller polls them; the scheduler step must not block on them.
+        """
+        request = ServerModuleCallRequest(method=method, payload=payload)
+        return {
+            url: self.req_clients[url].server_module_call(request)
+            for url in self._server_urls
+        }
 
     # Helper functions
     def _create_key(

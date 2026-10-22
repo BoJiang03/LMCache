@@ -1071,6 +1071,15 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
    * - ``lmcache.mp.lazy_offload_select_count``
      - ``10``
      - ``FIFO`` only: maximum finished requests emitted by one drain.
+   * - ``lmcache.mp.measure_l1_duplication``
+     - ``false``
+     - Boolean. Every 10 s, add to vLLM's ``KV Transfer metrics`` log line
+       the share of this model's committed L1 that vLLM's GPU prefix cache
+       also holds, by bytes and by objects. Requires the MP server to start
+       with ``--server-module '{"module_path":
+       "lmcache.v1.multiprocess.l1_residency"}'`` and without
+       ``--separate-object-groups``. Design:
+       ``docs/design/integration/vllm/l1_duplication.md``.
 
 To let vLLM worker 0 start a local MP server automatically:
 

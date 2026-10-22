@@ -17,6 +17,7 @@ from lmcache.v1.multiprocess.engine_module import DiscoverableModule, EngineModu
 from lmcache.v1.multiprocess.protocols.server_module import (
     ServerModuleCallRequest,
     ServerModuleCallResponse,
+    unknown_method_error,
 )
 from lmcache.v1.multiprocess.request_handler import HandlerType, request_handler
 from lmcache.v1.utils.subclass_discovery import discover_subclasses
@@ -252,7 +253,7 @@ class ExtServerModuleRouter:
         ):
             if method in handlers:
                 return "server module method %s is served by %s" % (method, rpc)
-        return "unknown server module method: %s" % method
+        return unknown_method_error(method)
 
 
 def parse_server_module_specs(raw_specs: Sequence[str]) -> list[ExtServerModuleSpec]:

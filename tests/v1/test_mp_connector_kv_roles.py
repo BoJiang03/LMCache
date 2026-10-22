@@ -6,8 +6,10 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
+import functools
 
 # Third Party
+import msgspec
 import pytest
 import torch
 
@@ -42,6 +44,7 @@ from vllm.v1.request import Request, RequestStatus  # noqa: E402
 # First Party
 from lmcache.integration.vllm import lmcache_mp_connector as connector_mod  # noqa: E402
 from lmcache.integration.vllm import vllm_multi_process_adapter as adapter_mod
+from lmcache.integration.vllm.l1_duplication import SAMPLE_INTERVAL_S  # noqa: E402
 from lmcache.integration.vllm.lmcache_mp_connector import (  # noqa: E402
     LMCacheMPConnector,
     LMCacheMPKVEvents,
@@ -56,7 +59,12 @@ from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
 )
+from lmcache.v1.multiprocess.protocols.l1_residency import (  # noqa: E402
+    L1_RESIDENCY_QUERY_METHOD,
+    L1ResidencyQuery,
+)
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
+from lmcache.v1.multiprocess.token_hasher import TokenHasher  # noqa: E402
 
 pytestmark = pytest.mark.no_shared_allocator
 
@@ -312,6 +320,81 @@ def test_decode_store_policy_rejects_non_boolean(
         )
     )
     with pytest.raises(ValueError, match="save_decode_cache must be a boolean"):
+        LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+
+
+def _l1_duplication_calls(
+    mock_io: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, measure: bool
+) -> list[Any]:
+    """Run one due scheduler step; return the server-module calls it made.
+
+    The coordinator hits 8 tokens of a 3-block request with 4-token chunks.
+    """
+    clock = MagicMock(return_value=0.0)
+    monkeypatch.setattr(
+        connector_mod,
+        "L1DuplicationMeter",
+        functools.partial(connector_mod.L1DuplicationMeter, clock=clock),
+    )
+    mock_io.scheduler.configure_mock(
+        hash_algorithm="blake3", model_name="test-model", world_size=1
+    )
+    mock_io.scheduler.server_module_call.return_value = {}
+    mock_io.pool.hash_block_size = 4
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"lmcache.mp.measure_l1_duplication": measure},
+        )
+    )
+    connector = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    coordinator = MagicMock()
+    coordinator.find_longest_cache_hit.return_value = ([], 8, 0)
+    connector.bind_kv_cache_manager(
+        cast(Any, SimpleNamespace(coordinator=coordinator, block_pool=mock_io.pool))
+    )
+    request = _request()
+    cast(Any, request).block_hashes = [b"h0", b"h1", b"h2"]
+    try:
+        connector.get_num_new_matched_tokens(request, 0)
+        clock.return_value = SAMPLE_INTERVAL_S
+        connector.build_connector_meta(_schedule())
+    finally:
+        connector.shutdown()
+    return mock_io.scheduler.server_module_call.call_args_list
+
+
+def test_l1_duplication_off_sends_no_query(
+    mock_io: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the flag off, a due step sends nothing."""
+    assert _l1_duplication_calls(mock_io, monkeypatch, measure=False) == []
+
+
+def test_l1_duplication_queries_the_chunks_vllm_hits(
+    mock_io: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the flag on, a due step sends the chunks the coordinator hits."""
+    calls = _l1_duplication_calls(mock_io, monkeypatch, measure=True)
+    ((method, payload),) = [c.args for c in calls]
+    assert method == L1_RESIDENCY_QUERY_METHOD
+    query = msgspec.msgpack.decode(payload, type=L1ResidencyQuery)
+    expected = TokenHasher(chunk_size=4).compute_chunk_hashes(list(range(8)))
+    assert list(query.chunk_hashes_by_salt) == [""]
+    assert sorted(query.chunk_hashes_by_salt[""]) == sorted(expected)
+
+
+def test_l1_duplication_flag_rejects_non_boolean(mock_io: SimpleNamespace) -> None:
+    """A string 'false' must never silently enable measuring."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"lmcache.mp.measure_l1_duplication": "false"},
+        )
+    )
+    with pytest.raises(ValueError, match="measure_l1_duplication must be a boolean"):
         LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
 
 
