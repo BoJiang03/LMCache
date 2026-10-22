@@ -88,20 +88,32 @@ no-op re-store there.
    op due when any of its blocks nears vLLM's eviction head, and an op spans
    every cache group, so a due op can carry chunks whose blocks vLLM still
    references (an align-mode Mamba group frees older state blocks while the
-   attention blocks stay held). At emission the connector reads, per chunk
-   and cache group, whether every non-null block has
-   `ref_cnt > LMCache's own pins`, and sends those block ids as
+   attention blocks stay held). At emission the connector counts chunk `k`
+   as engine-held, in every cache group at once, iff vLLM could serve it
+   and keeps it: vLLM's own `KVCacheCoordinator.find_longest_cache_hit` over
+   the request's `Request.block_hashes` (all KV cache groups, read-only)
+   covers the chunk's end, and every non-null block of the chunk, in every
+   group, has `ref_cnt > LMCache's own pins`. It sends those block ids as
    `request_configs["lmcache.hint.engine_held_blocks"]` on the STORE. The
    server's store demotes, chunk by chunk through
-   `StorageManager.demote_cached_keys`, the keys of the object groups whose
-   every non-null block is listed: a resident key is demoted instead of
-   touched; a new key is admitted demoted when its write finishes
-   (`L1Manager.demote_keys` marks a staged key, and `finish_write` demotes
-   it after marking the write MRU). A chunk held only in part is stored as
+   `StorageManager.demote_cached_keys`, the keys of the chunks whose every
+   non-null block, over every object group, is listed: a resident key is
+   demoted instead of touched; a new key is admitted demoted when its write
+   finishes (`L1Manager.demote_keys` marks a staged key, and `finish_write`
+   demotes it after marking the write MRU). Any other chunk is stored as
    before.
 
+   An earlier rule held each cache group's part of a chunk on its own
+   blocks. That is wrong for hybrid models: vLLM's local hit is the minimum
+   over groups and ends at the last cached Mamba state, so attention blocks
+   past it serve nothing, and the next hit loads that attention from L1.
+   Demoting those copies puts the copy the next hit needs first in L1's
+   eviction order, which turns the hit into a recompute. A free-queue block
+   still serves a hit until vLLM recycles it, so a chunk resting on one is
+   not counted either: its demoted copy could be evicted before that hit.
+
    The connector keeps the held part of each emitted op outside the policy
-   ("parked"), with every chunk and group that was not held replaced by the
+   ("parked"), with every chunk that was not held replaced by the
    null block, and hands it back to the policy once vLLM drops a reference
    to one of its blocks (`ref_cnt <= LMCache's pins`). From then on it is an
    ordinary candidate: stored at its own eviction, touched or written to
@@ -111,8 +123,8 @@ no-op re-store there.
 
 ```text
 op due (Mamba state block at the free-queue head)
-   │  attention chunk blocks still referenced by vLLM
-   ├─> STORE [s, e), hint engine_held_blocks = attention blocks
+   │  chunks within vLLM's hit, every block still referenced by vLLM
+   ├─> STORE [s, e), hint engine_held_blocks = those chunks' blocks
    │      server: held keys -> demote_cached_keys (new: demoted at commit)
    └─> park the held part (non-held chunks nulled)
           vLLM frees one of its blocks -> back to the policy -> store at eviction
@@ -210,6 +222,10 @@ request, never wrong KV:
   `held_ops_lost`). When the next step may allocate every free block, the
   drain pins parked blocks, so a release in that step cannot recycle them
   before the next drain.
+- **Hit shrinks under a parked chunk.** A parked op is readmitted when one
+  of its own blocks is released. A chunk vLLM served only through a Mamba
+  state cached past it stops being servable once vLLM recycles that state,
+  while its own blocks stay referenced and its L1 copy stays demoted.
 - **Mixed hybrid chunk before the tail.** Without `--separate-object-groups`,
   one object holds attention and align-mode Mamba slices, and vLLM leaves a
   loaded chunk's Mamba blocks null except at the tail. The re-store skips a

@@ -143,7 +143,18 @@ def _request(request_id: str = "request") -> Request:
             status=RequestStatus.WAITING,
             num_computed_tokens=0,
             kv_transfer_params=None,
+            block_hashes=[f"{request_id}-{i}".encode() for i in range(3)],
         ),
+    )
+
+
+def _bind_serving_whole_prompts(connector: LMCacheMPConnector, pool: Any) -> None:
+    """Bind a KV cache manager over ``pool`` whose coordinator serves every
+    request's 12-token prompt from the GPU prefix cache."""
+    coordinator = MagicMock()
+    coordinator.find_longest_cache_hit.return_value = ([], 12, 0)
+    connector.bind_kv_cache_manager(
+        cast(Any, SimpleNamespace(coordinator=coordinator, block_pool=pool))
     )
 
 
@@ -260,7 +271,7 @@ def connectors(
     )
     scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
     worker = LMCacheMPConnector(config, KVConnectorRole.WORKER)
-    scheduler.bind_gpu_block_pool(mock_io.pool)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
     worker.register_kv_caches(mock_io.kv_caches)
     try:
         yield scheduler, worker
@@ -1015,7 +1026,7 @@ def test_exclusive_retrieve_restores_the_loaded_chunks(
         )
     )
     scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
-    scheduler.bind_gpu_block_pool(mock_io.pool)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
     request = _request()
     # A request cannot turn the mode on by itself.
     cast(Any, request).sampling_params = SimpleNamespace(
@@ -1113,7 +1124,7 @@ def test_exclusive_local_hit_reports_and_restores_the_held_prefix(
         )
     )
     scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
-    scheduler.bind_gpu_block_pool(mock_io.pool)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
     request = _request()
     configs = {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if exclusive else None
     # The lookup counts vLLM's covered 8 tokens as its hit and finds no more.

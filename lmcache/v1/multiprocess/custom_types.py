@@ -40,9 +40,10 @@ EXCLUSIVE_RETRIEVE_REQUEST_CONFIG = "lmcache.mp.exclusive_retrieve"
 ENGINE_HELD_TOKENS_HINT = "lmcache.hint.engine_held_tokens"
 
 # Request config an exclusive-retrieve connector sets on a lazy STORE: the GPU
-# block ids of the store that vLLM's GPU prefix cache still held when the
-# store was emitted. The chunks whose every block is listed are committed or
-# touched demoted, since the engine re-stores them before it evicts them.
+# block ids of the store's chunks vLLM could serve from its GPU prefix cache
+# and still held when the store was emitted. A chunk whose every block, in
+# every object group, is listed is committed or touched demoted in all of
+# them, since the engine re-stores it before it evicts it.
 ENGINE_HELD_BLOCKS_HINT = "lmcache.hint.engine_held_blocks"
 
 

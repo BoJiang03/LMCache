@@ -24,17 +24,24 @@ ones defined in ``lazy_offload_policy.base``:
 - **Token ledger**: the one token-id list a request's buffered operations
   share. The tracker hands out a fresh copy of the whole sequence with every
   operation, which deferral would otherwise retain once per operation.
-- **Engine-held**: said of a chunk, per KV-cache group, whose every block
-  vLLM's GPU prefix cache references beyond this class's own pins when the
-  chunk is emitted. Under exclusive retrieve the server stores such a chunk
-  at L1's evict-first end, so the manager *parks* it: it keeps the chunk's
-  engine-held blocks aside, unpinned, and readmits it to the policy once the
-  holder releases one of them, to be stored again before vLLM recycles it.
+- **Engine-held**: said of a chunk, when it is emitted, that vLLM could
+  serve as a local prefix-cache hit and keeps: vLLM's hit over every
+  KV-cache group covers it, and every block of it, in every group, is
+  referenced beyond this class's own pins. In a hybrid model the hit ends at
+  the last position every group can resume from (a cached Mamba state, a
+  full sliding window), so a chunk past it is not engine-held however many
+  of its attention blocks are cached: the next hit loads them from L1. Under
+  exclusive retrieve the server stores an engine-held chunk at L1's
+  evict-first end, so the manager *parks* it: it keeps the chunk's blocks
+  aside, unpinned, and readmits it to the policy once the holder releases
+  one of them, to be stored again before vLLM recycles it.
 """
 
 # Standard
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from functools import cache, partial
 from typing import TYPE_CHECKING, Protocol
 
 # First Party
@@ -60,6 +67,8 @@ from lmcache.v1.multiprocess.custom_types import (
 if TYPE_CHECKING:
     # Third Party
     from vllm.v1.core.block_pool import BlockPool
+    from vllm.v1.core.kv_cache_coordinator import KVCacheCoordinator
+    from vllm.v1.core.kv_cache_utils import BlockHash
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
@@ -196,9 +205,10 @@ class LazyOffloadManager:
 
     The only lazy-offload object exposed to the connector: it turns scheduler
     events into policy signals, pins and unpins vLLM GPU blocks, and returns
-    connector actions. Every method other than :meth:`bind_block_pool` and
-    :meth:`log_final_stats` raises ``ValueError`` until the pool is bound.
-    Scheduler thread only.
+    connector actions. Every method other than :meth:`bind_block_pool`,
+    :meth:`bind_cache_coordinator` and :meth:`log_final_stats` raises
+    ``ValueError`` until the pool is bound; deciding which chunks are
+    engine-held also needs the coordinator. Scheduler thread only.
     """
 
     def __init__(
@@ -259,6 +269,12 @@ class LazyOffloadManager:
         # Both are set by bind_block_pool: the policy reads the pool.
         self._gpu_block_pool: "BlockPool | None" = None
         self._policy: OffloadPolicy | None = None
+        # Set by bind_cache_coordinator: vLLM's hit decides engine-held.
+        self._coordinator: "KVCacheCoordinator | None" = None
+        # Per request, vLLM's live block-hash chain of its tokens, from its
+        # arrival until its session ends: what its servable prefix is
+        # looked up by, also after it finished.
+        self._block_hash_chains: dict[str, list["BlockHash"]] = {}
         self._requests = LazyOffloadRequestRegistry()
         # One token ledger per request whose operations are buffered.
         self._token_ledgers: dict[str, bytearray] = {}
@@ -340,6 +356,17 @@ class LazyOffloadManager:
             )
         self._gpu_block_pool = gpu_block_pool
         self._policy = create_offload_policy(self._configs, gpu_block_pool)
+
+    def bind_cache_coordinator(self, coordinator: "KVCacheCoordinator") -> None:
+        """Bind the scheduler's KV cache coordinator, whose hit decides which
+        chunks are engine-held.
+
+        Args:
+            coordinator: The scheduler's ``KVCacheManager.coordinator``, over
+                the bound block pool. Only its read-only
+                ``find_longest_cache_hit`` is called.
+        """
+        self._coordinator = coordinator
 
     def add_store_candidate(self, metadata: LMCacheMPRequestMetadata) -> None:
         """Buffer one STORE metadata produced by the request tracker.
@@ -588,13 +615,18 @@ class LazyOffloadManager:
                 request_id,
             )
 
-    def on_request_arrived(self, request_id: str) -> LazyOffloadActions:
+    def on_request_arrived(
+        self, request_id: str, block_hashes: list["BlockHash"]
+    ) -> LazyOffloadActions:
         """Reclaim residual state if a new request reuses a finished id.
 
         Args:
             request_id: The id whose tracker vLLM just created, which may be
                 a first arrival, a preempted request coming back, or a new
                 request taking over a finished id.
+            block_hashes: The request's ``Request.block_hashes``, which vLLM
+                extends as tokens arrive; kept by reference until the
+                request's session ends, to look its servable prefix up.
 
         Returns:
             A session-release action for the predecessor when the id is
@@ -606,6 +638,7 @@ class LazyOffloadManager:
         reused_finished_id = self._requests.is_finished(request_id)
         predecessor_in_flight = self._requests.has_in_flight(request_id)
         self._requests.arrive(request_id)
+        self._block_hash_chains[request_id] = block_hashes
         if not reused_finished_id:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
@@ -710,6 +743,9 @@ class LazyOffloadManager:
             engine_held: list[tuple[LMCacheMPRequestMetadata, BlockHashes]] = []
             engine_held_block_ids: list[int] = []
             trigger_kind = self._block_group_kind(item)
+            # Looked up at most once per item, and only for a chunk whose
+            # blocks are all in use.
+            servable_tokens = cache(partial(self._servable_tokens, item.request_id))
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
                 # Read before this op's own pin, which is not vLLM's.
@@ -740,7 +776,7 @@ class LazyOffloadManager:
                 valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
                 chunks_held, parked = self._engine_held_part(
-                    metadata, old_block_hashes, vllm_held
+                    metadata, old_block_hashes, vllm_held, servable_tokens
                 )
                 self._count_chunks(
                     diagnostics, item.request_id, chunks_held, trigger_kind
@@ -1152,50 +1188,74 @@ class LazyOffloadManager:
         metadata: LMCacheMPRequestMetadata,
         block_hashes: BlockHashes,
         vllm_held: set[int],
+        servable_tokens: Callable[[], int],
     ) -> tuple[list[bool | None], tuple[LMCacheMPRequestMetadata, BlockHashes] | None]:
         """Split off the chunks of one emitted op that vLLM still holds.
 
-        Per chunk and cache group, the chunk is engine-held when every one
-        of its blocks there but the null block is in ``vllm_held``, and it
-        has one. A chunk held in part is not: vLLM cannot serve it whole, so
-        it is stored like any other, and parking it would keep blocks
-        already in the free queue, which could make it due at every drain.
+        A chunk is engine-held when every block of it but the null block,
+        over every cache group, is in ``vllm_held``, it has one, and it ends
+        within ``servable_tokens()``. A chunk held in part is not: vLLM
+        cannot serve it whole, so it is stored like any other, and parking it
+        would keep blocks already in the free queue, which could make it due
+        at every drain.
+
+        Requiring every block in use, rather than only cached, is what makes
+        the chunk one vLLM keeps: a block in the free queue still serves a
+        hit until vLLM recycles it, and an L1 copy demoted for it would be
+        gone when the next hit needs it.
 
         Args:
             metadata: The emitted op.
             block_hashes: Its hash snapshot, keyed by its non-null blocks.
             vllm_held: Its blocks vLLM references beyond this class's pins.
+            servable_tokens: Returns the request's prefix vLLM could serve,
+                in tokens (:meth:`_servable_tokens`); called only for a
+                chunk whose blocks are all in ``vllm_held``.
 
         Returns:
-            Per chunk of the op, whether some cache group of it is
-            engine-held, ``None`` for a chunk with only null blocks (nothing
-            to store); and the op to park, with the blocks of every chunk
-            and group that is not engine-held replaced by the null block and
-            the snapshot of the blocks it keeps, or ``None`` when it keeps
-            none.
+            Per chunk of the op, whether it is engine-held, ``None`` for a
+            chunk with only null blocks (nothing to store); and the op to
+            park, with the blocks of every chunk that is not engine-held
+            replaced by the null block and the snapshot of the blocks it
+            keeps, or ``None`` when it keeps none.
         """
         null_block_id = self._require_block_pool().null_block.block_id
         op = metadata.op
         num_chunks = -(-(op.end - op.start) // self._chunk_size)
-        chunks_held: list[bool | None] = [None] * num_chunks
-        parked_block_ids: list[list[int]] = []
+        # Per cache group, the chunk each block position belongs to; None for
+        # a scratch group, which stores nothing.
+        chunk_of: list[list[int] | None] = []
+        real_blocks: list[list[int]] = [[] for _ in range(num_chunks)]
         for group_idx, group_block_ids in enumerate(op.block_ids):
             tokens_per_block = self._group_tokens_per_block[group_idx]
-            kept = [null_block_id] * len(group_block_ids)
-            if tokens_per_block:
-                blocks_per_chunk = self._chunk_size // tokens_per_block
-                for chunk_idx in range(num_chunks):
-                    begin = chunk_idx * blocks_per_chunk
-                    chunk = group_block_ids[begin : begin + blocks_per_chunk]
-                    real = [block for block in chunk if block != null_block_id]
-                    if not real:
-                        continue
-                    if all(block in vllm_held for block in real):
-                        chunks_held[chunk_idx] = True
-                        kept[begin : begin + len(chunk)] = chunk
-                    elif not chunks_held[chunk_idx]:
-                        chunks_held[chunk_idx] = False
-            parked_block_ids.append(kept)
+            if not tokens_per_block:
+                chunk_of.append(None)
+                continue
+            blocks_per_chunk = self._chunk_size // tokens_per_block
+            chunks = [pos // blocks_per_chunk for pos in range(len(group_block_ids))]
+            chunk_of.append(chunks)
+            for chunk_idx, block_id in zip(chunks, group_block_ids, strict=True):
+                if block_id != null_block_id:
+                    real_blocks[chunk_idx].append(block_id)
+        chunks_held: list[bool | None] = [
+            all(block_id in vllm_held for block_id in real)
+            and min(op.start + (chunk_idx + 1) * self._chunk_size, op.end)
+            <= servable_tokens()
+            if real
+            else None
+            for chunk_idx, real in enumerate(real_blocks)
+        ]
+        parked_block_ids: list[list[int]] = []
+        for chunks, group_block_ids in zip(chunk_of, op.block_ids, strict=True):
+            if chunks is None:
+                parked_block_ids.append([null_block_id] * len(group_block_ids))
+                continue
+            parked_block_ids.append(
+                [
+                    block_id if chunks_held[chunk_idx] else null_block_id
+                    for chunk_idx, block_id in zip(chunks, group_block_ids, strict=True)
+                ]
+            )
         parked_hashes = {
             block_id: block_hashes[block_id]
             for group in parked_block_ids
@@ -1206,6 +1266,27 @@ class LazyOffloadManager:
             return chunks_held, None
         parked = replace(metadata, op=replace(op, block_ids=parked_block_ids))
         return chunks_held, (parked, parked_hashes)
+
+    def _servable_tokens(self, request_id: str) -> int:
+        """Return how much of a request's prefix vLLM could serve locally now.
+
+        vLLM's own ``find_longest_cache_hit`` over every KV-cache group and
+        the request's whole hash chain: a Mamba state or sliding window
+        cached past a chunk can make the chunk servable. Read-only: it takes
+        no reference, touches no LRU order and emits no event.
+
+        Args:
+            request_id: A request that arrived and whose session has not
+                ended.
+
+        Returns:
+            The hit length in tokens, the same for every cache group.
+        """
+        chain = self._block_hash_chains[request_id]
+        _, hit_tokens, _ = self._require_coordinator().find_longest_cache_hit(
+            chain, len(chain) * self._require_block_pool().hash_block_size
+        )
+        return hit_tokens
 
     def _block_group_kind(self, item: PendingStoreItem) -> str:
         """Name the cache-group kind of the block that made ``item`` due.
@@ -1387,6 +1468,7 @@ class LazyOffloadManager:
         self._require_policy().release_request(request_id)
         self._requests.session_ended(request_id)
         self._token_ledgers.pop(request_id, None)
+        self._block_hash_chains.pop(request_id, None)
 
     def _require_policy(self) -> OffloadPolicy:
         """Return the bound policy or reject an invalid lifecycle call.
@@ -1400,6 +1482,19 @@ class LazyOffloadManager:
         if self._policy is None:
             raise ValueError("lazy offload GPU block pool is not bound")
         return self._policy
+
+    def _require_coordinator(self) -> "KVCacheCoordinator":
+        """Return the bound coordinator or reject deciding engine-held chunks.
+
+        Returns:
+            The coordinator :meth:`bind_cache_coordinator` bound.
+
+        Raises:
+            ValueError: If no coordinator has been bound yet.
+        """
+        if self._coordinator is None:
+            raise ValueError("lazy offload KV cache coordinator is not bound")
+        return self._coordinator
 
     def _require_block_pool(self) -> "BlockPool":
         """Return the bound block pool or reject an invalid lifecycle call.

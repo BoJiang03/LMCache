@@ -175,8 +175,10 @@ class _BlockPool:
 class _GroupCoordinator:
     """vLLM's hybrid coordinator over KV cache groups of the given specs.
 
-    A full-attention group's own hit is its longest run of cached blocks
-    from the start; the whole hit is the shortest of those.
+    The whole hit is vLLM's fixed point: each group cuts the candidate
+    length until none does. Full attention keeps its run of cached blocks
+    from the start; Mamba ends it at a cached state block; sliding window
+    ends it where every block of the window before it is cached.
     """
 
     def __init__(self, *specs: Any) -> None:
@@ -188,35 +190,35 @@ class _GroupCoordinator:
             SimpleNamespace(block_pool=self.block_pool) for _ in specs
         ]
 
-    def find_longest_cache_hit_per_group(
-        self, block_hashes: list[Any], max_cache_hit_length: int
-    ) -> tuple[tuple[list, ...], tuple[int, ...]]:
-        hits = []
-        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
-            num_blocks = 0
-            if isinstance(group.kv_cache_spec, FullAttentionSpec):
-                while (
-                    num_blocks < len(block_hashes)
-                    and (block_hashes[num_blocks], group_id) in self.block_pool.cached
-                ):
-                    num_blocks += 1
-            hits.append(num_blocks * HASH_BLOCK)
-        return tuple([] for _ in hits), tuple(hits)
-
     def find_longest_cache_hit(
         self, block_hashes: list[Any], max_cache_hit_length: int
     ) -> tuple[list, int, int]:
-        _, hits = self.find_longest_cache_hit_per_group(
-            block_hashes, max_cache_hit_length
-        )
-        full = [
-            hit
-            for hit, group in zip(
-                hits, self.kv_cache_config.kv_cache_groups, strict=True
-            )
-            if isinstance(group.kv_cache_spec, FullAttentionSpec)
-        ]
-        return [], min(full), 0
+        # In hash blocks, which every spec here is a multiple of.
+        hit = min(len(block_hashes), max_cache_hit_length // HASH_BLOCK)
+        while True:
+            candidate = hit
+            for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
+                spec = group.kv_cache_spec
+
+                def cached(end: int, group_id: int = group_id) -> bool:
+                    """Whether the group caches the block ending at hash block end."""
+                    return (block_hashes[end - 1], group_id) in self.block_pool.cached
+
+                if isinstance(spec, FullAttentionSpec):
+                    hit = next((end for end in range(hit) if not cached(end + 1)), hit)
+                elif isinstance(spec, MambaSpec):
+                    step = spec.block_size // HASH_BLOCK
+                    hit -= hit % step
+                    while hit and not cached(hit):
+                        hit -= step
+                else:
+                    window = -(-(spec.sliding_window - 1) // spec.block_size)
+                    while hit and not all(
+                        cached(end) for end in range(max(1, hit - window + 1), hit + 1)
+                    ):
+                        hit -= 1
+            if hit == candidate:
+                return [], hit * HASH_BLOCK, 0
 
 
 # The object groups of a server that separates them for an attention +
@@ -744,7 +746,7 @@ def _commit_all_chunks(l1: L1Manager, *object_group_ids: int) -> None:
     )
 
 
-def test_separated_object_groups_hold_chunks_per_kv_cache_group(
+def test_separated_object_groups_hold_every_chunk_vllm_can_serve(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -754,7 +756,8 @@ def test_separated_object_groups_hold_chunks_per_kv_cache_group(
     meter, clock, samples = _meter(adapter, coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
     # Attention holds all three chunks; Mamba keeps states at the ends of
-    # chunks 0 and 2 only.
+    # chunks 0 and 2 only. vLLM serves all three, so chunk 1's Mamba object
+    # counts too, although its own state was freed.
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [1, 5])
 
@@ -765,16 +768,51 @@ def test_separated_object_groups_hold_chunks_per_kv_cache_group(
     assert adapter.calls == 2
     assert samples == [
         DuplicationSample(
-            matched_objects=5,
-            matched_bytes=5 * OBJECT_BYTES,
+            matched_objects=6,
+            matched_bytes=6 * OBJECT_BYTES,
             model_objects=6,
             model_bytes=6 * OBJECT_BYTES,
             matched_inuse_objects=0,
             matched_inuse_bytes=0,
-            matched_mru_write_objects=5,
-            matched_mru_write_bytes=5 * OBJECT_BYTES,
+            matched_mru_write_objects=6,
+            matched_mru_write_bytes=6 * OBJECT_BYTES,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("attention_blocks", "mamba_states", "matched"),
+    [
+        # Mamba's only state is at chunk 0's end: vLLM serves chunk 0, and
+        # chunks 1 and 2 of the attention group are not in L0 either.
+        (range(6), [1], 2),
+        # A state at chunk 1's end, attention through chunk 1: chunks 0
+        # and 1 in both object groups, none of chunk 2.
+        (range(4), [3], 4),
+        # Attention holds chunk 0 only: Mamba's state at chunk 2's end serves
+        # nothing.
+        (range(2), [5], 0),
+    ],
+    ids=["state_at_chunk_0", "state_at_chunk_1", "attention_short_of_state"],
+)
+def test_separated_object_groups_hold_only_the_prefix_vllm_can_serve(
+    storage: tuple[L1Manager, StorageManager],
+    attention_blocks: range,
+    mamba_states: list[int],
+    matched: int,
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0, 1)
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    _cache_blocks(coordinator, 0, list(attention_blocks))
+    _cache_blocks(coordinator, 1, mamba_states)
+
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    assert _matched(samples) == matched
 
 
 def test_separated_object_groups_split_in_use_by_their_own_blocks(
@@ -788,7 +826,8 @@ def test_separated_object_groups_split_in_use_by_their_own_blocks(
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [1, 5])
     # A running request holds chunk 2's attention blocks and the Mamba state
-    # at chunk 0's end; the other held objects are free-cached.
+    # at chunk 0's end; the other held objects are free-cached, chunk 1's
+    # Mamba object with no state block at all.
     hashes = _block_hashes(TOKENS)
     coordinator.block_pool.in_use.update(
         {(hashes[4], 0), (hashes[5], 0), (hashes[1], 1)}
@@ -797,11 +836,11 @@ def test_separated_object_groups_split_in_use_by_their_own_blocks(
     _sample(meter, clock)
     _sample(meter, clock)
 
-    assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (5, 2)
+    assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (6, 2)
     assert samples[-1].matched_inuse_bytes == 2 * OBJECT_BYTES
 
 
-def test_object_group_of_several_kv_cache_groups_needs_all_of_them(
+def test_object_group_of_several_kv_cache_groups_holds_the_whole_hit(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -812,9 +851,10 @@ def test_object_group_of_several_kv_cache_groups_needs_all_of_them(
     meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
     # Both attention groups store into object group 0; the second holds
-    # chunk 0 only.
+    # chunk 0 only, which caps the hit.
     _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [0, 1])
+    _cache_blocks(coordinator, 2, [1, 3, 5])
 
     _sample(meter, clock)
     _sample(meter, clock)
@@ -822,7 +862,7 @@ def test_object_group_of_several_kv_cache_groups_needs_all_of_them(
     assert _matched(samples) == 1
 
 
-def test_sliding_window_chunk_needs_the_window_ending_at_it(
+def test_sliding_window_holds_every_chunk_before_the_hit_end(
     storage: tuple[L1Manager, StorageManager],
 ) -> None:
     l1, store = storage
@@ -835,12 +875,14 @@ def test_sliding_window_chunk_needs_the_window_ending_at_it(
     meter, clock, samples = _meter(_Adapter(store, attn_desc=attn_desc), coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
     # Chunk 1's window is cached; chunk 2's only in part; chunk 0's not.
+    # vLLM serves through chunk 1, which needs no window at chunk 0's end.
+    _cache_blocks(coordinator, 0, list(range(6)))
     _cache_blocks(coordinator, 1, [2, 3, 5])
 
     _sample(meter, clock)
     _sample(meter, clock)
 
-    assert _matched(samples) == 1
+    assert _matched(samples) == 2
 
 
 def test_finished_prefix_keeps_each_object_group_its_held_chunks(
@@ -851,13 +893,13 @@ def test_finished_prefix_keeps_each_object_group_its_held_chunks(
     coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
     meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
     meter.on_request_tracked(*_request("r", TOKENS))
-    # Attention holds chunk 0; Mamba a state at chunk 2's end.
-    _cache_blocks(coordinator, 0, [0, 1])
-    _cache_blocks(coordinator, 1, [5])
+    _cache_blocks(coordinator, 0, list(range(6)))
+    _cache_blocks(coordinator, 1, [1, 5])
     _sample(meter, clock)
     meter.on_request_finished("r")
 
     _sample(meter, clock)
+    # Without chunk 2's state vLLM serves chunk 0 only.
     _uncache_blocks(coordinator, 1, [5])
     _sample(meter, clock)
     # A chunk cut from a finished prefix stays cut once it is back.
@@ -868,7 +910,7 @@ def test_finished_prefix_keeps_each_object_group_its_held_chunks(
     _cache_blocks(coordinator, 0, [0, 1])
     _sample(meter, clock)
 
-    assert [s.matched_objects for s in samples] == [2, 1, 1, 0, 0]
+    assert [s.matched_objects for s in samples] == [6, 2, 2, 0, 0]
 
 
 @pytest.mark.parametrize(

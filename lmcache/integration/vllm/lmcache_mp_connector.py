@@ -1503,9 +1503,14 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         Args:
             kv_cache_manager: vLLM's scheduler KV cache manager. Its
-                coordinator decides which chunks L0 holds.
+                coordinator decides which chunks L0 holds, for the meter and
+                for lazy offload's engine-held chunks.
         """
         super().bind_kv_cache_manager(kv_cache_manager)
+        if self.lazy_offload:
+            self._lazy_offload_manager.bind_cache_coordinator(
+                kv_cache_manager.coordinator
+            )
         if self._measure_l1_duplication:
             self._l1_duplication_meter = L1DuplicationMeter(
                 self.scheduler_adapter,
@@ -2259,7 +2264,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         if request_id not in self.request_trackers:
             if self.lazy_offload:
-                actions = self._lazy_offload_manager.on_request_arrived(request_id)
+                actions = self._lazy_offload_manager.on_request_arrived(
+                    request_id, request.block_hashes
+                )
                 for session_id in actions.sessions_to_end:
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)

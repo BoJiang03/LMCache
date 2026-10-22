@@ -10,9 +10,10 @@
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
 - Those local-hit demotions count as demoted in the L1 committed usage.
-- A store's chunks whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists (the engine
-  still holds them) are committed or touched demoted, a new key too when its
-  write finishes after the demote; only under exclusive retrieve.
+- A store's chunks whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists in every
+  object group (the engine can serve and still holds them) are committed or
+  touched demoted, a new key too when its write finishes after the demote;
+  only under exclusive retrieve.
 - Under exclusive retrieve ``end_session`` touches no L1 key.
 
 Only pinned-memory and device calls are replaced; host callbacks run through
@@ -672,19 +673,33 @@ def test_store_of_held_resident_chunks_demotes_them(server: _Server) -> None:
 
 def test_store_of_held_new_chunks_commits_them_demoted(server: _Server) -> None:
     """New keys of held chunks are admitted demoted, although the demote is
-    issued before their write finishes; the unheld new key is written MRU."""
+    issued before their write finishes."""
     full, recurrent = server.keys()
     server.storage.delete_l1_keys(full + recurrent)
 
-    # Block 5 is the recurrent state of chunk 2; block 3 is left unheld.
-    assert server.store(exclusive=True, held_block_ids=[1, 2, 5])
+    # Block 5 is the recurrent state of chunk 2.
+    assert server.store(exclusive=True, held_block_ids=[1, 2, 3, 5])
 
     stored = full + recurrent[2:]
     assert server.storage.get_l1_committed_usage(stored, "model").matched_objects == 4
-    assert set(_demoted(server, stored)) == {full[0], full[1], recurrent[2]}
+    assert set(_demoted(server, stored)) == set(stored)
+    assert set(server.victims()[:4]) == set(stored)
+
+
+def test_chunk_held_in_one_object_group_only_is_not_demoted(
+    server: _Server,
+) -> None:
+    """A chunk is held as a whole: a hint listing chunk 2's recurrent state
+    but not its attention block demotes neither; both are written MRU."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    assert server.store(exclusive=True, held_block_ids=[1, 2, 5])
+
+    assert set(_demoted(server, full + recurrent[2:])) == {full[0], full[1]}
     victims = server.victims()
-    assert set(victims[:3]) == {full[0], full[1], recurrent[2]}
-    assert victims[-1] == full[2]
+    assert set(victims[:2]) == {full[0], full[1]}
+    assert set(victims[-2:]) == {full[2], recurrent[2]}
 
 
 def test_held_hint_without_exclusive_retrieve_changes_nothing(

@@ -6,7 +6,6 @@ See ``docs/design/integration/vllm/l1_duplication.md``.
 
 # Standard
 from dataclasses import dataclass, field
-from itertools import accumulate
 from typing import TYPE_CHECKING, Any, Callable, Literal
 import time
 
@@ -70,9 +69,9 @@ _SERVER_MODULE_HINT = (
 # varies; model, kv ranks and object group come from the query.
 _ChunkKey = tuple[str, bytes]
 
-# How a vLLM KV cache group holds chunk i in L0 under per-object-group rules:
-# "prefix" by its own prefix hit, "window" by the blocks of the sliding window
-# ending at the chunk's end, "state" by the state block at the chunk's end.
+# Which blocks of a held chunk the in-use split reads, per vLLM KV cache
+# group: "prefix" the blocks overlapping the chunk, "window" the sliding
+# window ending at the chunk's end, "state" the state block at its end.
 _HoldRule = Literal["prefix", "window", "state"]
 
 
@@ -96,34 +95,30 @@ def _by_salt(keys: set[_ChunkKey]) -> dict[str, list[bytes]]:
     return chunk_hashes_by_salt
 
 
-def _is_covered(
-    held: set[_ChunkKey], prefix: "_Prefix", kept: list[int], prefix_closed: bool
-) -> bool:
+def _is_covered(held: set[_ChunkKey], prefix: "_Prefix", kept: list[int]) -> bool:
     """Return whether ``held`` already has every kept chunk of a finished prefix.
+
+    A held chunk's whole prefix is held, and a chunk hash chains every chunk
+    before it, so the last kept chunk stands for all.
 
     Args:
         held: One object group's chunks held through longer prefixes.
         prefix: The finished prefix.
         kept: Its kept chunk indices in that object group, ascending.
-        prefix_closed: Whether the object group's rule holds every chunk
-            before a held one; a chunk hash chains every chunk before it, so
-            the last kept chunk then stands for all.
 
     Returns:
         ``True`` if looking the prefix up again cannot add a chunk.
     """
-    if prefix_closed:
-        return not kept or (prefix.cache_salt, prefix.chunk_hashes[kept[-1]]) in held
-    return all((prefix.cache_salt, prefix.chunk_hashes[i]) in held for i in kept)
+    return not kept or (prefix.cache_salt, prefix.chunk_hashes[kept[-1]]) in held
 
 
 @dataclass(frozen=True)
 class _VllmGroup:
-    """One vLLM KV cache group, as the per-object-group rules read it.
+    """One vLLM KV cache group, as the in-use split reads it.
 
     Attributes:
         group_id: Its index in ``kv_cache_config.kv_cache_groups``.
-        rule: How it holds a chunk (see :data:`_HoldRule`).
+        rule: Which blocks of a held chunk it reads (see :data:`_HoldRule`).
         block_size: Tokens per block of its spec.
         window_blocks: For ``"window"``, the trailing blocks a hit needs,
             vLLM's ``cdiv(sliding_window - 1, block_size)``; else 0.
@@ -143,17 +138,12 @@ class _ObjectGroupRule:
 
     Attributes:
         window: The object group's kind and window, as the server names it.
-        vllm_groups: Its vLLM KV cache groups; a chunk of the object group is
-            in L0 only if every one of them holds it.
+        vllm_groups: Its vLLM KV cache groups, whose blocks decide whether a
+            held chunk of the object group is in use.
     """
 
     window: GroupWindow
     vllm_groups: tuple[_VllmGroup, ...]
-
-    @property
-    def prefix_closed(self) -> bool:
-        """Whether holding chunk ``i`` implies holding every chunk before it."""
-        return all(group.rule == "prefix" for group in self.vllm_groups)
 
 
 @dataclass(frozen=True)
@@ -170,8 +160,8 @@ class DuplicationSample:
         model_objects: Committed L1 objects of this model.
         model_bytes: Their bytes.
         matched_inuse_objects: The part of ``matched_objects`` whose chunk a
-            running request holds on the GPU: some block the meter read to
-            decide the chunk is held has ``ref_cnt > 0``. The rest,
+            running request holds on the GPU: some block of the chunk in its
+            object group's vLLM KV cache groups has ``ref_cnt > 0``. The rest,
             ``matched_objects - matched_inuse_objects``, sits only in vLLM's
             free queue, still hashed.
         matched_inuse_bytes: Their bytes.
@@ -272,14 +262,13 @@ class _Prefix:
 class L1DuplicationMeter:
     """Sample the L0/L1 duplication every :data:`SAMPLE_INTERVAL_S`.
 
-    While the servers have one object group, L0 holds chunk ``i`` of a
-    prefix iff vLLM would hit at least ``(i + 1) * chunk_size`` tokens of it
-    from the GPU now, by vLLM's own side-effect-free
-    ``find_longest_cache_hit``. Once a reply shows several object groups
-    (``--separate-object-groups``), L0 holds chunk ``i`` of an object group
-    iff each of its vLLM KV cache groups holds it by its own rule (see the
-    design doc). Call every method on the scheduler thread; they share the
-    prefix state unlocked.
+    L0 holds chunk ``i`` of a prefix, in every object group, iff vLLM could
+    serve it: its hit over all KV cache groups covers at least
+    ``(i + 1) * chunk_size`` tokens of the prefix from the GPU now, by vLLM's
+    own side-effect-free ``find_longest_cache_hit``. Once a reply shows
+    several object groups (``--separate-object-groups``), each object
+    group's objects of those chunks count. Call every method on the
+    scheduler thread; they share the prefix state unlocked.
 
     Args:
         adapter: The scheduler adapter that reaches the servers.
@@ -310,7 +299,7 @@ class L1DuplicationMeter:
         self._on_sample = on_sample
         self._clock = clock
         # The rule of every object group once the servers reported several;
-        # None while they have one, measured by vLLM's whole hit.
+        # None while they have one.
         self._rules: list[_ObjectGroupRule] | None = None
         # Every vLLM KV cache group: while the servers have one object group,
         # a held chunk is in use if a block of any of them is.
@@ -438,9 +427,9 @@ class L1DuplicationMeter:
             Per measured object group, every chunk L0 holds, and the subset
             of those a running request holds (see :meth:`_chunk_in_use`).
         """
-        prefix_closed = self._prefix_closed()
-        held: list[set[_ChunkKey]] = [set() for _ in prefix_closed]
-        inuse: list[set[_ChunkKey]] = [set() for _ in prefix_closed]
+        num_measured = self._num_measured()
+        held: list[set[_ChunkKey]] = [set() for _ in range(num_measured)]
+        inuse: list[set[_ChunkKey]] = [set() for _ in range(num_measured)]
         for prefix in self._running.values():
             self._add_chunks(held, inuse, prefix, self._held_chunks(prefix))
         finished = sorted(
@@ -449,10 +438,8 @@ class L1DuplicationMeter:
         self._finished = {}
         for prefix in finished:
             covered = [
-                _is_covered(keys, prefix, kept, closed)
-                for keys, kept, closed in zip(
-                    held, prefix.kept, prefix_closed, strict=True
-                )
+                _is_covered(keys, prefix, kept)
+                for keys, kept in zip(held, prefix.kept, strict=True)
             ]
             kept = prefix.kept
             if not all(covered):
@@ -477,17 +464,18 @@ class L1DuplicationMeter:
                 :meth:`_keep_finished` cut.
 
         Returns:
-            Ascending chunk indices per measured object group. A finished
-            prefix's are limited to the ones it kept: chunks past them belong
-            to a longer prefix, which counts them itself.
+            Ascending chunk indices per measured object group: the chunks
+            vLLM's whole hit covers, the same in every object group. A
+            finished prefix's are limited to the ones it kept: chunks past
+            them belong to a longer prefix, which counts them itself.
         """
-        if self._rules is None:
-            _, hit_tokens, _ = self._coordinator.find_longest_cache_hit(
-                prefix.block_hashes, len(prefix.block_hashes) * self._hash_block_size
-            )
-            held = [list(range(hit_tokens // self._chunk_size))]
-        else:
-            held = self._held_per_object_group(prefix.block_hashes, self._rules)
+        _, hit_tokens, _ = self._coordinator.find_longest_cache_hit(
+            prefix.block_hashes, len(prefix.block_hashes) * self._hash_block_size
+        )
+        held = [
+            list(range(hit_tokens // self._chunk_size))
+            for _ in range(self._num_measured())
+        ]
         if prefix.tracker is None:
             return [
                 sorted(set(indices).intersection(kept))
@@ -504,109 +492,6 @@ class L1DuplicationMeter:
                 prefix.chunk_hashes.append(
                     self._hasher.hash_to_bytes(prefix.last_raw_hash)
                 )
-        return held
-
-    def _held_per_object_group(
-        self, block_hashes: list[Any], rules: list[_ObjectGroupRule]
-    ) -> list[list[int]]:
-        """Apply the per-object-group rules to one prefix's block hashes.
-
-        Every lookup is read-only: vLLM's ``find_longest_cache_hit`` (one
-        KV cache group) or ``find_longest_cache_hit_per_group``, and
-        ``BlockPool.get_cached_block``.
-
-        Args:
-            block_hashes: The prefix's vLLM block hashes.
-            rules: The rule of every measured object group.
-
-        Returns:
-            Per rule, the ascending indices of the chunks that every one of
-            its vLLM KV cache groups holds.
-        """
-        num_tokens = len(block_hashes) * self._hash_block_size
-        num_chunks = num_tokens // self._chunk_size
-        prefix_hits: tuple[int, ...] = ()
-        if any(g.rule == "prefix" for rule in rules for g in rule.vllm_groups):
-            if len(self._coordinator.kv_cache_config.kv_cache_groups) == 1:
-                _, hit_tokens, _ = self._coordinator.find_longest_cache_hit(
-                    block_hashes, num_tokens
-                )
-                prefix_hits = (hit_tokens,)
-            else:
-                _, prefix_hits = self._coordinator.find_longest_cache_hit_per_group(
-                    block_hashes, num_tokens
-                )
-        held: list[list[int]] = []
-        for rule in rules:
-            indices = set.intersection(
-                *(
-                    self._held_by_vllm_group(
-                        group, block_hashes, num_chunks, prefix_hits
-                    )
-                    for group in rule.vllm_groups
-                )
-            )
-            held.append(sorted(indices))
-        return held
-
-    def _held_by_vllm_group(
-        self,
-        group: _VllmGroup,
-        block_hashes: list[Any],
-        num_chunks: int,
-        prefix_hits: tuple[int, ...],
-    ) -> set[int]:
-        """Return the chunks one vLLM KV cache group holds in L0.
-
-        The hash of the block ending at token ``t`` is
-        ``block_hashes[t // hash_block_size - 1]`` at any block size: each
-        hash chains its whole prefix, which vLLM's
-        ``BlockHashListWithBlockSize`` view also relies on.
-
-        Args:
-            group: The vLLM KV cache group.
-            block_hashes: The prefix's vLLM block hashes.
-            num_chunks: Whole chunks the block hashes cover.
-            prefix_hits: Per vLLM KV cache group, its own prefix hit in
-                tokens; read for ``"prefix"`` groups only.
-
-        Returns:
-            The indices of the chunks the group holds.
-        """
-        if group.rule == "prefix":
-            return set(
-                range(min(prefix_hits[group.group_id] // self._chunk_size, num_chunks))
-            )
-        group_ids = [group.group_id]
-        hashes_per_block = group.block_size // self._hash_block_size
-        blocks_per_chunk = self._chunk_size // group.block_size
-        if group.rule == "state":
-            return {
-                index
-                for index in range(num_chunks)
-                if group.block_pool.get_cached_block(
-                    block_hashes[(index + 1) * blocks_per_chunk * hashes_per_block - 1],
-                    group_ids,
-                )
-                is not None
-            }
-        # Running count of cached blocks, so each window costs one subtraction.
-        num_cached = [
-            0,
-            *accumulate(
-                group.block_pool.get_cached_block(
-                    block_hashes[(block + 1) * hashes_per_block - 1], group_ids
-                )
-                is not None
-                for block in range(num_chunks * blocks_per_chunk)
-            ),
-        ]
-        held: set[int] = set()
-        for index in range(num_chunks):
-            end = (index + 1) * blocks_per_chunk
-            start = max(0, end - group.window_blocks)
-            if num_cached[end] - num_cached[start] == end - start:
-                held.add(index)
         return held
 
     def _keep_finished(self, prefix: _Prefix, kept: list[list[int]]) -> None:
@@ -628,16 +513,13 @@ class L1DuplicationMeter:
         if stored is None or stored.finish_order < prefix.finish_order:
             self._finished[key] = prefix
 
-    def _prefix_closed(self) -> list[bool]:
-        """Return, per measured object group, whether its rule is prefix-closed.
+    def _num_measured(self) -> int:
+        """Return how many object groups a query measures.
 
         Returns:
-            ``[True]`` for vLLM's whole hit, else each rule's
-            :attr:`_ObjectGroupRule.prefix_closed`.
+            1 while the servers have one object group, else one per rule.
         """
-        if self._rules is None:
-            return [True]
-        return [rule.prefix_closed for rule in self._rules]
+        return 1 if self._rules is None else len(self._rules)
 
     def _add_chunks(
         self,
@@ -678,10 +560,10 @@ class L1DuplicationMeter:
     ) -> bool:
         """Return whether a running request holds a block of held chunk ``index``.
 
-        Per vLLM KV cache group, the blocks read are the ones its rule reads
-        to decide the chunk is held: the blocks overlapping the chunk for
-        ``"prefix"``, the window ending at the chunk's end for ``"window"``,
-        the state block at the chunk's end for ``"state"``. A block counts
+        Per vLLM KV cache group, the blocks read are the chunk's own: the
+        blocks overlapping the chunk for ``"prefix"``, the window ending at
+        the chunk's end for ``"window"``, the state block at the chunk's end
+        for ``"state"``. A block counts
         when ``BlockPool.get_cached_block`` (read-only) finds it with
         ``ref_cnt > 0``; a block not cached counts as not in use.
 
@@ -833,7 +715,7 @@ class L1DuplicationMeter:
         """Check that the replies counted what this query measured.
 
         The first reply showing several object groups switches the meter to
-        per-object-group rules (and one showing one switches it back); that
+        per-object-group queries (and one showing one switches it back); that
         sample counted the wrong field and is dropped. Finished prefixes keep
         their chunks so far in every object group.
 
@@ -879,7 +761,7 @@ class L1DuplicationMeter:
         self._use_rules(rules)
         logger.info(
             "L1 duplication: servers separate object groups %s; measuring "
-            "each by its KV cache groups from the next sample",
+            "each from the next sample",
             object_groups,
         )
         return False
@@ -888,11 +770,11 @@ class L1DuplicationMeter:
         """Switch to ``rules``; finished prefixes keep every hashed chunk.
 
         Args:
-            rules: The per-object-group rules, or ``None`` for vLLM's whole
-                hit.
+            rules: The per-object-group rules, or ``None`` for one object
+                group.
         """
         self._rules = rules
-        num_measured = len(self._prefix_closed())
+        num_measured = self._num_measured()
         for prefix in self._finished.values():
             prefix.kept = [
                 list(range(len(prefix.chunk_hashes))) for _ in range(num_measured)

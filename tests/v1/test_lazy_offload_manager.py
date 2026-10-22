@@ -3,18 +3,30 @@
 
 # Standard
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 # Third Party
 import pytest
+import torch
 
 pytest.importorskip("vllm", reason="the manager reads a vLLM BlockPool")
 
 # Third Party
 from vllm.v1.core.block_pool import BlockPool  # noqa: E402
+from vllm.v1.core.kv_cache_coordinator import (  # noqa: E402
+    KVCacheCoordinator,
+    get_kv_cache_coordinator,
+)
 from vllm.v1.core.kv_cache_utils import (  # noqa: E402
     BlockHash,
     make_block_hash_with_group_id,
+)
+from vllm.v1.kv_cache_interface import (  # noqa: E402
+    FullAttentionSpec,
+    KVCacheConfig,
+    KVCacheGroupSpec,
+    MambaSpec,
 )
 
 # First Party
@@ -101,6 +113,15 @@ def _step(
     )
 
 
+class _EmptyPrefixCache:
+    """A KV cache coordinator whose GPU prefix cache serves no hit."""
+
+    def find_longest_cache_hit(
+        self, block_hashes: list[BlockHash], max_cache_hit_length: int
+    ) -> tuple[tuple[list, ...], int, int]:
+        return (), 0, 0
+
+
 def _manager(
     pool: BlockPool,
     configs: dict | None = None,
@@ -111,7 +132,11 @@ def _manager(
     num_lookahead_tokens: int = 0,
     max_model_len: int = TOKENS_PER_BLOCK,
 ) -> LazyOffloadManager:
-    """Build a two-group manager bound to ``pool``."""
+    """Build a two-group manager bound to ``pool``.
+
+    Request "req" has arrived with no hash chain yet, under a prefix cache
+    that serves nothing, so none of its chunks is engine-held.
+    """
     manager = LazyOffloadManager(
         CONFIGS if configs is None else configs,
         [TOKENS_PER_BLOCK, TOKENS_PER_BLOCK],
@@ -125,6 +150,8 @@ def _manager(
         prefill_alignment=prefill_alignment,
     )
     manager.bind_block_pool(pool)
+    manager.bind_cache_coordinator(cast(KVCacheCoordinator, _EmptyPrefixCache()))
+    manager.on_request_arrived("req", [])
     return manager
 
 
@@ -1350,6 +1377,92 @@ def _exclusive_op(block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
     return op
 
 
+def _coordinator(mamba: bool = False) -> KVCacheCoordinator:
+    """vLLM's own coordinator over 16 blocks of one chunk each.
+
+    Args:
+        mamba: Whether an align-mode Mamba group (group 1) follows the full
+            attention group (group 0).
+    """
+    groups = [
+        KVCacheGroupSpec(
+            ["attention"],
+            FullAttentionSpec(
+                block_size=TOKENS_PER_BLOCK,
+                num_kv_heads=1,
+                head_size=1,
+                dtype=torch.float32,
+            ),
+        )
+    ]
+    if mamba:
+        groups.append(
+            KVCacheGroupSpec(
+                ["mamba"],
+                MambaSpec(
+                    block_size=TOKENS_PER_BLOCK,
+                    shapes=((1,),),
+                    dtypes=(torch.float32,),
+                    mamba_cache_mode="align",
+                ),
+            )
+        )
+    return get_kv_cache_coordinator(
+        KVCacheConfig(num_blocks=16, kv_cache_tensors=[], kv_cache_groups=groups),
+        max_model_len=16 * TOKENS_PER_BLOCK,
+        max_in_flight_tokens=MAX_STEP_TOKENS,
+        use_eagle=False,
+        enable_caching=True,
+        enable_kv_cache_events=False,
+        dcp_world_size=1,
+        pcp_world_size=1,
+        scheduler_block_size=TOKENS_PER_BLOCK,
+        hash_block_size=TOKENS_PER_BLOCK,
+    )
+
+
+def _chain(num_blocks: int) -> list[BlockHash]:
+    """vLLM block hashes of a request's first ``num_blocks`` blocks."""
+    return [BlockHash(bytes([i + 1]) * 32) for i in range(num_blocks)]
+
+
+def _cache(pool: BlockPool, chain: list[BlockHash], block_ids: list[list[int]]) -> None:
+    """Cache each group's blocks under ``chain``, as vLLM does once they fill.
+
+    Null blocks are skipped, as vLLM skips them.
+    """
+    request = SimpleNamespace(block_hashes=chain)
+    for group_id, group_block_ids in enumerate(block_ids):
+        blocks = [pool.blocks[block_id] for block_id in group_block_ids]
+        pool.cache_full_blocks(
+            request, blocks, 0, len(blocks), TOKENS_PER_BLOCK, group_id
+        )
+
+
+def _held_manager(
+    coordinator: KVCacheCoordinator, num_blocks: int, configs: dict | None = None
+) -> tuple[LazyOffloadManager, list[int]]:
+    """A manager over ``coordinator``, and request "req"'s cached blocks.
+
+    Args:
+        coordinator: An attention-only :func:`_coordinator`.
+        num_blocks: Attention blocks to allocate and cache as the request's
+            first chunks; still in use.
+        configs: The manager's configs; None for ``CONFIGS``.
+
+    Returns:
+        The manager, which knows the request's hash chain, and the blocks.
+    """
+    pool = coordinator.block_pool
+    block_ids = [block.block_id for block in pool.get_new_blocks(num_blocks)]
+    chain = _chain(num_blocks)
+    _cache(pool, chain, [block_ids])
+    manager = _manager(pool, configs=configs, receipts=_Receipts())
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    return manager, block_ids
+
+
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     exclusive: bool,
@@ -1358,10 +1471,10 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     store's hint and, under exclusive retrieve, stored once more after its
     holder releases it, and only then; the request's session waits for that
     store. A plain request stores each chunk once and sends no hint."""
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
     null = pool.null_block.block_id
-    first, second = _hashed_blocks(pool, 2)
-    manager = _manager(pool, receipts=_Receipts())
+    manager, (first, second) = _held_manager(coordinator, 2)
     op = _exclusive_op([[first, second], [null, null]]) if exclusive else None
     manager.add_store_candidate(op or _op(0, [[first, second], [null, null]]))
     pool.free_blocks([pool.blocks[first]])
@@ -1398,10 +1511,10 @@ def test_released_held_chunk_is_stored_before_the_queue_reaches_it() -> None:
     """A released held chunk is buffered again under the policy's window: it
     waits while the free queue is long and is stored once an allocation
     could take it."""
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
     null = pool.null_block.block_id
-    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
-    manager = _manager(pool, configs={}, receipts=_Receipts())
+    manager, ids = _held_manager(coordinator, pool.get_num_free_blocks(), {})
     manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
     pool.free_blocks([pool.blocks[block_id] for block_id in ids if block_id != ids[1]])
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
@@ -1422,10 +1535,10 @@ def test_held_chunk_is_pinned_while_an_allocation_can_take_the_whole_queue() -> 
     """When the next step may take every free block, a block its holder frees
     first could be recycled before the next drain: the parked chunk's blocks
     are pinned, and its store follows the release."""
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
     null = pool.null_block.block_id
-    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
-    manager = _manager(pool, configs={}, receipts=_Receipts())
+    manager, ids = _held_manager(coordinator, pool.get_num_free_blocks(), {})
     manager.add_store_candidate(_exclusive_op([[ids[0], ids[1]], [null, null]]))
     pool.free_blocks([pool.blocks[ids[0]], pool.blocks[ids[2]]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
@@ -1443,10 +1556,10 @@ def test_held_chunk_is_pinned_while_an_allocation_can_take_the_whole_queue() -> 
 def test_reset_drops_a_parked_chunk() -> None:
     """A preempted request's parked chunk keeps its stored copy; its later
     store is dropped and counted, and the session ends."""
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
     null = pool.null_block.block_id
-    first, second = _hashed_blocks(pool, 2)
-    manager = _manager(pool, receipts=_Receipts())
+    manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
     pool.free_blocks([pool.blocks[first]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
@@ -1466,10 +1579,10 @@ def test_reset_drops_a_parked_chunk() -> None:
 def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
     """The ledger counts every emitted chunk by whether vLLM held it and by
     the kind of the group whose block made the op due."""
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
     null = pool.null_block.block_id
-    first, second = _hashed_blocks(pool, 2)
-    manager = _manager(pool, receipts=_Receipts())
+    manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
     pool.free_blocks([pool.blocks[first]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
@@ -1485,3 +1598,47 @@ def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
     assert " emitted_chunks_held_by_other=1" in line
     assert " held_ops_parked=1" in line
     assert " readmitted=1 " in line
+
+
+@pytest.mark.parametrize(
+    ("states", "freed_states", "held_chunks"),
+    [
+        # Mamba's only state is at chunk 0's end: vLLM serves chunk 0 alone,
+        # though attention holds all three chunks.
+        ([0], [], [0]),
+        # A state at chunk 1's end: vLLM serves chunks 0 and 1.
+        ([1], [], [0, 1]),
+        # The state at chunk 2's end serves all three chunks, but it sits in
+        # the free queue, where vLLM may recycle it: chunk 2 is not held.
+        ([2], [2], [0, 1]),
+    ],
+    ids=["state_at_chunk_0", "state_at_chunk_1", "free_state_at_chunk_2"],
+)
+def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
+    states: list[int], freed_states: list[int], held_chunks: list[int]
+) -> None:
+    """The hint lists a chunk's blocks only when vLLM's own hit over every
+    KV cache group covers the chunk and every block of it is in use."""
+    coordinator = _coordinator(mamba=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(3)
+    attention = [block.block_id for block in pool.get_new_blocks(3)]
+    mamba = [null] * 3
+    for chunk in states:
+        mamba[chunk] = pool.get_new_blocks(1)[0].block_id
+    _cache(pool, chain, [attention, mamba])
+    pool.free_blocks([pool.blocks[mamba[chunk]] for chunk in freed_states])
+    manager = _manager(pool, receipts=_Receipts())
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_exclusive_op([attention, mamba]))
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted(
+        block_id
+        for chunk in held_chunks
+        for block_id in (attention[chunk], mamba[chunk])
+        if block_id != null
+    )
