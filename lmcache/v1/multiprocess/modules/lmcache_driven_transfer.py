@@ -93,15 +93,23 @@ def all_null_chunk_masks(
     blocks_per_chunk: Sequence[int],
     num_chunks: int,
     null_block_id: int = 0,
+    skip_partly_null: bool = False,
 ) -> list[list[bool]]:
-    """Mark, per object group, the chunks whose engine block ids are all null.
+    """Mark, per object group, the chunks whose engine block ids are null.
 
-    A chunk is null for an object group when every block ID of every kernel
-    group equals the server's null marker. Align-mode Mamba/linear
+    By default a chunk is null for an object group when every block ID of
+    every kernel group equals the server's null marker. Align-mode Mamba/linear
     layers produce such chunks: only the block holding the last recurrent state
     is real, so every earlier chunk is null. These chunks must not be stored --
     the null block carries no valid KV, and object keys are content hashes, so
     committing them would serve garbage to a later prefix hit.
+
+    Exclusive-retrieve re-stores need ``skip_partly_null``: they re-store
+    chunks loaded from L1, and vLLM fills a loaded chunk's Mamba blocks with
+    the null block except at the tail. In a mixed object group (attention and
+    Mamba in one object, the default without separate object groups) such a
+    chunk has real attention blocks, so the default rule would commit it with
+    the null block's contents as its recurrent state.
 
     Args:
         block_ids: Raw per-kernel-group engine block ids (before any downsample),
@@ -112,24 +120,25 @@ def all_null_chunk_masks(
         num_chunks: Number of chunks in the request.
         null_block_id: Server-wide block ID denoting absent data. Defaults to
             the historical vLLM null block zero.
+        skip_partly_null: Mark a chunk null when ANY kernel group of the object
+            group has only null blocks in it, instead of when ALL do.
 
     Returns:
-        ``mask[g][i]`` is True iff chunk ``i`` is all-null for object group ``g``.
+        ``mask[g][i]`` is True iff chunk ``i`` is null for object group ``g``.
     """
+    combine = any if skip_partly_null else all
     masks: list[list[bool]] = []
     for group in object_groups:
         chunk_null: list[bool] = []
         for i in range(num_chunks):
-            is_null = True
+            kernel_group_null: list[bool] = []
             for kg in group.kernel_group_indices:
                 bpc = blocks_per_chunk[kg]
-                if any(
-                    block != null_block_id
-                    for block in block_ids[kg][i * bpc : (i + 1) * bpc]
-                ):
-                    is_null = False
-                    break
-            chunk_null.append(is_null)
+                chunk_blocks = block_ids[kg][i * bpc : (i + 1) * bpc]
+                kernel_group_null.append(
+                    all(block == null_block_id for block in chunk_blocks)
+                )
+            chunk_null.append(combine(kernel_group_null))
         masks.append(chunk_null)
     return masks
 
@@ -723,7 +732,8 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             # Chunks whose block ids are all the null block (e.g. align-mode
             # Mamba chunks holding no real state) carry no valid KV and must not
             # be committed. Computed on the raw block ids before downsampling
-            # mutates them.
+            # mutates them. Exclusive re-stores also skip chunks that are null
+            # in only some kernel groups (see all_null_chunk_masks).
             null_block_id = self._ctx.null_block_id
             skipped_chunks = all_null_chunk_masks(
                 gpu_block_ids,
@@ -731,6 +741,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 blocks_per_chunk,
                 num_chunks,
                 null_block_id,
+                skip_partly_null=key.requests_exclusive_retrieve(),
             )
 
             block_ids_per_group_gpu = downsample_and_stage_block_ids(

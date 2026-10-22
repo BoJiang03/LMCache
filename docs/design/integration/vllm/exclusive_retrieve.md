@@ -90,6 +90,12 @@ request, never wrong KV:
   blocks, so its demoted chunks are not re-stored.
 - **Stale block hash.** A candidate whose block was reused before the drain is
   skipped by the lazy hash check, as for any lazy store.
+- **Mixed hybrid chunk before the tail.** Without `--separate-object-groups`,
+  one object holds attention and align-mode Mamba slices, and vLLM leaves a
+  loaded chunk's Mamba blocks null except at the tail. The re-store skips a
+  chunk that is null in any kernel group, rather than commit a null recurrent
+  state under a valid key, so its demoted L1 copy may be evicted. Separate
+  object groups avoid this: only the all-null Mamba object is skipped.
 
 ## Flag plumbing
 
