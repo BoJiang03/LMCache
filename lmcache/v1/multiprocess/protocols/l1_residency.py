@@ -82,12 +82,22 @@ class L1ResidencyQuery(msgspec.Struct):
             values to count, for a server with one object group.
         chunk_hashes_by_group: The chunks to count per object group, for a
             server with several.
+        inuse_chunk_hashes_by_salt: The subset of ``chunk_hashes_by_salt``
+            to count again as ``matched_inuse_*``.
+        inuse_chunk_hashes_by_group: The subset of ``chunk_hashes_by_group``
+            to count again as ``matched_inuse_*``.
     """
 
     model_name: str
     world_size: int
     chunk_hashes_by_salt: dict[str, list[bytes]]
     chunk_hashes_by_group: list[GroupHeldChunks] = msgspec.field(default_factory=list)
+    inuse_chunk_hashes_by_salt: dict[str, list[bytes]] = msgspec.field(
+        default_factory=dict
+    )
+    inuse_chunk_hashes_by_group: list[GroupHeldChunks] = msgspec.field(
+        default_factory=list
+    )
 
 
 class L1ResidencyReply(msgspec.Struct):
@@ -108,6 +118,9 @@ class L1ResidencyReply(msgspec.Struct):
             world size, by object group id. One entry means the server counted
             ``chunk_hashes_by_salt``; several mean it counted
             ``chunk_hashes_by_group``.
+        matched_inuse_objects: Committed objects among the keys of the
+            query's ``inuse_*`` chunks.
+        matched_inuse_bytes: Their bytes.
     """
 
     probe_hash: bytes
@@ -116,3 +129,5 @@ class L1ResidencyReply(msgspec.Struct):
     model_objects: int
     model_bytes: int
     object_groups: list[GroupWindow]
+    matched_inuse_objects: int
+    matched_inuse_bytes: int

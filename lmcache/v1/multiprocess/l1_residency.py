@@ -33,6 +33,7 @@ from lmcache.v1.multiprocess.engine_module import (
 from lmcache.v1.multiprocess.ext_server_module import server_module_handler
 from lmcache.v1.multiprocess.protocols.l1_residency import (
     L1_RESIDENCY_QUERY_METHOD,
+    GroupHeldChunks,
     GroupWindow,
     L1ResidencyQuery,
     L1ResidencyReply,
@@ -79,6 +80,49 @@ def _salted_keys(
             cache_salt=cache_salt,
         )
         keys.extend(ipc_key_to_object_keys(ipc_key, chunk_hashes, [object_group_id])[0])
+    return keys
+
+
+def _query_keys(
+    request: L1ResidencyQuery,
+    object_groups: list[GroupWindow],
+    chunk_hashes_by_salt: dict[str, list[bytes]],
+    chunk_hashes_by_group: list[GroupHeldChunks],
+) -> list[ObjectKey]:
+    """Expand one set of a query's chunks into object keys.
+
+    With one object group ``chunk_hashes_by_salt`` counts in it; with several,
+    each ``chunk_hashes_by_group`` entry counts in the object group its window
+    names, and an entry naming none counts nothing.
+
+    Args:
+        request: The query, for its model and world size.
+        object_groups: The server's object groups of that model and world size.
+        chunk_hashes_by_salt: The chunks to expand for one object group.
+        chunk_hashes_by_group: The chunks to expand per object group.
+
+    Returns:
+        The object keys of the chunks.
+
+    Raises:
+        ValueError: If a cache salt violates the ``ObjectKey`` invariants.
+    """
+    if len(object_groups) == 1:
+        return _salted_keys(
+            request.model_name, request.world_size, chunk_hashes_by_salt, 0
+        )
+    keys: list[ObjectKey] = []
+    for held in chunk_hashes_by_group:
+        if held.window not in object_groups:
+            continue
+        keys.extend(
+            _salted_keys(
+                request.model_name,
+                request.world_size,
+                held.chunk_hashes_by_salt,
+                object_groups.index(held.window),
+            )
+        )
     return keys
 
 
@@ -155,28 +199,25 @@ class L1ResidencyModule(DiscoverableModule):
         """
         request = msgspec.msgpack.decode(payload, type=L1ResidencyQuery)
         object_groups = self._object_groups(request.model_name, request.world_size)
-        if len(object_groups) == 1:
-            keys = _salted_keys(
-                request.model_name,
-                request.world_size,
-                request.chunk_hashes_by_salt,
-                0,
-            )
-        else:
-            keys = []
-            for held in request.chunk_hashes_by_group:
-                if held.window not in object_groups:
-                    continue
-                keys.extend(
-                    _salted_keys(
-                        request.model_name,
-                        request.world_size,
-                        held.chunk_hashes_by_salt,
-                        object_groups.index(held.window),
-                    )
-                )
+        keys = _query_keys(
+            request,
+            object_groups,
+            request.chunk_hashes_by_salt,
+            request.chunk_hashes_by_group,
+        )
+        inuse_keys = _query_keys(
+            request,
+            object_groups,
+            request.inuse_chunk_hashes_by_salt,
+            request.inuse_chunk_hashes_by_group,
+        )
         usage = self._ctx.storage_manager.get_l1_committed_usage(
             keys, request.model_name
+        )
+        # A second lock pass (and model scan); objects committed or evicted
+        # between the two can make the in-use count disagree by a few.
+        inuse_usage = self._ctx.storage_manager.get_l1_committed_usage(
+            inuse_keys, request.model_name
         )
         return msgspec.msgpack.encode(
             L1ResidencyReply(
@@ -186,6 +227,8 @@ class L1ResidencyModule(DiscoverableModule):
                 model_objects=usage.model_objects,
                 model_bytes=usage.model_bytes,
                 object_groups=object_groups,
+                matched_inuse_objects=inuse_usage.matched_objects,
+                matched_inuse_bytes=inuse_usage.matched_bytes,
             )
         )
 

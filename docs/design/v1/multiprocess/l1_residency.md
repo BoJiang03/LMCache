@@ -36,8 +36,14 @@ L1ResidencyQuery(model_name, world_size, chunk_hashes_by_salt,
   -> StorageManager.get_l1_committed_usage(keys, model_name)
        = sum of L1Manager.get_committed_usage over every L1 manager
 L1ResidencyReply(probe_hash, matched_objects, matched_bytes,
-                 model_objects, model_bytes, object_groups)
+                 model_objects, model_bytes, object_groups,
+                 matched_inuse_objects, matched_inuse_bytes)
 ```
+
+`inuse_chunk_hashes_by_salt` / `inuse_chunk_hashes_by_group` (default
+empty) name a subset of the queried chunks; the server expands them the same
+way and answers their committed count as `matched_inuse_*`, in a second
+`get_l1_committed_usage` call (so a second lock pass and model scan).
 
 `probe_hash` is the server's `TokenHasher` hash of a fixed probe chunk
 (`compute_probe_hash`). A client that hashes the same probe differently

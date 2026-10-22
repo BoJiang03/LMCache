@@ -58,8 +58,8 @@ def test_lookup_stats_snapshot_and_aggregation() -> None:
 
 def test_duplication_sample_is_a_latest_value() -> None:
     stats = LMCacheMPConnectorStats()
-    stats.record_l1_duplication(DuplicationSample(1, 1, 1, 1))
-    stats.record_l1_duplication(DuplicationSample(3, 300, 4, 1200))
+    stats.record_l1_duplication(DuplicationSample(1, 1, 1, 1, 0, 0))
+    stats.record_l1_duplication(DuplicationSample(3, 300, 4, 1200, 2, 200))
     assert not stats.is_empty()
 
     accumulated = LMCacheMPConnectorStats(data=dict(stats.clone_and_reset().data))
@@ -74,6 +74,8 @@ def test_duplication_sample_is_a_latest_value() -> None:
         "LMCache MP L1 dup matched_bytes": 300,
         "LMCache MP L1 dup model_objects": 4,
         "LMCache MP L1 dup model_bytes": 1200,
+        "LMCache MP L1 dup matched_inuse_objects": 2,
+        "LMCache MP L1 dup matched_inuse_bytes": 200,
     }
 
 

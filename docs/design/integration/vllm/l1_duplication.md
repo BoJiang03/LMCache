@@ -33,6 +33,17 @@ object_ratio = matched_objects / model_objects
 - **Held in L0**, when the server separates object groups: each object
   group's chunk is held by the rule below, and counts its own objects.
 
+**In use vs free-cached.** `matched_inuse_*` is the part of `matched_*`
+whose chunk a running request holds: some block the rule read to decide the
+chunk is held (per vLLM KV cache group: the blocks overlapping the chunk for
+full attention, the window ending at the chunk's end for sliding window, the
+state block at the chunk's end for Mamba), looked up with
+`BlockPool.get_cached_block`, has `ref_cnt > 0`. Without separated object
+groups every vLLM KV cache group's blocks are read; with them, only the
+groups stored in that object group. `matched_* - matched_inuse_*` is held
+only by blocks in vLLM's free queue (`ref_cnt == 0`, still hashed), which
+vLLM may evict at any allocation.
+
 The denominator is L1 because the question is how much L1 capacity is
 wasted; a ratio over L0 would grow when L1 grows even if L1 wasted nothing.
 
@@ -171,13 +182,16 @@ With separated object groups, a prefix lookup costs one
 one `get_cached_block` per block of each sliding-window group and one per
 chunk of each Mamba group; the windows are then summed in one pass.
 
+The in-use split adds, per distinct held chunk and object group, one
+`get_cached_block` per block it reads, stopping at the first in-use block.
+
 ## Output
 
 Each sample replaces the previous one in `LMCacheMPConnectorStats` (latest
 value, not a mean); vLLM's `KV Transfer metrics` log line shows it:
 
 ```
-'LMCache MP L1 dup byte_ratio': 0.412, 'LMCache MP L1 dup object_ratio': 0.412, 'LMCache MP L1 dup matched_objects': 1195, ...
+'LMCache MP L1 dup byte_ratio': 0.412, 'LMCache MP L1 dup object_ratio': 0.412, 'LMCache MP L1 dup matched_objects': 1195, ..., 'LMCache MP L1 dup matched_inuse_objects': 402, 'LMCache MP L1 dup matched_inuse_bytes': ...
 ```
 
 ## Several schedulers on one server

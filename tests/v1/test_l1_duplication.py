@@ -77,7 +77,8 @@ class _Coordinator:
     Attention hits the longest run of cached blocks from the start; with
     EAGLE it then drops the last hit block. Mamba then needs a cached state
     at the hit's last block, else it falls back to the last earlier block
-    with one, like vLLM's hybrid fixed point.
+    with one, like vLLM's hybrid fixed point. It is also its own block pool:
+    a cached block has ``ref_cnt`` 1 if its hash is in ``in_use``, else 0.
     """
 
     def __init__(
@@ -88,7 +89,29 @@ class _Coordinator:
         self.eagle = eagle
         self.attention_blocks: set[Any] = set()
         self.mamba_states: set[Any] = set()
+        self.in_use: set[Any] = set()
         self.calls = 0
+        specs: list[Any] = []
+        if attention:
+            specs.append(FullAttentionSpec())
+        if mamba:
+            specs.append(MambaSpec())
+        self.kv_cache_config = SimpleNamespace(
+            kv_cache_groups=[SimpleNamespace(kv_cache_spec=spec) for spec in specs]
+        )
+        self.single_type_managers = [SimpleNamespace(block_pool=self) for _ in specs]
+
+    def get_cached_block(
+        self, block_hash: Any, kv_cache_group_ids: list[int]
+    ) -> list[Any] | None:
+        (group_id,) = kv_cache_group_ids
+        spec = self.kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
+        cached = (
+            self.mamba_states if isinstance(spec, MambaSpec) else self.attention_blocks
+        )
+        if block_hash not in cached:
+            return None
+        return [SimpleNamespace(ref_cnt=int(block_hash in self.in_use))]
 
     def find_longest_cache_hit(
         self, block_hashes: list[Any], max_cache_hit_length: int
@@ -128,17 +151,24 @@ class MambaSpec:
 
 
 class _BlockPool:
-    """vLLM's block pool over cached (block hash, KV cache group id) pairs."""
+    """vLLM's block pool over cached (block hash, KV cache group id) pairs.
+
+    A cached block has ``ref_cnt`` 1 if its pair is in ``in_use``, else 0.
+    """
 
     def __init__(self) -> None:
         self.cached: set[tuple[Any, int]] = set()
+        self.in_use: set[tuple[Any, int]] = set()
         self.enable_caching = True
 
     def get_cached_block(
         self, block_hash: Any, kv_cache_group_ids: list[int]
-    ) -> list[object] | None:
+    ) -> list[Any] | None:
         if all((block_hash, g) in self.cached for g in kv_cache_group_ids):
-            return [object() for _ in kv_cache_group_ids]
+            return [
+                SimpleNamespace(ref_cnt=int((block_hash, g) in self.in_use))
+                for g in kv_cache_group_ids
+            ]
         return None
 
 
@@ -329,10 +359,46 @@ def test_ratio_is_over_committed_l1_of_the_model_for_the_request_salt(
             matched_bytes=OBJECT_BYTES,
             model_objects=2,
             model_bytes=2 * OBJECT_BYTES,
+            matched_inuse_objects=0,
+            matched_inuse_bytes=0,
         )
     ]
     assert samples[0].byte_ratio == pytest.approx(0.5)
     assert samples[0].object_ratio == pytest.approx(0.5)
+
+
+def test_held_chunks_split_into_in_use_and_free_cached(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    commit(l1, *(object_key(c) for c in CHUNK_HASHES))
+    coordinator = _Coordinator()
+    meter, clock, samples = _meter(_Adapter(store), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    _cache(coordinator, TOKENS)
+    # A running request holds the whole of chunk 0 and one block of chunk 1;
+    # chunk 2's blocks sit only in the free queue.
+    hashes = _block_hashes(TOKENS)
+    coordinator.in_use.update({hashes[0], hashes[1], hashes[2]})
+
+    _sample(meter, clock)
+
+    assert samples[-1] == DuplicationSample(
+        matched_objects=3,
+        matched_bytes=3 * OBJECT_BYTES,
+        model_objects=3,
+        model_bytes=3 * OBJECT_BYTES,
+        matched_inuse_objects=2,
+        matched_inuse_bytes=2 * OBJECT_BYTES,
+    )
+
+    # Once every block is freed (ref_cnt 0, still cached), nothing is in use.
+    coordinator.in_use.clear()
+    _sample(meter, clock)
+
+    assert samples[-1].matched_objects == 3
+    assert samples[-1].matched_inuse_objects == 0
+    assert samples[-1].matched_inuse_bytes == 0
 
 
 def test_mamba_hit_holds_every_chunk_up_to_its_latest_state(
@@ -661,8 +727,34 @@ def test_separated_object_groups_hold_chunks_per_kv_cache_group(
             matched_bytes=5 * OBJECT_BYTES,
             model_objects=6,
             model_bytes=6 * OBJECT_BYTES,
+            matched_inuse_objects=0,
+            matched_inuse_bytes=0,
         )
     ]
+
+
+def test_separated_object_groups_split_in_use_by_their_own_blocks(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0, 1)
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    _cache_blocks(coordinator, 0, list(range(6)))
+    _cache_blocks(coordinator, 1, [1, 5])
+    # A running request holds chunk 2's attention blocks and the Mamba state
+    # at chunk 0's end; the other held objects are free-cached.
+    hashes = _block_hashes(TOKENS)
+    coordinator.block_pool.in_use.update(
+        {(hashes[4], 0), (hashes[5], 0), (hashes[1], 1)}
+    )
+
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (5, 2)
+    assert samples[-1].matched_inuse_bytes == 2 * OBJECT_BYTES
 
 
 def test_object_group_of_several_kv_cache_groups_needs_all_of_them(

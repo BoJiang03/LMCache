@@ -258,3 +258,46 @@ def test_reply_carries_the_server_probe_hash(
     assert reply.probe_hash == compute_probe_hash(hasher)
     assert reply.probe_hash != compute_probe_hash(TokenHasher())
     assert (reply.matched_objects, reply.model_objects) == (0, 0)
+
+
+def test_inuse_chunks_count_again_as_matched_inuse(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    for chunk_hash in (b"a", b"b"):
+        commit(
+            l1,
+            object_key(chunk_hash, object_group_id=0),
+            object_key(chunk_hash, object_group_id=1),
+        )
+
+    merged = _query(
+        _module(store),
+        L1ResidencyQuery(
+            model_name="m",
+            world_size=1,
+            chunk_hashes_by_salt={"": [b"a", b"b"]},
+            inuse_chunk_hashes_by_salt={"": [b"b"]},
+        ),
+    )
+    separated = _query(
+        _separated_module(store),
+        L1ResidencyQuery(
+            model_name="m",
+            world_size=1,
+            chunk_hashes_by_salt={},
+            chunk_hashes_by_group=[
+                GroupHeldChunks(window=ATTENTION, chunk_hashes_by_salt={"": [b"a"]}),
+                GroupHeldChunks(window=STATE, chunk_hashes_by_salt={"": [b"a", b"b"]}),
+            ],
+            inuse_chunk_hashes_by_group=[
+                GroupHeldChunks(window=ATTENTION, chunk_hashes_by_salt={"": [b"a"]}),
+                GroupHeldChunks(window=STATE, chunk_hashes_by_salt={"": [b"b"]}),
+            ],
+        ),
+    )
+
+    assert (merged.matched_objects, merged.matched_inuse_objects) == (2, 1)
+    assert merged.matched_inuse_bytes == OBJECT_BYTES
+    assert (separated.matched_objects, separated.matched_inuse_objects) == (3, 2)
+    assert separated.matched_inuse_bytes == 2 * OBJECT_BYTES
