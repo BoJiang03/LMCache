@@ -15,7 +15,11 @@ import torch
 from lmcache import device_ops
 from lmcache.logging import init_logger
 from lmcache.utils import lmcache_deprecate
-from lmcache.v1.distributed.api import AttnWindowDesc, GroupKind
+from lmcache.v1.distributed.api import (
+    AttnWindowDesc,
+    GroupKind,
+    window_tokens_to_chunks,
+)
 from lmcache.v1.platform.ops_types import PageBufferShapeDesc
 import lmcache.lmcache_native as lmcache_native
 
@@ -720,10 +724,7 @@ class KVLayerGroupsManager:
         groups_by_bucket: dict[_ObjectBucket, list[int]] = defaultdict(list)
         bucket_sw_size: dict[_ObjectBucket, int] = {}
         for kernel_group_idx, group in enumerate(self._kernel_groups):
-            if group.sw_size_tokens == -1:
-                sw_size_chunks = -1
-            else:
-                sw_size_chunks = (group.sw_size_tokens + chunk_size - 1) // chunk_size
+            sw_size_chunks = window_tokens_to_chunks(group.sw_size_tokens, chunk_size)
             bucket = _ObjectBucket(
                 extra_tag=group.extra_object_group_tag,
                 recurrent=group.recurrent_state,

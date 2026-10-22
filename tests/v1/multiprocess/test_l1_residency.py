@@ -10,10 +10,13 @@ from unittest.mock import MagicMock
 # Third Party
 import msgspec
 import pytest
+import torch
 
 # First Party
+from lmcache.v1.distributed.api import AttnWindowDesc, MemoryLayoutDesc
 from lmcache.v1.distributed.l1_manager import L1Manager
 from lmcache.v1.distributed.storage_manager import StorageManager
+from lmcache.v1.multiprocess.engine_context import LayoutDescRegistry
 from lmcache.v1.multiprocess.ext_server_module import (
     ExtServerModuleSpec,
     build_server_module_router,
@@ -22,6 +25,8 @@ from lmcache.v1.multiprocess.ext_server_module import (
 from lmcache.v1.multiprocess.l1_residency import L1ResidencyModule
 from lmcache.v1.multiprocess.protocols.l1_residency import (
     L1_RESIDENCY_QUERY_METHOD,
+    GroupHeldChunks,
+    GroupWindow,
     L1ResidencyQuery,
     L1ResidencyReply,
     compute_probe_hash,
@@ -36,6 +41,14 @@ from tests.v1.distributed.utils import (
 )
 
 pytestmark = pytest.mark.no_shared_allocator
+
+# A hybrid model's object groups under --separate-object-groups: full
+# attention (id 0) and one-chunk recurrent state (id 1).
+ATTENTION = GroupWindow(kind="attention", window_chunks=-1)
+STATE = GroupWindow(kind="recurrent", window_chunks=1)
+HYBRID = AttnWindowDesc(
+    num_chunks_in_sw=[-1, 1], group_kinds=("attention", "recurrent")
+)
 
 
 @pytest.fixture
@@ -58,6 +71,28 @@ def _module(
     return L1ResidencyModule(cast(Any, ctx))
 
 
+def _separated_module(
+    store: StorageManager, attn_desc: AttnWindowDesc | None = HYBRID
+) -> L1ResidencyModule:
+    """A module on a server that separates object groups.
+
+    ``attn_desc`` is registered for model ``m`` at world size 1; ``None``
+    registers nothing.
+    """
+    registry = LayoutDescRegistry()
+    if attn_desc is not None:
+        layout = MemoryLayoutDesc([torch.Size([1024])], [torch.float32])
+        registry.register("m", 1, layout, attn_desc=attn_desc)
+    ctx = SimpleNamespace(
+        storage_manager=store,
+        token_hasher=TokenHasher(),
+        separate_object_groups=True,
+        full_sw_kv=False,
+        layout_desc_registry=registry,
+    )
+    return L1ResidencyModule(cast(Any, ctx))
+
+
 def _query(module: L1ResidencyModule, query: L1ResidencyQuery) -> L1ResidencyReply:
     reply = module.query(msgspec.msgpack.encode(query))
     return msgspec.msgpack.decode(reply, type=L1ResidencyReply)
@@ -75,9 +110,94 @@ def test_module_loads_as_a_server_module_plugin() -> None:
     ]
 
 
-def test_rejects_separate_object_groups() -> None:
-    with pytest.raises(ValueError, match="separate_object_groups=False"):
-        L1ResidencyModule(MagicMock(separate_object_groups=True))
+def test_rejects_separate_object_groups_with_full_sw_kv() -> None:
+    with pytest.raises(ValueError, match="full_sw_kv"):
+        L1ResidencyModule(MagicMock(separate_object_groups=True, full_sw_kv=True))
+
+
+def test_separated_object_groups_count_each_group_its_own_chunks(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    for chunk_hash in (b"a", b"b"):
+        commit(
+            l1,
+            object_key(chunk_hash, object_group_id=0),
+            object_key(chunk_hash, object_group_id=1),
+        )
+
+    reply = _query(
+        _separated_module(store),
+        L1ResidencyQuery(
+            model_name="m",
+            world_size=1,
+            # Ignored with several object groups.
+            chunk_hashes_by_salt={"": [b"a", b"b"]},
+            chunk_hashes_by_group=[
+                GroupHeldChunks(window=ATTENTION, chunk_hashes_by_salt={"": [b"a"]}),
+                GroupHeldChunks(window=STATE, chunk_hashes_by_salt={"": [b"a", b"b"]}),
+            ],
+        ),
+    )
+
+    assert reply.object_groups == [ATTENTION, STATE]
+    assert (reply.matched_objects, reply.matched_bytes) == (3, 3 * OBJECT_BYTES)
+    assert (reply.model_objects, reply.model_bytes) == (4, 4 * OBJECT_BYTES)
+
+
+def test_group_the_server_does_not_have_counts_nothing(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    commit(l1, object_key(b"a", object_group_id=1))
+    other = GroupWindow(kind="recurrent", window_chunks=2)
+
+    reply = _query(
+        _separated_module(store),
+        L1ResidencyQuery(
+            model_name="m",
+            world_size=1,
+            chunk_hashes_by_salt={},
+            chunk_hashes_by_group=[
+                GroupHeldChunks(window=other, chunk_hashes_by_salt={"": [b"a"]})
+            ],
+        ),
+    )
+
+    assert reply.object_groups == [ATTENTION, STATE]
+    assert (reply.matched_objects, reply.model_objects) == (0, 1)
+
+
+def test_one_object_group_counts_chunk_hashes_by_salt(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    commit(l1, object_key(b"a"), object_key(b"b"))
+    query = L1ResidencyQuery(
+        model_name="m",
+        world_size=1,
+        chunk_hashes_by_salt={"": [b"a"]},
+        chunk_hashes_by_group=[
+            GroupHeldChunks(window=ATTENTION, chunk_hashes_by_salt={"": [b"b"]})
+        ],
+    )
+
+    # Without separation, and with separation on a model of one object group.
+    for module in (
+        _module(store),
+        _separated_module(store, AttnWindowDesc(num_chunks_in_sw=[-1])),
+    ):
+        reply = _query(module, query)
+        assert len(reply.object_groups) == 1
+        assert (reply.matched_objects, reply.model_objects) == (1, 2)
+
+
+def test_separated_object_groups_need_a_registered_kv_cache(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    query = L1ResidencyQuery(model_name="m", world_size=1, chunk_hashes_by_salt={})
+    with pytest.raises(ValueError, match="No attention-window descriptor"):
+        _separated_module(storage[1], None).query(msgspec.msgpack.encode(query))
 
 
 def test_counts_only_committed_objects_of_the_model(

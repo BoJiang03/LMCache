@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 # Third Party
 import grpc
 import pytest
+import torch
 
 # First Party
 from lmcache.integration.vllm.l1_duplication import (
@@ -21,8 +22,10 @@ from lmcache.integration.vllm.l1_duplication import (
     DuplicationSample,
     L1DuplicationMeter,
 )
+from lmcache.v1.distributed.api import AttnWindowDesc, MemoryLayoutDesc
 from lmcache.v1.distributed.l1_manager import L1Manager
 from lmcache.v1.distributed.storage_manager import StorageManager
+from lmcache.v1.multiprocess.engine_context import LayoutDescRegistry
 from lmcache.v1.multiprocess.futures import MessagingFuture
 from lmcache.v1.multiprocess.l1_residency import L1ResidencyModule
 from lmcache.v1.multiprocess.protocols.l1_residency import L1_RESIDENCY_QUERY_METHOD
@@ -105,6 +108,94 @@ class _Coordinator:
         return [], num_blocks * HASH_BLOCK, 0
 
 
+# Stand-ins for vLLM's KV cache specs; the meter tells them apart by class
+# name, as for real specs.
+class FullAttentionSpec:
+    def __init__(self) -> None:
+        self.block_size = HASH_BLOCK
+
+
+class SlidingWindowSpec:
+    def __init__(self, sliding_window: int) -> None:
+        self.block_size = HASH_BLOCK
+        self.sliding_window = sliding_window
+
+
+class MambaSpec:
+    def __init__(self) -> None:
+        self.block_size = CHUNK
+        self.mamba_cache_mode = "align"
+
+
+class _BlockPool:
+    """vLLM's block pool over cached (block hash, KV cache group id) pairs."""
+
+    def __init__(self) -> None:
+        self.cached: set[tuple[Any, int]] = set()
+        self.enable_caching = True
+
+    def get_cached_block(
+        self, block_hash: Any, kv_cache_group_ids: list[int]
+    ) -> list[object] | None:
+        if all((block_hash, g) in self.cached for g in kv_cache_group_ids):
+            return [object() for _ in kv_cache_group_ids]
+        return None
+
+
+class _GroupCoordinator:
+    """vLLM's hybrid coordinator over KV cache groups of the given specs.
+
+    A full-attention group's own hit is its longest run of cached blocks
+    from the start; the whole hit is the shortest of those.
+    """
+
+    def __init__(self, *specs: Any) -> None:
+        self.block_pool = _BlockPool()
+        self.kv_cache_config = SimpleNamespace(
+            kv_cache_groups=[SimpleNamespace(kv_cache_spec=spec) for spec in specs]
+        )
+        self.single_type_managers = [
+            SimpleNamespace(block_pool=self.block_pool) for _ in specs
+        ]
+
+    def find_longest_cache_hit_per_group(
+        self, block_hashes: list[Any], max_cache_hit_length: int
+    ) -> tuple[tuple[list, ...], tuple[int, ...]]:
+        hits = []
+        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            num_blocks = 0
+            if isinstance(group.kv_cache_spec, FullAttentionSpec):
+                while (
+                    num_blocks < len(block_hashes)
+                    and (block_hashes[num_blocks], group_id) in self.block_pool.cached
+                ):
+                    num_blocks += 1
+            hits.append(num_blocks * HASH_BLOCK)
+        return tuple([] for _ in hits), tuple(hits)
+
+    def find_longest_cache_hit(
+        self, block_hashes: list[Any], max_cache_hit_length: int
+    ) -> tuple[list, int, int]:
+        _, hits = self.find_longest_cache_hit_per_group(
+            block_hashes, max_cache_hit_length
+        )
+        full = [
+            hit
+            for hit, group in zip(
+                hits, self.kv_cache_config.kv_cache_groups, strict=True
+            )
+            if isinstance(group.kv_cache_spec, FullAttentionSpec)
+        ]
+        return [], min(full), 0
+
+
+# The object groups of a server that separates them for an attention +
+# Mamba model: full attention (id 0) and one-chunk recurrent state (id 1).
+HYBRID = AttnWindowDesc(
+    num_chunks_in_sw=[-1, 1], group_kinds=("attention", "recurrent")
+)
+
+
 class _Adapter:
     model_name = "m"
 
@@ -114,11 +205,20 @@ class _Adapter:
         world_size: int = 1,
         hasher: TokenHasher | None = None,
         response: _Response = "module",
+        attn_desc: AttnWindowDesc | None = None,
     ) -> None:
+        # attn_desc: the object groups of a server that separates them,
+        # registered for this model and world size; None for one that merges.
+        registry = LayoutDescRegistry()
+        if attn_desc is not None:
+            layout = MemoryLayoutDesc([torch.Size([1024])], [torch.float32])
+            registry.register(self.model_name, world_size, layout, attn_desc=attn_desc)
         ctx = SimpleNamespace(
             storage_manager=store,
             token_hasher=hasher or TokenHasher(chunk_size=CHUNK),
-            separate_object_groups=False,
+            separate_object_groups=attn_desc is not None,
+            full_sw_kv=False,
+            layout_desc_registry=registry,
         )
         self.module = L1ResidencyModule(cast(Any, ctx))
         self.world_size = world_size
@@ -181,7 +281,7 @@ def _evict(coordinator: _Coordinator, tokens: list[int], start: int = 0) -> None
 
 
 def _meter(
-    adapter: _Adapter, coordinator: _Coordinator
+    adapter: _Adapter, coordinator: "_Coordinator | _GroupCoordinator"
 ) -> tuple[L1DuplicationMeter, _Clock, list[DuplicationSample]]:
     clock = _Clock()
     samples: list[DuplicationSample] = []
@@ -500,3 +600,166 @@ def test_no_query_before_the_interval(
     clock.now = SAMPLE_INTERVAL_S
     meter.on_scheduler_step()
     assert adapter.calls == 1
+
+
+def _cache_blocks(
+    coordinator: _GroupCoordinator, group_id: int, blocks: list[int]
+) -> None:
+    """Cache group ``group_id``'s blocks of ``TOKENS``, by hash block index.
+
+    Hash block ``2 * i + 1`` ends chunk ``i``; a Mamba state there is the
+    state at the chunk's end.
+    """
+    hashes = _block_hashes(TOKENS)
+    coordinator.block_pool.cached.update((hashes[b], group_id) for b in blocks)
+
+
+def _uncache_blocks(
+    coordinator: _GroupCoordinator, group_id: int, blocks: list[int]
+) -> None:
+    """Evict group ``group_id``'s blocks of ``TOKENS``, by hash block index."""
+    hashes = _block_hashes(TOKENS)
+    coordinator.block_pool.cached.difference_update(
+        (hashes[b], group_id) for b in blocks
+    )
+
+
+def _commit_all_chunks(l1: L1Manager, *object_group_ids: int) -> None:
+    """Commit every chunk of ``TOKENS`` in each of ``object_group_ids``."""
+    commit(
+        l1,
+        *(
+            object_key(c, object_group_id=g)
+            for c in CHUNK_HASHES
+            for g in object_group_ids
+        ),
+    )
+
+
+def test_separated_object_groups_hold_chunks_per_kv_cache_group(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0, 1)
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    adapter = _Adapter(store, attn_desc=HYBRID)
+    meter, clock, samples = _meter(adapter, coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    # Attention holds all three chunks; Mamba keeps states at the ends of
+    # chunks 0 and 2 only.
+    _cache_blocks(coordinator, 0, list(range(6)))
+    _cache_blocks(coordinator, 1, [1, 5])
+
+    # The first reply shows two object groups: that sample is dropped.
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    assert adapter.calls == 2
+    assert samples == [
+        DuplicationSample(
+            matched_objects=5,
+            matched_bytes=5 * OBJECT_BYTES,
+            model_objects=6,
+            model_bytes=6 * OBJECT_BYTES,
+        )
+    ]
+
+
+def test_object_group_of_several_kv_cache_groups_needs_all_of_them(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0)
+    coordinator = _GroupCoordinator(
+        FullAttentionSpec(), FullAttentionSpec(), MambaSpec()
+    )
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    # Both attention groups store into object group 0; the second holds
+    # chunk 0 only.
+    _cache_blocks(coordinator, 0, list(range(6)))
+    _cache_blocks(coordinator, 1, [0, 1])
+
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    assert _matched(samples) == 1
+
+
+def test_sliding_window_chunk_needs_the_window_ending_at_it(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 1)
+    # A 4-token window needs vLLM's cdiv(4 - 1, 2) = 2 trailing blocks.
+    coordinator = _GroupCoordinator(FullAttentionSpec(), SlidingWindowSpec(4))
+    attn_desc = AttnWindowDesc(
+        num_chunks_in_sw=[-1, 1], group_kinds=("attention", "attention")
+    )
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=attn_desc), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    # Chunk 1's window is cached; chunk 2's only in part; chunk 0's not.
+    _cache_blocks(coordinator, 1, [2, 3, 5])
+
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    assert _matched(samples) == 1
+
+
+def test_finished_prefix_keeps_each_object_group_its_held_chunks(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0, 1)
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    # Attention holds chunk 0; Mamba a state at chunk 2's end.
+    _cache_blocks(coordinator, 0, [0, 1])
+    _cache_blocks(coordinator, 1, [5])
+    _sample(meter, clock)
+    meter.on_request_finished("r")
+
+    _sample(meter, clock)
+    _uncache_blocks(coordinator, 1, [5])
+    _sample(meter, clock)
+    # A chunk cut from a finished prefix stays cut once it is back.
+    _cache_blocks(coordinator, 1, [5])
+    _sample(meter, clock)
+    _uncache_blocks(coordinator, 0, [0, 1])
+    _sample(meter, clock)
+    _cache_blocks(coordinator, 0, [0, 1])
+    _sample(meter, clock)
+
+    assert [s.matched_objects for s in samples] == [2, 1, 1, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("attn_desc", "enable_caching"),
+    [
+        (
+            AttnWindowDesc(
+                num_chunks_in_sw=[-1, 2], group_kinds=("attention", "recurrent")
+            ),
+            True,
+        ),
+        (HYBRID, False),
+    ],
+    ids=["object_group_missing", "prefix_caching_disabled"],
+)
+def test_separated_object_groups_stop_measuring(
+    storage: tuple[L1Manager, StorageManager],
+    attn_desc: AttnWindowDesc,
+    enable_caching: bool,
+) -> None:
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    coordinator.block_pool.enable_caching = enable_caching
+    adapter = _Adapter(storage[1], attn_desc=attn_desc)
+    meter, clock, samples = _meter(adapter, coordinator)
+
+    for _ in range(3):
+        _sample(meter, clock)
+
+    assert adapter.calls == 1
+    assert samples == []

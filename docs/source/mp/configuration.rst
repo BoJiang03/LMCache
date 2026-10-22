@@ -1077,8 +1077,10 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
        the share of this model's committed L1 that vLLM's GPU prefix cache
        also holds, by bytes and by objects. Requires the MP server to start
        with ``--server-module '{"module_path":
-       "lmcache.v1.multiprocess.l1_residency"}'`` and without
-       ``--separate-object-groups``. Design:
+       "lmcache.v1.multiprocess.l1_residency"}'``. With
+       ``--separate-object-groups`` each object group is measured on its
+       own; the blend engine with ``--separate-object-groups`` is not
+       supported. Design:
        ``docs/design/integration/vllm/l1_duplication.md``.
 
 To let vLLM worker 0 start a local MP server automatically:
