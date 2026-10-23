@@ -90,6 +90,47 @@ _SUMMED_FIELDS = (
 )
 
 
+def _pool_census(block_pool: Any) -> dict[str, Any]:
+    """Count a vLLM block pool's blocks by cache state, per KV cache group.
+
+    A cached block's group is the last 4 bytes (big-endian) of its
+    ``BlockHashWithGroupId``, as vLLM's ``get_group_id`` reads it.
+
+    Args:
+        block_pool: A vLLM ``BlockPool``; its ``blocks`` are only read.
+
+    Returns:
+        ``blocks`` (excluding the null block), ``uncached_inuse`` and
+        ``uncached_free`` (no block hash), and per group id ``cached`` and
+        ``cached_inuse`` (``ref_cnt > 0``).
+    """
+    cached: dict[int, int] = {}
+    cached_inuse: dict[int, int] = {}
+    blocks = uncached_inuse = uncached_free = 0
+    for block in block_pool.blocks:
+        if block.is_null:
+            continue
+        blocks += 1
+        block_hash = block.block_hash
+        if block_hash is None:
+            if block.ref_cnt > 0:
+                uncached_inuse += 1
+            else:
+                uncached_free += 1
+            continue
+        group_id = int.from_bytes(block_hash[-4:], "big")
+        cached[group_id] = cached.get(group_id, 0) + 1
+        if block.ref_cnt > 0:
+            cached_inuse[group_id] = cached_inuse.get(group_id, 0) + 1
+    return {
+        "blocks": blocks,
+        "uncached_inuse": uncached_inuse,
+        "uncached_free": uncached_free,
+        "cached": dict(sorted(cached.items())),
+        "cached_inuse": dict(sorted(cached_inuse.items())),
+    }
+
+
 def _ceil_div(a: int, b: int) -> int:
     """Return ``a / b`` rounded up, for non-negative ``a``."""
     return -(-a // b)
@@ -433,6 +474,7 @@ class L1DuplicationMeter:
         self._next_sample_at = self._clock() + SAMPLE_INTERVAL_S
         # Pruning runs even while no server is healthy, so state stays bounded.
         held, inuse, firm = self._held_chunk_keys()
+        self._log_l0_census(held, inuse)
         if not self._adapter.is_healthy:
             return
         inuse_firm = [i & f for i, f in zip(inuse, firm, strict=True)]
@@ -1006,6 +1048,33 @@ class L1DuplicationMeter:
             _ObjectGroupRule(window=window, vllm_groups=tuple(vllm_groups))
             for window, vllm_groups in groups.items()
         ]
+
+    def _log_l0_census(
+        self, held: list[set[_ChunkKey]], inuse: list[set[_ChunkKey]]
+    ) -> None:
+        """Log what L0 holds next to the chunks the meter counts as held.
+
+        One INFO line ``L0 census: ...`` per sample: per measured object
+        group the held and in-use held chunk counts, and per distinct block
+        pool its blocks by cache state (:func:`_pool_census`). Comparing
+        them tells blocks L0 caches but cannot serve from chunks it serves.
+
+        Args:
+            held: Per measured object group, the chunks L0 holds.
+            inuse: Per measured object group, the held chunks in use.
+        """
+        pools = {
+            id(group.block_pool): group.block_pool for group in self._all_vllm_groups
+        }
+        logger.info(
+            "L0 census: running=%d finished=%d held=%s inuse=%s groups=%s pools=%s",
+            len(self._running),
+            len(self._finished),
+            [len(keys) for keys in held],
+            [len(keys) for keys in inuse],
+            [(group.group_id, group.rule) for group in self._all_vllm_groups],
+            [_pool_census(pool) for pool in pools.values()],
+        )
 
     def _stop_unserved(self, url: str) -> None:
         """Stop measuring because server ``url`` does not serve the query."""

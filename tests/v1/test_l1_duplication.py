@@ -9,6 +9,7 @@ real ``l1_residency`` module over a real CPU L1 what L1 commits.
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, Literal, cast
+import logging
 
 # Third Party
 import grpc
@@ -16,6 +17,7 @@ import pytest
 import torch
 
 # First Party
+from lmcache.integration.vllm import l1_duplication
 from lmcache.integration.vllm.l1_duplication import (
     MAX_MISSED_DEADLINES,
     SAMPLE_INTERVAL_S,
@@ -94,6 +96,8 @@ class _Coordinator:
         self.attention_blocks: set[Any] = set()
         self.mamba_states: set[Any] = set()
         self.in_use: set[Any] = set()
+        # The pool's blocks, as the L0 census reads them.
+        self.blocks: list[Any] = []
         self.calls = 0
         specs: list[Any] = []
         if attention:
@@ -182,6 +186,8 @@ class _BlockPool:
         self.cached: set[tuple[Any, int]] = set()
         self.in_use: set[tuple[Any, int]] = set()
         self.enable_caching = True
+        # The pool's blocks, as the L0 census reads them.
+        self.blocks: list[Any] = []
 
     def get_cached_block(
         self, block_hash: Any, kv_cache_group_ids: list[int]
@@ -426,6 +432,43 @@ def test_ratio_is_over_committed_l1_of_the_model_for_the_request_salt(
     ]
     assert samples[0].byte_ratio == pytest.approx(0.5)
     assert samples[0].object_ratio == pytest.approx(0.5)
+
+
+def test_l0_census_logs_pool_blocks_by_group_next_to_held_chunks(
+    storage: tuple[L1Manager, StorageManager], caplog: pytest.LogCaptureFixture
+) -> None:
+    _, store = storage
+    coordinator = _Coordinator()
+    meter, clock, _ = _meter(_Adapter(store), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    _cache(coordinator, TOKENS)
+
+    def block(group_id: int | None, ref_cnt: int, is_null: bool = False) -> Any:
+        block_hash = None if group_id is None else b"h" + group_id.to_bytes(4, "big")
+        return SimpleNamespace(is_null=is_null, block_hash=block_hash, ref_cnt=ref_cnt)
+
+    coordinator.blocks = [
+        block(None, 0, is_null=True),
+        block(0, 1),
+        block(0, 0),
+        block(1, 0),
+        block(None, 1),
+        block(None, 0),
+    ]
+    caplog.set_level(logging.INFO)
+    meter_logger = logging.getLogger(l1_duplication.__name__)
+    meter_logger.addHandler(caplog.handler)
+    try:
+        _sample(meter, clock)
+    finally:
+        meter_logger.removeHandler(caplog.handler)
+
+    (line,) = [r.getMessage() for r in caplog.records if "L0 census" in r.getMessage()]
+    assert "running=1 finished=0 held=[3] inuse=[0]" in line
+    assert (
+        "pools=[{'blocks': 5, 'uncached_inuse': 1, 'uncached_free': 1, "
+        "'cached': {0: 2, 1: 1}, 'cached_inuse': {0: 1}}]"
+    ) in line
 
 
 def test_held_chunks_split_into_in_use_and_free_cached(
