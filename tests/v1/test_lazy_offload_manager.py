@@ -1852,9 +1852,10 @@ def test_chunk_at_the_end_of_an_eagle_hit_counts_as_one_block_past() -> None:
     assert counts["not_held_past_servable_by_one_block"] == 1
 
 
-def test_hit_through_a_free_duplicate_counts_as_shadowed() -> None:
-    """A chunk whose hit vLLM reads from a free duplicate of the op's own
-    in-use block counts as shadowed."""
+def test_free_duplicate_does_not_cut_the_chunk_it_shadows() -> None:
+    """vLLM's hit reading a free duplicate of the op's own in-use block does
+    not rely on the duplicate: the in-use block keeps the hash cached, so
+    the chunk is held."""
     coordinator = _coordinator()
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -1865,11 +1866,10 @@ def test_hit_through_a_free_duplicate_counts_as_shadowed() -> None:
     pool.free_blocks([duplicate])
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
 
-    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    counts = _counts(manager)
-    assert counts["not_held_past_servable"] == 2
-    assert counts["not_held_past_servable_shadowed"] == 1
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted([first, second])
+    assert "emitted_chunks_not_held" not in _counts(manager)
 
 
 # Chunks of the anchored request below whose op holds a Mamba state.

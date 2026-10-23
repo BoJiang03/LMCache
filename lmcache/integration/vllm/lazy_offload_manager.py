@@ -762,7 +762,17 @@ class LazyOffloadManager:
             trigger_kind = self._block_group_kind(item)
             # Looked up at most once per item, and only for a chunk whose
             # blocks are all in use; pins leave it unchanged.
-            servable_tokens = cache(partial(self._servable_tokens, item.request_id))
+            servable_tokens = cache(
+                partial(
+                    self._servable_tokens,
+                    item.request_id,
+                    [
+                        block_id
+                        for _, block_hashes in item.metadatas
+                        for block_id in block_hashes
+                    ],
+                )
+            )
             hit_blocks = cache(partial(self._hit_blocks, item.request_id))
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
@@ -1414,7 +1424,7 @@ class LazyOffloadManager:
         )
         return hit_blocks
 
-    def _servable_tokens(self, request_id: str) -> int:
+    def _servable_tokens(self, request_id: str, own_block_ids: list[int]) -> int:
         """Return how much of a request's prefix vLLM serves from blocks it keeps.
 
         The longest hit of vLLM's own ``find_longest_cache_hit`` over every
@@ -1422,19 +1432,31 @@ class LazyOffloadManager:
         referenced beyond this class's pins. A hit relying on a block in the
         free queue is cut below that block and looked up again, so a Mamba
         state or sliding window that anchors the hit cannot be recycled while
-        a chunk it serves is parked. Read-only: the lookup takes no
-        reference, touches no LRU order and emits no event.
+        a chunk it serves is parked. vLLM returns the first block cached
+        under a hash, which may be a free duplicate of one of
+        ``own_block_ids`` still in use; that one keeps the hash cached when
+        the duplicate is recycled, so the hit does not rely on the
+        duplicate. Read-only: the lookup takes no reference, touches no LRU
+        order and emits no event.
 
         Args:
             request_id: A request that arrived and whose session has not
                 ended.
+            own_block_ids: The blocks of the request's emitted ops.
 
         Returns:
             The hit length in tokens, the same for every cache group.
         """
         coordinator = self._require_coordinator()
+        pool = self._require_block_pool()
         chain = self._block_hash_chains[request_id]
-        max_tokens = len(chain) * self._require_block_pool().hash_block_size
+        max_tokens = len(chain) * pool.hash_block_size
+        # Hashes, keyed by group, that an in-use block of the request keeps.
+        kept_hashes = {
+            pool.blocks[block_id].block_hash
+            for block_id in own_block_ids
+            if pool.blocks[block_id].ref_cnt > self._pin_counts[block_id]
+        }
         while True:
             hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
                 chain, max_tokens
@@ -1450,6 +1472,7 @@ class LazyOffloadManager:
                     if position * manager.block_size < hit_tokens
                     and not block.is_null
                     and block.ref_cnt <= self._pin_counts[block.block_id]
+                    and block.block_hash not in kept_hashes
                 ),
                 default=hit_tokens,
             )
