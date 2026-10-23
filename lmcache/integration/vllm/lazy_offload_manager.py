@@ -44,8 +44,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import cache, partial
 from typing import TYPE_CHECKING, Protocol
+import time
 
 # First Party
+from lmcache.integration.vllm.lazy_offload_lead import StoreLeadMeter
 from lmcache.integration.vllm.lazy_offload_policy import create_offload_policy
 from lmcache.integration.vllm.lazy_offload_policy.base import (
     BlockHashes,
@@ -301,6 +303,24 @@ class LazyOffloadManager:
         # This class's references per block, which a block's ref_cnt
         # counts too: the rest are vLLM's.
         self._pin_counts: Counter[int] = Counter()
+        # Times how long each stored chunk's L1 copy overlaps L0, by the last
+        # block of each chunk in the first full-attention group (the first
+        # cacheable group without attention).
+        self._lead_meter = StoreLeadMeter(self._pin_counts)
+        cacheable = [
+            group_idx
+            for group_idx, tokens_per_block in enumerate(group_tokens_per_block)
+            if tokens_per_block
+        ]
+        self._lead_group = next(
+            (
+                group_idx
+                for group_idx in cacheable
+                if group_kinds[group_idx] == "attention"
+                and group_idx not in self._mamba_groups
+            ),
+            cacheable[0],
+        )
         # Per request, the engine-held part of each op of its in-flight
         # batch, parked once the batch is stored.
         self._held_in_flight: dict[
@@ -573,6 +593,8 @@ class LazyOffloadManager:
                     {"held_ops_parked": len(held)}
                 )
             self._unpin(list(batch.block_ids))
+            if not batch.failed:
+                self._track_lead(batch.operations, time.monotonic())
             if batch.failed and not batch.orphaned:
                 # The data is still on the GPU; a reset or id reuse would
                 # have detached the batch from the generation it belongs to.
@@ -687,9 +709,10 @@ class LazyOffloadManager:
         return bool(self._requests.in_flight_request_ids())
 
     def log_final_stats(self) -> None:
-        """Write the policy's final counter ledger, when one was built."""
+        """Write the policy's final counter ledger, if built, and the lead line."""
         if self._policy is not None:
             self._policy.log_final_stats()
+        self._lead_meter.log()
 
     def _drain(
         self,
@@ -722,6 +745,9 @@ class LazyOffloadManager:
                 has a store batch in flight, which would make the worker's
                 receipts ambiguous.
         """
+        now = time.monotonic()
+        self._lead_meter.poll(now)
+        self._lead_meter.maybe_log(now)
         running_blocks_allocated = self._running_blocks_allocated(scheduler_output)
         self._next_step_blocks = self._running_blocks_bound(scheduler_output)
         for request_id in scheduler_output.num_scheduled_tokens:
@@ -1585,6 +1611,40 @@ class LazyOffloadManager:
         if lost:
             self._require_policy().record_diagnostics({"held_ops_lost": lost})
         return emptied
+
+    def _track_lead(self, operations: PendingStoreItem, now: float) -> None:
+        """Start timing the overlap of every chunk a settled batch stored.
+
+        Args:
+            operations: The batch's operations, with their hash snapshots.
+            now: When the batch settled.
+        """
+        group_idx = self._lead_group
+        pool = self._require_block_pool()
+        null_block_id = pool.null_block.block_id
+        blocks_per_chunk = self._chunk_size // self._group_tokens_per_block[group_idx]
+        for metadata, block_hashes in operations.metadatas:
+            op = metadata.op
+            group_block_ids = op.block_ids[group_idx]
+            for first in range(0, len(group_block_ids), blocks_per_chunk):
+                chunk_start = op.start + first // blocks_per_chunk * self._chunk_size
+                last = next(
+                    (
+                        block_id
+                        for block_id in reversed(
+                            group_block_ids[first : first + blocks_per_chunk]
+                        )
+                        if block_id != null_block_id
+                    ),
+                    None,
+                )
+                if last is not None:
+                    self._lead_meter.on_stored(
+                        now,
+                        pool.blocks[last],
+                        block_hashes[last],
+                        min(chunk_start + self._chunk_size, op.end) - chunk_start,
+                    )
 
     def _drop_parked(self, request_id: str) -> None:
         """Forget a request's parked ops, whose generation ended.

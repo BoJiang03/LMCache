@@ -32,6 +32,7 @@ from vllm.v1.kv_cache_interface import (  # noqa: E402
 )
 
 # First Party
+from lmcache.integration.vllm import lazy_offload_lead  # noqa: E402
 from lmcache.integration.vllm.lazy_offload_manager import (  # noqa: E402
     LazyOffloadManager,
 )
@@ -2056,3 +2057,27 @@ def test_engine_held_chunk_of_a_segment_is_parked_and_stored_again() -> None:
         [attention[0], null, attention[2]],
         [mamba[0], null, mamba[2]],
     ]
+
+
+def test_settled_store_is_timed_until_vllm_recycles_its_block() -> None:
+    """The lead line counts a store and the recycle of its free block."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_store([[ids[0]], [pool.null_block.block_id]]))
+    pool.free_blocks([pool.blocks[block_id] for block_id in ids])
+    assert manager.on_scheduler_step(_step()).stores_to_submit
+
+    manager.on_store_results(set(), {"req": 1})
+    assert pool.get_new_blocks(1)[0].block_id == ids[0]
+    manager.on_scheduler_step(_step())
+    with patch.object(lazy_offload_lead.logger, "info") as info:
+        manager.log_final_stats()
+
+    (line,) = [call.args[1] for call in info.call_args_list]
+    fields = dict(item.split("=") for item in line.split())
+    assert fields["stored"] == "1"
+    assert fields["stored_tokens"] == str(TOKENS_PER_BLOCK)
+    assert fields["after_recycle"] == "0"
+    assert fields["free_recycled"].split(",")[0] == "1"
+    assert fields["alive_free"] == "0"
