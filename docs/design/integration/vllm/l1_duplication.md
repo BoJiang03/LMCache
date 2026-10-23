@@ -49,6 +49,19 @@ vLLM may evict at any allocation. `matched_inuse_demoted_bytes` and
 `matched_demoted_*` and `matched_mru_<cause>_*` split `matched_*`: an
 in-use chunk whose L1 copy is not demoted was made MRU by that cause.
 
+**Firm vs relying on a free block (dev diagnostic).** `matched_firm_*` is
+the part of `matched_*` whose chunk vLLM serves from in-use blocks only:
+the chunk ends within the hit cut below the first block it reads with
+`ref_cnt == 0` (`kv_cache_groups.hit_tokens_before_free`, the cut the
+lazy-offload hold rule applies). `matched_* - matched_firm_*` is served
+only while a free-queue block, such as the Mamba state anchoring the hit
+past the chunk, is not recycled; the hold rule refuses to demote it.
+`matched_inuse_firm_*` crosses it with the in-use split, and
+`matched_firm_demoted_*`, `matched_inuse_firm_demoted_*` and
+`matched_inuse_demoted_objects` with the demoted split, so for example the
+in-use non-demoted bytes that rely on a free block are
+`matched_inuse_bytes - matched_inuse_demoted_bytes - (matched_inuse_firm_bytes - matched_inuse_firm_demoted_bytes)`.
+
 The denominator is L1 because the question is how much L1 capacity is
 wasted; a ratio over L0 would grow when L1 grows even if L1 wasted nothing.
 
@@ -184,6 +197,10 @@ sliding-window block that holds the chunk's own data.
 
 The in-use split adds, per distinct held chunk and object group, one
 `get_cached_block` per block it reads, stopping at the first in-use block.
+The firm split reads the blocks of each looked-up prefix's hit, once per
+prefix with a held chunk not yet firm, and repeats the lookup per free block
+it cuts below (none when the hit is all in use or cut to 0); the server
+answers it with two more `get_l1_committed_usage` passes.
 
 ## Output
 

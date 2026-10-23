@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 # Standard
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -141,6 +141,53 @@ def layer_window_tokens(spec: Any) -> int:
     if is_cachable_mamba_spec(spec):
         return spec.block_size
     return -1
+
+
+def hit_tokens_before_free(
+    coordinator: Any,
+    block_hashes: Sequence[Any],
+    hit_blocks: Sequence[Sequence[Any]],
+    hit_tokens: int,
+    is_free: Callable[[Any], bool],
+) -> int:
+    """Cut vLLM's hit until it relies on no free block.
+
+    A hit that reads a non-null block ``is_free`` calls free is cut below
+    that block's start and looked up again with vLLM's read-only
+    ``find_longest_cache_hit``, until no such block is read. A Mamba state
+    or sliding window anchoring the hit past a chunk thus counts only while
+    vLLM cannot recycle it.
+
+    Args:
+        coordinator: vLLM's ``KVCacheCoordinator``.
+        block_hashes: The prefix's vLLM block hashes.
+        hit_blocks: Per KV cache group, the blocks ``coordinator``'s hit over
+            ``block_hashes`` reads, by position.
+        hit_tokens: That hit's length in tokens.
+        is_free: Whether a ``KVCacheBlock`` the hit reads may be recycled.
+
+    Returns:
+        The cut hit's length in tokens, the same for every KV cache group.
+    """
+    while True:
+        max_tokens = min(
+            (
+                position * manager.block_size
+                for manager, blocks in zip(
+                    coordinator.single_type_managers, hit_blocks, strict=True
+                )
+                for position, block in enumerate(blocks)
+                if position * manager.block_size < hit_tokens
+                and not block.is_null
+                and is_free(block)
+            ),
+            default=hit_tokens,
+        )
+        if max_tokens in (hit_tokens, 0):
+            return max_tokens
+        hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
+            block_hashes, max_tokens
+        )
 
 
 def _resolve_per_layer_sw_sizes(

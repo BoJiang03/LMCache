@@ -23,6 +23,7 @@ import msgspec
 
 # First Party
 from lmcache.v1.distributed.api import ObjectKey, ipc_key_to_object_keys
+from lmcache.v1.distributed.internal_api import L1CommittedUsage
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
 from lmcache.v1.multiprocess.engine_context import MPCacheServerContext
 from lmcache.v1.multiprocess.engine_module import (
@@ -199,46 +200,59 @@ class L1ResidencyModule(DiscoverableModule):
         """
         request = msgspec.msgpack.decode(payload, type=L1ResidencyQuery)
         object_groups = self._object_groups(request.model_name, request.world_size)
-        keys = _query_keys(
+        held = self._usage(
             request,
             object_groups,
             request.chunk_hashes_by_salt,
             request.chunk_hashes_by_group,
         )
-        inuse_keys = _query_keys(
+        # One lock pass (and model scan) per subset; objects committed or
+        # evicted between them can make a subset disagree by a few.
+        inuse = self._usage(
             request,
             object_groups,
             request.inuse_chunk_hashes_by_salt,
             request.inuse_chunk_hashes_by_group,
         )
-        usage = self._ctx.storage_manager.get_l1_committed_usage(
-            keys, request.model_name
+        firm = self._usage(
+            request,
+            object_groups,
+            request.firm_chunk_hashes_by_salt,
+            request.firm_chunk_hashes_by_group,
         )
-        # A second lock pass (and model scan); objects committed or evicted
-        # between the two can make the in-use count disagree by a few.
-        inuse_usage = self._ctx.storage_manager.get_l1_committed_usage(
-            inuse_keys, request.model_name
+        inuse_firm = self._usage(
+            request,
+            object_groups,
+            request.inuse_firm_chunk_hashes_by_salt,
+            request.inuse_firm_chunk_hashes_by_group,
         )
         return msgspec.msgpack.encode(
             L1ResidencyReply(
                 probe_hash=compute_probe_hash(self._ctx.token_hasher),
-                matched_objects=usage.matched_objects,
-                matched_bytes=usage.matched_bytes,
-                model_objects=usage.model_objects,
-                model_bytes=usage.model_bytes,
+                matched_objects=held.matched_objects,
+                matched_bytes=held.matched_bytes,
+                model_objects=held.model_objects,
+                model_bytes=held.model_bytes,
                 object_groups=object_groups,
-                matched_inuse_objects=inuse_usage.matched_objects,
-                matched_inuse_bytes=inuse_usage.matched_bytes,
-                matched_demoted_objects=usage.matched_demoted_objects,
-                matched_demoted_bytes=usage.matched_demoted_bytes,
-                matched_mru_objects={
-                    c: n for c, n in usage.matched_mru_objects.items()
-                },
-                matched_mru_bytes={c: n for c, n in usage.matched_mru_bytes.items()},
-                matched_inuse_demoted_bytes=inuse_usage.matched_demoted_bytes,
+                matched_inuse_objects=inuse.matched_objects,
+                matched_inuse_bytes=inuse.matched_bytes,
+                matched_demoted_objects=held.matched_demoted_objects,
+                matched_demoted_bytes=held.matched_demoted_bytes,
+                matched_mru_objects={c: n for c, n in held.matched_mru_objects.items()},
+                matched_mru_bytes={c: n for c, n in held.matched_mru_bytes.items()},
+                matched_inuse_demoted_bytes=inuse.matched_demoted_bytes,
                 matched_inuse_mru_bytes={
-                    c: n for c, n in inuse_usage.matched_mru_bytes.items()
+                    c: n for c, n in inuse.matched_mru_bytes.items()
                 },
+                matched_inuse_demoted_objects=inuse.matched_demoted_objects,
+                matched_firm_objects=firm.matched_objects,
+                matched_firm_bytes=firm.matched_bytes,
+                matched_firm_demoted_objects=firm.matched_demoted_objects,
+                matched_firm_demoted_bytes=firm.matched_demoted_bytes,
+                matched_inuse_firm_objects=inuse_firm.matched_objects,
+                matched_inuse_firm_bytes=inuse_firm.matched_bytes,
+                matched_inuse_firm_demoted_objects=inuse_firm.matched_demoted_objects,
+                matched_inuse_firm_demoted_bytes=inuse_firm.matched_demoted_bytes,
             )
         )
 
@@ -268,3 +282,32 @@ class L1ResidencyModule(DiscoverableModule):
             GroupWindow(kind=kind, window_chunks=window)
             for kind, window in zip(kinds, attn_desc.num_chunks_in_sw, strict=True)
         ]
+
+    def _usage(
+        self,
+        request: L1ResidencyQuery,
+        object_groups: list[GroupWindow],
+        chunk_hashes_by_salt: dict[str, list[bytes]],
+        chunk_hashes_by_group: list[GroupHeldChunks],
+    ) -> L1CommittedUsage:
+        """Count one set of a query's chunks, in its own lock pass.
+
+        Args:
+            request: The query, for its model and world size.
+            object_groups: The server's object groups of that model and
+                world size.
+            chunk_hashes_by_salt: The chunks to count for one object group.
+            chunk_hashes_by_group: The chunks to count per object group.
+
+        Returns:
+            Their committed usage, with the model's.
+
+        Raises:
+            ValueError: If a cache salt violates the ``ObjectKey`` invariants.
+        """
+        keys = _query_keys(
+            request, object_groups, chunk_hashes_by_salt, chunk_hashes_by_group
+        )
+        return self._ctx.storage_manager.get_l1_committed_usage(
+            keys, request.model_name
+        )

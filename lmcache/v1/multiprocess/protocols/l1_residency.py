@@ -86,6 +86,15 @@ class L1ResidencyQuery(msgspec.Struct):
             to count again as ``matched_inuse_*``.
         inuse_chunk_hashes_by_group: The subset of ``chunk_hashes_by_group``
             to count again as ``matched_inuse_*``.
+        firm_chunk_hashes_by_salt: The subset of ``chunk_hashes_by_salt``
+            to count again as ``matched_firm_*``.
+        firm_chunk_hashes_by_group: The subset of ``chunk_hashes_by_group``
+            to count again as ``matched_firm_*``.
+        inuse_firm_chunk_hashes_by_salt: The subset of
+            ``chunk_hashes_by_salt`` to count again as ``matched_inuse_firm_*``.
+        inuse_firm_chunk_hashes_by_group: The subset of
+            ``chunk_hashes_by_group`` to count again as
+            ``matched_inuse_firm_*``.
     """
 
     model_name: str
@@ -96,6 +105,18 @@ class L1ResidencyQuery(msgspec.Struct):
         default_factory=dict
     )
     inuse_chunk_hashes_by_group: list[GroupHeldChunks] = msgspec.field(
+        default_factory=list
+    )
+    firm_chunk_hashes_by_salt: dict[str, list[bytes]] = msgspec.field(
+        default_factory=dict
+    )
+    firm_chunk_hashes_by_group: list[GroupHeldChunks] = msgspec.field(
+        default_factory=list
+    )
+    inuse_firm_chunk_hashes_by_salt: dict[str, list[bytes]] = msgspec.field(
+        default_factory=dict
+    )
+    inuse_firm_chunk_hashes_by_group: list[GroupHeldChunks] = msgspec.field(
         default_factory=list
     )
 
@@ -131,6 +152,20 @@ class L1ResidencyReply(msgspec.Struct):
             ``matched_inuse_bytes``.
         matched_inuse_mru_bytes: The rest of ``matched_inuse_bytes``, by
             cause.
+        matched_inuse_demoted_objects: The demoted part of
+            ``matched_inuse_objects``.
+        matched_firm_objects: Committed objects among the keys of the
+            query's ``firm_*`` chunks.
+        matched_firm_bytes: Their bytes.
+        matched_firm_demoted_objects: The demoted part of
+            ``matched_firm_objects``.
+        matched_firm_demoted_bytes: Their bytes.
+        matched_inuse_firm_objects: Committed objects among the keys of the
+            query's ``inuse_firm_*`` chunks.
+        matched_inuse_firm_bytes: Their bytes.
+        matched_inuse_firm_demoted_objects: The demoted part of
+            ``matched_inuse_firm_objects``.
+        matched_inuse_firm_demoted_bytes: Their bytes.
     """
 
     probe_hash: bytes
@@ -147,3 +182,12 @@ class L1ResidencyReply(msgspec.Struct):
     matched_mru_bytes: dict[str, int] = msgspec.field(default_factory=dict)
     matched_inuse_demoted_bytes: int = 0
     matched_inuse_mru_bytes: dict[str, int] = msgspec.field(default_factory=dict)
+    matched_inuse_demoted_objects: int = 0
+    matched_firm_objects: int = 0
+    matched_firm_bytes: int = 0
+    matched_firm_demoted_objects: int = 0
+    matched_firm_demoted_bytes: int = 0
+    matched_inuse_firm_objects: int = 0
+    matched_inuse_firm_bytes: int = 0
+    matched_inuse_firm_demoted_objects: int = 0
+    matched_inuse_firm_demoted_bytes: int = 0

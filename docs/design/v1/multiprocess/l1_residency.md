@@ -44,6 +44,9 @@ L1ResidencyReply(probe_hash, matched_objects, matched_bytes,
 empty) name a subset of the queried chunks; the server expands them the same
 way and answers their committed count as `matched_inuse_*`, in a second
 `get_l1_committed_usage` call (so a second lock pass and model scan).
+`firm_chunk_hashes_by_*` and `inuse_firm_chunk_hashes_by_*` name two
+more subsets (dev diagnostic), answered as `matched_firm_*` and
+`matched_inuse_firm_*`, each with its demoted part, in one more pass each.
 
 The reply also splits `matched_*` by recency state (dev measurement):
 `matched_demoted_*` counts keys an exclusive retrieve demoted

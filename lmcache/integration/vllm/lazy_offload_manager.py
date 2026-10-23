@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Protocol
 import time
 
 # First Party
+from lmcache.integration.vllm.kv_cache_groups import hit_tokens_before_free
 from lmcache.integration.vllm.lazy_offload_lead import StoreLeadMeter
 from lmcache.integration.vllm.lazy_offload_policy import create_offload_policy
 from lmcache.integration.vllm.lazy_offload_policy.base import (
@@ -1486,27 +1487,19 @@ class LazyOffloadManager:
             for block_id in own_block_ids
             if pool.blocks[block_id].ref_cnt > self._pin_counts[block_id]
         }
-        while True:
-            hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
-                chain, max_tokens
-            )
-            # A hit past a free block's start relies on it.
-            max_tokens = min(
-                (
-                    position * manager.block_size
-                    for manager, blocks in zip(
-                        coordinator.single_type_managers, hit_blocks, strict=True
-                    )
-                    for position, block in enumerate(blocks)
-                    if position * manager.block_size < hit_tokens
-                    and not block.is_null
-                    and block.ref_cnt <= self._pin_counts[block.block_id]
-                    and block.block_hash not in kept_hashes
-                ),
-                default=hit_tokens,
-            )
-            if max_tokens == hit_tokens:
-                return hit_tokens
+        hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
+            chain, max_tokens
+        )
+        return hit_tokens_before_free(
+            coordinator,
+            chain,
+            hit_blocks,
+            hit_tokens,
+            lambda block: (
+                block.ref_cnt <= self._pin_counts[block.block_id]
+                and block.block_hash not in kept_hashes
+            ),
+        )
 
     def _block_group_kind(self, item: PendingStoreItem) -> str:
         """Name the cache-group kind of the block that made ``item`` due.

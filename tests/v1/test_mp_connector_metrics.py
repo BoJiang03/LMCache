@@ -100,6 +100,20 @@ def test_duplication_sample_is_a_latest_value() -> None:
                 "other",
             )
         },
+        **{
+            f"LMCache MP L1 dup {name}": 0
+            for name in (
+                "matched_inuse_demoted_objects",
+                "matched_firm_objects",
+                "matched_firm_bytes",
+                "matched_firm_demoted_objects",
+                "matched_firm_demoted_bytes",
+                "matched_inuse_firm_objects",
+                "matched_inuse_firm_bytes",
+                "matched_inuse_firm_demoted_objects",
+                "matched_inuse_firm_demoted_bytes",
+            )
+        },
     }
 
 

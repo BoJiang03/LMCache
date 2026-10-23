@@ -15,6 +15,7 @@ import msgspec
 
 # First Party
 from lmcache.integration.vllm.kv_cache_groups import (
+    hit_tokens_before_free,
     is_cachable_mamba_spec,
     is_scratch_spec,
     is_sliding_window_spec,
@@ -73,6 +74,20 @@ _ChunkKey = tuple[str, bytes]
 # blocks overlapping the chunk, "window" the sliding window ending at the
 # chunk's end, "state" the state block at its end.
 _HoldRule = Literal["prefix", "window", "state"]
+
+
+# Reply fields a sample sums over the servers as they are.
+_SUMMED_FIELDS = (
+    "matched_inuse_demoted_objects",
+    "matched_firm_objects",
+    "matched_firm_bytes",
+    "matched_firm_demoted_objects",
+    "matched_firm_demoted_bytes",
+    "matched_inuse_firm_objects",
+    "matched_inuse_firm_bytes",
+    "matched_inuse_firm_demoted_objects",
+    "matched_inuse_firm_demoted_bytes",
+)
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -184,6 +199,24 @@ class DuplicationSample:
             ``matched_inuse_bytes``.
         matched_inuse_mru_<cause>_bytes: The rest of ``matched_inuse_bytes``,
             by the same causes.
+        matched_inuse_demoted_objects: The demoted part of
+            ``matched_inuse_objects``.
+        matched_firm_objects: The part of ``matched_objects`` whose chunk
+            vLLM serves from in-use blocks only: it ends within the hit cut
+            below the first block it reads with ``ref_cnt == 0``, the rule
+            the lazy-offload hold applies. The rest is servable only while a
+            free-queue block, such as the Mamba state anchoring the hit, is
+            not recycled.
+        matched_firm_bytes: Their bytes.
+        matched_firm_demoted_objects: The demoted part of
+            ``matched_firm_objects``.
+        matched_firm_demoted_bytes: Their bytes.
+        matched_inuse_firm_objects: The part of ``matched_firm_objects``
+            also in ``matched_inuse_objects``.
+        matched_inuse_firm_bytes: Their bytes.
+        matched_inuse_firm_demoted_objects: The demoted part of
+            ``matched_inuse_firm_objects``.
+        matched_inuse_firm_demoted_bytes: Their bytes.
     """
 
     matched_objects: int
@@ -210,6 +243,15 @@ class DuplicationSample:
     matched_inuse_mru_lookup_touch_bytes: int = 0
     matched_inuse_mru_end_session_touch_bytes: int = 0
     matched_inuse_mru_other_bytes: int = 0
+    matched_inuse_demoted_objects: int = 0
+    matched_firm_objects: int = 0
+    matched_firm_bytes: int = 0
+    matched_firm_demoted_objects: int = 0
+    matched_firm_demoted_bytes: int = 0
+    matched_inuse_firm_objects: int = 0
+    matched_inuse_firm_bytes: int = 0
+    matched_inuse_firm_demoted_objects: int = 0
+    matched_inuse_firm_demoted_bytes: int = 0
 
     @property
     def byte_ratio(self) -> float:
@@ -363,7 +405,8 @@ class L1DuplicationMeter:
         prefix = self._running.pop(request_id, None)
         if prefix is None:
             return
-        held = self._held_chunks(prefix)
+        _, hit_tokens = self._find_hit(prefix)
+        held = self._held_chunks(prefix, hit_tokens)
         prefix.tracker = None
         prefix.last_raw_hash = None
         self._num_finished += 1
@@ -389,39 +432,58 @@ class L1DuplicationMeter:
             return
         self._next_sample_at = self._clock() + SAMPLE_INTERVAL_S
         # Pruning runs even while no server is healthy, so state stays bounded.
-        held, inuse = self._held_chunk_keys()
+        held, inuse, firm = self._held_chunk_keys()
         if not self._adapter.is_healthy:
             return
-        if self._rules is None:
-            query = L1ResidencyQuery(
-                model_name=self._adapter.model_name,
-                world_size=self._adapter.world_size,
-                chunk_hashes_by_salt=_by_salt(held[0]),
-                inuse_chunk_hashes_by_salt=_by_salt(inuse[0]),
-            )
-        else:
-            query = L1ResidencyQuery(
-                model_name=self._adapter.model_name,
-                world_size=self._adapter.world_size,
-                chunk_hashes_by_salt={},
-                chunk_hashes_by_group=[
-                    GroupHeldChunks(
-                        window=rule.window, chunk_hashes_by_salt=_by_salt(keys)
-                    )
-                    for rule, keys in zip(self._rules, held, strict=True)
-                ],
-                inuse_chunk_hashes_by_group=[
-                    GroupHeldChunks(
-                        window=rule.window, chunk_hashes_by_salt=_by_salt(keys)
-                    )
-                    for rule, keys in zip(self._rules, inuse, strict=True)
-                ],
-            )
+        inuse_firm = [i & f for i, f in zip(inuse, firm, strict=True)]
+        query = L1ResidencyQuery(
+            model_name=self._adapter.model_name,
+            world_size=self._adapter.world_size,
+            chunk_hashes_by_salt=self._merged_chunks(held),
+            chunk_hashes_by_group=self._chunks_by_group(held),
+            inuse_chunk_hashes_by_salt=self._merged_chunks(inuse),
+            inuse_chunk_hashes_by_group=self._chunks_by_group(inuse),
+            firm_chunk_hashes_by_salt=self._merged_chunks(firm),
+            firm_chunk_hashes_by_group=self._chunks_by_group(firm),
+            inuse_firm_chunk_hashes_by_salt=self._merged_chunks(inuse_firm),
+            inuse_firm_chunk_hashes_by_group=self._chunks_by_group(inuse_firm),
+        )
         self._inflight = self._adapter.server_module_call(
             L1_RESIDENCY_QUERY_METHOD, msgspec.msgpack.encode(query)
         )
 
-    def _held_chunk_keys(self) -> tuple[list[set[_ChunkKey]], list[set[_ChunkKey]]]:
+    def _merged_chunks(self, keys: list[set[_ChunkKey]]) -> dict[str, list[bytes]]:
+        """Return a query's chunks for a server with one object group.
+
+        Args:
+            keys: Per measured object group, chunk keys.
+
+        Returns:
+            The only object group's chunk hashes per cache salt while the
+            servers have one object group, else none.
+        """
+        return _by_salt(keys[0]) if self._rules is None else {}
+
+    def _chunks_by_group(self, keys: list[set[_ChunkKey]]) -> list[GroupHeldChunks]:
+        """Return a query's chunks for a server with several object groups.
+
+        Args:
+            keys: Per measured object group, chunk keys.
+
+        Returns:
+            Each rule's chunks while the servers have several object groups,
+            else none.
+        """
+        if self._rules is None:
+            return []
+        return [
+            GroupHeldChunks(window=rule.window, chunk_hashes_by_salt=_by_salt(k))
+            for rule, k in zip(self._rules, keys, strict=True)
+        ]
+
+    def _held_chunk_keys(
+        self,
+    ) -> tuple[list[set[_ChunkKey]], list[set[_ChunkKey]], list[set[_ChunkKey]]]:
         """Return the chunks L0 holds, cutting finished prefixes to them.
 
         A finished prefix whose kept chunks are all held already, through a
@@ -430,14 +492,20 @@ class L1DuplicationMeter:
         blocks for the in-use split.
 
         Returns:
-            Per measured object group, every chunk L0 holds, and the subset
-            of those a running request holds (see :meth:`_chunk_in_use`).
+            Per measured object group, every chunk L0 holds, the subset of
+            those a running request holds (see :meth:`_chunk_in_use`), and
+            the subset vLLM serves from in-use blocks only (see
+            :meth:`_add_chunks`).
         """
         num_measured = self._num_measured()
         held: list[set[_ChunkKey]] = [set() for _ in range(num_measured)]
         inuse: list[set[_ChunkKey]] = [set() for _ in range(num_measured)]
+        firm: list[set[_ChunkKey]] = [set() for _ in range(num_measured)]
         for prefix in self._running.values():
-            self._add_chunks(held, inuse, prefix, self._held_chunks(prefix))
+            hit = self._find_hit(prefix)
+            self._add_chunks(
+                held, inuse, firm, prefix, self._held_chunks(prefix, hit[1]), hit
+            )
         finished = sorted(
             self._finished.values(), key=lambda p: len(p.chunk_hashes), reverse=True
         )
@@ -455,18 +523,34 @@ class L1DuplicationMeter:
             ]
             kept = prefix.kept
             if not all(covered):
-                now = self._held_chunks(prefix)
+                hit = self._find_hit(prefix)
+                now = self._held_chunks(prefix, hit[1])
                 kept = [
                     old if is_covered else new
                     for old, new, is_covered in zip(kept, now, covered, strict=True)
                 ]
                 if not any(kept):
                     continue
-                self._add_chunks(held, inuse, prefix, kept)
+                self._add_chunks(held, inuse, firm, prefix, kept, hit)
             self._keep_finished(prefix, kept)
-        return held, inuse
+        return held, inuse, firm
 
-    def _held_chunks(self, prefix: _Prefix) -> list[list[int]]:
+    def _find_hit(self, prefix: _Prefix) -> tuple[Any, int]:
+        """Return vLLM's whole hit over ``prefix``, free blocks included.
+
+        Args:
+            prefix: A tracked prefix.
+
+        Returns:
+            Per vLLM KV cache group the blocks the hit reads, and its length
+            in tokens, by read-only ``find_longest_cache_hit``.
+        """
+        hit_blocks, hit_tokens, _ = self._coordinator.find_longest_cache_hit(
+            prefix.block_hashes, len(prefix.block_hashes) * self._hash_block_size
+        )
+        return hit_blocks, hit_tokens
+
+    def _held_chunks(self, prefix: _Prefix, hit_tokens: int) -> list[list[int]]:
         """Return, per measured object group, the chunks of ``prefix`` L0 holds.
 
         Hashes a running prefix's chunks up to the last one held.
@@ -474,6 +558,7 @@ class L1DuplicationMeter:
         Args:
             prefix: A running prefix, or a finished one that
                 :meth:`_keep_finished` cut.
+            hit_tokens: vLLM's whole hit over it (:meth:`_find_hit`).
 
         Returns:
             Ascending chunk indices per measured object group: the chunks
@@ -482,9 +567,6 @@ class L1DuplicationMeter:
             prefix's are limited to the ones it kept: chunks past them
             belong to a longer prefix, which counts them itself.
         """
-        _, hit_tokens, _ = self._coordinator.find_longest_cache_hit(
-            prefix.block_hashes, len(prefix.block_hashes) * self._hash_block_size
-        )
         held = [
             [
                 index
@@ -553,22 +635,32 @@ class L1DuplicationMeter:
         self,
         held: list[set[_ChunkKey]],
         inuse: list[set[_ChunkKey]],
+        firm: list[set[_ChunkKey]],
         prefix: _Prefix,
         chunks: list[list[int]],
+        hit: tuple[Any, int],
     ) -> None:
         """Add the chunks of ``prefix`` in ``chunks`` to ``held``, per object group.
 
         Each one a running request holds (:meth:`_chunk_in_use`) also goes to
-        ``inuse``.
+        ``inuse``. Each one ending within the prefix's hit cut below the
+        first block it reads with ``ref_cnt == 0`` (:func:`hit_tokens_before_free`,
+        the lazy-offload hold rule's cut) also goes to ``firm``; the cut
+        reads the hit's blocks, and looks up again past a free one, only
+        while some chunk is not in ``firm`` yet.
 
         Args:
             held: Per measured object group, the chunks held so far.
             inuse: Per measured object group, the held chunks in use so far.
+            firm: Per measured object group, the held chunks served from
+                in-use blocks only so far.
             prefix: The prefix whose chunks are added.
             chunks: Per measured object group, the indices of its held chunks.
+            hit: vLLM's whole hit over the prefix (:meth:`_find_hit`).
         """
-        for keys, inuse_keys, indices, vllm_groups in zip(
-            held, inuse, chunks, self._measured_vllm_groups(), strict=True
+        firm_tokens: int | None = None
+        for keys, inuse_keys, firm_keys, indices, vllm_groups in zip(
+            held, inuse, firm, chunks, self._measured_vllm_groups(), strict=True
         ):
             for index in indices:
                 key = (prefix.cache_salt, prefix.chunk_hashes[index])
@@ -577,6 +669,17 @@ class L1DuplicationMeter:
                     vllm_groups, prefix.block_hashes, index
                 ):
                     inuse_keys.add(key)
+                if key in firm_keys:
+                    continue
+                if firm_tokens is None:
+                    firm_tokens = hit_tokens_before_free(
+                        self._coordinator,
+                        prefix.block_hashes,
+                        *hit,
+                        lambda block: block.ref_cnt == 0,
+                    )
+                if (index + 1) * self._chunk_size <= firm_tokens:
+                    firm_keys.add(key)
 
     def _chunk_cached(
         self, vllm_groups: tuple[_VllmGroup, ...], block_hashes: list[Any], index: int
@@ -780,6 +883,10 @@ class L1DuplicationMeter:
                 matched_inuse_demoted_bytes=sum(
                     r.matched_inuse_demoted_bytes for r in replies
                 ),
+                **{
+                    name: sum(getattr(r, name) for r in replies)
+                    for name in _SUMMED_FIELDS
+                },
                 **by_cause,
             )
         )

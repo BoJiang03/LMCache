@@ -71,6 +71,10 @@ class _RpcError(grpc.RpcError):
         return self._code
 
 
+# vLLM's null block, which a hit reads where a group needs no block.
+_NULL_BLOCK = SimpleNamespace(is_null=True, ref_cnt=0)
+
+
 class _Coordinator:
     """vLLM's coordinator over a set of GPU-cached block hashes.
 
@@ -99,7 +103,10 @@ class _Coordinator:
         self.kv_cache_config = SimpleNamespace(
             kv_cache_groups=[SimpleNamespace(kv_cache_spec=spec) for spec in specs]
         )
-        self.single_type_managers = [SimpleNamespace(block_pool=self) for _ in specs]
+        self.single_type_managers = [
+            SimpleNamespace(block_pool=self, block_size=spec.block_size)
+            for spec in specs
+        ]
 
     def get_cached_block(
         self, block_hash: Any, kv_cache_group_ids: list[int]
@@ -128,7 +135,22 @@ class _Coordinator:
         if self.mamba:
             while num_blocks and block_hashes[num_blocks - 1] not in self.mamba_states:
                 num_blocks -= 1
-        return [], num_blocks * HASH_BLOCK, 0
+        hit_blocks: list[list[Any]] = []
+        if self.attention:
+            hit_blocks.append([self._block(h) for h in block_hashes[:num_blocks]])
+        if self.mamba:
+            # Positions of whole states, null but the anchor state at the end.
+            positions = num_blocks * HASH_BLOCK // CHUNK
+            anchor = block_hashes[num_blocks - 1] if num_blocks else None
+            hit_blocks.append(
+                [_NULL_BLOCK] * (positions - 1) + [self._block(anchor)]
+                if positions
+                else []
+            )
+        return hit_blocks, num_blocks * HASH_BLOCK, 0
+
+    def _block(self, block_hash: Any) -> Any:
+        return SimpleNamespace(is_null=False, ref_cnt=int(block_hash in self.in_use))
 
 
 # Stand-ins for vLLM's KV cache specs; the meter tells them apart by class
@@ -187,7 +209,8 @@ class _GroupCoordinator:
             kv_cache_groups=[SimpleNamespace(kv_cache_spec=spec) for spec in specs]
         )
         self.single_type_managers = [
-            SimpleNamespace(block_pool=self.block_pool) for _ in specs
+            SimpleNamespace(block_pool=self.block_pool, block_size=spec.block_size)
+            for spec in specs
         ]
 
     def find_longest_cache_hit(
@@ -218,7 +241,41 @@ class _GroupCoordinator:
                     ):
                         hit -= 1
             if hit == candidate:
-                return [], hit * HASH_BLOCK, 0
+                return (
+                    self._hit_blocks(block_hashes, hit * HASH_BLOCK),
+                    hit * HASH_BLOCK,
+                    0,
+                )
+
+    def _hit_blocks(self, block_hashes: list[Any], hit_tokens: int) -> list[list[Any]]:
+        """The blocks a hit reads per group, null where the group needs none."""
+        hit_blocks: list[list[Any]] = []
+        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            spec = group.kv_cache_spec
+            num_blocks = hit_tokens // spec.block_size
+            needed = num_blocks
+            if isinstance(spec, MambaSpec):
+                needed = min(1, num_blocks)
+            elif isinstance(spec, SlidingWindowSpec):
+                needed = min(
+                    -(-(spec.sliding_window - 1) // spec.block_size), num_blocks
+                )
+            blocks: list[Any] = []
+            for position in range(num_blocks):
+                if position < num_blocks - needed:
+                    blocks.append(_NULL_BLOCK)
+                    continue
+                key = (
+                    block_hashes[(position + 1) * spec.block_size // HASH_BLOCK - 1],
+                    group_id,
+                )
+                blocks.append(
+                    SimpleNamespace(
+                        is_null=False, ref_cnt=int(key in self.block_pool.in_use)
+                    )
+                )
+            hit_blocks.append(blocks)
+        return hit_blocks
 
 
 # The object groups of a server that separates them for an attention +
@@ -397,6 +454,12 @@ def test_held_chunks_split_into_in_use_and_free_cached(
         matched_mru_write_objects=3,
         matched_mru_write_bytes=3 * OBJECT_BYTES,
         matched_inuse_mru_write_bytes=2 * OBJECT_BYTES,
+        # Only chunk 0 is served without the free block 3; chunk 1 is in use
+        # but relies on it.
+        matched_firm_objects=1,
+        matched_firm_bytes=OBJECT_BYTES,
+        matched_inuse_firm_objects=1,
+        matched_inuse_firm_bytes=OBJECT_BYTES,
     )
 
     # Once every block is freed (ref_cnt 0, still cached), nothing is in use.
@@ -832,6 +895,61 @@ def test_separated_object_groups_split_in_use_by_their_own_blocks(
 
     assert (samples[-1].matched_objects, samples[-1].matched_inuse_objects) == (5, 2)
     assert samples[-1].matched_inuse_bytes == 2 * OBJECT_BYTES
+
+
+def test_firm_split_counts_only_chunks_served_without_a_free_block(
+    storage: tuple[L1Manager, StorageManager],
+) -> None:
+    l1, store = storage
+    _commit_all_chunks(l1, 0, 1)
+    # Chunk 0's attention object was demoted by an exclusive retrieve.
+    store.demote_l1_keys([(l1.l1_manager_id, [object_key(CHUNK_HASHES[0])])])
+    coordinator = _GroupCoordinator(FullAttentionSpec(), MambaSpec())
+    meter, clock, samples = _meter(_Adapter(store, attn_desc=HYBRID), coordinator)
+    meter.on_request_tracked(*_request("r", TOKENS))
+    # A running request holds every attention block and the Mamba state at
+    # chunk 0's end; the state at chunk 2's end, which anchors vLLM's hit
+    # over all three chunks, sits in the free queue.
+    _cache_blocks(coordinator, 0, list(range(6)))
+    _cache_blocks(coordinator, 1, [1, 5])
+    hashes = _block_hashes(TOKENS)
+    coordinator.block_pool.in_use.update({(h, 0) for h in hashes} | {(hashes[1], 1)})
+
+    _sample(meter, clock)
+    _sample(meter, clock)
+
+    sample = samples[-1]
+    # Held: attention chunks 0-2 and Mamba chunks 0 and 2; all but the
+    # Mamba chunk 2 object have an in-use block of their own.
+    assert (sample.matched_objects, sample.matched_inuse_objects) == (5, 4)
+    # Without the free anchor vLLM serves chunk 0 only: its attention and
+    # Mamba objects are firm; attention chunks 1 and 2 are in use but served
+    # only through the free state.
+    assert (sample.matched_firm_objects, sample.matched_firm_bytes) == (
+        2,
+        2 * OBJECT_BYTES,
+    )
+    assert (sample.matched_inuse_firm_objects, sample.matched_inuse_firm_bytes) == (
+        2,
+        2 * OBJECT_BYTES,
+    )
+    assert (sample.matched_demoted_objects, sample.matched_inuse_demoted_objects) == (
+        1,
+        1,
+    )
+    assert (
+        sample.matched_firm_demoted_objects,
+        sample.matched_firm_demoted_bytes,
+        sample.matched_inuse_firm_demoted_objects,
+        sample.matched_inuse_firm_demoted_bytes,
+    ) == (1, OBJECT_BYTES, 1, OBJECT_BYTES)
+
+    # Once the request also holds the anchor, every held chunk is firm.
+    coordinator.block_pool.in_use.add((hashes[5], 1))
+    _sample(meter, clock)
+
+    assert samples[-1].matched_firm_objects == 5
+    assert samples[-1].matched_inuse_firm_objects == 5
 
 
 def test_object_group_of_several_kv_cache_groups_holds_the_whole_hit(
