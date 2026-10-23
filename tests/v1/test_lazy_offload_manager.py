@@ -2,6 +2,7 @@
 """LazyOffloadManager admission of store operations on hybrid block tables."""
 
 # Standard
+from collections import Counter
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -115,14 +116,17 @@ def _step(
 
 
 class _EmptyPrefixCache:
-    """A KV cache coordinator whose GPU prefix cache serves no hit."""
+    """A two-group KV cache coordinator whose GPU prefix cache serves no hit."""
 
-    single_type_managers = ()
+    single_type_managers = (
+        SimpleNamespace(block_size=TOKENS_PER_BLOCK),
+        SimpleNamespace(block_size=TOKENS_PER_BLOCK),
+    )
 
     def find_longest_cache_hit(
         self, block_hashes: list[BlockHash], max_cache_hit_length: int
     ) -> tuple[tuple[list, ...], int, int]:
-        return (), 0, 0
+        return ([], []), 0, 0
 
 
 def _manager(
@@ -1381,13 +1385,17 @@ def _exclusive_op(block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
     return op
 
 
-def _coordinator(mamba: bool = False, num_blocks: int = 16) -> KVCacheCoordinator:
+def _coordinator(
+    mamba: bool = False, num_blocks: int = 16, use_eagle: bool = False
+) -> KVCacheCoordinator:
     """vLLM's own coordinator over blocks of one chunk each.
 
     Args:
         mamba: Whether an align-mode Mamba group (group 1) follows the full
             attention group (group 0).
         num_blocks: Blocks of its pool, the null block included.
+        use_eagle: Whether speculative decoding drops the last block of a
+            full-attention hit.
     """
     groups = [
         KVCacheGroupSpec(
@@ -1418,7 +1426,7 @@ def _coordinator(mamba: bool = False, num_blocks: int = 16) -> KVCacheCoordinato
         ),
         max_model_len=16 * TOKENS_PER_BLOCK,
         max_in_flight_tokens=MAX_STEP_TOKENS,
-        use_eagle=False,
+        use_eagle=use_eagle,
         enable_caching=True,
         enable_kv_cache_events=False,
         dcp_world_size=1,
@@ -1713,34 +1721,71 @@ def test_attention_of_a_chunk_whose_own_state_is_freed_is_held() -> None:
 
 
 NOT_HELD_REASONS = (
-    "not_held_attn_inuse_state_free",
     "not_held_attn_free",
     "not_held_past_servable",
 )
 
 
+def _counts(manager: LazyOffloadManager) -> dict[str, int]:
+    """The manager's final ledger line, parsed into its counts."""
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    return {
+        name: int(value) for name, value in (field.split("=") for field in line.split())
+    }
+
+
 @pytest.mark.parametrize(
-    ("states", "freed_attention", "freed_states", "reasons"),
+    ("states", "freed_attention", "freed_states", "labels"),
     [
         # Chunk 2's own state is free while its attention is in use; the
-        # hit vLLM can serve stops at token zero, past which chunks 0, 1 end.
-        ([2], [], [2], ["not_held_past_servable"] * 2 + [NOT_HELD_REASONS[0]]),
+        # hit vLLM can serve stops at token zero, past which every chunk
+        # ends, chunk 0 by one block.
+        (
+            [2],
+            [],
+            [2],
+            [
+                ("not_held_past_servable", "not_held_past_servable_by_one_block"),
+                ("not_held_past_servable",),
+                ("not_held_past_servable",),
+            ],
+        ),
         # Chunk 2's attention is free; the state at chunk 1 serves 0 and 1.
-        ([1], [2], [], [None, None, "not_held_attn_free"]),
+        ([1], [2], [], [("held",), ("held",), ("not_held_attn_free",)]),
         # A free attention block names the chunk, though its state is free.
-        ([2], [2], [2], ["not_held_past_servable"] * 2 + ["not_held_attn_free"]),
+        (
+            [2],
+            [2],
+            [2],
+            [
+                ("not_held_past_servable", "not_held_past_servable_by_one_block"),
+                ("not_held_past_servable",),
+                ("not_held_attn_free",),
+            ],
+        ),
+        # Chunk 1's own state is free, but the state at chunk 2 serves it:
+        # held as its attention is.
+        (
+            [1, 2],
+            [],
+            [1],
+            [("held",), ("held", "emitted_chunks_held_state_free"), ("held",)],
+        ),
     ],
-    ids=["own_state_free", "attention_free", "both_free"],
+    ids=["own_state_free", "attention_free", "both_free", "held_state_free"],
 )
 def test_chunks_not_held_are_counted_by_reason(
     states: list[int],
     freed_attention: list[int],
     freed_states: list[int],
-    reasons: list[str | None],
+    labels: list[tuple[str, ...]],
 ) -> None:
-    """Every emitted chunk vLLM does not hold counts under exactly one
-    reason, and a chunk whose attention is in use but whose own state is
-    free also counts its attention blocks."""
+    """Every emitted chunk counts as held exactly when the hint lists it, and
+    one not held counts under exactly one reason; a held chunk whose own
+    state is free and a chunk ending one block past the servable prefix
+    also count under their labels."""
     coordinator = _coordinator(mamba=True)
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -1754,29 +1799,77 @@ def test_chunks_not_held_are_counted_by_reason(
         [pool.blocks[attention[chunk]] for chunk in freed_attention]
         + [pool.blocks[mamba[chunk]] for chunk in freed_states]
     )
+    in_use = {
+        block_id
+        for block_id in attention + mamba
+        if block_id != null and pool.blocks[block_id].ref_cnt > 0
+    }
     manager = _manager(
         pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
     )
     manager.bind_cache_coordinator(coordinator)
     manager.on_request_arrived("req", chain)
     manager.add_store_candidate(_exclusive_op([attention, mamba]))
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    counts = _counts(manager)
+    held = [chunk for chunk, label in enumerate(labels) if label[0] == "held"]
+    assert (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT, []) == sorted(
+        block_id
+        for chunk in held
+        for block_id in (attention[chunk], mamba[chunk])
+        if block_id in in_use
+    )
+    expected = Counter(label for chunk_labels in labels for label in chunk_labels)
+    for name in (
+        *NOT_HELD_REASONS,
+        "not_held_past_servable_by_one_block",
+        "not_held_past_servable_shadowed",
+        "emitted_chunks_held_state_free",
+    ):
+        assert counts.get(name, 0) == expected[name]
+    assert counts.get("emitted_chunks_not_held", 0) == len(labels) - len(held)
+    assert sum(counts.get(reason, 0) for reason in NOT_HELD_REASONS) == counts.get(
+        "emitted_chunks_not_held", 0
+    )
+
+
+def test_chunk_at_the_end_of_an_eagle_hit_counts_as_one_block_past() -> None:
+    """Under speculative decoding vLLM drops the last block of a hit, so the
+    chunk at the chain's end, all its blocks in use, is not held and counts
+    as ending one block past the servable prefix."""
+    coordinator = _coordinator(use_eagle=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, (first, second) = _held_manager(coordinator, 2)
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == [first]
+    counts = _counts(manager)
+    assert counts["not_held_past_servable"] == 1
+    assert counts["not_held_past_servable_by_one_block"] == 1
+
+
+def test_hit_through_a_free_duplicate_counts_as_shadowed() -> None:
+    """A chunk whose hit vLLM reads from a free duplicate of the op's own
+    in-use block counts as shadowed."""
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    (duplicate,) = pool.get_new_blocks(1)
+    # Cached first, the duplicate is the block vLLM's lookup returns.
+    _cache(pool, _chain(1), [[duplicate.block_id]])
+    manager, (first, second) = _held_manager(coordinator, 2)
+    pool.free_blocks([duplicate])
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
-    with patch.object(eviction_aware.logger, "info") as mock_info:
-        manager.log_final_stats()
-    (line,) = [call.args[1] for call in mock_info.call_args_list]
-    counts = {
-        name: int(value) for name, value in (field.split("=") for field in line.split())
-    }
-    for reason in NOT_HELD_REASONS:
-        assert counts.get(reason, 0) == reasons.count(reason)
-    assert counts.get(f"{NOT_HELD_REASONS[0]}_attn_blocks", 0) == reasons.count(
-        NOT_HELD_REASONS[0]
-    )
-    assert (
-        sum(counts.get(reason, 0) for reason in NOT_HELD_REASONS)
-        == (counts["emitted_chunks_not_held"])
-    )
+    counts = _counts(manager)
+    assert counts["not_held_past_servable"] == 2
+    assert counts["not_held_past_servable_shadowed"] == 1
 
 
 # Chunks of the anchored request below whose op holds a Mamba state.

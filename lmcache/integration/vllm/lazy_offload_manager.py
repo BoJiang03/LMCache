@@ -69,14 +69,13 @@ if TYPE_CHECKING:
     # Third Party
     from vllm.v1.core.block_pool import BlockPool
     from vllm.v1.core.kv_cache_coordinator import KVCacheCoordinator
-    from vllm.v1.core.kv_cache_utils import BlockHash
+    from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
 
 # Chunk states of :meth:`LazyOffloadManager._chunk_state` the code branches on.
 _HELD = "held"
-_NOT_HELD_STATE_FREE = "not_held_attn_inuse_state_free"
 
 
 class StoreCompletionTracker(Protocol):
@@ -269,6 +268,17 @@ class LazyOffloadManager:
         self._max_step_tokens = max_step_tokens
         self._num_lookahead_tokens = num_lookahead_tokens
         self._mamba_groups = dict(mamba_groups or {})
+        # What vLLM's EAGLE drop takes off a full-attention hit; read only for
+        # the diagnostic counts, 0 without full attention.
+        self._attention_block_tokens = max(
+            (
+                tokens_per_block
+                for group_idx, tokens_per_block in enumerate(group_tokens_per_block)
+                if group_kinds[group_idx] == "attention"
+                and group_idx not in self._mamba_groups
+            ),
+            default=0,
+        )
         self._prefill_alignment = prefill_alignment
         self._completion_tracker = completion_tracker
         # Both are set by bind_block_pool: the policy reads the pool.
@@ -753,6 +763,7 @@ class LazyOffloadManager:
             # Looked up at most once per item, and only for a chunk whose
             # blocks are all in use; pins leave it unchanged.
             servable_tokens = cache(partial(self._servable_tokens, item.request_id))
+            hit_blocks = cache(partial(self._hit_blocks, item.request_id))
             for metadata, old_block_hashes in item.metadatas:
                 gpu_block_ids = list(old_block_hashes)
                 # Read before this op's own pin, which is not vLLM's.
@@ -783,7 +794,7 @@ class LazyOffloadManager:
                 valid.metadatas.append((metadata, old_block_hashes))
                 valid_block_ids.extend(gpu_block_ids)
                 chunk_states, parked = self._engine_held_part(
-                    metadata, old_block_hashes, vllm_held, servable_tokens
+                    metadata, old_block_hashes, vllm_held, servable_tokens, hit_blocks
                 )
                 self._count_chunks(
                     diagnostics, item.request_id, chunk_states, trigger_kind
@@ -1196,8 +1207,9 @@ class LazyOffloadManager:
         block_hashes: BlockHashes,
         vllm_held: set[int],
         servable_tokens: Callable[[], int],
+        hit_blocks: Callable[[], tuple[list["KVCacheBlock"], ...]],
     ) -> tuple[
-        list[tuple[str, int] | None],
+        list[tuple[str, ...] | None],
         tuple[LMCacheMPRequestMetadata, BlockHashes] | None,
     ]:
         """Split off the chunks of one emitted op that vLLM still holds.
@@ -1224,17 +1236,19 @@ class LazyOffloadManager:
                 from blocks it references, in tokens
                 (:meth:`_servable_tokens`); called only for a chunk whose
                 full-attention blocks are all in ``vllm_held``.
+            hit_blocks: Returns vLLM's hit over the request's chain, free
+                blocks included (:meth:`_hit_blocks`); read only for the
+                diagnostic counts.
 
         Returns:
-            Per chunk of the op, its :meth:`_chunk_state` and its number of
-            real full-attention blocks, ``None`` for a chunk with only null
-            blocks (nothing to store); and the op to park, keeping of each
-            engine-held chunk the blocks in ``vllm_held``, every other block
-            replaced by the null block, with the snapshot of the blocks it
-            keeps, or ``None`` when it keeps none. The server demotes an
-            object group of a chunk only when the hint, the kept blocks,
-            lists every block of that group, so a chunk's freed state is
-            stored to MRU.
+            Per chunk of the op, its :meth:`_chunk_state` labels, ``None``
+            for a chunk with only null blocks (nothing to store); and the op
+            to park, keeping of each engine-held chunk the blocks in
+            ``vllm_held``, every other block replaced by the null block, with
+            the snapshot of the blocks it keeps, or ``None`` when it keeps
+            none. The server demotes an object group of a chunk only when
+            the hint, the kept blocks, lists every block of that group, so a
+            chunk's freed state is stored to MRU.
         """
         null_block_id = self._require_block_pool().null_block.block_id
         op = metadata.op
@@ -1244,6 +1258,8 @@ class LazyOffloadManager:
         chunk_of: list[list[int] | None] = []
         real_blocks: list[list[int]] = [[] for _ in range(num_chunks)]
         attention_blocks: list[list[int]] = [[] for _ in range(num_chunks)]
+        # Per chunk, its real blocks as (group, position in the group, id).
+        own_blocks: list[list[tuple[int, int, int]]] = [[] for _ in range(num_chunks)]
         for group_idx, group_block_ids in enumerate(op.block_ids):
             tokens_per_block = self._group_tokens_per_block[group_idx]
             if not tokens_per_block:
@@ -1254,39 +1270,38 @@ class LazyOffloadManager:
                 and group_idx not in self._mamba_groups
             )
             blocks_per_chunk = self._chunk_size // tokens_per_block
+            first_position = op.start // tokens_per_block
             chunks = [pos // blocks_per_chunk for pos in range(len(group_block_ids))]
             chunk_of.append(chunks)
-            for chunk_idx, block_id in zip(chunks, group_block_ids, strict=True):
+            for pos, (chunk_idx, block_id) in enumerate(
+                zip(chunks, group_block_ids, strict=True)
+            ):
                 if block_id != null_block_id:
                     real_blocks[chunk_idx].append(block_id)
+                    own_blocks[chunk_idx].append(
+                        (group_idx, first_position + pos, block_id)
+                    )
                     if full_attention:
                         attention_blocks[chunk_idx].append(block_id)
-        chunk_states: list[tuple[str, int] | None] = [
-            (
-                self._chunk_state(
-                    real,
-                    attention,
-                    vllm_held,
-                    min(op.start + (chunk_idx + 1) * self._chunk_size, op.end),
-                    servable_tokens,
-                ),
-                len(attention),
+        chunk_states: list[tuple[str, ...] | None] = [
+            self._chunk_state(
+                real,
+                attention,
+                own,
+                vllm_held,
+                min(op.start + (chunk_idx + 1) * self._chunk_size, op.end),
+                servable_tokens,
+                hit_blocks,
             )
             if real
             else None
-            for chunk_idx, (real, attention) in enumerate(
-                zip(real_blocks, attention_blocks, strict=True)
+            for chunk_idx, (real, attention, own) in enumerate(
+                zip(real_blocks, attention_blocks, own_blocks, strict=True)
             )
         ]
         chunks_held = [
-            all(block_id in vllm_held for block_id in attention or real)
-            and min(op.start + (chunk_idx + 1) * self._chunk_size, op.end)
-            <= servable_tokens()
-            if real
-            else None
-            for chunk_idx, (real, attention) in enumerate(
-                zip(real_blocks, attention_blocks, strict=True)
-            )
+            chunk_state is not None and chunk_state[0] == _HELD
+            for chunk_state in chunk_states
         ]
         parked_block_ids: list[list[int]] = []
         for chunks, group_block_ids in zip(chunk_of, op.block_ids, strict=True):
@@ -1316,45 +1331,88 @@ class LazyOffloadManager:
         self,
         real: list[int],
         attention: list[int],
+        own: list[tuple[int, int, int]],
         vllm_held: set[int],
         chunk_end: int,
         servable_tokens: Callable[[], int],
-    ) -> str:
-        """Name whether a chunk is held whole and, if not, the first reason.
+        hit_blocks: Callable[[], tuple[list["KVCacheBlock"], ...]],
+    ) -> tuple[str, ...]:
+        """Decide whether a chunk is engine-held and label why or why not.
 
-        Diagnostic only, by the whole-chunk rule that every block of the
-        chunk is in use: ``not_held_attn_inuse_state_free`` counts the chunks
-        whose attention :meth:`_engine_held_part` may still hold. The reasons
-        split the chunks not held whole, so they add up to
-        ``emitted_chunks_not_held``. A chunk with no real full-attention
-        block, as in a model without attention, counts a block not in use
-        as ``not_held_attn_free``.
+        The first label is the decision :meth:`_engine_held_part` parks by,
+        so the counts match it. The reasons split the chunks not held and
+        add up to ``emitted_chunks_not_held``; the further labels count a
+        subset of the chunks under the first one. A chunk with no real
+        full-attention block, as in a model without attention, is judged by
+        all of its blocks.
 
         Args:
             real: The chunk's non-null blocks over every non-scratch group.
             attention: Those of its full-attention groups: not recurrent,
                 not sliding window.
+            own: The blocks of ``real`` as (group, position in the group,
+                block id).
             vllm_held: The op's blocks vLLM references beyond this class's
                 pins.
             chunk_end: The token the chunk ends at.
             servable_tokens: As in :meth:`_engine_held_part`; called only
-                when every block of ``real`` is in ``vllm_held``.
+                when every block of ``attention`` (of ``real`` without
+                attention) is in ``vllm_held``.
+            hit_blocks: As in :meth:`_engine_held_part`; called only for a
+                chunk past the servable prefix.
 
         Returns:
-            ``"held"`` for an engine-held chunk; else
-            ``"not_held_past_servable"`` when every block is in use but the
-            chunk ends past the servable prefix, ``"not_held_attn_free"``
-            when an attention block is not in use, and
-            ``"not_held_attn_inuse_state_free"`` when every attention block
-            is but a recurrent or sliding-window one is not.
+            ``("held",)``, plus ``"emitted_chunks_held_state_free"`` when a
+            recurrent or sliding-window block of the chunk is not in use;
+            ``("not_held_attn_free",)`` when a full-attention block is not
+            in use; else ``("not_held_past_servable", ...)``, plus
+            ``"not_held_past_servable_by_one_block"`` when the chunk ends
+            exactly one full-attention block past the servable prefix, as
+            vLLM's EAGLE drop leaves the last block of a hit, and
+            ``"not_held_past_servable_shadowed"`` when vLLM's hit reads
+            another block than the op's own at one of the chunk's positions,
+            a duplicate with the same hash.
         """
-        if all(block_id in vllm_held for block_id in real):
-            if chunk_end <= servable_tokens():
-                return _HELD
-            return "not_held_past_servable"
-        if not attention or not all(block_id in vllm_held for block_id in attention):
-            return "not_held_attn_free"
-        return _NOT_HELD_STATE_FREE
+        if not all(block_id in vllm_held for block_id in attention or real):
+            return ("not_held_attn_free",)
+        servable = servable_tokens()
+        if chunk_end <= servable:
+            if all(block_id in vllm_held for block_id in real):
+                return (_HELD,)
+            return (_HELD, "emitted_chunks_held_state_free")
+        labels = ["not_held_past_servable"]
+        if self._attention_block_tokens and (
+            chunk_end == servable + self._attention_block_tokens
+        ):
+            labels.append("not_held_past_servable_by_one_block")
+        hit = hit_blocks()
+        if any(
+            position < len(hit[group_idx])
+            and not hit[group_idx][position].is_null
+            and hit[group_idx][position].block_id != block_id
+            for group_idx, position, block_id in own
+        ):
+            labels.append("not_held_past_servable_shadowed")
+        return tuple(labels)
+
+    def _hit_blocks(self, request_id: str) -> tuple[list["KVCacheBlock"], ...]:
+        """Return vLLM's hit over a request's chain, free blocks included.
+
+        The same read-only lookup :meth:`_servable_tokens` starts from,
+        before it cuts the hit below a free block.
+
+        Args:
+            request_id: A request that arrived and whose session has not
+                ended.
+
+        Returns:
+            Per KV-cache group, the blocks the hit reads, by position.
+        """
+        chain = self._block_hash_chains[request_id]
+        hit_blocks, _, _ = self._require_coordinator().find_longest_cache_hit(
+            chain, len(chain) * self._require_block_pool().hash_block_size
+        )
+        return hit_blocks
 
     def _servable_tokens(self, request_id: str) -> int:
         """Return how much of a request's prefix vLLM serves from blocks it keeps.
@@ -1420,43 +1478,42 @@ class LazyOffloadManager:
         self,
         diagnostics: "Counter[str]",
         request_id: str,
-        chunk_states: list[tuple[str, int] | None],
+        chunk_states: list[tuple[str, ...] | None],
         trigger_kind: str,
     ) -> None:
-        """Count one emitted op's chunks by whole-chunk held state and trigger.
+        """Count one emitted op's chunks by held state and trigger.
 
-        Held means held whole (see :meth:`_chunk_state`). A held chunk counts
-        as held by the emitting request while that request runs, and by
-        another one once it finished: a running request references every
-        full-attention block it was handed, but a block it freed (a
-        sliding-window one) may be held by another, so the split is
-        approximate.
+        Held is the decision :meth:`_engine_held_part` parks by (see
+        :meth:`_chunk_state`). A held chunk counts as held by the emitting
+        request while that request runs, and by another one once it
+        finished: a running request references every full-attention block
+        it was handed, but a block it freed (a sliding-window one) may be
+        held by another, so the split is approximate.
 
         Args:
             diagnostics: The drain's counts, updated in place.
             request_id: The emitting request.
-            chunk_states: Per chunk of the op, its :meth:`_chunk_state` and
-                its real full-attention blocks; ``None`` skips a chunk with
-                nothing to store. A chunk not held counts under its reason
-                too, and under ``not_held_attn_inuse_state_free`` its
-                attention blocks also count, as ``..._attn_blocks``.
+            chunk_states: Per chunk of the op, its :meth:`_chunk_state`
+                labels; ``None`` skips a chunk with nothing to store. A chunk
+                not held counts under its reason too, and every chunk under
+                each of its further labels.
             trigger_kind: What :meth:`_block_group_kind` named for its item.
         """
         handed = self._handed_blocks.get(request_id)
         for chunk_state in chunk_states:
             if chunk_state is None:
                 continue
-            state, num_attention_blocks = chunk_state
+            state, *labels = chunk_state
             diagnostics[f"emitted_chunks_trigger_{trigger_kind}"] += 1
             if state != _HELD:
                 diagnostics["emitted_chunks_not_held"] += 1
                 diagnostics[state] += 1
-                if state == _NOT_HELD_STATE_FREE:
-                    diagnostics[f"{state}_attn_blocks"] += num_attention_blocks
             elif handed:
                 diagnostics["emitted_chunks_held_by_self"] += 1
             else:
                 diagnostics["emitted_chunks_held_by_other"] += 1
+            for label in labels:
+                diagnostics[label] += 1
 
     def _readmit_released(self, drop_lost: bool = False) -> list[str]:
         """Hand back to the policy parked ops a holder released a block of.
