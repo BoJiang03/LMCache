@@ -2081,3 +2081,75 @@ def test_settled_store_is_timed_until_vllm_recycles_its_block() -> None:
     assert fields["after_recycle"] == "0"
     assert fields["free_recycled"].split(",")[0] == "1"
     assert fields["alive_free"] == "0"
+
+
+def test_chunk_held_only_once_its_store_lands_is_counted() -> None:
+    """A chunk not held at emit that a successor's hit takes back before
+    the store lands is counted as left MRU while held, with its tokens."""
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, (first, second) = _held_manager(coordinator, 2)
+    manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
+    pool.free_blocks([pool.blocks[first]])
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert ENGINE_HELD_BLOCKS_HINT not in (store.request_configs or {})
+
+    pool.touch([pool.blocks[first]])
+    manager.on_store_results(set(), {"req": 1})
+
+    counts = _counts(manager)
+    assert counts["landed_mru_held_attention"] == 2
+    assert counts["landed_mru_held_attention_tokens"] == 2 * TOKENS_PER_BLOCK
+
+
+@pytest.mark.parametrize("case", ["free_at_landing", "held_at_emit", "not_exclusive"])
+def test_landed_chunk_is_not_counted_unless_newly_held(case: str) -> None:
+    """A chunk servable only through a free block when its store lands, one
+    the emit-time hint listed already, and one of a plain request are not
+    counted."""
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, (first, second) = _held_manager(coordinator, 2)
+    block_ids = [[first, second], [null, null]]
+    op = _op(0, block_ids) if case == "not_exclusive" else _exclusive_op(block_ids)
+    manager.add_store_candidate(op)
+    pool.free_blocks([pool.blocks[second if case == "held_at_emit" else first]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+
+    if case == "not_exclusive":
+        pool.touch([pool.blocks[first]])
+    manager.on_store_results(set(), {"req": 1})
+
+    assert not any(name.startswith("landed_mru_held") for name in _counts(manager))
+
+
+def test_landed_hybrid_chunk_is_counted_per_kind() -> None:
+    """A Mamba state a successor takes back before the store lands makes the
+    chunks it serves held: their attention counts, and the recurrent object
+    of the chunk whose own state is in use."""
+    coordinator = _coordinator(mamba=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(3)
+    attention = [block.block_id for block in pool.get_new_blocks(3)]
+    mamba = [null, pool.get_new_blocks(1)[0].block_id, null]
+    _cache(pool, chain, [attention, mamba])
+    pool.free_blocks([pool.blocks[mamba[1]]])
+    manager = _manager(
+        pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
+    )
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_exclusive_op([attention, mamba]))
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert ENGINE_HELD_BLOCKS_HINT not in (store.request_configs or {})
+
+    pool.touch([pool.blocks[mamba[1]]])
+    manager.on_store_results(set(), {"req": 1})
+
+    counts = _counts(manager)
+    assert counts["landed_mru_held_attention"] == 2
+    assert counts["landed_mru_held_recurrent"] == 1
+    assert counts["landed_mru_held_recurrent_tokens"] == TOKENS_PER_BLOCK

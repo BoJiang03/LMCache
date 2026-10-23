@@ -592,6 +592,9 @@ class LazyOffloadManager:
                 self._require_policy().record_diagnostics(
                     {"held_ops_parked": len(held)}
                 )
+            if not batch.failed and not batch.orphaned:
+                # Before the unpin, which leaves the blocks to vLLM.
+                self._count_landed_held(request_id, batch.operations, held)
             self._unpin(list(batch.block_ids))
             if not batch.failed:
                 self._track_lead(batch.operations, time.monotonic())
@@ -1563,6 +1566,99 @@ class LazyOffloadManager:
                 diagnostics["emitted_chunks_held_by_other"] += 1
             for label in labels:
                 diagnostics[label] += 1
+
+    def _count_landed_held(
+        self,
+        request_id: str,
+        operations: PendingStoreItem,
+        emit_held: list[tuple[LMCacheMPRequestMetadata, BlockHashes]],
+    ) -> None:
+        """Count objects a settled store left MRU although vLLM holds them now.
+
+        Engine-held is decided when an op is emitted; a chunk can become
+        held before its store lands (a successor's local hit, or a later
+        Mamba state the owner caches), and the server then writes it to
+        L1's MRU end. Per chunk of each exclusive-retrieve op and per kind
+        of its groups (Mamba groups count as ``"recurrent"``), an object is
+        counted when :meth:`_engine_held_part` now keeps every real block of
+        that kind and the emit-time hint did not list every one of them, the
+        rule the server demotes an object group by. Under
+        ``--separate-object-groups`` a kind is an object group; with a mixed
+        object group the split is approximate.
+
+        Counts ``landed_mru_held_<kind>`` and ``landed_mru_held_<kind>_tokens``.
+
+        Args:
+            request_id: The request whose batch settled.
+            operations: The batch's ops, with their hash snapshots; their
+                blocks are still pinned.
+            emit_held: The parked part of the batch: its blocks are the ones
+                the store's hint listed.
+        """
+        pool = self._require_block_pool()
+        null_block_id = pool.null_block.block_id
+        emit_listed = {
+            block_id for _, block_hashes in emit_held for block_id in block_hashes
+        }
+        servable_tokens = cache(
+            partial(
+                self._servable_tokens,
+                request_id,
+                [
+                    block_id
+                    for _, block_hashes in operations.metadatas
+                    for block_id in block_hashes
+                ],
+            )
+        )
+        # The hit is read only for diagnostic labels, discarded here.
+        no_hit: tuple[list["KVCacheBlock"], ...] = tuple(
+            [] for _ in self._group_tokens_per_block
+        )
+        diagnostics: Counter[str] = Counter()
+        for metadata, block_hashes in operations.metadatas:
+            if not _requests_exclusive_retrieve(metadata):
+                continue
+            op = metadata.op
+            vllm_held = {
+                block_id
+                for block_id in block_hashes
+                if pool.blocks[block_id].ref_cnt > self._pin_counts[block_id]
+            }
+            _, parked = self._engine_held_part(
+                metadata, block_hashes, vllm_held, servable_tokens, lambda: no_hit
+            )
+            if parked is None:
+                continue
+            held_now = parked[1]
+            # (chunk, kind) -> that kind's real blocks of the chunk.
+            objects: dict[tuple[int, str], list[int]] = {}
+            for group_idx, group_block_ids in enumerate(op.block_ids):
+                tokens_per_block = self._group_tokens_per_block[group_idx]
+                if not tokens_per_block:
+                    continue
+                kind = (
+                    "recurrent"
+                    if group_idx in self._mamba_groups
+                    else self._group_kinds[group_idx]
+                )
+                blocks_per_chunk = self._chunk_size // tokens_per_block
+                for pos, block_id in enumerate(group_block_ids):
+                    if block_id != null_block_id:
+                        objects.setdefault((pos // blocks_per_chunk, kind), []).append(
+                            block_id
+                        )
+            for (chunk_idx, kind), real in objects.items():
+                if all(block_id in held_now for block_id in real) and not all(
+                    block_id in emit_listed for block_id in real
+                ):
+                    chunk_start = op.start + chunk_idx * self._chunk_size
+                    diagnostics[f"landed_mru_held_{kind}"] += 1
+                    diagnostics[f"landed_mru_held_{kind}_tokens"] += (
+                        min(chunk_start + self._chunk_size, op.end) - chunk_start
+                    )
+        if diagnostics:
+            self._require_policy().record_diagnostics(dict(diagnostics))
 
     def _readmit_released(self, drop_lost: bool = False) -> list[str]:
         """Hand back to the policy parked ops a holder released a block of.
