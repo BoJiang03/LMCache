@@ -10,7 +10,7 @@ Network and GPU I/O are stubbed.
 # Standard
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 # Third Party
@@ -77,14 +77,20 @@ def _kv_cache_config() -> KVCacheConfig:
     )
 
 
-def _config(enable_prefix_caching: bool) -> VllmConfig:
+def _config(
+    enable_prefix_caching: bool, extra_config: dict[str, object] | None = None
+) -> VllmConfig:
     transfer_config = KVTransferConfig(
-        kv_connector="LMCacheMPConnector", kv_role="kv_both"
+        kv_connector="LMCacheMPConnector",
+        kv_role="kv_both",
+        kv_connector_extra_config=extra_config or {},
     )
     return cast(
         VllmConfig,
         SimpleNamespace(
-            model_config=SimpleNamespace(model="test-model", use_mla=False),
+            model_config=SimpleNamespace(
+                model="test-model", use_mla=False, max_model_len=4096
+            ),
             parallel_config=SimpleNamespace(
                 world_size=1, rank=0, tensor_parallel_size=1, pipeline_parallel_size=1
             ),
@@ -96,6 +102,7 @@ def _config(enable_prefix_caching: bool) -> VllmConfig:
             scheduler_config=SimpleNamespace(
                 disable_hybrid_kv_cache_manager=False,
                 max_num_batched_tokens=NUM_TOKENS,
+                long_prefill_token_threshold=0,
             ),
             kv_transfer_config=transfer_config,
         ),
@@ -113,6 +120,9 @@ def _request(request_id: str = "request") -> Request:
             status=RequestStatus.WAITING,
             num_computed_tokens=0,
             kv_transfer_params=None,
+            block_hashes=[
+                f"{request_id}-{i}".encode() for i in range(NUM_TOKENS // BLOCK_SIZE)
+            ],
         ),
     )
 
@@ -137,23 +147,26 @@ def _schedule(
             ),
             num_scheduled_tokens={request_id: num_tokens},
             total_num_scheduled_tokens=num_tokens,
+            finished_req_ids=set(),
+            preempted_req_ids=None,
         ),
     )
 
 
 def _pool(unhashed: set[int]) -> MagicMock:
     """A block pool whose blocks are hashed except the null block and ``unhashed``."""
-    return MagicMock(
-        null_block=SimpleNamespace(block_id=NULL_BLOCK_ID),
-        blocks=[
-            SimpleNamespace(
-                block_hash=None
-                if block_id == NULL_BLOCK_ID or block_id in unhashed
-                else bytes([block_id])
-            )
-            for block_id in range(16)
-        ],
-    )
+    blocks = [
+        SimpleNamespace(
+            block_id=block_id,
+            block_hash=None
+            if block_id == NULL_BLOCK_ID or block_id in unhashed
+            else bytes([block_id]),
+            is_null=block_id == NULL_BLOCK_ID,
+            ref_cnt=1,
+        )
+        for block_id in range(16)
+    ]
+    return MagicMock(null_block=blocks[NULL_BLOCK_ID], blocks=blocks)
 
 
 @pytest.fixture
@@ -262,5 +275,64 @@ def test_without_prefix_caching_recurrent_states_are_kept(
         connector.bind_gpu_block_pool(_pool(unhashed=set(range(16))))
         block_ids = ([1, 2, 3], [4, 5, 6], [7, 8, 9])
         assert _stored_block_ids(connector, block_ids)[RECURRENT] == [7, 8, 9]
+    finally:
+        connector.shutdown()
+
+
+def test_lazy_admission_never_sees_an_uncached_state(
+    mock_io: SimpleNamespace,
+) -> None:
+    """Lazy offload buffers the nulled op, so the uncached state cannot void it.
+
+    Its unhashed block would otherwise void the whole buffered store.
+    """
+    connector = LMCacheMPConnector(
+        _config(
+            True,
+            {
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.lazy_offload_threshold": 1,
+                "lmcache.mp.lazy_offload_select_count": 1,
+            },
+        ),
+        KVConnectorRole.SCHEDULER,
+        _kv_cache_config(),
+    )
+    try:
+        coordinator = MagicMock()
+        coordinator.find_longest_cache_hit.return_value = ([], NUM_TOKENS, 0)
+        connector.bind_kv_cache_manager(
+            cast(
+                Any,
+                SimpleNamespace(
+                    coordinator=coordinator, block_pool=_pool(unhashed={8})
+                ),
+            )
+        )
+        request = _request()
+        block_ids = ([1, 2, 3], [4, 5, 6], [NULL_BLOCK_ID, 8, 9])
+        assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+        connector.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: block_ids), 0
+        )
+        metadata = connector.build_connector_meta(
+            _schedule(request.request_id, NUM_TOKENS, block_ids)
+        )
+        assert metadata.requests == []
+        connector.request_finished(request, block_ids[0])
+        # A later token-producing step drains the finished request.
+        trigger = _request("trigger")
+        trigger_blocks = ([13], [14], [15])
+        assert connector.get_num_new_matched_tokens(trigger, 0) == (0, False)
+        connector.update_state_after_alloc(
+            trigger, MagicMock(get_block_ids=lambda: trigger_blocks), 0
+        )
+        metadata = connector.build_connector_meta(
+            _schedule(trigger.request_id, 1, trigger_blocks)
+        )
+        [store] = [m for m in metadata.requests if m.request_id == "request"]
+        assert (store.op.start, store.op.end) == (0, NUM_TOKENS)
+        assert store.op.block_ids[RECURRENT] == [NULL_BLOCK_ID, NULL_BLOCK_ID, 9]
     finally:
         connector.shutdown()
