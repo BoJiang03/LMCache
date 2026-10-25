@@ -235,7 +235,10 @@ def test_server_store_and_retrieve_delegate_event_ordering(
     monkeypatch.setattr(
         lmcache_driven_transfer,
         "submit_callback_to_stream",
-        lambda stream, kind, payload: callbacks.append((kind, payload)),
+        # DIAG: the retrieve timing callback is not part of this contract.
+        lambda stream, kind, payload: (
+            kind == "diag_retrieve_done" or callbacks.append((kind, payload))
+        ),
     )
     held: list[tuple[str, bytes]] = []
     released: list[int] = []

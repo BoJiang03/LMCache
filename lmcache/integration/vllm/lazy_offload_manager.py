@@ -712,6 +712,16 @@ class LazyOffloadManager:
         """
         return bool(self._requests.in_flight_request_ids())
 
+    def diag_pending_ops(self) -> tuple[int, int]:
+        """DIAG: buffered operations and requests with a store in flight.
+
+        Returns:
+            ``(pending_ops, inflight_store_requests)``; pending is -1 when the
+            policy is not built yet or does not count its operations.
+        """
+        pending = -1 if self._policy is None else self._policy.diag_pending_ops()
+        return pending, len(self._requests.in_flight_request_ids())
+
     def log_final_stats(self) -> None:
         """Write the policy's final counter ledger, if built, and the lead line."""
         if self._policy is not None:

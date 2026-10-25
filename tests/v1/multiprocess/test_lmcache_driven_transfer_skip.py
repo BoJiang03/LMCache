@@ -433,7 +433,10 @@ def test_failed_copy_releases_all_retained_owners_on_stream(monkeypatch):
     module.context.storage_manager.prepare_read_completion.assert_called_once_with(
         ["g0c0", "g0c1", "g1c1"], owners
     )
-    assert callback.call_args_list == [
+    # DIAG: the retrieve timing callback is not part of this contract.
+    assert [
+        c for c in callback.call_args_list if c.args[1] != "diag_retrieve_done"
+    ] == [
         call(cache_context.cupy_stream, "release_imported_event", (1, 7)),
         call(cache_context.cupy_stream, "finish_read_by_owner", completion),
     ]

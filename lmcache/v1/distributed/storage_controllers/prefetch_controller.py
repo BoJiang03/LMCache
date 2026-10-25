@@ -23,6 +23,7 @@ import enum
 import itertools
 import select
 import threading
+import time
 
 # First Party
 from lmcache.lmcache_native import Bitmap
@@ -1690,6 +1691,8 @@ class PrefetchController(StorageControllerInterface):
         self, request: InFlightPrefetchRequest, result: PrefetchResult
     ) -> None:
         """Store the request's result and wake any waiter."""
+        # DIAG: frozen dataclass, so the timestamp is set like __post_init__'s.
+        object.__setattr__(result, "diag_done_at", time.monotonic())
         with self._prefetch_results_lock:
             self._completed_results[request.request_id] = result
             # Wake any WAIT_PREFETCH_STATUS handler blocked on this result.

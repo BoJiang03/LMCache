@@ -53,6 +53,7 @@ import zmq
 
 # First Party
 from lmcache.banner import print_banner_once
+from lmcache.diag_timing import sched_diag, timed, timed_step
 from lmcache.integration.vllm.experimental import dispatch
 from lmcache.integration.vllm.kv_cache_group_edits import (
     apply_kv_cache_group_edits,
@@ -792,6 +793,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         # while current vLLM's type declaration requires it.
         super().__init__(vllm_config, role, kv_cache_config)  # type: ignore[arg-type]
         self._connector_stats = LMCacheMPConnectorStats()
+        self._diag = sched_diag()
 
         # Fail fast, before the server handshake below.
         kv_cache_config = getattr(self, "_kv_cache_config", None)
@@ -1085,6 +1087,26 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                         vllm_config, kv_cache_config, mamba_groups
                     ),
                 )
+                self._diag.pending_ops_fn = self._lazy_offload_manager.diag_pending_ops
+            # DIAG: instance attributes shadow the methods vLLM calls.
+            self.get_num_new_matched_tokens = timed(  # type: ignore[method-assign]
+                self._diag, "gnmt", self.get_num_new_matched_tokens
+            )
+            self.update_state_after_alloc = timed(  # type: ignore[method-assign]
+                self._diag, "usaa", self.update_state_after_alloc
+            )
+            self.build_connector_meta = timed_step(  # type: ignore[method-assign]
+                self._diag, self.build_connector_meta
+            )
+            self.update_connector_output = timed(  # type: ignore[method-assign]
+                self._diag, "uco", self.update_connector_output
+            )
+            self.request_finished = timed(  # type: ignore[method-assign]
+                self._diag, "rf", self.request_finished
+            )
+            self.on_new_request = timed(  # type: ignore[method-assign]
+                self._diag, "onr", self.on_new_request
+            )
 
     @property
     def role(self) -> KVConnectorRole:
@@ -1912,7 +1934,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         self._process_cached_requests(scheduler_output, metadata)
 
         if self.lazy_offload:
+            w0 = time.monotonic()
+            c0 = time.thread_time()
             actions = self._lazy_offload_manager.on_scheduler_step(scheduler_output)
+            self._diag.add("drain", time.thread_time() - c0, time.monotonic() - w0)
             for store_metadata in actions.stores_to_submit:
                 metadata.add_request_metadata(store_metadata)
             for request_id in actions.sessions_to_end:
@@ -1944,6 +1969,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if kv_cache_events and isinstance(kv_cache_events, LMCacheMPKVEvents):
             # One aggregated batch per step keeps the workers' event order.
             self._kv_cache_events.extend(kv_cache_events.aggregate().get_all_events())
+
+        if connector_output.finished_recving:
+            self._diag.loads_finished(
+                connector_output.finished_recving, time.monotonic()
+            )
 
         if not self.lazy_offload:
             return
@@ -2000,6 +2030,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         # Clean up request tracker to prevent memory leak
         self._cleanup_request_tracker(request.request_id)
+        self._diag.forget_request(request.request_id)
         if self._l1_duplication_meter is not None:
             self._l1_duplication_meter.on_request_finished(request.request_id)
 
@@ -2128,6 +2159,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             )
             if r_metadata is not None:
                 metadata.add_request_metadata(r_metadata)
+                self._diag.load_issued(request_tracker.request_id, time.monotonic())
             request_tracker.state = LMCacheMPRequestState.READY
 
     def _process_new_requests(
@@ -2386,6 +2418,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             ``num_external_tokens`` and ``load_async``, unchanged.
         """
         if self.lazy_offload:
+            w0 = time.monotonic()
+            c0 = time.thread_time()
             self._lazy_offload_manager.on_admission(
                 request.request_id,
                 len(request.all_token_ids),
@@ -2393,4 +2427,5 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 num_external_tokens,
                 load_async,
             )
+            self._diag.add("admit", time.thread_time() - c0, time.monotonic() - w0)
         return num_external_tokens, load_async

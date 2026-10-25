@@ -8,6 +8,7 @@ import threading
 import time
 
 # First Party
+from lmcache.diag_timing import server_diag
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import (
     DEFAULT_ATTN_WINDOW_DESC,
@@ -124,6 +125,9 @@ class _PrefetchJob:
     # Names the ``lookup()`` branch that returned before submitting a prefetch
     # task; empty on the normal path.
     early_exit_reason: str = ""
+    # DIAG: monotonic time just before the prefetch task was submitted; 0 on
+    # early exits, which fall back to the handle's own submit time.
+    diag_submitted_at: float = 0.0
 
 
 class LookupModule(DiscoverableModule):
@@ -164,6 +168,9 @@ class LookupModule(DiscoverableModule):
         self._prefetch_jobs: dict[str, _PrefetchJob] = {}
         self._prefetch_job_lock = threading.Lock()
         self._setup_metrics()
+        server_diag().set_gauge(
+            "prefetch_jobs", self, LookupModule._active_prefetch_count
+        )
 
     @property
     def context(self) -> MPCacheServerContext:
@@ -364,6 +371,7 @@ class LookupModule(DiscoverableModule):
             ),
             num_kv_readers=num_kv_readers,
         )
+        diag_submitted_at = time.monotonic()
         handle = self._ctx.storage_manager.submit_prefetch_task(
             spec,
             external_request_id=key.request_id,
@@ -386,6 +394,7 @@ class LookupModule(DiscoverableModule):
                 ),
                 model_name=model_name,
                 cache_salt=key.cache_salt,
+                diag_submitted_at=diag_submitted_at,
             )
         )
 
@@ -769,7 +778,15 @@ class LookupModule(DiscoverableModule):
         """
         result = self._ctx.storage_manager.query_prefetch_status(job.handle)
         if result is None:
+            server_diag().record("prefetch_not_ready_poll", 0.0)
             return None
+        consumed_at = time.monotonic()
+        submitted_at = job.diag_submitted_at or job.handle.submit_time
+        diag = server_diag()
+        diag.record("prefetch_submit_to_consumed", consumed_at - submitted_at)
+        if result.diag_done_at:
+            diag.record("prefetch_submit_to_done", result.diag_done_at - submitted_at)
+            diag.record("prefetch_done_to_consumed", consumed_at - result.diag_done_at)
         if job.row_windows:
             found_count, _retain = fold_unfold_grouped(
                 result.hit_cells, job.row_windows

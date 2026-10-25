@@ -9,6 +9,7 @@ import time
 
 # First Party
 from lmcache import torch_dev
+from lmcache.diag_timing import server_diag
 from lmcache.logging import init_logger
 from lmcache.utils import (
     EngineType,
@@ -287,6 +288,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             self._release_imported_event,
             payload_type=tuple[int, int],
         )
+        self._device_host_func_dispatcher.register(
+            "diag_retrieve_done",
+            self._diag_retrieve_done,
+            payload_type=float,
+        )
         self._device_host_func_dispatcher.start()
 
     def _release_imported_event(self, payload: tuple[int, int]) -> None:
@@ -299,6 +305,12 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         entry = self.get_and_touch_context_entry(instance_id)
         if entry is not None:
             entry.cache_context.release_imported_event(import_token)
+
+    def _diag_retrieve_done(self, started_at: float) -> None:
+        """DIAG: a RETRIEVE's stream work, started at ``started_at``, is done."""
+        server_diag().record(
+            "retrieve_start_to_stream_done", time.monotonic() - started_at
+        )
 
     def register_host_func(self, kind: str, handler: Any, payload_type: Any) -> None:
         """Register *handler* for *kind* on the per-process device host-func
@@ -1083,6 +1095,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             RuntimeError: If the backend does not support IPC event handles.
         """
         st = time.perf_counter()
+        diag_started_at = time.monotonic()
 
         entry = self.get_and_touch_context_entry(instance_id)
         if entry is None:
@@ -1262,6 +1275,9 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 retrieve_succeeded = False
             finally:
                 event_backend.record_event(event, cache_context.stream)
+                submit_callback_to_stream(
+                    cache_context.cupy_stream, "diag_retrieve_done", diag_started_at
+                )
                 if retained_keys:
                     submit_callback_to_stream(
                         cache_context.cupy_stream,

@@ -112,6 +112,10 @@ class FIFOOffloadPolicy(OffloadPolicy):
             emptied_request_ids=[item.request_id for item in items],
         )
 
+    def diag_pending_ops(self) -> int:
+        """DIAG: number of buffered operations across requests."""
+        return sum(len(item.metadatas) for item in self._pending_items.values())
+
     def has_pending_request(self, request_id: str) -> bool:
         """Whether the request currently owns buffered operations.
 

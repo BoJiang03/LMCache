@@ -5,6 +5,7 @@ in the multiprocess cache server.
 """
 
 # Standard
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional, overload
@@ -12,6 +13,7 @@ import threading
 import time
 
 # First Party
+from lmcache.diag_timing import server_diag
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import ObjectKey
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
@@ -26,6 +28,8 @@ from lmcache.v1.periodic_thread import (
 )
 
 logger = init_logger(__name__)
+
+_DIAG_ENDED_CAP = 65536
 
 
 @dataclass
@@ -309,6 +313,15 @@ class SessionManager:
         self._ttl = ttl
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        # DIAG: recently ended request ids (bounded) and live sessions that
+        # were created again after their END_SESSION.
+        self._diag_ended: OrderedDict[str, None] = OrderedDict()
+        self._diag_recreated_live: set[str] = set()
+        diag = server_diag()
+        diag.set_gauge("live_sessions", self, SessionManager.active_count)
+        diag.set_gauge(
+            "live_sessions_recreated", self, SessionManager.diag_recreated_live_count
+        )
         #: Callbacks invoked for every destroyed session, so owners of
         #: per-request state (e.g. entries in ``Session.extras``) can release
         #: it however the request ended. See :meth:`_notify_destroyed`.
@@ -333,6 +346,9 @@ class SessionManager:
                 self._sessions[request_id] = Session(
                     request_id=request_id, hasher=self._hasher
                 )
+                if request_id in self._diag_ended:
+                    server_diag().count("session_recreated_after_end")
+                    self._diag_recreated_live.add(request_id)
                 logger.debug("Created session for request_id=%s", request_id)
             return self._sessions[request_id]
 
@@ -352,9 +368,15 @@ class SessionManager:
         """
         with self._lock:
             if request_id not in self._sessions:
+                server_diag().count("session_remove_missing")
                 return None
             session = self._sessions[request_id]
             del self._sessions[request_id]
+            server_diag().count("session_ended")
+            self._diag_recreated_live.discard(request_id)
+            self._diag_ended[request_id] = None
+            if len(self._diag_ended) > _DIAG_ENDED_CAP:
+                self._diag_ended.popitem(last=False)
             logger.debug("Removed session for request_id=%s", request_id)
         self._notify_destroyed(session)
         return session
@@ -373,6 +395,8 @@ class SessionManager:
                     expired.append(session)
             for session in expired:
                 del self._sessions[session.request_id]
+                server_diag().count("session_expired")
+                self._diag_recreated_live.discard(session.request_id)
 
         for session in expired:
             self._notify_destroyed(session)
@@ -398,6 +422,10 @@ class SessionManager:
                     "Session destroy listener failed for request_id=%s",
                     session.request_id,
                 )
+
+    def diag_recreated_live_count(self) -> int:
+        """DIAG: live sessions created again after their END_SESSION."""
+        return len(self._diag_recreated_live)
 
     def active_count(self) -> int:
         """Return the number of active sessions.

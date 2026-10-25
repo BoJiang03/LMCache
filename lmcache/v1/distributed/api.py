@@ -781,6 +781,8 @@ class PrefetchResult:
     they are not persisted. Tags name configured L1s for affinity and reporting
     and are the appropriate identity at process boundaries.
     """
+    diag_done_at: float = field(default=0.0, repr=False, compare=False)
+    """DIAG: monotonic time the controller published this result; 0 if never."""
     _l1_hit_count: int = field(init=False, repr=False, compare=False)
     _l2_hit_count: int = field(init=False, repr=False, compare=False)
 

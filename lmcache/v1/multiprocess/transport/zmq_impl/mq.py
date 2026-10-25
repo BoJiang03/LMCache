@@ -10,6 +10,7 @@ import inspect
 import itertools
 import queue
 import threading
+import time
 
 # Third Party
 from zmq.utils.monitor import recv_monitor_message
@@ -17,6 +18,7 @@ import msgspec
 import zmq
 
 # First Party
+from lmcache.diag_timing import server_diag
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import MemoryLayoutDesc
 from lmcache.v1.multiprocess.affinity_pool import AffinityOrder, AffinityThreadPool
@@ -538,6 +540,7 @@ class SyncRequestHandler(RequestHandlerBase[ResponseType]):
         self.payload_clss = payload_clss
         self.response_cls = response_cls
         self.handler = handler
+        self.diag_name = "?"
 
     def __call__(self, payloads: list[bytes]) -> ResponseType:
         return self.handler(*unwrap_request_payloads(payloads, self.payload_clss))
@@ -570,9 +573,10 @@ class BlockingRequestHandler(RequestHandlerBase[ResponseType]):
         self.payload_clss = payload_clss
         self.handler = handler
         self.response_cls = response_cls
+        self.diag_name = "?"
 
     def __call__(
-        self, payloads: list[bytes], affinity_key: int = 0
+        self, payloads: list[bytes], affinity_key: int = 0, recv_at: float = 0.0
     ) -> Future[ResponseType]:
         assert self.executor is not None, (
             "BlockingRequestHandler has no executor assigned. "
@@ -581,12 +585,23 @@ class BlockingRequestHandler(RequestHandlerBase[ResponseType]):
         decoded_payloads = unwrap_request_payloads(payloads, self.payload_clss)
         if isinstance(self.executor, AffinityThreadPool):
             return self.executor.submit(
-                self.handler,
+                self._diag_run,
+                recv_at,
                 *decoded_payloads,
                 affinity_key=affinity_key,
                 order=self.affinity_order,
             )
-        return self.executor.submit(self.handler, *decoded_payloads)
+        return self.executor.submit(self._diag_run, recv_at, *decoded_payloads)
+
+    def _diag_run(self, recv_at: float, *args: Any) -> ResponseType:
+        """DIAG: run the handler, recording its wall and its queue wait."""
+        start = time.monotonic()
+        try:
+            return self.handler(*args)
+        finally:
+            server_diag().record(
+                self.diag_name, time.monotonic() - start, start - recv_at
+            )
 
     def get_response_class(self) -> ResponseType:
         return self.response_cls
@@ -662,7 +677,9 @@ class MessageQueueServer(RequestServer):
             payloads (list[bytes]): The payloads of the request.
             prefix_frames (list[bytes]): The prefix frames to send back.
         """
+        start = time.monotonic()
         response = handler_entry(payloads)
+        server_diag().record(handler_entry.diag_name, time.monotonic() - start)
         if isinstance(response, MessagingStream):
             self._start_stream(
                 response, handler_entry.get_response_class(), prefix_frames
@@ -724,7 +741,9 @@ class MessageQueueServer(RequestServer):
                 prefix_frames[0] is the zmq identity used as affinity key.
         """
         affinity_key = hash(prefix_frames[0])
-        future = handler_entry(payloads, affinity_key=affinity_key)
+        future = handler_entry(
+            payloads, affinity_key=affinity_key, recv_at=time.monotonic()
+        )
 
         def _notify_response(fut: Future):
             try:
@@ -939,16 +958,20 @@ class MessageQueueServer(RequestServer):
                 raise ValueError(f"Unknown handler type: {handler_type}")
 
     def add_sync_handler(self, rpc_spec: RpcSpec, handler: Callable[..., Any]) -> None:
-        self.handlers[rpc_spec.operation] = SyncRequestHandler(
+        entry = SyncRequestHandler(
             list(rpc_spec.payload_types), rpc_spec.response_type, handler
         )
+        entry.diag_name = rpc_spec.operation
+        self.handlers[rpc_spec.operation] = entry
 
     def add_blocking_handler(
         self, rpc_spec: RpcSpec, handler: Callable[..., Any]
     ) -> None:
-        self.handlers[rpc_spec.operation] = BlockingRequestHandler(
+        blocking = BlockingRequestHandler(
             list(rpc_spec.payload_types), rpc_spec.response_type, handler
         )
+        blocking.diag_name = rpc_spec.operation
+        self.handlers[rpc_spec.operation] = blocking
 
     def add_nonblocking_handler(
         self, rpc_spec: RpcSpec, handler: Callable[..., Any]

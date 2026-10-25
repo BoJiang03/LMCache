@@ -240,6 +240,10 @@ class OffloadPolicy(ABC):
         """
         return AdmissionProtection()
 
+    def diag_pending_ops(self) -> int:
+        """DIAG: number of buffered operations, -1 if not counted."""
+        return -1
+
     @abstractmethod
     def has_pending_request(self, request_id: str) -> bool:
         """Whether the request currently owns buffered operations.

@@ -18,6 +18,7 @@ import zmq
 
 # First Party
 from lmcache import torch_dev
+from lmcache.diag_timing import sched_diag
 from lmcache.integration.request_telemetry.factory import RequestTelemetryFactory
 from lmcache.integration.vllm.experimental import dispatch
 from lmcache.integration.vllm.mp_lookup_state import LookupState
@@ -776,6 +777,8 @@ class LMCacheMPSchedulerAdapter:
         # once resolved, so repeated checks return the same value after the
         # server has handed the hit count over (exactly once).
         self._lookups: dict[str, LookupState] = {}
+        # DIAG: submitted lookups whose timing is not recorded yet.
+        self._diag_lookups: set[str] = set()
 
         self.model_name = model_name
         self.parallel_strategy = parallel_strategy
@@ -969,6 +972,7 @@ class LMCacheMPSchedulerAdapter:
             blocking_lookup=not self._nonblocking_lookup_status,
         )
         self._lookups[request_id] = lookup
+        self._diag_lookups.add(request_id)
         lookup.submit()
         return True
 
@@ -1006,7 +1010,13 @@ class LMCacheMPSchedulerAdapter:
 
         for url in lookup.on_scheduler_check():
             self._mark_lookup_timed_out(url)
-        return lookup.get_result()
+        result = lookup.get_result()
+        if result is not None and request_id in self._diag_lookups:
+            self._diag_lookups.discard(request_id)
+            timing = lookup.diag_timing()
+            if timing is not None:
+                sched_diag().record_lookup(*timing)
+        return result
 
     def num_blocks_per_chunk(self) -> int:
         """
@@ -1026,6 +1036,7 @@ class LMCacheMPSchedulerAdapter:
             request_id: The ID of the finished request.
         """
         lookup = self._lookups.pop(request_id, None)
+        self._diag_lookups.discard(request_id)
         if lookup is not None:
             lookup.close()
 

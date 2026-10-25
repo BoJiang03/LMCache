@@ -65,6 +65,10 @@ class _Server:
     hit_chunks: int = 0
     """Final hit chunk count, set in RESOLVED."""
 
+    sent_at: float = 0.0
+    """DIAG: ``time.monotonic()`` the QUERY_PREFETCH_STATUS in flight was
+    sent."""
+
 
 class LookupState:
     """One request's lookup on every LMCache server, from LOOKUP to the
@@ -133,9 +137,18 @@ class LookupState:
         # Guards ``_servers`` and ``_result``; every send happens under it.
         self._lock = threading.Lock()
 
+        # DIAG: LOOKUP sent, last LOOKUP ack, status replies handled, their
+        # summed send -> reply time, and the last final status reply.
+        self._diag_submitted_at = 0.0
+        self._diag_acked_at = 0.0
+        self._diag_polls = 0
+        self._diag_status_rtt = 0.0
+        self._diag_replied_at = 0.0
+
     def submit(self) -> None:
         """Send LOOKUP to every server."""
-        deadline = time.monotonic() + self._timeout
+        self._diag_submitted_at = time.monotonic()
+        deadline = self._diag_submitted_at + self._timeout
         sent_lookups: list[tuple[str, MessagingFuture[None]]] = []
         with self._lock:
             for url, server in self._servers.items():
@@ -291,6 +304,25 @@ class LookupState:
         with self._lock:
             return self._result
 
+    def diag_timing(self) -> tuple[float, float, float, float, int] | None:
+        """DIAG: return this lookup's timing once every server resolved it.
+
+        Returns:
+            ``(submit_to_reply, reply_to_now, ack, status_rtt, polls)`` as
+            :meth:`SchedulerDiag.record_lookup` takes them, or None unless every
+            server reported a final hit count.
+        """
+        with self._lock:
+            if any(s.phase is not _Phase.RESOLVED for s in self._servers.values()):
+                return None
+            return (
+                self._diag_replied_at - self._diag_submitted_at,
+                time.monotonic() - self._diag_replied_at,
+                self._diag_acked_at - self._diag_submitted_at,
+                self._diag_status_rtt,
+                self._diag_polls,
+            )
+
     def _handle_completed_rpcs(self) -> list[tuple[str, _QueryPrefetchStatusFuture]]:
         """Handle every in-flight RPC that has completed; caller holds the lock."""
         sent_queries: list[tuple[str, _QueryPrefetchStatusFuture]] = []
@@ -314,6 +346,7 @@ class LookupState:
         self, url: str, server: _Server, future: _RpcFuture
     ) -> list[tuple[str, _QueryPrefetchStatusFuture]]:
         """Send QUERY_PREFETCH_STATUS after the LOOKUP; caller holds the lock."""
+        self._diag_acked_at = max(self._diag_acked_at, future.done_at)
         if future.exception_ is not None:
             logger.warning(
                 "LOOKUP for request %s to %s failed: %s; querying its status anyway",
@@ -329,6 +362,8 @@ class LookupState:
     ) -> list[tuple[str, _QueryPrefetchStatusFuture]]:
         """Resolve the server or re-query it after a QUERY_PREFETCH_STATUS
         reply; caller holds the lock."""
+        self._diag_polls += 1
+        self._diag_status_rtt += future.done_at - server.sent_at
         if future.exception_ is not None:
             logger.warning(
                 "QUERY_PREFETCH_STATUS for request %s to %s failed: %s; re-querying",
@@ -339,6 +374,7 @@ class LookupState:
         else:
             reply = future.result(timeout=0)
             if reply is not None:
+                self._diag_replied_at = max(self._diag_replied_at, future.done_at)
                 server.phase = _Phase.RESOLVED
                 server.future = None
                 server.hit_chunks = int(reply)
@@ -359,7 +395,8 @@ class LookupState:
         future = server.client.query_prefetch_status(self._key.request_id)
         server.phase = _Phase.QUERY_PREFETCH_STATUS_IN_FLIGHT
         server.future = future
-        server.deadline = time.monotonic() + self._timeout
+        server.sent_at = time.monotonic()
+        server.deadline = server.sent_at + self._timeout
         server.scheduler_checked = False
         return url, future
 

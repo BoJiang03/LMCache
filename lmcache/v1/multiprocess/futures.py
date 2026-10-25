@@ -3,6 +3,7 @@
 from collections.abc import Callable, Iterator
 from typing import Any, Generic, Optional, TypeVar, cast
 import threading
+import time
 
 # First Party
 from lmcache import torch_dev
@@ -67,6 +68,8 @@ class MessagingFuture(Generic[T]):
         self._retained_references: list[object] = []
         self._callback_lock = threading.Lock()
         self._callbacks: list[Callable[["MessagingFuture[T]"], None]] = []
+        # DIAG: monotonic time the reply was set; 0.0 while pending.
+        self.done_at = 0.0
 
     def add_done_callback(self, fn: Callable[["MessagingFuture[T]"], None]) -> None:
         """Run ``fn(self)`` once the future completes.
@@ -165,6 +168,7 @@ class MessagingFuture(Generic[T]):
         """
         with self._callback_lock:
             self.result_ = result
+            self.done_at = time.monotonic()
             self.is_done_.set()
         self._run_callbacks()
 
@@ -181,6 +185,7 @@ class MessagingFuture(Generic[T]):
         """
         with self._callback_lock:
             self.exception_ = exception
+            self.done_at = time.monotonic()
             self.is_done_.set()
         self._run_callbacks()
 

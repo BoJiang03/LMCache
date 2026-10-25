@@ -467,6 +467,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 protection.to_tail.append(item)
         return protection
 
+    def diag_pending_ops(self) -> int:
+        """DIAG: number of buffered operations across requests."""
+        return sum(len(ops) for ops in self._pending.values())
+
     def has_pending_request(self, request_id: str) -> bool:
         """Whether this request currently owns buffered operations.
 
