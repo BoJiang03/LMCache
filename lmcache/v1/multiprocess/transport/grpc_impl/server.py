@@ -118,6 +118,7 @@ class _GeneratedServicer:
                         registered.handler,
                         *payloads,
                         affinity_key=affinity_key,
+                        order=registered.affinity_order,
                     )
                 result = future.result()
             elif registered.handler_type is HandlerType.BLOCKING:

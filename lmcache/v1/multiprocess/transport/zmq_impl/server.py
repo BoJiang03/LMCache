@@ -10,6 +10,7 @@ from typing import Any, Callable
 import zmq
 
 # First Party
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder
 from lmcache.v1.multiprocess.config import MPServerConfig
 from lmcache.v1.multiprocess.engine_module import EngineModule
 from lmcache.v1.multiprocess.ext_server_module import register_zmq_services
@@ -35,12 +36,14 @@ class HandlerSpec:
         handler: Callable that processes the decoded request payloads.
         handler_type: Whether to execute inline or on a worker.
         requires_client_affinity: Whether to use the client-affinity pool.
+        affinity_order: Where a request joins the client's affinity queue.
     """
 
     operation: RpcOperation
     handler: Callable[..., Any]
     handler_type: HandlerType
     requires_client_affinity: bool
+    affinity_order: AffinityOrder
 
     @property
     def pool(self) -> ThreadPoolType:
@@ -92,6 +95,7 @@ def get_zmq_handler_specs(module: object) -> list[HandlerSpec]:
             handler=registered.handler,
             handler_type=registered.options.handler_type,
             requires_client_affinity=registered.options.requires_client_affinity,
+            affinity_order=registered.options.affinity_order,
         )
         for registered in iter_request_handlers(module)
     ]
@@ -129,9 +133,17 @@ def build_zmq_request_server(
     normal_types = [
         spec.operation for spec in all_specs if spec.pool is ThreadPoolType.NORMAL
     ]
+    ahead_types = [
+        spec.operation
+        for spec in all_specs
+        if spec.pool is ThreadPoolType.AFFINITY
+        and spec.affinity_order is AffinityOrder.AHEAD
+    ]
     if affinity_types:
         server.add_affinity_thread_pool(
-            affinity_types, max_workers=mp_config.max_gpu_workers
+            affinity_types,
+            max_workers=mp_config.max_gpu_workers,
+            ahead_operations=ahead_types,
         )
     if normal_types:
         server.add_normal_thread_pool(
