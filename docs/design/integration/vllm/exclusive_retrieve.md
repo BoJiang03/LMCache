@@ -33,6 +33,7 @@ no-op re-store there.
 | `end_session` | no L1 touch (rule 4) |
 | Chunk held by 2+ running requests (shared-held): loaded, local hit, or stored | touched, or written if missing, never demoted (rule 10) |
 | Shared-held chunk back to one holder | that holder's buffered store is expedited, demoted as rule 9 says (rule 10) |
+| Hit of a request computing less than one scheduler block past it: loaded or local hit | touched, never demoted (rule 11) |
 
 1. **Demote after a fully successful retrieve.** The server's retrieve
    submits a `demote_l1_keys` host callback on the transfer stream right after
@@ -226,6 +227,23 @@ servable: every candidate is still stored, an expedited one earlier, and an
 engine-held chunk again once vLLM releases it. No block is pinned except
 while its copy is in flight.
 
+## Hit of a request that adds no block (rule 11)
+
+If `num_prompt_tokens - max(vLLM hit, LMCache hit) < scheduler block size`,
+the RETRIEVE and post-allocation FREE carry
+`shared_held_tokens >= hit end`, so the whole hit is touched instead of
+demoted. Why: such a request fills no new full block, so vLLM caches no
+recurrent state past the hit; the next turn of its session resumes from the
+hit end, and on a hybrid model only the L1 copy ending there can serve it.
+Demoting that copy made the next turn a full recompute: in an e2e run,
+own-session continuations after a turn that computed under 1584 tokens hit
+0 in 25/130 cases under exclusive retrieve, against 0/254 under eager.
+
+```text
+prompt 10, block 4, hit 8 (10 - 8 < 4) -> RETRIEVE/FREE shared_held_tokens = 8
+prompt 12, block 4, hit 8 (12 - 8 = 4) -> no hint unless rule 10 sets one
+```
+
 ## Why nothing is dropped
 
 The L1 copy of a loaded chunk is not removed by the retrieve; it only moves to
@@ -315,11 +333,11 @@ LMCacheMPRequestTracker.num_vllm_hit_tokens
   -> IPCCacheServerKey.engine_held_tokens() on the server
 ```
 
-The shared-held prefix travels on the RETRIEVE and on the post-allocation
-FREE_LOOKUP_LOCKS:
+The shared-held prefix (or the hit end, rule 11) travels on the RETRIEVE
+and on the post-allocation FREE_LOOKUP_LOCKS:
 
 ```text
-LazyOffloadManager.shared_held_tokens(request_id)
+max(LazyOffloadManager.shared_held_tokens(request_id), hit end if rule 11)
   -> request_configs["lmcache.hint.shared_held_tokens"]   (RETRIEVE, FREE)
   -> IPCCacheServerKey.shared_held_tokens() on the server
 ```
