@@ -818,6 +818,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         scheduler_block_size = get_vllm_scheduler_block_size(
             vllm_config, kv_cache_config
         )
+        self._scheduler_block_size = scheduler_block_size
         cache_model_name = get_dcp_decorated_model_name(vllm_config, kv_cache_config)
 
         assert vllm_config.kv_transfer_config is not None
@@ -2377,6 +2378,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         miss the GPU copy (a hybrid hit resumes only at a cached state) and
         needs the L1 one (see ``SHARED_HELD_TOKENS_HINT``).
 
+        A request that computes less than one scheduler block past its hit
+        keeps its whole hit prefix this way too: vLLM caches no new state
+        for it, so the L1 copy ending at the hit is the only one the next
+        turn of its session can resume from.
+
         Args:
             request_id: The exclusive-retrieve request.
             request_configs: The configs of its RETRIEVE or post-allocation
@@ -2387,6 +2393,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             chunk of the prefix is shared-held.
         """
         shared = self._lazy_offload_manager.shared_held_tokens(request_id)
+        tracker = self.request_trackers[request_id]
+        hit_end = max(tracker.num_vllm_hit_tokens, tracker.num_lmcache_hit_tokens)
+        if tracker.num_prompt_tokens - hit_end < self._scheduler_block_size:
+            shared = max(shared, hit_end)
         if not shared:
             return request_configs
         return {**(request_configs or {}), SHARED_HELD_TOKENS_HINT: shared}
