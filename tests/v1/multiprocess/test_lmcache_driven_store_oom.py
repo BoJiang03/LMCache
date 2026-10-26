@@ -200,7 +200,8 @@ def test_store_fails_when_one_object_group_key_has_no_room_then_retry_fills_it(
     used_after_retry, _ = storage_manager.get_l1_usage()
     assert used_after_retry == used_before_retry + group_1_obj.get_size()
 
-    # Both keys are resident now, so a third store writes nothing and succeeds.
+    # Both keys are resident now, so a third store writes nothing and succeeds
+    # without enqueuing a copy.
     assert _store(module)
-    assert [obj is None for copy in copies[4:] for obj in copy] == [True, True]
+    assert copies[4:] == []
     assert storage_manager.get_l1_usage()[0] == used_after_retry
