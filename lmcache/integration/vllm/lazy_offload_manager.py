@@ -932,7 +932,7 @@ class LazyOffloadManager:
         Returns:
             The blocks allocated, over every KV-cache group.
         """
-        null_block_id = self._require_block_pool().null_block.block_id
+        null_block = {self._require_block_pool().null_block.block_id}
         num_groups = len(self._group_tokens_per_block)
         for new_request in scheduler_output.scheduled_new_reqs:
             self._handed_blocks[new_request.req_id] = [
@@ -956,8 +956,11 @@ class LazyOffloadManager:
             known = self._handed_blocks[request_id]
             lengths = self._table_lengths[request_id]
             for group_idx, group in enumerate(groups):
+                # Most steps hand a decoding request nothing new in a group.
+                if not group:
+                    continue
                 handed = set(group)
-                allocated += len(handed - known[group_idx] - {null_block_id})
+                allocated += len(handed - known[group_idx] - null_block)
                 known[group_idx] |= handed
                 lengths[group_idx] += len(group)
         return allocated

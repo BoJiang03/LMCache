@@ -427,12 +427,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         Returns:
             Per request, the ops to move to the tail or newly held.
         """
-        owners = {
-            block_id: (request_id, index)
-            for request_id, ops in self._pending.items()
-            for index, op in enumerate(ops)
-            for block_id in op.block_hashes
-        }
+        # One owner tuple per op, not per block: an exclusive-retrieve op
+        # re-stores a whole loaded prompt, hundreds of blocks.
+        owners: dict[int, tuple[str, int]] = {}
+        for request_id, ops in self._pending.items():
+            for index, op in enumerate(ops):
+                owners.update(dict.fromkeys(op.block_hashes, (request_id, index)))
         ranks, reaches_tail = self._free_queue_ranks(num_blocks, owners.keys())
         last_met: dict[str, int] = {}
         for block_id in ranks:
@@ -484,12 +484,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         Returns:
             The block ids, possibly empty.
         """
-        return {
-            block_id
-            for ops in self._pending.values()
-            for op in ops
-            for block_id in op.block_hashes
-        }
+        return set().union(
+            *(op.block_hashes for ops in self._pending.values() for op in ops)
+        )
 
     def drop_request(self, request_id: str) -> int:
         """Discard buffered operations invalidated by a tracker reset.
@@ -646,8 +643,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 and self._pool.free_block_queue.num_free_blocks < depth
             )
         # Depth zero makes nothing due and the queue is not walked; the loss
-        # check below reads hashes, not ranks, and still runs.
-        ranks, reaches_tail = self._free_queue_ranks(depth, self.buffered_block_ids())
+        # check below reads hashes, not ranks, and still runs. Built once:
+        # both walks below read it, and nothing changes the buffer between.
+        op_of_block = self._op_of_block()
+        ranks, reaches_tail = self._free_queue_ranks(depth, op_of_block)
         drain = LazyOffloadDrain(reaches_tail=reaches_tail)
         ranks_ahead: dict[int, int] = {}
         if reaches_tail:
@@ -664,7 +663,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                         op.held = False
                     drain.releases.append(request_id)
             self._squeeze_held.clear()
-            ranks_ahead = self._budget_reach(depth)
+            ranks_ahead = self._budget_reach(depth, op_of_block)
         overdue_cutoff = self._now - self._config.max_deferral_seconds
         dropped_ops = 0
         dropped_ids: list[str] = []
@@ -839,7 +838,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 counted += 1
         return ranks, counted < depth
 
-    def _budget_reach(self, depth: int) -> dict[int, int]:
+    def _budget_reach(self, depth: int, op_of_block: dict[int, int]) -> dict[int, int]:
         """Buffered blocks past the danger window that the budget needs now.
 
         Allocations take at most ``depth`` blocks per drain and a drain
@@ -853,6 +852,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
 
         Args:
             depth: The danger depth, blocks an allocation takes per drain.
+            op_of_block: Every buffered block to the ``id`` of its op, as
+                :meth:`_op_of_block` builds it.
 
         Returns:
             Block id past the window to its position from the head, one
@@ -863,12 +864,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # One drain stores them all: nothing past the window is needed.
         if depth <= 0 or pending_ops <= budget:
             return {}
-        op_of_block = {
-            block_id: id(op)
-            for ops in self._pending.values()
-            for op in ops
-            for block_id in op.block_hashes
-        }
         # Past this many drains the budget stores every op there is in time.
         horizon = depth * (-(-pending_ops // budget) + 1)
         # Each op once, first block met, as (position, block id, in window).
@@ -890,6 +885,20 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         return {
             block_id: rank for rank, block_id, in_window in met[:need] if not in_window
         }
+
+    def _op_of_block(self) -> dict[int, int]:
+        """Map every buffered block to the ``id`` of the op covering it.
+
+        A block two ops cover maps to the later one, in buffer order.
+
+        Returns:
+            Block id to ``id(op)``, possibly empty.
+        """
+        op_of_block: dict[int, int] = {}
+        for ops in self._pending.values():
+            for op in ops:
+                op_of_block.update(dict.fromkeys(op.block_hashes, id(op)))
+        return op_of_block
 
     def _drop_evicted_suffix(
         self, request_id: str, ops: list[PendingStoreOp]
