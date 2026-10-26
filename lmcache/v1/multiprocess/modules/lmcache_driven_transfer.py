@@ -1305,6 +1305,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         for obj_key in keys[: max(0, num_shared)]
                     }
                     if shared_keys:
+                        server_diag().count("xr_shared_touch_retrieve")
                         self._ctx.storage_manager.touch_cached_keys(
                             [k for k in retained_keys if k in shared_keys],
                             "lookup_touch",

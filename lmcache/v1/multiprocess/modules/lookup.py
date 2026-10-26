@@ -707,6 +707,7 @@ class LookupModule(DiscoverableModule):
                         group_keys
                     )
         if touched:
+            server_diag().count("xr_shared_touch_free")
             self._ctx.storage_manager.touch_cached_keys(touched, "lookup_touch")
         if not demoted:
             return
