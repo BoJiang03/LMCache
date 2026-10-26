@@ -210,7 +210,7 @@ class ExtServerModuleRouter:
         """Dispatch one request on the calling client's affinity thread.
 
         The transport queues it in order with the client's other affinity
-        requests, such as store and retrieve.
+        requests, such as store; a later retrieve may run ahead of it.
 
         Args:
             request: Opaque extension request envelope.

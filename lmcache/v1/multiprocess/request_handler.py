@@ -8,6 +8,7 @@ from typing import Any, Callable, TypeVar, get_type_hints
 import inspect
 
 # First Party
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder
 from lmcache.v1.multiprocess.rpc import RpcOperation, get_rpc_spec
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -30,6 +31,7 @@ class RequestHandlerOptions:
     operation: RpcOperation | None
     handler_type: HandlerType
     requires_client_affinity: bool
+    affinity_order: AffinityOrder
 
 
 @dataclass(frozen=True)
@@ -46,15 +48,35 @@ def request_handler(
     *,
     operation: RpcOperation | None = None,
     requires_client_affinity: bool = False,
+    affinity_order: AffinityOrder = AffinityOrder.FIFO,
 ) -> Callable[[F], F]:
-    """Attach scheduling metadata; operation defaults to the method name."""
+    """Attach scheduling metadata; operation defaults to the method name.
+
+    Args:
+        handler_type: How the handler is executed.
+        operation: RPC operation served; defaults to the method name.
+        requires_client_affinity: Run on the calling client's affinity
+            thread, serialized with the client's other affinity handlers.
+        affinity_order: Where a request joins the client's affinity queue;
+            see :class:`AffinityOrder`.
+
+    Returns:
+        A decorator that attaches the metadata to the handler.
+
+    Raises:
+        ValueError: If client affinity is requested for a non-blocking
+            handler, or an affinity order without client affinity.
+    """
     if requires_client_affinity and handler_type is not HandlerType.BLOCKING:
         raise ValueError("Client affinity requires HandlerType.BLOCKING")
+    if affinity_order is not AffinityOrder.FIFO and not requires_client_affinity:
+        raise ValueError("An affinity order requires client affinity")
 
     options = RequestHandlerOptions(
         operation=operation,
         handler_type=handler_type,
         requires_client_affinity=requires_client_affinity,
+        affinity_order=affinity_order,
     )
 
     def decorate(func: F) -> F:

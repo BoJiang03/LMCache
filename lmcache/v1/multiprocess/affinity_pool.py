@@ -3,15 +3,20 @@
 Thread pool with affinity routing.
 
 Tasks submitted with the same ``affinity_key`` always execute on the same
-worker thread.  Within each worker, tasks execute sequentially in FIFO order.
+worker thread.  Within each worker, tasks execute sequentially: ``FIFO`` tasks
+in submission order, and an ``AHEAD`` task before every ``FIFO`` task that has
+not started yet (``AHEAD`` tasks keep submission order among themselves).
 
 This is used for GPU-bound request handlers (STORE / RETRIEVE) so that all
 operations for a given vLLM instance land on one thread, eliminating the need
-for per-instance locks on the shared temporary GPU buffer.
+for per-instance locks on the shared temporary GPU buffer.  A RETRIEVE is
+submitted ``AHEAD`` so that a burst of queued STOREs does not delay a load.
 """
 
 # Standard
 from concurrent.futures import Future
+from enum import Enum
+import itertools
 import queue
 import threading
 
@@ -22,6 +27,21 @@ logger = init_logger(__name__)
 
 # Sentinel object to signal worker shutdown
 _SHUTDOWN = object()
+
+
+class AffinityOrder(Enum):
+    """Where a task joins its worker's queue.
+
+    The value is the queue rank: a lower rank is served first.
+
+    Attributes:
+        AHEAD: Runs before every queued ``FIFO`` task of the worker, after
+            the worker's running task and its earlier queued ``AHEAD`` tasks.
+        FIFO: Runs after every task already queued on the worker.
+    """
+
+    AHEAD = 0
+    FIFO = 1
 
 
 class AffinityThreadPool:
@@ -41,7 +61,12 @@ class AffinityThreadPool:
         thread_name_prefix: str = "affinity",
     ) -> None:
         self._num_workers = max_workers
-        self._queues: list[queue.Queue] = [queue.Queue() for _ in range(max_workers)]
+        # Entries are (order rank, submission sequence, task); the unique
+        # sequence keeps each rank FIFO and never lets two tasks compare.
+        self._queues: list[queue.PriorityQueue] = [
+            queue.PriorityQueue() for _ in range(max_workers)
+        ]
+        self._sequence = itertools.count()
         self._threads: list[threading.Thread] = []
         # Maps an affinity_key -> the worker slot (thread index) bound to it.
         self._key_to_slot: dict[int, int] = {}
@@ -72,9 +97,9 @@ class AffinityThreadPool:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _worker(q: queue.Queue) -> None:
+    def _worker(q: queue.PriorityQueue) -> None:
         while True:
-            item = q.get()
+            _, _, item = q.get()
             if item is _SHUTDOWN:
                 break
             future, fn, args, kwargs = item
@@ -131,24 +156,42 @@ class AffinityThreadPool:
     # Public API
     # ------------------------------------------------------------------
 
-    def submit(self, fn, *args, affinity_key: int = 0, **kwargs) -> Future:
+    def submit(
+        self,
+        fn,
+        *args,
+        affinity_key: int = 0,
+        order: AffinityOrder = AffinityOrder.FIFO,
+        **kwargs,
+    ) -> Future:
         """Submit *fn* for execution on the worker bound to *affinity_key*.
 
-        Returns a :class:`concurrent.futures.Future`.
+        Args:
+            fn: Callable to run as ``fn(*args, **kwargs)``.
+            *args: Positional arguments for ``fn``.
+            affinity_key: Key selecting the worker; equal keys share one.
+            order: Where the task joins the worker's queue; see
+                :class:`AffinityOrder`. A running task is never preempted.
+            **kwargs: Keyword arguments for ``fn``.
+
+        Returns:
+            A :class:`concurrent.futures.Future` for ``fn``'s result.
         """
         future: Future = Future()
         slot = self._slot_for_key(affinity_key)
-        self._queues[slot].put((future, fn, args, kwargs))
+        self._queues[slot].put(
+            (order.value, next(self._sequence), (future, fn, args, kwargs))
+        )
         return future
 
     def shutdown(self, wait: bool = True) -> None:
         """Shut down the pool.
 
-        Sends a shutdown sentinel to every worker.  If *wait* is true, blocks
-        until all workers have exited.
+        Sends a shutdown sentinel to every worker, queued as a ``FIFO`` task.
+        If *wait* is true, blocks until all workers have exited.
         """
         for q in self._queues:
-            q.put(_SHUTDOWN)
+            q.put((AffinityOrder.FIFO.value, next(self._sequence), _SHUTDOWN))
         if wait:
             for t in self._threads:
                 t.join()

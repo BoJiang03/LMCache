@@ -155,6 +155,7 @@ class GrpcAioMultiprocessServer(GrpcMultiprocessServerBase):
                     handler,
                     *payloads,
                     affinity_key=client_affinity_key(context),
+                    order=registered.affinity_order,
                 )
                 result = await asyncio.wrap_future(future)
             else:

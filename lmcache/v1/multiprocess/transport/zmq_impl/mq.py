@@ -4,7 +4,7 @@
 # Standard
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar, get_type_hints
+from typing import Any, Callable, Generic, Sequence, TypeVar, get_type_hints
 import enum
 import inspect
 import itertools
@@ -19,7 +19,7 @@ import zmq
 # First Party
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import MemoryLayoutDesc
-from lmcache.v1.multiprocess.affinity_pool import AffinityThreadPool
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder, AffinityThreadPool
 from lmcache.v1.multiprocess.custom_types import (
     DeviceIPCWrapper,
     get_customized_decoder,
@@ -556,7 +556,7 @@ class BlockingRequestHandler(RequestHandlerBase[ResponseType]):
     The ``executor`` field is initially ``None`` and must be assigned via
     :meth:`MessageQueueServer.add_normal_thread_pool` or
     :meth:`MessageQueueServer.add_affinity_thread_pool` before the server
-    is started.
+    is started, which also sets ``affinity_order``.
     """
 
     def __init__(
@@ -566,6 +566,7 @@ class BlockingRequestHandler(RequestHandlerBase[ResponseType]):
         handler: Callable[..., ResponseType],
     ):
         self.executor: ThreadPoolExecutor | AffinityThreadPool | None = None
+        self.affinity_order = AffinityOrder.FIFO
         self.payload_clss = payload_clss
         self.handler = handler
         self.response_cls = response_cls
@@ -580,7 +581,10 @@ class BlockingRequestHandler(RequestHandlerBase[ResponseType]):
         decoded_payloads = unwrap_request_payloads(payloads, self.payload_clss)
         if isinstance(self.executor, AffinityThreadPool):
             return self.executor.submit(
-                self.handler, *decoded_payloads, affinity_key=affinity_key
+                self.handler,
+                *decoded_payloads,
+                affinity_key=affinity_key,
+                order=self.affinity_order,
             )
         return self.executor.submit(self.handler, *decoded_payloads)
 
@@ -1013,6 +1017,7 @@ class MessageQueueServer(RequestServer):
         self,
         operations: list[RpcOperation],
         max_workers: int,
+        ahead_operations: Sequence[RpcOperation] = (),
     ) -> None:
         """Assign an AffinityThreadPool to specific request types.
 
@@ -1027,8 +1032,21 @@ class MessageQueueServer(RequestServer):
         Args:
             operations: The RPC operations that should use this pool.
             max_workers: Number of worker threads in the pool.
+            ahead_operations: Operations of ``operations`` submitted with
+                :attr:`AffinityOrder.AHEAD`: they run before the client's
+                queued requests of the other operations.
+
+        Raises:
+            ValueError: If an operation is not registered, or an
+                ``ahead_operations`` entry is not in ``operations``.
+            TypeError: If an operation is not a blocking handler.
         """
         self._validate_blocking_handlers(operations, "add_affinity_thread_pool")
+        unknown_ahead = set(ahead_operations) - set(operations)
+        if unknown_ahead:
+            raise ValueError(
+                f"ahead_operations {sorted(unknown_ahead)} are not in operations"
+            )
         if not operations:
             return
 
@@ -1041,6 +1059,8 @@ class MessageQueueServer(RequestServer):
             handler = self.handlers[operation]
             assert isinstance(handler, BlockingRequestHandler)
             handler.executor = pool
+            if operation in ahead_operations:
+                handler.affinity_order = AffinityOrder.AHEAD
 
         logger.debug(
             "Created affinity thread pool (max_workers=%d) for request types: %s",

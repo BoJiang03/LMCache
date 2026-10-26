@@ -23,6 +23,7 @@ from lmcache.v1.gpu_connector.utils import LayoutHints
 from lmcache.v1.kv_layer_groups import ObjectGroupInfo
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType, next_transfer_key
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder
 from lmcache.v1.multiprocess.custom_types import (
     IPCCacheServerKey,
     KVCache,
@@ -886,9 +887,16 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             full_sw_kv=self._ctx.full_sw_kv,
         )
 
+    # AHEAD: a retrieve may run before this client's queued, not yet started
+    # stores. It reads only keys its lookup locked, and a key is visible to
+    # a lookup only after a started store reserved it; the engine keeps a
+    # store's blocks until that store completes, so a retrieve never writes
+    # blocks a queued store has yet to read. The client's thread, stream and
+    # staging buffers stay exclusive to one handler at a time.
     @request_handler(
         HandlerType.BLOCKING,
         requires_client_affinity=True,
+        affinity_order=AffinityOrder.AHEAD,
     )
     @_lmcache_nvtx_annotate
     def retrieve(

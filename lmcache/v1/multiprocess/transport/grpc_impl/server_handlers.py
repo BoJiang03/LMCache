@@ -10,6 +10,7 @@ from typing import Any, Callable
 import grpc
 
 # First Party
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder
 from lmcache.v1.multiprocess.request_handler import (
     BoundRequestHandler,
     HandlerType,
@@ -39,6 +40,7 @@ class GrpcRequestHandler:
     handler: Callable[..., Any] | None
     handler_type: HandlerType
     requires_client_affinity: bool
+    affinity_order: AffinityOrder
     request_decoder: RequestDecoder
     response_encoder: ResponseEncoder
 
@@ -100,6 +102,11 @@ def build_service_handlers(
                 bound_handler.options.requires_client_affinity
                 if bound_handler is not None
                 else False
+            ),
+            affinity_order=(
+                bound_handler.options.affinity_order
+                if bound_handler is not None
+                else AffinityOrder.FIFO
             ),
             request_decoder=method_codec.request_decoder,
             response_encoder=method_codec.response_encoder,

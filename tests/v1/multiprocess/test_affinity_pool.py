@@ -9,7 +9,7 @@ import time
 import pytest
 
 # First Party
-from lmcache.v1.multiprocess.affinity_pool import AffinityThreadPool
+from lmcache.v1.multiprocess.affinity_pool import AffinityOrder, AffinityThreadPool
 
 
 def test_submit_returns_correct_result():
@@ -246,3 +246,93 @@ def test_shutdown_no_wait():
     pool.submit(lambda: time.sleep(0.5), affinity_key=0)
     # Should return immediately without waiting
     pool.shutdown(wait=False)
+
+
+def _queue_behind_running_task(
+    pool: AffinityThreadPool, orders: list[tuple[str, AffinityOrder]]
+) -> list[str]:
+    """Submit ``orders`` while a gated task holds the worker; return run order."""
+    gate = threading.Event()
+    started = threading.Event()
+    ran: list[str] = []
+
+    def hold() -> None:
+        started.set()
+        assert gate.wait(timeout=5)
+        ran.append("running")
+
+    futures = [pool.submit(hold, affinity_key=0)]
+    assert started.wait(timeout=5)
+    futures += [
+        pool.submit(ran.append, name, affinity_key=0, order=order)
+        for name, order in orders
+    ]
+    gate.set()
+    for future in futures:
+        future.result(timeout=5)
+    return ran
+
+
+def test_ahead_task_runs_before_queued_fifo_tasks():
+    """An AHEAD task waits for the running task, then jumps queued FIFO tasks."""
+    pool = AffinityThreadPool(max_workers=1)
+    ran = _queue_behind_running_task(
+        pool,
+        [
+            ("fifo-1", AffinityOrder.FIFO),
+            ("fifo-2", AffinityOrder.FIFO),
+            ("ahead-1", AffinityOrder.AHEAD),
+            ("fifo-3", AffinityOrder.FIFO),
+            ("ahead-2", AffinityOrder.AHEAD),
+        ],
+    )
+    assert ran == ["running", "ahead-1", "ahead-2", "fifo-1", "fifo-2", "fifo-3"]
+    pool.shutdown()
+
+
+def test_default_order_is_fifo():
+    pool = AffinityThreadPool(max_workers=1)
+    gate = threading.Event()
+    ran: list[int] = []
+    futures = [pool.submit(gate.wait, 5, affinity_key=0)]
+    futures += [pool.submit(ran.append, i, affinity_key=0) for i in range(5)]
+    gate.set()
+    for future in futures:
+        future.result(timeout=5)
+    assert ran == [0, 1, 2, 3, 4]
+    pool.shutdown()
+
+
+def test_ahead_task_does_not_cross_affinity_keys():
+    """An AHEAD task stays on its own key's worker, behind that worker's task."""
+    pool = AffinityThreadPool(max_workers=2)
+    gate = threading.Event()
+    started = threading.Event()
+
+    def hold() -> bool:
+        started.set()
+        return gate.wait(timeout=5)
+
+    held = pool.submit(hold, affinity_key=0)
+    assert started.wait(timeout=5)
+    other = pool.submit(
+        threading.current_thread, affinity_key=1, order=AffinityOrder.AHEAD
+    )
+    ahead = pool.submit(lambda: held.done(), affinity_key=0, order=AffinityOrder.AHEAD)
+    other.result(timeout=5)
+    assert not ahead.done()
+    gate.set()
+    assert ahead.result(timeout=5) is True
+    pool.shutdown()
+
+
+def test_shutdown_runs_queued_ahead_and_fifo_tasks():
+    pool = AffinityThreadPool(max_workers=1)
+    ran: list[str] = []
+    gate = threading.Event()
+    pool.submit(gate.wait, 5, affinity_key=0)
+    pool.submit(ran.append, "fifo", affinity_key=0)
+    pool.submit(ran.append, "ahead", affinity_key=0, order=AffinityOrder.AHEAD)
+    gate.set()
+    pool.shutdown(wait=True)
+    assert ran == ["ahead", "fifo"]

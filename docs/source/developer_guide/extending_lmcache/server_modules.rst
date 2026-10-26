@@ -265,7 +265,8 @@ store and retrieve requests. Clients call it with
 
 The transport queues the call in order with the client's other affinity
 requests: it starts after an earlier store or retrieve from the same client and
-holds back later ones until it returns, so keep it short. A method is served
+holds back later ones until it returns, so keep it short. A later retrieve is
+the exception: it may run ahead of the call while the call has not started. A method is served
 by exactly one of ``server_module_call`` and ``server_module_affinity_call``;
 calling it through the other returns an error that names the right RPC.
 
