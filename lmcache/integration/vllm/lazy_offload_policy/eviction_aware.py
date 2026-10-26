@@ -52,10 +52,15 @@ _OVERDUE_RANK = 1 << 62
 # before a mere deadline.
 _HELD_RANK = 1 << 61
 
+# Rank of a request due only because the manager expedited some of its ops:
+# no allocation reaches them before the next drain, so it goes after the held
+# ones and is never pinned.
+_EXPEDITED_RANK = _HELD_RANK + 1
+
 # Rank base of a request due only because the budget would fall behind: no
-# allocation reaches it before the next drain, so it goes after the held ones,
-# in queue order, and is never pinned.
-_AHEAD_RANK = _HELD_RANK + 1
+# allocation reaches it before the next drain, so it goes after the expedited
+# ones, in queue order, and is never pinned.
+_AHEAD_RANK = _EXPEDITED_RANK + 1
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
 _DROP_LOG_SAMPLE_REQUESTS = 8  # Dropped requests named in the drop line.
@@ -161,6 +166,8 @@ class PendingStoreOp:
         admitted_at_time: Monotonic clock read when the operation was
             buffered, against which ``max_deferral_seconds`` is measured.
         held: Whether the manager pinned its blocks for a hold.
+        expedited: Whether the manager made it due (see
+            ``OffloadPolicy.expedite``); it stays due until emitted.
     """
 
     store_metadata: "LMCacheMPRequestMetadata"
@@ -168,6 +175,7 @@ class PendingStoreOp:
     has_anchor: bool
     admitted_at_time: float = 0.0
     held: bool = False
+    expedited: bool = False
 
 
 @dataclass(frozen=True)
@@ -561,6 +569,22 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._insert_sorted(item)
         self._counters.readmitted += len(item.metadatas)
 
+    def expedite(self, request_id: str, end: int) -> None:
+        """Make the request's ops starting before ``end`` due; see
+        ``OffloadPolicy.expedite``.
+
+        An expedited op is due like a held one, closed into its segment,
+        but served after the held ones and only while the drain budget
+        lasts; past it, the op waits for a later drain.
+
+        Args:
+            request_id: The request whose ops are expedited.
+            end: Token the expedited range ends at.
+        """
+        for op in self._pending.get(request_id, []):
+            if op.store_metadata.op.start < end:
+                op.expedited = True
+
     def record_diagnostics(self, counts: dict[str, int]) -> None:
         """Add the manager's diagnostic counts to the ledger line.
 
@@ -587,8 +611,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         restarts when it is scheduled again, which discards what is still
         buffered, so it is not held to the budget. Requests are served most
         imminent first until ``max_drain_per_step``; due ops past the budget
-        are held. Past the window, ops come due as soon as the budget could
-        not otherwise store them before allocations reach them (see
+        are held. Expedited ops (see :meth:`expedite`) are due too, served
+        after the held ones, and wait unheld once the budget is spent. Past
+        the window, ops come due as soon as the budget could not otherwise
+        store them before allocations reach them (see
         :meth:`_budget_reach`); they take budget the window left over, after
         the held ones, and are never held. One whose deadline passed while
         no block of it sits in the window is due anyway, but it is served
@@ -681,9 +707,11 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # The ones the window made due past their deadline: their segment
         # starts at the front, which holds the op that made them overdue.
         past_deadline_ids: set[str] = set()
-        # And the ones only the budget made due: they go if budget is left,
-        # unpinned, since no allocation reaches them before the next drain.
+        # And the ones only the budget or an expedite made due: they go if
+        # budget is left, unpinned, since no allocation reaches them before
+        # the next drain.
         ahead_ids: set[str] = set()
+        expedited_ids: set[str] = set()
         for order, request_id in enumerate(list(self._pending)):
             ops = self._pending[request_id]
             surviving = self._drop_evicted_suffix(request_id, ops)
@@ -703,7 +731,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                     self._hold(drain, request_id, surviving)
                     self._squeeze_held.add(request_id)
                 else:
-                    start, end = self._segment(surviving, ranks, held_due=False)
+                    start, end = self._segment(
+                        surviving, ranks, held_due=False, expedited_due=False
+                    )
                     self._hold(drain, request_id, surviving[start:end])
                 continue
             if (imminent := _min_rank(surviving, ranks)) is not None:
@@ -731,6 +761,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 and request_id not in self._squeeze_held
             ) or request_id in signals.preempted_request_ids:
                 candidates.append((_HELD_RANK, order, request_id))
+            elif any(op.expedited for op in surviving):
+                candidates.append((_EXPEDITED_RANK, order, request_id))
+                expedited_ids.add(request_id)
             elif (ahead := _min_rank(surviving, ranks_ahead)) is not None:
                 candidates.append((_AHEAD_RANK + ahead[0], order, request_id))
                 triggers[request_id] = ahead[1]
@@ -756,7 +789,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         for _, _, request_id in candidates:
             ops = self._pending[request_id]
             is_overdue = request_id in overdue_ids
-            is_ahead = request_id in ahead_ids
+            is_ahead = request_id in ahead_ids or request_id in expedited_ids
             if (is_overdue or is_ahead) and ops_left <= 0:
                 # Nothing about to be recycled made it due: it waits in place.
                 continue
@@ -974,7 +1007,11 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         drain.holds.append(_pending_item(request_id, newly_held))
 
     def _segment(
-        self, ops: list[PendingStoreOp], window: "Container[int]", held_due: bool
+        self,
+        ops: list[PendingStoreOp],
+        window: "Container[int]",
+        held_due: bool,
+        expedited_due: bool = True,
     ) -> tuple[int, int]:
         """The due segment of one request's ops, as a slice.
 
@@ -982,6 +1019,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             ops: The request's buffered operations, in prefix order.
             window: The block ids in reach. Only membership is read.
             held_due: Whether held ops count as due.
+            expedited_due: Whether expedited ops count as due; not when the
+                segment is held, since an expedite never pins.
 
         Returns:
             ``(start, end)`` per :func:`_due_segment`, or ``(0, 0)`` when no
@@ -990,7 +1029,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         due = [
             index
             for index, op in enumerate(ops)
-            if (held_due and op.held) or _in_window(op, window)
+            if (held_due and op.held)
+            or (expedited_due and op.expedited)
+            or _in_window(op, window)
         ]
         if not due:
             return 0, 0

@@ -71,6 +71,13 @@ earlier**:
    storing any of it.
 4. A failed store is buffered again and its blocks go to the tail.
 5. A stored block returns to the head on unpin unless an op still buffers it.
+6. The one exception to "no earlier": `expedite(request_id, end)` marks the
+   request's ops starting before `end` due. Exclusive retrieve uses it when a
+   chunk becomes, or stops being, shared-held (two running holders; see
+   `exclusive_retrieve.md`, rule 10). Expedited ops are served after held
+   ones, closed into their segment, and like the ops past `D` they only
+   take budget left over and are never held; the mark persists until a
+   drain emits them.
 
 The proof obligations are then: `D` is an upper bound on what can allocate
 before the next drain (step 2 and the decision rule below), and no path

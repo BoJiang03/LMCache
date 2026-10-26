@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Standard
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 import math
 import sys
@@ -91,6 +92,7 @@ from lmcache.utils import init_logger as lmcache_init_logger
 from lmcache.v1.multiprocess.custom_types import (
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+    SHARED_HELD_TOKENS_HINT,
 )
 
 try:
@@ -1893,10 +1895,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     # Every LMCache hit (even one only as long as the covered
                     # prefix) reaches this FREE, as the lookup counts the
                     # covered prefix as hit.
-                    request_configs = {
-                        **(request_configs or {}),
-                        ENGINE_HELD_TOKENS_HINT: tracker.num_vllm_hit_tokens,
-                    }
+                    request_configs = self._with_shared_held_hint(
+                        request.request_id,
+                        {
+                            **(request_configs or {}),
+                            ENGINE_HELD_TOKENS_HINT: tracker.num_vllm_hit_tokens,
+                        },
+                    )
                 self.scheduler_adapter.free_lookup_locks(
                     packed_token_ids=tracker.packed_token_ids(),
                     start=0,
@@ -2158,6 +2163,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 group_tokens_per_block=self._group_tokens_per_block,
             )
             if r_metadata is not None:
+                if self.exclusive_retrieve:
+                    r_metadata = replace(
+                        r_metadata,
+                        request_configs=self._with_shared_held_hint(
+                            request_tracker.request_id, r_metadata.request_configs
+                        ),
+                    )
                 metadata.add_request_metadata(r_metadata)
                 self._diag.load_issued(request_tracker.request_id, time.monotonic())
             request_tracker.state = LMCacheMPRequestState.READY
@@ -2345,6 +2357,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             request_configs = dict(new_tracker.request_configs or {})
             request_configs.pop(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, None)
             request_configs.pop(ENGINE_HELD_TOKENS_HINT, None)
+            request_configs.pop(SHARED_HELD_TOKENS_HINT, None)
             if self.exclusive_retrieve:
                 request_configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
             new_tracker.request_configs = request_configs or None
@@ -2352,6 +2365,31 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             if self._l1_duplication_meter is not None:
                 self._l1_duplication_meter.on_request_tracked(request, new_tracker)
         return self.request_trackers[request_id]
+
+    def _with_shared_held_hint(
+        self, request_id: str, request_configs: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Add the shared-held prefix to an exclusive request's configs.
+
+        The chunks of the prefix another running request holds on the GPU
+        are touched in L1 rather than demoted when this request loads them
+        or vLLM's prefix cache serves them: a sibling forking past them can
+        miss the GPU copy (a hybrid hit resumes only at a cached state) and
+        needs the L1 one (see ``SHARED_HELD_TOKENS_HINT``).
+
+        Args:
+            request_id: The exclusive-retrieve request.
+            request_configs: The configs of its RETRIEVE or post-allocation
+                FREE_LOOKUP_LOCKS.
+
+        Returns:
+            ``request_configs`` with the hint set, or unchanged when no
+            chunk of the prefix is shared-held.
+        """
+        shared = self._lazy_offload_manager.shared_held_tokens(request_id)
+        if not shared:
+            return request_configs
+        return {**(request_configs or {}), SHARED_HELD_TOKENS_HINT: shared}
 
     def _drop_uncached_states(self, metadata: LMCacheMPRequestMetadata) -> None:
         """Replace the uncached recurrent states of a store with the null block.

@@ -3,6 +3,7 @@
 
 # Standard
 from collections import Counter
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -38,6 +39,12 @@ from lmcache.integration.vllm.lazy_offload_manager import (  # noqa: E402
 )
 from lmcache.integration.vllm.lazy_offload_policy import (  # noqa: E402
     eviction_aware,
+)
+from lmcache.integration.vllm.lazy_offload_policy.base import (  # noqa: E402
+    DrainSignals,
+)
+from lmcache.integration.vllm.lazy_offload_policy.fifo import (  # noqa: E402
+    FIFOOffloadPolicy,
 )
 from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
     LMCacheMPRequestMetadata,
@@ -1590,6 +1597,91 @@ def test_reset_drops_a_parked_chunk() -> None:
     (line,) = [call.args[1] for call in mock_info.call_args_list]
     assert " held_ops_parked=1" in line
     assert " held_ops_dropped=1" in line
+
+
+def _shared_with_sibling() -> tuple[LazyOffloadManager, BlockPool, list[int]]:
+    """Request "req" and its sibling "sib" hold the same two cached chunks.
+
+    "req" was offered their store first, while it held them alone; "sib"
+    then hit them in vLLM's prefix cache, taking a reference on each block,
+    and was offered their store too. Nothing is due by eviction: the free
+    queue is long and no deadline is set.
+
+    Returns:
+        The manager, the pool and the two attention blocks.
+    """
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, block_ids = _held_manager(coordinator, 2, {})
+    op = _exclusive_op([block_ids, [null, null]])
+    manager.add_store_candidate(op)
+    # Alone, the holder's chunks wait for vLLM to evict them.
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    manager.on_request_arrived("sib", _chain(2))
+    assert manager.shared_held_tokens("sib") == 2 * TOKENS_PER_BLOCK
+    assert manager.shared_held_tokens("req") == 0
+    pool.touch([pool.blocks[block_id] for block_id in block_ids])
+    manager.add_store_candidate(replace(op, request_id="sib"))
+    return manager, pool, block_ids
+
+
+def test_chunk_two_running_requests_hold_is_stored_now_and_not_demoted() -> None:
+    """A chunk's second running holder stores it at once, ahead of any
+    eviction, and the store leaves it out of the demote hint: the server
+    touches or writes it to L1's most recently used end."""
+    manager, _, block_ids = _shared_with_sibling()
+
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert store.request_id == "sib"
+    assert store.op.block_ids[0] == block_ids
+    hint = (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT, [])
+    assert not set(hint) & set(block_ids)
+    assert manager.shared_held_tokens("req") == 2 * TOKENS_PER_BLOCK
+
+
+def test_chunk_back_to_one_holder_is_stored_demoted() -> None:
+    """Once one of two holders finishes, the chunk is an ordinary exclusive
+    chunk again: the remaining holder's buffered store goes out with the
+    chunk in the demote hint, since vLLM still holds it."""
+    manager, pool, block_ids = _shared_with_sibling()
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    manager.on_store_results(set(), {"sib": 1})
+    pool.free_blocks([pool.blocks[block_id] for block_id in block_ids])
+
+    manager.on_request_finished("sib")
+
+    assert manager.shared_held_tokens("req") == 0
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert store.request_id == "req"
+    assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == block_ids
+
+
+def test_fifo_releases_an_expedited_request_below_its_threshold() -> None:
+    """FIFO stores whole requests once enough have finished; an expedited
+    request goes out with the next drain anyway, unless its batch is in
+    flight."""
+    policy = FIFOOffloadPolicy({})
+    policy.add(_op(0, [[1], [2]]), {1: None, 2: None})
+    policy.expedite("req", TOKENS_PER_BLOCK)
+    signals = DrainSignals(
+        next_step_blocks=0,
+        resuming_blocks=0,
+        admission_blocks=0,
+        finished_request_ids=set(),
+        blocked_request_ids={"req"},
+        preempted_request_ids=set(),
+        running_blocks_allocated=0,
+    )
+
+    assert policy.drain(signals).items == []
+    drain = policy.drain(replace(signals, blocked_request_ids=set()))
+
+    (item,) = drain.items
+    assert item.request_id == "req"
+    assert drain.emptied_request_ids == ["req"]
+    assert not policy.has_pending_request("req")
 
 
 def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
