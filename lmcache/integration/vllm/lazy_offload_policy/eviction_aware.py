@@ -980,10 +980,14 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # whole tail, including full-attention layers whose data is still
         # live. Splitting the check needs per-group token ranges in
         # LoadStoreOp.
-        return all(
-            self._pool.blocks[block_id].block_hash == snapshot
-            for block_id, snapshot in op.block_hashes.items()
-        )
+        # A plain loop over a local, not all() over a generator: every drain
+        # checks every buffered block, and an exclusive-retrieve op covers a
+        # whole loaded prompt.
+        blocks = self._pool.blocks
+        for block_id, snapshot in op.block_hashes.items():
+            if blocks[block_id].block_hash != snapshot:
+                return False
+        return True
 
     def log_final_stats(self) -> None:
         """Log the cumulative counters at shutdown as one INFO line.
