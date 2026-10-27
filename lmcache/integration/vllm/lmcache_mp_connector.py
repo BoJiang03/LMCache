@@ -2109,6 +2109,18 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         return self._lazy_offload_manager.has_inflight_store_work()
 
+    def lazy_offload_block_counts(self) -> tuple[int, int]:
+        """Count the GPU blocks lazy offload keeps from vLLM's allocator.
+
+        Returns:
+            ``(pinned, pin_only)`` from the lazy offload manager (see
+            ``LazyOffloadManager.pinned_block_counts``); ``(0, 0)`` when lazy
+            offload is off or this is not the scheduler-side connector.
+        """
+        if self.role != KVConnectorRole.SCHEDULER or not self.lazy_offload:
+            return 0, 0
+        return self._lazy_offload_manager.pinned_block_counts()
+
     @classmethod
     def get_required_kvcache_layout(cls, vllm_config: "VllmConfig") -> str | None:
         """Defer to vLLM; a connector preference is unsafe for now.

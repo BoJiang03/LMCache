@@ -414,6 +414,25 @@ def test_freed_block_of_blocked_request_survives_until_its_batch_settles() -> No
     assert pool.blocks[second].ref_cnt == 0
 
 
+def test_pinned_block_counts_tell_blocks_only_pins_hold() -> None:
+    """A submitted store's block is pin-only until vLLM references it too."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    null = pool.null_block.block_id
+    ids = _hashed_blocks(pool, pool.get_num_free_blocks())
+    manager = _manager(pool, receipts=_Receipts())
+    manager.add_store_candidate(_op(0, [[ids[0]], [null]]))
+    pool.free_blocks([pool.blocks[ids[0]]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
+    assert manager.pinned_block_counts() == (1, 1)
+
+    pool.touch([pool.blocks[ids[0]]])
+    assert manager.pinned_block_counts() == (1, 0)
+
+    pool.free_blocks([pool.blocks[ids[0]]])
+    manager.on_store_results(set(), {"req": 1})
+    assert manager.pinned_block_counts() == (0, 0)
+
+
 # An admission of this many tokens allocates at most this many blocks over
 # the manager's two groups: per group, a partial block at each end and one
 # for a copy-on-write or checkpoint block (no draft tokens here). It reaches

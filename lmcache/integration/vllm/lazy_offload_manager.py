@@ -747,6 +747,28 @@ class LazyOffloadManager:
         pending = -1 if self._policy is None else self._policy.diag_pending_ops()
         return pending, len(self._requests.in_flight_request_ids())
 
+    def pinned_block_counts(self) -> tuple[int, int]:
+        """Count the GPU blocks this class pins, and those only pins hold.
+
+        The first count is O(1). The second walks the pinned blocks, not the
+        block pool, so read it only where an allocation has failed.
+
+        Returns:
+            ``(pinned, pin_only)``: distinct pinned blocks, and those of them
+            whose every reference is this class's pin, which vLLM could
+            allocate if the pins were released.
+
+        Raises:
+            ValueError: If no GPU block pool has been bound.
+        """
+        blocks = self._require_block_pool().blocks
+        pin_only = sum(
+            1
+            for block_id, pins in self._pin_counts.items()
+            if blocks[block_id].ref_cnt <= pins
+        )
+        return len(self._pin_counts), pin_only
+
     def shared_held_tokens(self, request_id: str) -> int:
         """Return the prefix of a request whose chunks another request holds.
 
