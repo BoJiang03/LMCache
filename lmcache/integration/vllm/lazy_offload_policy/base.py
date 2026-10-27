@@ -77,7 +77,7 @@ class PendingStoreItem:
             hold the same data.
         trigger_block_id: The block whose eviction imminence made a drain
             emit the item, read only for diagnostics; ``None`` when nothing
-            in the free queue did (a hold, a preemption, a deadline) or the
+            in the free queue did (a hold, an expedite, a preemption) or the
             policy does not tell.
     """
 

@@ -338,8 +338,8 @@ not add policy-specific branches to the connector.
 Two policies are available:
 
 - `EVICTION_AWARE` (default) reads the free queue in LRU order and releases an
-  operation when one of its blocks enters the pressure-derived danger window,
-  or when the operation passes the configured deferral deadline. It validates
+  operation when one of its blocks enters the pressure-derived danger window.
+  It validates
   admission-time block hashes and preserves prefix closure. Its full queue
   contract is in
   [lazy_offload_policy/eviction_aware.md](lazy_offload_policy/eviction_aware.md).
@@ -382,8 +382,6 @@ Configuration in `kv_connector_extra_config`:
 ```text
 lmcache.mp.lazy_offload = true                         # default: false
 lmcache.mp.lazy_offload_policy = EVICTION_AWARE        # default
-lmcache.mp.lazy_offload_max_drain_per_step = 64
-lmcache.mp.lazy_offload_max_deferral_seconds = 0.0     # 0: no deadline
 
 # Explicit FIFO mode only
 lmcache.mp.lazy_offload_threshold = 100

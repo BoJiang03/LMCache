@@ -60,8 +60,8 @@ from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
 TOKENS_PER_BLOCK = 4
 # Large enough that every admission here is scheduled in one chunk.
 MAX_STEP_TOKENS = 1024
-# Emit every buffered operation on the next drain, by its deferral deadline.
-CONFIGS = {"lmcache.mp.lazy_offload_max_deferral_seconds": 1e-9}
+# One drain stores at most this many buffered ops.
+BUDGET = eviction_aware.MAX_DRAIN_PER_STEP
 # The free-queue head every drain keeps clear for one admission, with the
 # test manager's max_model_len of one block and no draft tokens. Per group:
 # the five slots of that block plus a recomputed token span two blocks, plus
@@ -154,7 +154,7 @@ def _manager(
     that serves nothing, so none of its chunks is engine-held.
     """
     manager = LazyOffloadManager(
-        CONFIGS if configs is None else configs,
+        configs or {},
         [TOKENS_PER_BLOCK, TOKENS_PER_BLOCK],
         receipts or _NoReceipts(),
         max_step_tokens=max_step_tokens,
@@ -194,6 +194,48 @@ def _hashed_blocks(pool: BlockPool, n: int) -> list[int]:
     return [block.block_id for block in blocks]
 
 
+def _free_to_head(pool: BlockPool, block_ids: list[int]) -> None:
+    """Free the in-use blocks ``block_ids`` and move them to the queue head.
+
+    vLLM queues a freed cached block at the tail, and allocations bring it
+    to the head. Here the blocks ahead of it are taken and freed again
+    behind it, hashed so that vLLM queues them at the tail too: the next
+    drain finds the blocks within the admission reserve, with free blocks
+    behind them. A buffered op on a block ahead of them loses its data.
+    """
+    pool.free_blocks([pool.blocks[block_id] for block_id in block_ids])
+    queue = [block.block_id for block in pool.free_block_queue.get_all_free_blocks()]
+    ahead = pool.get_new_blocks(min(queue.index(block_id) for block_id in block_ids))
+    for i, block in enumerate(ahead):
+        if block.block_hash is None:
+            block.set_block_hash(
+                make_block_hash_with_group_id(
+                    BlockHash(b"\xfe" * 30 + i.to_bytes(2, "big")), 0
+                )
+            )
+    pool.free_blocks(ahead)
+
+
+def _squeezed_stores(
+    manager: LazyOffloadManager, pool: BlockPool, keep: int = 0
+) -> list[LMCacheMPRequestMetadata]:
+    """Store the buffered ops while vLLM may still hold all their blocks.
+
+    Every free block but the last ``keep`` is allocated, so each drain's
+    window reaches the queue tail: the first drain stores what is due and
+    pins the rest, and the second, still squeezed, stores the pins.
+
+    Returns:
+        The stores of both drains.
+    """
+    pool.get_new_blocks(pool.get_num_free_blocks() - keep)
+    return [
+        store
+        for _ in range(2)
+        for store in manager.on_scheduler_step(_step()).stores_to_submit
+    ]
+
+
 def test_null_blocks_do_not_block_the_store() -> None:
     """A mamba group's null blocks (align mode) leave the store to its live blocks."""
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
@@ -203,6 +245,7 @@ def test_null_blocks_do_not_block_the_store() -> None:
     manager = _manager(pool)
 
     manager.add_store_candidate(_store([attention, [null, state[0]]]))
+    _free_to_head(pool, attention + state)
     actions = manager.on_scheduler_step(_step())
 
     assert len(actions.stores_to_submit) == 1
@@ -218,6 +261,8 @@ def test_unhashed_live_block_still_rejects_the_store() -> None:
     manager = _manager(pool)
 
     manager.add_store_candidate(_store([attention, [pool.null_block.block_id] * 2]))
+    # Admitted, the op would be due.
+    _free_to_head(pool, attention[:1])
     actions = manager.on_scheduler_step(_step())
 
     assert actions.stores_to_submit == []
@@ -280,6 +325,7 @@ def test_coalesced_store_keeps_the_request_configs() -> None:
         op = _op(i * TOKENS_PER_BLOCK, [[block], [null]])
         op.request_configs = configs
         manager.add_store_candidate(op)
+    _free_to_head(pool, ids)
 
     actions = manager.on_scheduler_step(_step())
 
@@ -305,6 +351,8 @@ def _blocked_with_freed_successor(
     first, second = ids[0], ids[1]
     manager = _manager(pool, receipts=_Receipts())
     manager.add_store_candidate(_op(0, [[first], [null]]))
+    # The only free block, so in reach.
+    pool.free_blocks([pool.blocks[first]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
     manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[second], [null]]))
@@ -327,6 +375,8 @@ def test_blocked_request_pins_only_blocks_in_reach() -> None:
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     manager = _manager(pool, receipts=_Receipts())
     manager.add_store_candidate(_op(0, [[ids[0]], [null]]))
+    # The only free block, so in reach.
+    pool.free_blocks([pool.blocks[ids[0]]])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     next_block = ids[1 + ADMISSION_RESERVE]
     manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[next_block], [null]]))
@@ -663,21 +713,20 @@ def test_resumed_load_left_waiting_keeps_its_protection() -> None:
 def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
     """A due op the budget defers is not recycled while it waits.
 
-    Two requests have a block at the free-queue head and a running request
-    is about to take two blocks; one drain stores only one op. The other
-    is held, so the next drain stores it first, intact
+    One request more than a drain stores has a block at the free-queue head
+    and a running request is about to take two blocks; one drain stores all
+    but the last op. That one is held, so the next drain stores it, intact
     though the running request has allocated and nothing presses on it.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(
+        num_gpu_blocks=2 * BUDGET + 16, enable_caching=True, hash_block_size=4
+    )
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={"lmcache.mp.lazy_offload_max_drain_per_step": 1},
-        receipts=_Receipts(),
-    )
+    manager = _manager(pool, receipts=_Receipts())
     manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
-    for request_id, block_id in (("first", ids[0]), ("second", ids[1])):
+    request_ids = [f"r{i}" for i in range(BUDGET + 1)]
+    for request_id, block_id in zip(request_ids, ids, strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
         manager.add_store_candidate(store)
@@ -687,35 +736,35 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
     pool.get_new_blocks(2)
     second = manager.on_scheduler_step(_step())
 
-    assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert [store.request_id for store in second.stores_to_submit] == ["second"]
+    assert [store.request_id for store in first.stores_to_submit] == request_ids[:-1]
+    assert [store.request_id for store in second.stores_to_submit] == request_ids[-1:]
 
 
 @pytest.mark.parametrize(
-    ("budget", "stored"), [(1, [["a"], ["b"], []]), (64, [[], [], []])]
+    ("num_ops", "counts"),
+    [(BUDGET, [0, 0, 0]), (2 * BUDGET + 1, [BUDGET, 1, 0])],
+    ids=["one-drain", "past-one-drain"],
 )
 def test_backlog_the_budget_cannot_keep_up_with_starts_early(
-    budget: int, stored: list[list[str]]
+    num_ops: int, counts: list[int]
 ) -> None:
     """Ops just past the window are stored early only if the budget is short.
 
-    Three ops sit right behind the blocks one admission can take, so the
-    next drain's allocations reach all three. One op per drain cannot store
-    them in that one drain, so the drains before it store one each until
-    the last fits the drain that reaches it; a budget that stores all three
-    at once leaves them deferred.
+    The ops sit right behind the blocks one admission can take, so the next
+    drain's allocations reach them all. More than one drain stores cannot
+    all go in that one drain, so the drains before it store a budget's worth
+    each, in queue order, until the rest fits the drain that reaches them;
+    as many as one drain stores stay deferred.
     """
-    pool = BlockPool(num_gpu_blocks=40, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(
+        num_gpu_blocks=num_ops + 32, enable_caching=True, hash_block_size=4
+    )
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={"lmcache.mp.lazy_offload_max_drain_per_step": budget},
-        receipts=_Receipts(),
-        max_step_tokens=TOKENS_PER_BLOCK,
-    )
+    manager = _manager(pool, receipts=_Receipts(), max_step_tokens=TOKENS_PER_BLOCK)
+    request_ids = [f"r{i}" for i in range(num_ops)]
     # One admission reaches 10 blocks with this model length and two groups.
-    for request_id, block_id in zip("abc", ids[10:13], strict=True):
+    for request_id, block_id in zip(request_ids, ids[10:], strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
         manager.add_store_candidate(store)
@@ -723,9 +772,13 @@ def test_backlog_the_budget_cannot_keep_up_with_starts_early(
 
     drains = [manager.on_scheduler_step(_step()) for _ in range(3)]
 
+    expected: list[list[str]] = []
+    for count in counts:
+        start = sum(map(len, expected))
+        expected.append(request_ids[start : start + count])
     assert [
         [store.request_id for store in drain.stores_to_submit] for drain in drains
-    ] == stored
+    ] == expected
 
 
 def test_stored_block_returns_to_queue_head() -> None:
@@ -750,21 +803,26 @@ def test_stored_block_returns_to_queue_head() -> None:
 def test_stored_block_another_request_buffered_is_not_recycled_next() -> None:
     """A shared prefix block stays out of reach after one request stores it.
 
-    Two requests buffered the same block, at the free-queue head; one drain
-    stores only the first. Once that store settles, the block is still
-    buffered by the second, so the next allocation takes another block and
-    the second request's op is stored intact.
+    Two requests buffered the same block, behind a budget's worth of other
+    requests' blocks less one at the free-queue head; one drain stores the
+    first of the two but not the second. Once that store settles, the block
+    is still buffered by the second, so the next allocation takes another
+    block and the second request's op is stored intact.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(
+        num_gpu_blocks=2 * BUDGET + 16, enable_caching=True, hash_block_size=4
+    )
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={**CONFIGS, "lmcache.mp.lazy_offload_max_drain_per_step": 1},
-        receipts=_Receipts(),
-    )
-    for request_id in ("first", "second"):
-        store = _store([[ids[0]], [null]])
+    manager = _manager(pool, receipts=_Receipts())
+    ahead = [f"r{i}" for i in range(BUDGET - 1)]
+    shared = ids[len(ahead)]
+    for request_id, block_id in [
+        *zip(ahead, ids, strict=False),
+        ("first", shared),
+        ("second", shared),
+    ]:
+        store = _store([[block_id], [null]])
         store.request_id = request_id
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
@@ -774,8 +832,11 @@ def test_stored_block_another_request_buffered_is_not_recycled_next() -> None:
     allocated = pool.get_new_blocks(1)[0].block_id
     second = manager.on_scheduler_step(_step())
 
-    assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert allocated != ids[0]
+    assert [store.request_id for store in first.stores_to_submit] == [
+        *ahead,
+        "first",
+    ]
+    assert allocated != shared
     assert [store.request_id for store in second.stores_to_submit] == ["second"]
 
 
@@ -1093,31 +1154,33 @@ def test_block_already_in_the_table_is_not_allocated_again(
 def test_deferred_op_is_pinned_when_the_next_step_can_take_the_whole_queue() -> None:
     """The tail is no refuge for a deferred op when the window reaches it.
 
-    Only three blocks are free and the running request can take two: past
-    the drain budget, the second op is pinned rather than moved to the
-    tail, so allocating the whole queue leaves it to store next drain.
+    Only the buffered blocks and one more are free, and the running request
+    can take two: past the drain budget, the last op is pinned rather than
+    moved to the tail, so allocating the whole queue leaves it to store
+    next drain.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    pool = BlockPool(
+        num_gpu_blocks=2 * BUDGET + 16, enable_caching=True, hash_block_size=4
+    )
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={"lmcache.mp.lazy_offload_max_drain_per_step": 1},
-        receipts=_Receipts(),
-    )
+    manager = _manager(pool, receipts=_Receipts())
     manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
-    for request_id, block_id in (("first", ids[0]), ("second", ids[1])):
+    request_ids = [f"r{i}" for i in range(BUDGET + 1)]
+    for request_id, block_id in zip(request_ids, ids, strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
         manager.add_store_candidate(store)
-    pool.free_blocks([pool.blocks[block_id] for block_id in ids[:3]])
+    pool.free_blocks(
+        [pool.blocks[block_id] for block_id in ids[: len(request_ids) + 1]]
+    )
 
     first = manager.on_scheduler_step(_step({"running": 2 * TOKENS_PER_BLOCK}))
     pool.get_new_blocks(pool.get_num_free_blocks())
     second = manager.on_scheduler_step(_step())
 
-    assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert [store.request_id for store in second.stores_to_submit] == ["second"]
+    assert [store.request_id for store in first.stores_to_submit] == request_ids[:-1]
+    assert [store.request_id for store in second.stores_to_submit] == request_ids[-1:]
 
 
 def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
@@ -1132,11 +1195,7 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={"lmcache.mp.lazy_offload_max_drain_per_step": 1},
-        receipts=_Receipts(),
-    )
+    manager = _manager(pool, receipts=_Receipts())
     manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
     for request_id, block_id in (("first", ids[0]), ("owned", ids[5])):
         store = _store([[block_id], [null]])
@@ -1164,11 +1223,7 @@ def test_lasting_squeeze_stores_what_it_pinned() -> None:
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
     null = pool.null_block.block_id
-    manager = _manager(
-        pool,
-        configs={"lmcache.mp.lazy_offload_max_drain_per_step": 1},
-        receipts=_Receipts(),
-    )
+    manager = _manager(pool, receipts=_Receipts())
     manager.on_admission("running", 2 * TOKENS_PER_BLOCK, 0, 0, load_async=False)
     for request_id, block_id in (("first", ids[0]), ("owned", ids[5])):
         store = _store([[block_id], [null]])
@@ -1327,6 +1382,7 @@ def test_failed_store_is_submitted_again_ahead_of_later_ops() -> None:
     first, second = _hashed_blocks(pool, 2)
     manager = _manager(pool, receipts=_Receipts())
     manager.add_store_candidate(_op(0, [[first], [null]]))
+    _free_to_head(pool, [first, second])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[second], [null]]))
 
@@ -1345,13 +1401,17 @@ def test_failed_store_waits_for_every_worker_before_its_retry() -> None:
     still be reading the pinned blocks, so the retry waits for the batch to
     settle; the settled retry leaves no pin behind.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    # Smaller than the admission reserve: a buffered op on any free block is
+    # due, so a retry submitted early would show.
+    pool = BlockPool(
+        num_gpu_blocks=ADMISSION_RESERVE, enable_caching=True, hash_block_size=4
+    )
     null = pool.null_block.block_id
     (block,) = _hashed_blocks(pool, 1)
     manager = _manager(pool, receipts=_TwoWorkerReceipts())
     manager.add_store_candidate(_op(0, [[block], [null]]))
-    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     pool.free_blocks([pool.blocks[block]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     manager.on_store_results({"req"}, {"req": 1})
     unsettled = manager.on_scheduler_step(_step()).stores_to_submit
@@ -1371,13 +1431,17 @@ def test_failed_store_of_a_preempted_request_is_not_retried() -> None:
     The restart recomputes from token zero, so the old range would be stored
     from blocks the request no longer owns; its receipt only unpins them.
     """
-    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    # Smaller than the admission reserve: a buffered op on any free block is
+    # due, so a retry would show.
+    pool = BlockPool(
+        num_gpu_blocks=ADMISSION_RESERVE, enable_caching=True, hash_block_size=4
+    )
     null = pool.null_block.block_id
     (block,) = _hashed_blocks(pool, 1)
     manager = _manager(pool, receipts=_Receipts())
     manager.add_store_candidate(_op(0, [[block], [null]]))
-    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     pool.free_blocks([pool.blocks[block]])
+    assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     manager.on_request_reset("req")
     manager.on_store_results({"req"}, {"req": 1})
@@ -1471,7 +1535,7 @@ def _held_manager(
         coordinator: An attention-only :func:`_coordinator`.
         num_blocks: Attention blocks to allocate and cache as the request's
             first chunks; still in use.
-        configs: The manager's configs; None for ``CONFIGS``.
+        configs: The manager's configs; None for none.
 
     Returns:
         The manager, which knows the request's hash chain, and the blocks.
@@ -1500,7 +1564,7 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     manager, (first, second) = _held_manager(coordinator, 2)
     op = _exclusive_op([[first, second], [null, null]]) if exclusive else None
     manager.add_store_candidate(op or _op(0, [[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[second]])
+    _free_to_head(pool, [second])
 
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
     assert store.op.block_ids[0] == [first, second]
@@ -1513,8 +1577,9 @@ def test_held_chunk_is_stored_again_once_its_holder_releases_it(
     # Held, the chunk is not stored again however often the manager drains.
     for _ in range(4):
         assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert _counts(manager)["readmitted"] == 0
 
-    pool.free_blocks([pool.blocks[first]])
+    _free_to_head(pool, [first])
     restores = manager.on_scheduler_step(_step()).stores_to_submit
     settled = manager.on_store_results(set(), {"req": 1} if restores else {})
 
@@ -1584,12 +1649,12 @@ def test_reset_drops_a_parked_chunk() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[second]])
+    _free_to_head(pool, [second])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_store_results(set(), {"req": 1})
 
     manager.on_request_reset("req")
-    pool.free_blocks([pool.blocks[first]])
+    _free_to_head(pool, [first])
 
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
     with patch.object(eviction_aware.logger, "info") as mock_info:
@@ -1605,7 +1670,7 @@ def _shared_with_sibling() -> tuple[LazyOffloadManager, BlockPool, list[int]]:
     "req" was offered their store first, while it held them alone; "sib"
     then hit them in vLLM's prefix cache, taking a reference on each block,
     and was offered their store too. Nothing is due by eviction: the free
-    queue is long and no deadline is set.
+    queue is long.
 
     Returns:
         The manager, the pool and the two attention blocks.
@@ -1692,10 +1757,10 @@ def test_emitted_chunks_are_counted_by_held_state_and_trigger() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[second]])
+    _free_to_head(pool, [second])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
     manager.on_store_results(set(), {"req": 1})
-    pool.free_blocks([pool.blocks[first]])
+    _free_to_head(pool, [first])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     with patch.object(eviction_aware.logger, "info") as mock_info:
@@ -1716,7 +1781,7 @@ def test_chunk_past_a_free_block_is_not_held() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[first]])
+    _free_to_head(pool, [first])
 
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
 
@@ -1749,7 +1814,8 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
 ) -> None:
     """The hint lists a chunk's blocks only when vLLM's own hit over every
     KV cache group, from blocks in use only, covers the chunk and every
-    block of it is in use."""
+    block of it is in use. A squeeze stores the op even when vLLM holds
+    every block of it."""
     coordinator = _coordinator(mamba=True)
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -1765,7 +1831,7 @@ def test_hybrid_chunk_is_held_only_within_the_prefix_vllm_can_serve(
     manager.on_request_arrived("req", chain)
     manager.add_store_candidate(_exclusive_op([attention, mamba]))
 
-    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    (store,) = _squeezed_stores(manager, pool, keep=len(freed_states))
 
     assert (store.request_configs or {}).get(ENGINE_HELD_BLOCKS_HINT, []) == sorted(
         block_id
@@ -1787,7 +1853,7 @@ def test_attention_of_a_chunk_whose_own_state_is_freed_is_held() -> None:
     attention = [block.block_id for block in pool.get_new_blocks(3)]
     mamba = [null] + [block.block_id for block in pool.get_new_blocks(2)]
     _cache(pool, chain, [attention, mamba])
-    pool.free_blocks([pool.blocks[mamba[1]]])
+    _free_to_head(pool, [mamba[1]])
     manager = _manager(
         pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
     )
@@ -1801,7 +1867,7 @@ def test_attention_of_a_chunk_whose_own_state_is_freed_is_held() -> None:
         [*attention, mamba[2]]
     )
     manager.on_store_results(set(), {"req": 1})
-    pool.free_blocks([pool.blocks[attention[1]]])
+    _free_to_head(pool, [attention[1]])
     (restore,) = manager.on_scheduler_step(_step()).stores_to_submit
 
     assert restore.op.block_ids == [attention, [null, null, mamba[2]]]
@@ -1888,9 +1954,10 @@ def test_chunks_not_held_are_counted_by_reason(
     for chunk in states:
         mamba[chunk] = pool.get_new_blocks(1)[0].block_id
     _cache(pool, chain, [attention, mamba])
-    pool.free_blocks(
-        [pool.blocks[attention[chunk]] for chunk in freed_attention]
-        + [pool.blocks[mamba[chunk]] for chunk in freed_states]
+    _free_to_head(
+        pool,
+        [attention[chunk] for chunk in freed_attention]
+        + [mamba[chunk] for chunk in freed_states],
     )
     in_use = {
         block_id
@@ -1930,14 +1997,15 @@ def test_chunks_not_held_are_counted_by_reason(
 def test_chunk_at_the_end_of_an_eagle_hit_counts_as_one_block_past() -> None:
     """Under speculative decoding vLLM drops the last block of a hit, so the
     chunk at the chain's end, all its blocks in use, is not held and counts
-    as ending one block past the servable prefix."""
+    as ending one block past the servable prefix. A squeeze stores the op
+    while vLLM holds every block of it."""
     coordinator = _coordinator(use_eagle=True)
     pool = coordinator.block_pool
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
 
-    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    (store,) = _squeezed_stores(manager, pool)
 
     assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == [first]
     counts = _counts(manager)
@@ -1948,7 +2016,8 @@ def test_chunk_at_the_end_of_an_eagle_hit_counts_as_one_block_past() -> None:
 def test_free_duplicate_does_not_cut_the_chunk_it_shadows() -> None:
     """vLLM's hit reading a free duplicate of the op's own in-use block does
     not rely on the duplicate: the in-use block keeps the hash cached, so
-    the chunk is held."""
+    the chunk is held. A squeeze stores the op while vLLM holds every block
+    of it, and leaves the duplicate free."""
     coordinator = _coordinator()
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -1959,7 +2028,7 @@ def test_free_duplicate_does_not_cut_the_chunk_it_shadows() -> None:
     pool.free_blocks([duplicate])
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
 
-    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    (store,) = _squeezed_stores(manager, pool, keep=1)
 
     assert store.request_configs[ENGINE_HELD_BLOCKS_HINT] == sorted([first, second])
     assert "emitted_chunks_not_held" not in _counts(manager)
@@ -2183,7 +2252,7 @@ def test_chunk_held_only_once_its_store_lands_is_counted() -> None:
     null = pool.null_block.block_id
     manager, (first, second) = _held_manager(coordinator, 2)
     manager.add_store_candidate(_exclusive_op([[first, second], [null, null]]))
-    pool.free_blocks([pool.blocks[first]])
+    _free_to_head(pool, [first])
     (store,) = manager.on_scheduler_step(_step()).stores_to_submit
     assert ENGINE_HELD_BLOCKS_HINT not in (store.request_configs or {})
 
@@ -2207,7 +2276,7 @@ def test_landed_chunk_is_not_counted_unless_newly_held(case: str) -> None:
     block_ids = [[first, second], [null, null]]
     op = _op(0, block_ids) if case == "not_exclusive" else _exclusive_op(block_ids)
     manager.add_store_candidate(op)
-    pool.free_blocks([pool.blocks[second if case == "held_at_emit" else first]])
+    _free_to_head(pool, [second if case == "held_at_emit" else first])
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     if case == "not_exclusive":
@@ -2228,7 +2297,7 @@ def test_landed_hybrid_chunk_is_counted_per_kind() -> None:
     attention = [block.block_id for block in pool.get_new_blocks(3)]
     mamba = [null, pool.get_new_blocks(1)[0].block_id, null]
     _cache(pool, chain, [attention, mamba])
-    pool.free_blocks([pool.blocks[mamba[1]]])
+    _free_to_head(pool, [mamba[1]])
     manager = _manager(
         pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
     )

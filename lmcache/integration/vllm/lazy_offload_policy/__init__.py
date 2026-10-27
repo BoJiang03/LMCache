@@ -11,7 +11,6 @@ from lmcache.integration.vllm.lazy_offload_policy.base import (
     OffloadPolicy,
 )
 from lmcache.integration.vllm.lazy_offload_policy.eviction_aware import (
-    EvictionAwarePolicyConfig,
     EvictionAwareStoreQueue,
 )
 from lmcache.integration.vllm.lazy_offload_policy.fifo import FIFOOffloadPolicy
@@ -34,7 +33,7 @@ class LazyOffloadMode(enum.Enum):
         FIFO: Drains whole finished requests once enough of them have
             accumulated. Ignores GPU block pressure.
         EVICTION_AWARE: Drains a request when the GPU blocks holding its
-            data approach eviction, or when it passes the deferral deadline.
+            data approach eviction.
     """
 
     FIFO = "FIFO"
@@ -49,8 +48,8 @@ def create_offload_policy(
     """Build the policy ``POLICY_CONFIG_KEY`` names, EVICTION_AWARE default.
 
     Args:
-        configs: The connector's ``kv_connector_extra_config``. The
-            remaining keys are read by the selected policy itself.
+        configs: The connector's ``kv_connector_extra_config``. The FIFO
+            policy reads its own keys from it.
         gpu_block_pool: The scheduler's GPU block pool, which the
             eviction-aware policy ranks by eviction order. It is held for
             the policy's lifetime and only ever read.
@@ -62,7 +61,7 @@ def create_offload_policy(
         A policy ready to buffer store operations.
 
     Raises:
-        ValueError: If the name is unknown or a tunable is out of range.
+        ValueError: If the name is unknown.
     """
     name = cast(
         str, configs.get(POLICY_CONFIG_KEY, LazyOffloadMode.EVICTION_AWARE.value)
@@ -73,6 +72,5 @@ def create_offload_policy(
         raise ValueError(f"Unknown offload policy: {name}") from e
     if mode is LazyOffloadMode.FIFO:
         return FIFOOffloadPolicy(configs)
-    config = EvictionAwarePolicyConfig.from_configs(configs)
-    logger.info("lazy offload enabled with EVICTION_AWARE policy: %s", config)
-    return EvictionAwareStoreQueue(config, gpu_block_pool, anchor_groups)
+    logger.info("lazy offload enabled with EVICTION_AWARE policy")
+    return EvictionAwareStoreQueue(gpu_block_pool, anchor_groups)

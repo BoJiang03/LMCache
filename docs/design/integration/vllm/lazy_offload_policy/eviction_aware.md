@@ -54,8 +54,9 @@ earlier**:
    outside buffered ops, `D` = running requests' bound + unscheduled
    resumed loads + one admission (`admission_blocks`). Every op met is due:
    emitted, or held (pinned) when its request has a batch in flight or the
-   drain budget is spent. The budget stores at most `B` ops per drain, so
-   the window also widens when it would fall behind: if the first `m`
+   drain budget is spent. The budget stores at most `B` ops per drain
+   (`MAX_DRAIN_PER_STEP`, 64), so the window also widens when it would
+   fall behind: if the first `m`
    buffered ops in queue order lie within `k` drains' allocations
    (`k * D` blocks outside buffered ops), `m - (k - 1) * B` of them are
    due now. Those past `D` only take budget the window left over and are
@@ -234,7 +235,7 @@ lifecycle events to it.
    The data is still on the GPU, so the request's prefix chain stays whole.
    An L1 rejection (out of memory) is the common cause, so the retry waits
    for the window like any buffered op rather than being resubmitted into
-   the L1 that just refused it; a deadline, when set, still applies. Keys
+   the L1 that just refused it. Keys
    already resident count as stored, so retrying a partly stored batch is
    safe. An
    orphaned batch is never retried: the request generation now using the id
@@ -322,7 +323,7 @@ the true vLLM hit instead of 0.
   shift by walking until it has counted `danger depth` blocks outside
   buffered ops: every buffered block met is due, so it leaves the queue
   and the blocks behind it are what the next step can reach. Due ops past
-  `max_drain_per_step` are held (pinned), and later drains emit them
+  `MAX_DRAIN_PER_STEP` are held (pinned), and later drains emit them
   first. A walk that reaches the tail before counting the danger depth
   (a squeezed drain) means the next step may take the whole queue, and
   every block freed before it allocates. Every op the drain does not emit
@@ -333,20 +334,9 @@ the true vLLM hit instead of 0.
   groups, requests still running, and every loss during a burst of
   squeezed walks. Making every op due there instead stored the whole
   buffer in one burst.
-- **Deferral deadline (`max_deferral_seconds`)**: the danger window is a
-  *spatial* signal -- how close a block sits to the free-queue head -- which
-  answers when the block dies on the GPU, not when the conversation comes
-  back. When the reuse interval is the shorter clock the window emits after
-  the entry was already needed: the store lands, too late to be found. A
-  request whose oldest pending op has waited longer than this bound is due
-  even when no block of it sits in the window, and then releases its whole
-  surviving front (still capped by `max_drain_per_step`). It is served after
-  every request that does hold a block in the window, so an expired backlog
-  cannot spend the budget a block about to be recycled needs. A request past
-  both is ranked and sized by the window: it releases the due front segment,
-  which always holds the op that made it overdue, and the ops behind that keep
-  their own admission clocks and come due on their own deadlines. `0.0`, the
-  default, disables it.
+- **No deadline**: eviction pressure alone decides when an op is stored;
+  how long it has waited does not. A time bound would store ops that no
+  allocation is about to reach.
 - **Prefix closure**: a due op releases the request's ops from the front
   through the last due one; a data-loss drop (hash mismatch) drops from the
   first lost op through the tail and blacklists the request's later chunks;
@@ -364,7 +354,7 @@ the true vLLM hit instead of 0.
   rule changes when they are stored, not whether. A suffix store is
   servable because the server looks up from vLLM's hit (`key.start`) and
   chunk keys hash from token zero. Attention-only models have no anchors and
-  keep front closure; so does a request past its deadline.
+  keep front closure.
 
   ```
   ops      0    1*   2    3    4*        * = anchor op
@@ -376,12 +366,13 @@ the true vLLM hit instead of 0.
 
   Holds are per op (`PendingStoreOp.held`), not a front prefix, and a
   requeued or readmitted op is inserted where its start sorts.
-- Cross-request drain order = min due rank ascending; `max_drain_per_step`
-  bounds the per-step D2H burst in operations. The cap may split a request's
-  due segment but only ever emits a front slice of it, so within-request
-  prefix order is preserved. Due ops past the cap are not lost: they are
-  held for the next drain, so a low cap delays stores and keeps their
-  blocks pinned meanwhile; `configuration.rst` states the rule.
+- Cross-request drain order = min due rank ascending; `MAX_DRAIN_PER_STEP`
+  bounds the per-step D2H burst in operations. It is a constant, not a
+  setting: rule 1 widens the window by it, so ops come due early enough
+  that none is recycled unstored. The cap may split a request's due segment but only
+  ever emits a front slice of it, so within-request prefix order is
+  preserved. Due ops past the cap are not lost: they are held for the next
+  drain, which emits them first.
 - **Idle consequences**: receipts travel in worker metadata, which flows on
   every step, including steps that schedule no tokens. Those steps drain as
   well, which a squeezed admission needs: its pins can leave no waiting
@@ -421,8 +412,7 @@ per one allocated. `dropped_evicted` is the quality sensor --
 data lost before we drained, meaning an allocation escaped both the
 running-request bound and the admission protection, so nonzero means a
 bound is wrong for this model or vLLM version. `requeued` counts stores
-L1 rejected and the policy retried, and `emitted_overdue` is how much of
-`emitted` the deadline rather than the window released.
+L1 rejected and the policy retried.
 
 Two log hooks:
 
@@ -450,14 +440,15 @@ Two log hooks:
   in some cache group, and whether the emitting request was still running);
   `emitted_chunks_trigger_<kind>` (the same chunks, by the kind of cache
   group, `attention`, `recurrent` or `sliding_window`, whose block made the
-  op due; `none` when the deadline did); and `held_ops_parked`,
+  op due; `none` when no block did: a hold, an expedite or a preemption);
+  and `held_ops_parked`,
   `held_ops_dropped` (parked ops a reset or id reuse discarded) and
   `held_ops_lost` (parked ops whose block was reused first). A count
   appears once it is nonzero.
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
-  turned away before `admitted`), and `emitted_overdue` is a weight beside
-  the equation, not a term of it, and so are the `bound_*` counters. `emitted` means handed to the manager, not
+  turned away before `admitted`), and the `bound_*` counters are weights
+  beside the equation, not terms of it. `emitted` means handed to the manager, not
   submitted: the manager re-reads the hashes before pinning and can still
   drop an op there. That drop is a WARNING line and no counter, and for this
   policy it is unreachable, since `drain()` checked the same hashes

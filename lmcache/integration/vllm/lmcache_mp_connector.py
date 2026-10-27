@@ -2084,10 +2084,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         Returns:
             True when scheduler-side lazy offload has submitted stores waiting
             for worker completion. Queued stores are intentionally excluded:
-            they may stay buffered until block pressure or their deadline
-            releases them, and their hash snapshot, not a delayed free, keeps
-            them from storing stale blocks. Non-lazy mode uses vLLM's normal
-            delayed-free path and does not need this keepalive.
+            they may stay buffered until block pressure releases them, and
+            their hash snapshot, not a delayed free, keeps them from storing
+            stale blocks. Non-lazy mode uses vLLM's normal delayed-free path
+            and does not need this keepalive.
         """
         if self.role != KVConnectorRole.SCHEDULER or not self.lazy_offload:
             return False

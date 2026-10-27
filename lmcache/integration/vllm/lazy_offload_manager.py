@@ -391,8 +391,8 @@ class LazyOffloadManager:
                 manager reads block hashes and which it pins into.
 
         Raises:
-            ValueError: If a different pool is bound, or the policy name or
-                tunables are invalid.
+            ValueError: If a different pool is bound, or the policy name is
+                unknown.
         """
         if self._gpu_block_pool is gpu_block_pool:
             return
