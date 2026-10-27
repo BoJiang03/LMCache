@@ -73,6 +73,7 @@ from lmcache.v1.multiprocess.modules import lmcache_driven_transfer as transfer
 from lmcache.v1.multiprocess.modules.lookup import LookupModule
 from lmcache.v1.multiprocess.modules.management import ManagementModule
 from lmcache.v1.multiprocess.session import SessionManager
+from lmcache.v1.multiprocess.token_codec import unpack_token_ids
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 import lmcache.v1.memory_management as memory_management
 
@@ -253,7 +254,7 @@ class _Server:
         self, key: IPCCacheServerKey, object_group_ids: list[int]
     ) -> list[list[ObjectKey]]:
         session = self.sessions.get_or_create(key.request_id)
-        session.set_tokens(list(key.token_ids))
+        session.set_tokens(key.token_bytes)
         if session.lookup_ipc_key is None:
             session.lookup_ipc_key = key.no_worker_id_version()
         hashes = [
@@ -320,7 +321,7 @@ def test_exclusive_retrieve_touches_the_shared_held_chunks(server: _Server) -> N
         model_name=key.model_name,
         world_size=key.world_size,
         worker_id=key.worker_id,
-        token_ids=list(key.token_ids),
+        token_ids=unpack_token_ids(key.token_bytes),
         start=key.start,
         end=key.end,
         request_id=key.request_id,
@@ -610,7 +611,7 @@ def test_local_hit_touches_the_shared_held_chunks(server: _Server) -> None:
         model_name=key.model_name,
         world_size=key.world_size,
         worker_id=None,
-        token_ids=list(key.token_ids),
+        token_ids=unpack_token_ids(key.token_bytes),
         start=key.start,
         end=key.end,
         request_id=key.request_id,

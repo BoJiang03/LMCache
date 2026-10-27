@@ -59,6 +59,7 @@ from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
     ENGINE_HELD_BLOCKS_HINT,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
 )
+from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
 
 TOKENS_PER_BLOCK = 4
 # Large enough that every admission here is scheduled in one chunk.
@@ -180,7 +181,7 @@ def _store(block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
         request_id="req",
         direction="STORE",
         op=LoadStoreOp(
-            token_ids=list(range(n_tokens)),
+            token_bytes=pack_token_ids(range(n_tokens)),
             block_ids=block_ids,
             start=0,
             end=n_tokens,
@@ -312,7 +313,10 @@ def _op(start: int, block_ids: list[list[int]]) -> LMCacheMPRequestMetadata:
         request_id="req",
         direction="STORE",
         op=LoadStoreOp(
-            token_ids=list(range(end)), block_ids=block_ids, start=start, end=end
+            token_bytes=pack_token_ids(range(end)),
+            block_ids=block_ids,
+            start=start,
+            end=end,
         ),
     )
 

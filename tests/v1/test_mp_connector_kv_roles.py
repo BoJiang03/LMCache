@@ -543,7 +543,9 @@ def test_store_of_a_step_without_forward_is_submitted_once(
         LMCacheMPRequestMetadata(
             request_id="request",
             direction="STORE",
-            op=LoadStoreOp(token_ids=list(range(4)), block_ids=[[1]], start=0, end=4),
+            op=LoadStoreOp(
+                token_bytes=pack_token_ids(range(4)), block_ids=[[1]], start=0, end=4
+            ),
         )
     )
     worker.bind_connector_metadata(metadata)

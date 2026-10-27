@@ -74,7 +74,7 @@ def _salted_keys(
             model_name=model_name,
             world_size=world_size,
             worker_id=None,
-            token_ids=(),
+            token_bytes=b"",
             start=0,
             end=0,
             request_id="",
