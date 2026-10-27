@@ -25,6 +25,14 @@ logger = init_logger(__name__)
 #: Config key naming the policy to run.
 POLICY_CONFIG_KEY = "lmcache.mp.lazy_offload_policy"
 
+#: Keys earlier releases read and this one ignores. Setting one logs a
+#: warning, so a stale deployment config does not fail silently.
+REMOVED_CONFIG_KEYS = (
+    "lmcache.mp.lazy_offload_horizon_steps",
+    "lmcache.mp.lazy_offload_max_deferral_seconds",
+    "lmcache.mp.lazy_offload_max_drain_per_step",
+)
+
 
 class LazyOffloadMode(enum.Enum):
     """Which drain policy the connector runs.
@@ -49,7 +57,8 @@ def create_offload_policy(
 
     Args:
         configs: The connector's ``kv_connector_extra_config``. The FIFO
-            policy reads its own keys from it.
+            policy reads its own keys from it; any of
+            ``REMOVED_CONFIG_KEYS`` present is ignored with a warning.
         gpu_block_pool: The scheduler's GPU block pool, which the
             eviction-aware policy ranks by eviction order. It is held for
             the policy's lifetime and only ever read.
@@ -63,6 +72,9 @@ def create_offload_policy(
     Raises:
         ValueError: If the name is unknown.
     """
+    for key in REMOVED_CONFIG_KEYS:
+        if key in configs:
+            logger.warning("%s was removed and has no effect; drop it", key)
     name = cast(
         str, configs.get(POLICY_CONFIG_KEY, LazyOffloadMode.EVICTION_AWARE.value)
     )

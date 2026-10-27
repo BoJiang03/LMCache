@@ -33,7 +33,10 @@ from vllm.v1.kv_cache_interface import (  # noqa: E402
 )
 
 # First Party
-from lmcache.integration.vllm import lazy_offload_lead  # noqa: E402
+from lmcache.integration.vllm import (  # noqa: E402
+    lazy_offload_lead,
+    lazy_offload_policy,
+)
 from lmcache.integration.vllm.lazy_offload_manager import (  # noqa: E402
     LazyOffloadManager,
 )
@@ -2314,3 +2317,33 @@ def test_landed_hybrid_chunk_is_counted_per_kind() -> None:
     assert counts["landed_mru_held_attention"] == 2
     assert counts["landed_mru_held_recurrent"] == 1
     assert counts["landed_mru_held_recurrent_tokens"] == TOKENS_PER_BLOCK
+
+
+@pytest.mark.parametrize(
+    "removed_key", [*lazy_offload_policy.REMOVED_CONFIG_KEYS, None]
+)
+def test_removed_config_key_is_warned_about(
+    monkeypatch: pytest.MonkeyPatch, removed_key: str | None
+) -> None:
+    """A removed key still in the config logs one warning naming it; a clean
+    config logs none.
+
+    The module logger does not propagate, so the test spies on it instead of
+    using ``caplog``.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        lazy_offload_policy.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(str(msg) % args),
+    )
+    configs = {} if removed_key is None else {removed_key: 2.5}
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+
+    _manager(pool, configs=configs)
+
+    if removed_key is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1
+        assert removed_key in warnings[0]
