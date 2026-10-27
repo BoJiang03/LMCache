@@ -1732,25 +1732,19 @@ class LazyOffloadManager:
             Requests left with nothing buffered or parked because their
             last parked ops were dropped.
         """
-        pool = self._require_block_pool()
         emptied: list[str] = []
         lost = 0
         for request_id in list(self._parked):
             kept: list[tuple[LMCacheMPRequestMetadata, BlockHashes]] = []
             readmitted = PendingStoreItem(request_id=request_id)
             for metadata, block_hashes in self._parked[request_id]:
-                blocks = [pool.blocks[block_id] for block_id in block_hashes]
-                if any(
-                    block.block_hash != block_hashes[block.block_id] for block in blocks
-                ):
+                intact, released = self._parked_state(block_hashes)
+                if not intact:
                     if drop_lost:
                         lost += 1
                     else:
                         kept.append((metadata, block_hashes))
-                elif any(
-                    block.ref_cnt <= self._pin_counts[block.block_id]
-                    for block in blocks
-                ):
+                elif released:
                     readmitted.metadatas.append((metadata, block_hashes))
                 else:
                     kept.append((metadata, block_hashes))
@@ -1765,6 +1759,33 @@ class LazyOffloadManager:
         if lost:
             self._require_policy().record_diagnostics({"held_ops_lost": lost})
         return emptied
+
+    def _parked_state(self, block_hashes: BlockHashes) -> tuple[bool, bool]:
+        """Read whether a parked op's blocks kept their hashes and were released.
+
+        One pass over the blocks: :meth:`_readmit_released` runs on every
+        drain and admission over every parked op, most of which a running
+        holder keeps for its whole decode.
+
+        Args:
+            block_hashes: The parked op's hash snapshot, keyed by block id.
+
+        Returns:
+            ``(intact, released)``: whether every block still holds its
+            snapshot hash, and whether vLLM references one of them no more
+            than this class's pins do. ``released`` is only meaningful when
+            ``intact``.
+        """
+        blocks = self._require_block_pool().blocks
+        pin_counts = self._pin_counts
+        released = False
+        for block_id, block_hash in block_hashes.items():
+            block = blocks[block_id]
+            if block.block_hash != block_hash:
+                return False, False
+            if not released and block.ref_cnt <= pin_counts.get(block_id, 0):
+                released = True
+        return True, released
 
     def _track_lead(self, operations: PendingStoreItem, now: float) -> None:
         """Start timing the overlap of every chunk a settled batch stored.
