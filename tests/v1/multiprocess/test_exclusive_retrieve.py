@@ -30,6 +30,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
+import random
 
 # Third Party
 import pytest
@@ -750,6 +751,76 @@ def test_restore_after_local_hit_demotion_promotes_resident_keys(
 
     assert server.storage.get_l1_usage()[0] == used_before
     assert set(server.victims()[-len(held) :]) == set(held)
+
+
+def _reset(srv: _Server) -> None:
+    """Back to the fixture's state: only the request's chunks and one
+    unrelated key in L1, no lock and no session."""
+    srv.storage.clear(force=True)
+    srv.sessions.remove("req")
+    full, recurrent = srv.keys()
+    srv.commit([OTHER_KEY])
+    srv.commit(full + recurrent)
+
+
+def _l1_state(
+    srv: _Server,
+) -> tuple[list[ObjectKey], list[bool], list[bool], set[ObjectKey]]:
+    """Eviction order, the recorded demotions, and which keys hold at least
+    one and at least two read locks (the second probed by releasing one;
+    this ends the server's use)."""
+    victims = srv.victims()
+    session = srv.sessions.get("req")
+    assert session is not None
+    locked = [not srv.l1.is_key_evictable(k) for k in victims]
+    srv.l1.finish_read(
+        [k for k, is_locked in zip(victims, locked, strict=True) if is_locked]
+    )
+    locked_twice = [not srv.l1.is_key_evictable(k) for k in victims]
+    return victims, locked, locked_twice, session.get_demoted_keys()
+
+
+def test_held_hint_free_equals_a_plain_free_and_a_demotion(
+    server: _Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Randomized, fixed seed: an exclusive FREE_LOOKUP_LOCKS with a held
+    hint leaves L1 exactly as a plain FREE of the same ranges followed by a
+    demotion-only FREE does. Lookup starts and held lengths are block-, not
+    chunk-aligned, and an abandoned lookup can leave an extra range past the
+    FREE's end, so every release range resolves against the shared hash."""
+    split_server = _Server(monkeypatch)
+    rng = random.Random(0)
+    total = CHUNK * NUM_CHUNKS
+    try:
+        for _ in range(100):
+            covered = rng.randrange(0, total + 1, 2)
+            relookup = rng.random() < 0.5
+            covered_again = rng.randrange(0, covered + 1, 2)
+            held = rng.randrange(0, total + 1, 2)
+            free_end = rng.choice([held, total, rng.randrange(0, total + 1)])
+            states = []
+            for srv in (server, split_server):
+                _reset(srv)
+                lookup = _lookup_module(srv, SEPARATE_GROUPS)
+                hit = _look_up(lookup, True, covered)
+                extra: tuple[tuple[int, int], ...] = ()
+                if relookup:
+                    # The first lookup is abandoned with its locks held.
+                    extra = ((covered, hit * CHUNK),)
+                    _look_up(lookup, True, covered_again)
+                if srv is split_server:
+                    lookup.free_lookup_locks(
+                        _scheduler_key(False, 0, free_end), 1, extra
+                    )
+                    lookup.free_lookup_locks(_scheduler_key(True, 0, 0, held), 1)
+                else:
+                    lookup.free_lookup_locks(
+                        _scheduler_key(True, 0, free_end, held), 1, extra
+                    )
+                states.append(_l1_state(srv))
+            assert states[0] == states[1], (covered, relookup, held, free_end)
+    finally:
+        split_server.close()
 
 
 @pytest.mark.parametrize(
