@@ -26,6 +26,7 @@ from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType, next_transfer_key
 from lmcache.v1.multiprocess.affinity_pool import AffinityOrder
 from lmcache.v1.multiprocess.custom_types import (
+    EXCLUSIVE_RETRIEVE,
     IPCCacheServerKey,
     KVCache,
 )
@@ -261,10 +262,15 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
 
     @classmethod
     def create(cls, build_ctx: ModuleBuildContext) -> EngineModule | None:
-        """Build unless the transfer mode excludes the LMCache-driven path."""
+        """Build unless the transfer mode excludes the LMCache-driven path.
+
+        The built module advertises ``EXCLUSIVE_RETRIEVE``, since its retrieve
+        demotes loaded chunks for requests that ask for it.
+        """
         mode = build_ctx.mp_config.supported_transfer_mode
         if mode == "engine_driven":
             return None
+        build_ctx.add_experimental(EXCLUSIVE_RETRIEVE)
         return cls(build_ctx.engine_context)
 
     def __init__(self, ctx: MPCacheServerContext) -> None:

@@ -91,6 +91,7 @@ from lmcache.utils import CacheRemoveEvent
 from lmcache.utils import init_logger as lmcache_init_logger
 from lmcache.v1.multiprocess.custom_types import (
     ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
     SHARED_HELD_TOKENS_HINT,
 )
@@ -975,6 +976,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 extra_config=vllm_config.kv_transfer_config.kv_connector_extra_config,
                 required_chunk_alignment=scheduler_block_size,
             )
+            # A connector may be upgraded before its server; an older server
+            # ignores the XR request config, so XR there would only re-store
+            # hits. Lazy offload alone is safe against it.
+            if (
+                self.exclusive_retrieve
+                and EXCLUSIVE_RETRIEVE not in self.scheduler_adapter.experimental
+            ):
+                logger.warning(
+                    "lmcache.mp.exclusive_retrieve is disabled: the LMCache "
+                    "server does not advertise %s; running lazy offload "
+                    "without exclusive retrieve",
+                    EXCLUSIVE_RETRIEVE,
+                )
+                self.exclusive_retrieve = False
             self.request_trackers: dict[str, LMCacheMPRequestTracker] = {}
             # Worker events aggregated per step, awaiting take_events().
             self._kv_cache_events: list[KVCacheEvent] = []

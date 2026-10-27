@@ -319,11 +319,18 @@ request, never wrong KV:
 ```text
 kv_connector_extra_config["lmcache.mp.exclusive_retrieve"]
   -> LMCacheMPConnector.exclusive_retrieve      (ValueError without lazy offload)
+  -> kept only if every server's GET_EXPERIMENTAL lists "exclusive_retrieve"
   -> tracker.request_configs[...] = True        (user-supplied value stripped)
   -> LMCacheMPRequestMetadata.request_configs   (RETRIEVE and STORE)
   -> worker adapter key -> IPCCacheServerKey.request_configs
   -> IPCCacheServerKey.requests_exclusive_retrieve() on the server
 ```
+
+A server advertises `exclusive_retrieve` when it builds the LMCache-driven
+transfer module. Against one that does not (older, or `engine_driven`), the
+scheduler connector logs one WARNING and runs lazy offload alone: an older server
+ignores the request config, so XR would only re-store hits, and refusing to start
+would turn a connector-first rolling upgrade into an outage.
 
 The held prefix travels only on the post-allocation FREE_LOOKUP_LOCKS:
 

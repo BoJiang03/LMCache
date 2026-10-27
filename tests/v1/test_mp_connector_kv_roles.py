@@ -58,6 +58,7 @@ from lmcache.utils import CacheStoreEvent  # noqa: E402
 from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
     ENGINE_HELD_BLOCKS_HINT,
     ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
     SHARED_HELD_TOKENS_HINT,
 )
@@ -213,7 +214,8 @@ def lazy_offload(request: pytest.FixtureRequest) -> bool:
 @pytest.fixture
 def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Stub transport, telemetry and GPU resources, keeping worker logic real."""
-    scheduler = MagicMock(lmcache_tokens_per_chunk=4)
+    # A current server: it advertises exclusive retrieve.
+    scheduler = MagicMock(lmcache_tokens_per_chunk=4, experimental={EXCLUSIVE_RETRIEVE})
     scheduler.check_lookup_result.return_value = 0
     transfer = MagicMock()
     transfer.create_recorded_event.return_value = None
@@ -1006,6 +1008,53 @@ def test_exclusive_retrieve_requires_lazy_offload(mock_io: SimpleNamespace) -> N
     )
     with pytest.raises(ValueError, match="exclusive_retrieve requires"):
         LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+
+
+@pytest.mark.parametrize("advertised", [False, True])
+def test_exclusive_retrieve_needs_a_server_advertising_it(
+    mock_io: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, advertised: bool
+) -> None:
+    """Against a server that does not advertise exclusive retrieve, the
+    connector warns and runs lazy offload alone: the hit prefix is not
+    re-stored and no request asks the server for exclusive retrieve."""
+    mock_io.scheduler.experimental = {EXCLUSIVE_RETRIEVE} if advertised else set()
+    warnings: list[str] = []
+    # The module logger does not propagate, so caplog cannot see it.
+    monkeypatch.setattr(
+        connector_mod.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(msg % args),
+    )
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.exclusive_retrieve": True,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    request = _request()
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        assert scheduler.get_num_new_matched_tokens(request, 4) == (4, True)
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2],)), 4
+        )
+        tracker = scheduler.request_trackers[request.request_id]
+        assert tracker.num_stored_tokens == (0 if advertised else 8)
+        (retrieve,) = scheduler.build_connector_meta(_schedule()).requests
+        assert retrieve.request_configs == (
+            {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if advertised else None
+        )
+        xr_warnings = [w for w in warnings if "exclusive_retrieve" in w]
+        assert len(xr_warnings) == (0 if advertised else 1)
+    finally:
+        scheduler.shutdown()
 
 
 @pytest.mark.parametrize("exclusive", [False, True])

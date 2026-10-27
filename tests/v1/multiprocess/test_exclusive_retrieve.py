@@ -57,9 +57,12 @@ from lmcache.v1.distributed.storage_manager import StorageManager
 from lmcache.v1.kv_layer_groups import ObjectGroupInfo
 from lmcache.v1.mp_observability.event import EventType
 from lmcache.v1.multiprocess import native_completion
+from lmcache.v1.multiprocess import server as server_mod
+from lmcache.v1.multiprocess.config import CoordinatorConfig, MPServerConfig
 from lmcache.v1.multiprocess.custom_types import (
     ENGINE_HELD_BLOCKS_HINT,
     ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
     SHARED_HELD_TOKENS_HINT,
     IPCCacheServerKey,
@@ -67,6 +70,7 @@ from lmcache.v1.multiprocess.custom_types import (
 from lmcache.v1.multiprocess.engine_context import LayoutDescRegistry
 from lmcache.v1.multiprocess.modules import lmcache_driven_transfer as transfer
 from lmcache.v1.multiprocess.modules.lookup import LookupModule
+from lmcache.v1.multiprocess.modules.management import ManagementModule
 from lmcache.v1.multiprocess.session import SessionManager
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 import lmcache.v1.memory_management as memory_management
@@ -956,3 +960,22 @@ def test_exclusive_end_session_touches_no_l1_key(server: _Server) -> None:
     LookupModule(lookup_ctx).end_session("req")
 
     assert server.victims() == before
+
+
+@pytest.mark.parametrize(
+    ("mode", "advertised"),
+    [("lmcache_driven", True), ("auto", True), ("engine_driven", False)],
+)
+def test_server_advertises_exclusive_retrieve_with_lmcache_driven_transfer(
+    stub_module_resources: Any, mode: str, advertised: bool
+) -> None:
+    """GET_EXPERIMENTAL names exclusive retrieve exactly when the server
+    serves LMCache-driven retrieves, whose demotion implements it."""
+    modules = server_mod._build_modules(
+        MagicMock(name="ctx"),
+        MPServerConfig(worker_reap_timeout_seconds=0, supported_transfer_mode=mode),
+        CoordinatorConfig(),
+    )
+    management = next(m for m in modules if isinstance(m, ManagementModule))
+
+    assert (EXCLUSIVE_RETRIEVE in management.get_experimental()) is advertised
