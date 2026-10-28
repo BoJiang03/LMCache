@@ -90,6 +90,7 @@ class _FakeStorageManager:
         self,
         keys: list[object],
         layout: object,
+        out_of_memory_keys: list[object] | None = None,
     ) -> dict[object, object]:
         return {}
 
