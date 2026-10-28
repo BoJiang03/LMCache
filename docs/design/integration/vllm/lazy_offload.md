@@ -369,9 +369,9 @@ also keeps the batch's operations: a batch that failed and is not orphaned
 goes back to the policy once every rank has reported, and is stored again,
 because its blocks were pinned and still hold the data.
 Overlapping emission remains a logic error because worker receipts are keyed
-only by request id. The completion receipt balances the pins: a block that
-sat in the free queue when it was pinned goes back to the queue head, where
-eviction order had it, unless another request's op still buffers it (step 4
+only by request id. The completion receipt balances the pins: a block the
+drain pinned while it sat in the free queue goes back to the queue head,
+where eviction order had it, unless another request's op still buffers it (step 4
 of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)). Failed stores
 are reported alongside completion receipts, so the scheduler requeues a
 failed range in token order among the request's buffered chunks and its

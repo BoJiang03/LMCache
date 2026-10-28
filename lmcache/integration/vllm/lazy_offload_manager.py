@@ -304,8 +304,9 @@ class LazyOffloadManager:
         self._token_ledgers: dict[str, bytearray] = {}
         # Blocks pinned for held operations, per request, until submission.
         self._held_block_ids: dict[str, set[int]] = {}
-        # Pinned blocks that sat in the free queue when pinned: unpinning
-        # returns them to its head, where eviction order had them.
+        # Blocks the drain or a protection pinned while they sat in the free
+        # queue: unpinning returns them to its head, where eviction order had
+        # them.
         self._pinned_while_free: set[int] = set()
         # This class's references per block, which a block's ref_cnt
         # counts too: the rest are vLLM's.
@@ -512,7 +513,9 @@ class LazyOffloadManager:
         offload would have stored them; the ops the hit covers stay
         buffered. Until their receipts settle, the caller defers the
         lookup, which then hits L1. Found through the chunk hashes of the
-        request's chain, so the cost is linear in its chunks.
+        request's chain, so the cost is linear in its chunks. The receipt
+        frees the flushed blocks to the free-queue tail, not the head, so
+        the flush does not evict the request's own hit-point state block.
 
         Args:
             request_id: A waiting request whose lookup was not yet
@@ -704,8 +707,10 @@ class LazyOffloadManager:
         holding the request's last cached block, which the hit drops. vLLM
         calls this before it frees the request's blocks, so the pin keeps
         them out of the free queue, and the receipt frees them to its tail
-        as vLLM would have, rather than to the head an op pinned while
-        free returns to.
+        as vLLM would have. That holds too for a block vLLM already freed,
+        such as an align-mode Mamba state block: the hold does not send it
+        to the head on release, where the next allocation would evict the
+        state the next turn's hit resumes at.
 
         Args:
             request_id: The request vLLM reported as finished.
@@ -722,7 +727,7 @@ class LazyOffloadManager:
         if policy.has_pending_request(request_id):
             held = policy.hold_past(request_id, self._hit_tokens(request_id))
             if held.metadatas:
-                self._pin_holds([held])
+                self._pin_holds([held], release_to_head=False)
         if self._has_buffered(request_id):
             return LazyOffloadActions()
         if self._requests.has_in_flight(request_id):
@@ -934,7 +939,7 @@ class LazyOffloadManager:
         )
         for request_id in drain.releases:
             self._release_holds(request_id)
-        self._pin_holds(drain.holds)
+        self._pin_holds(drain.holds, release_to_head=True)
         diagnostics: Counter[str] = Counter()
         for item in drain.items:
             if self._requests.has_in_flight(item.request_id):
@@ -1333,7 +1338,7 @@ class LazyOffloadManager:
         """
         protection = self._require_policy().protect(num_blocks)
         self._move_to_tail(protection.to_tail)
-        self._pin_holds(protection.holds)
+        self._pin_holds(protection.holds, release_to_head=True)
 
     def _move_to_tail(self, items: list[PendingStoreItem]) -> None:
         """Move buffered blocks to the free-queue tail, unpinned.
@@ -1364,7 +1369,9 @@ class LazyOffloadManager:
         self._handed_blocks.pop(request_id, None)
         self._table_lengths.pop(request_id, None)
 
-    def _pin_holds(self, holds: list[PendingStoreItem]) -> None:
+    def _pin_holds(
+        self, holds: list[PendingStoreItem], *, release_to_head: bool
+    ) -> None:
         """Pin the blocks of operations the policy just marked held.
 
         The policy checked these snapshots in the same call, and nothing
@@ -1372,11 +1379,19 @@ class LazyOffloadManager:
 
         Args:
             holds: The policy's new holds, one entry per request.
+            release_to_head: Whether the unpin returns blocks pinned while
+                free to the free-queue head. Only for holds the danger
+                window met near the head; a hold taken to store a chunk
+                eager offload would have stored (a finished request's tail,
+                a lookup flush) can sit anywhere in the queue, and at the
+                head the next allocation would evict a block vLLM still
+                serves hits from, such as a Mamba state block vLLM freed
+                before the request finished.
         """
         for hold in holds:
             held = self._held_block_ids.setdefault(hold.request_id, set())
             for _, block_hashes in hold.metadatas:
-                self._pin(list(block_hashes))
+                self._pin(list(block_hashes), release_to_head=release_to_head)
                 held.update(block_hashes)
 
     def _release_holds(self, request_id: str) -> None:
@@ -1955,19 +1970,23 @@ class LazyOffloadManager:
                 {"held_ops_dropped": len(dropped)}
             )
 
-    def _pin(self, block_ids: list[int]) -> None:
+    def _pin(self, block_ids: list[int], *, release_to_head: bool = True) -> None:
         """Pin blocks, remembering which ones were waiting for eviction.
 
         Args:
             block_ids: The blocks to pin, in eviction order.
+            release_to_head: Whether :meth:`_unpin` returns the ones that
+                were free to the queue head. False leaves them where
+                ``BlockPool.free_blocks`` puts them, the tail.
         """
         pool = self._require_block_pool()
         blocks = [pool.blocks[block_id] for block_id in block_ids]
-        self._pinned_while_free.update(
-            block_id
-            for block_id, block in zip(block_ids, blocks, strict=True)
-            if block.ref_cnt == 0
-        )
+        if release_to_head:
+            self._pinned_while_free.update(
+                block_id
+                for block_id, block in zip(block_ids, blocks, strict=True)
+                if block.ref_cnt == 0
+            )
         pool.touch(blocks)
         self._pin_counts.update(block_ids)
 
@@ -1975,8 +1994,10 @@ class LazyOffloadManager:
         """Release pins, returning formerly free blocks to the queue head.
 
         ``BlockPool.free_blocks`` appends a cached block to the tail as if
-        just used; a block this manager pinned out of the free queue was
-        near the head, so the head is closer to its place in eviction order.
+        just used; a block the drain or a protection pinned out of the free
+        queue was near the head, so the head is closer to its place in
+        eviction order. Blocks pinned with ``release_to_head=False`` stay
+        at the tail.
         A block another request still owns stays wherever vLLM puts it, and
         so does one a buffered operation still covers: a request sharing the
         prefix buffered it too, and at the head it would sit inside the danger
@@ -2182,7 +2203,7 @@ class LazyOffloadManager:
         flush = self._require_policy().flush_for_lookup(start, ends)
         if not flush.ends:
             return
-        self._pin_holds(flush.holds)
+        self._pin_holds(flush.holds, release_to_head=False)
         self._lookup_flushes[request_id] = (start, flush.ends)
         self._require_policy().record_diagnostics(
             {

@@ -42,7 +42,7 @@ buffered block:
 | `append_n` (free, cached)   | vLLM `free_blocks`, `unpin_blocks`   | joins the tail                         |
 | `prepend_n` (free, no hash) | vLLM `free_blocks`                   | never buffered (`add()` rejects it)    |
 | `remove` (touch)            | prefix hit, our pin                  | leaves the queue                       |
-| head return on unpin        | `LazyOffloadManager._unpin`          | stored blocks only, never a buffered one (step 4) |
+| head return on unpin        | `LazyOffloadManager._unpin`          | stored blocks only, never a buffered one (step 4); not for `hold_past` or lookup-flush pins |
 | tail move                   | `LazyOffloadManager._move_to_tail`   | joins the tail                         |
 
 So nothing is lost if, before every allocation of `n` blocks, the first
@@ -136,6 +136,18 @@ request for the step, without allocating for it or blocking the requests
 behind it. Once the receipts settle, the lookup goes out and hits L1. The
 check runs once per request generation; a lookup already submitted (eager
 prefetch) is not held back.
+
+Neither pin may change vLLM's eviction order, since lazy offload decides
+when a chunk is stored, never whether vLLM keeps it. Their receipts free
+the blocks to the tail, unlike the drain's, which return a block pinned
+while free to the head (step 4 of the per-step protocol below): a drain only pins
+blocks its window met near the head, but these pins reach anywhere. An
+align-mode Mamba group frees a request's prompt-end state block before
+`request_finished`, so `hold_past` pins it while it is free; returned to
+the head, the next allocation evicted it, and the next turn's local hit
+fell back to an earlier state (measured offline on the real scheduler:
+from 19 blocks to 15, and to 10 when a lookup flush did the same to the
+waiting request's own hit-point state).
 
 ## Per-step protocol (policy-caller obligations)
 
@@ -237,7 +249,7 @@ lifecycle events to it.
    transition -- teardown additionally requires the registry to say the
    request is finished with no submitted batch.
 4. On a store-completion receipt, complete the batch and unpin. A block
-   that sat in the free queue when it was pinned goes back to the queue
+   the drain pinned while it sat in the free queue goes back to the queue
    **head**, in order: `free_blocks` would append it as most recently used,
    while eviction order had it next, so every lazy store would otherwise
    refresh the GPU prefix cache's LRU. A block a request still owns is left
@@ -250,12 +262,14 @@ lifecycle events to it.
    says the request is finished and the policy has nothing pending.
 5. On `request_finished`, call `hold_past(id, hit)` with vLLM's hit over
    the request's chain and pin what it returns, while the request still
-   owns those blocks. Record `FINISHED` in the registry; end immediately
+   owns those blocks; on its receipt they go to the tail, also a block
+   vLLM already freed. Record `FINISHED` in the registry; end immediately
    only under the same predicate, otherwise a later drain or receipt applies
    it.
 6. Before a waiting request's lookup, `flush_for_lookup(start, ends)` with
    its local hit and the requests buffering chunks of its prefix past it;
-   pin the returned holds, and defer the lookup while `is_flushing` or an
+   pin the returned holds (released to the tail, like step 5's), and
+   defer the lookup while `is_flushing` or an
    open batch covers a flushed range.
 7. On preemption tracker reset, call `drop_request(id)`: buffered ops and
    prefix-validity state are discarded, and the manager unpins held ops (as

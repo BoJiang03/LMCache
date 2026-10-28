@@ -2520,3 +2520,50 @@ def test_lookup_flushes_only_up_to_the_last_state() -> None:
 
     assert _span(store) == (0, 2)
     assert store.op.block_ids == [attention[:2], [null, state]]
+
+
+def test_state_block_freed_before_its_request_finished_survives_the_store() -> None:
+    """A finished request's chunk vLLM's hit does not serve (speculative
+    decoding drops the last block, and no earlier state is cached) is
+    stored, its Mamba state included, which align mode freed before the
+    finish. Once
+    the store settles, the next allocation does not evict that state: the
+    store leaves it where vLLM queued it, not at the free-queue head."""
+    coordinator = _coordinator(mamba=True, num_blocks=64, use_eagle=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(2)
+    attention = [block.block_id for block in pool.get_new_blocks(2)]
+    (state,) = [block.block_id for block in pool.get_new_blocks(1)]
+    _cache(pool, chain, [attention, [null, state]])
+    manager = _manager(
+        pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
+    )
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_op(0, [[attention[0]], [null]]))
+    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[attention[1]], [state]]))
+    pool.free_blocks([pool.blocks[state]])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    manager.on_request_finished("req")
+    pool.free_blocks([pool.blocks[block_id] for block_id in reversed(attention)])
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert state in store.op.block_ids[1]
+    manager.on_store_results(set(), {"req": 1})
+
+    assert pool.get_new_blocks(1)[0].block_id != state
+
+
+def test_block_a_lookup_flush_stored_is_not_evicted_next() -> None:
+    """The free blocks a lookup flush stores keep their place in vLLM's
+    eviction order: once the store settles, the next allocation takes none
+    of them."""
+    manager, pool, block_ids = _deferred_turn(3)
+    manager.on_request_arrived("next", _chain(4))
+    assert manager.flush_for_lookup("next", 0)
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    manager.on_store_results(set(), {"req": 1})
+
+    assert not manager.flush_for_lookup("next", 0)
+    assert pool.get_new_blocks(1)[0].block_id not in block_ids
