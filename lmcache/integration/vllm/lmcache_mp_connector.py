@@ -235,6 +235,34 @@ def _iter_kv_cache_specs(kv_cache_config: "KVCacheConfig | None") -> Iterable[An
             yield group_spec
 
 
+def _get_recurrent_group_ids(
+    kv_cache_config: "KVCacheConfig | None",
+) -> tuple[int, ...]:
+    """Return the indices of the KV cache groups that hold recurrent state.
+
+    Args:
+        kv_cache_config: vLLM's resolved KV cache group configuration.
+
+    Returns:
+        Engine group indices whose spec is a ``MambaSpec`` (Mamba / GDN /
+        linear attention), in group order; empty without group metadata.
+    """
+    recurrent_group_ids: list[int] = []
+    groups = kv_cache_config.kv_cache_groups if kv_cache_config is not None else []
+    for group_idx, group in enumerate(groups):
+        per_layer_specs = getattr(group.kv_cache_spec, "kv_cache_specs", None)
+        specs = (
+            list(per_layer_specs.values())
+            if isinstance(per_layer_specs, dict)
+            else [group.kv_cache_spec]
+        )
+        if any(
+            cls.__name__ == "MambaSpec" for spec in specs for cls in type(spec).__mro__
+        ):
+            recurrent_group_ids.append(group_idx)
+    return tuple(recurrent_group_ids)
+
+
 def get_group_tokens_per_block(
     vllm_config: VllmConfig,
     kv_cache_config: "KVCacheConfig | None",
@@ -774,6 +802,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
             # GPU block pool reference
             self._gpu_block_pool: "BlockPool | None" = None
+            # Without prefix caching vLLM hashes no block, so a missing hash
+            # says nothing about reuse and no recurrent state is dropped.
+            self._recurrent_group_ids = (
+                _get_recurrent_group_ids(kv_cache_config)
+                if vllm_config.cache_config.enable_prefix_caching
+                else ()
+            )
         elif self.role == KVConnectorRole.WORKER:
             # Node routing: a worker connects only to its local LMCache server.
             # Global ranks are assigned to nodes in contiguous blocks:
@@ -1852,6 +1887,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 save_decode_cache=self._save_decode_cache,
             )
             if r_meta is not None:
+                self._drop_uncached_states(r_meta)
                 # In lazy_offload mode, add to pending queue instead of immediate store
                 if self.lazy_offload:
                     self._lazy_offload_manager.add_store_candidate(r_meta)
@@ -1895,6 +1931,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             )
 
             if r_meta is not None:
+                self._drop_uncached_states(r_meta)
                 # In lazy_offload mode, add to pending queue instead of immediate store
                 if self.lazy_offload:
                     self._lazy_offload_manager.add_store_candidate(r_meta)
@@ -2001,6 +2038,36 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             new_tracker = LMCacheMPRequestTracker(request)
             self.request_trackers[request_id] = new_tracker
         return self.request_trackers[request_id]
+
+    def _drop_uncached_states(self, metadata: LMCacheMPRequestMetadata) -> None:
+        """Replace the uncached recurrent states of a store with the null block.
+
+        An uncached state is a recurrent-group block that is not the null
+        block but has no prefix-cache hash. Under sparse retention vLLM leaves
+        every step-end state unhashed and frees it on the next step, so no
+        prefix hit can resume from it; storing it only costs bandwidth and
+        capacity. Nulled, its chunk is dropped by the server's all-null-chunk
+        skip. vLLM hashes the states it keeps in ``allocate_slots``, before
+        ``build_connector_meta``, so a kept state is never dropped here.
+        Attention and sliding-window groups are left untouched.
+
+        Args:
+            metadata: A store operation built this step; its block ids are
+                edited in place, before eager submission or lazy admission.
+        """
+        pool = self._gpu_block_pool
+        # vLLM releases without the bind hook expose no hashes to filter on.
+        if pool is None:
+            return
+        null_block_id = pool.null_block.block_id
+        for group_idx in self._recurrent_group_ids:
+            group_block_ids = metadata.op.block_ids[group_idx]
+            for slot, block_id in enumerate(group_block_ids):
+                if (
+                    block_id != null_block_id
+                    and pool.blocks[block_id].block_hash is None
+                ):
+                    group_block_ids[slot] = null_block_id
 
     def _cleanup_request_tracker(self, request_id: str) -> None:
         """

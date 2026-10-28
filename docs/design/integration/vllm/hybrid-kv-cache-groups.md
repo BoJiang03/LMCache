@@ -229,6 +229,32 @@ The server then sees an all-zero chunk for the Mamba group and skips it, and
 the next hit ends one chunk earlier. Needs `--separate-object-groups` and
 chunk size equal to the Mamba block size.
 
+### Uncached states
+
+In align mode every scheduler step leaves its final recurrent state in a real
+block. Under sparse retention (`--prefix-cache-retention-interval 0`, the
+default in vLLM builds that offer it) vLLM hashes only the states a later request can resume from (the
+prompt end and shared-prefix junctions); every other step-end state stays
+unhashed and is freed on the next step. Storing it costs one state page per
+step and no prefix hit can ever load it.
+
+So a block of a `MambaSpec` group that is not the null block but has no
+block hash is an *uncached state*, and the scheduler connector replaces it
+with the null block in each store operation, before eager submission or lazy
+admission; the all-null chunk skip above then drops it. Example, a 20k-token
+prompt with block size 3168 and an 8192-token budget, first step `[0, 6336)`:
+
+```
+attention:  [A0, A1]   hashed        -> stored
+GDN state:  [null, S1] S1 unhashed   -> [null, null], chunk skipped
+```
+
+The rule is safe because vLLM assigns those hashes in `allocate_slots`
+(`coordinator.cache_blocks`), within the same `schedule()` call and before
+`build_connector_meta`. Under dense retention every chunk's state is hashed,
+so nothing is dropped. Attention and sliding-window groups are never touched,
+and without prefix caching (no hashes at all) the rule is off.
+
 ## Code map
 
 | Area | File |
