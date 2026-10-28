@@ -634,6 +634,29 @@ class TestKernelAndObjectGroups:
         assert attn_desc.num_chunks_in_sw[2] >= 1
         assert attn_desc.group_kinds == ("attention", "attention", "recurrent")
 
+    @pytest.mark.parametrize("separate", [False, True])
+    def test_engine_held_windows_follow_every_layer(self, separate: bool):
+        # The engine holds a chunk of an object group only if every layer in
+        # it does: full attention every chunk, a sliding window its trailing
+        # chunks, a recurrent layer only the chunk at the held prefix's end.
+        tensors = [torch.randn(2, 32, 32, 8, 64, dtype=torch.float16) for _ in range(3)]
+        manager = _build_manager(
+            tensors,
+            engine_group_infos=[
+                EngineGroupInfo(0, (0,)),
+                EngineGroupInfo(1, (1,), sw_size_tokens=64),
+                EngineGroupInfo(2, (2,), sw_size_tokens=32, recurrent_state=True),
+            ],
+            separate_object_groups=separate,
+        )
+        attn_desc = manager.get_attn_desc()
+        if separate:
+            sw_window = attn_desc.num_chunks_in_sw[1]
+            assert attn_desc.engine_held_windows == (-1, sw_window, 0)
+        else:
+            # One mixed group: the recurrent layers decide.
+            assert attn_desc.engine_held_windows == (0,)
+
     def test_object_group_separation_disabled_ignores_aux_flag(self):
         # With separation off, the extra-group tag has no effect: everything
         # still collapses into the single fused object group.

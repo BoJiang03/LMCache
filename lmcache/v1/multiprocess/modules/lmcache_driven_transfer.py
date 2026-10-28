@@ -24,6 +24,7 @@ from lmcache.v1.kv_layer_groups import ObjectGroupInfo
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.mp_observability.event import Event, EventType, next_transfer_key
 from lmcache.v1.multiprocess.custom_types import (
+    EXCLUSIVE_RETRIEVE,
     IPCCacheServerKey,
     KVCache,
 )
@@ -93,15 +94,23 @@ def all_null_chunk_masks(
     blocks_per_chunk: Sequence[int],
     num_chunks: int,
     null_block_id: int = 0,
+    skip_partly_null: bool = False,
 ) -> list[list[bool]]:
-    """Mark, per object group, the chunks whose engine block ids are all null.
+    """Mark, per object group, the chunks whose engine block ids are null.
 
-    A chunk is null for an object group when every block ID of every kernel
-    group equals the server's null marker. Align-mode Mamba/linear
+    By default a chunk is null for an object group when every block ID of
+    every kernel group equals the server's null marker. Align-mode Mamba/linear
     layers produce such chunks: only the block holding the last recurrent state
     is real, so every earlier chunk is null. These chunks must not be stored --
     the null block carries no valid KV, and object keys are content hashes, so
     committing them would serve garbage to a later prefix hit.
+
+    Exclusive-retrieve re-stores need ``skip_partly_null``: they re-store
+    chunks loaded from L1, and vLLM fills a loaded chunk's Mamba blocks with
+    the null block except at the tail. In a mixed object group (attention and
+    Mamba in one object, the default without separate object groups) such a
+    chunk has real attention blocks, so the default rule would commit it with
+    the null block's contents as its recurrent state.
 
     Args:
         block_ids: Raw per-kernel-group engine block ids (before any downsample),
@@ -112,24 +121,25 @@ def all_null_chunk_masks(
         num_chunks: Number of chunks in the request.
         null_block_id: Server-wide block ID denoting absent data. Defaults to
             the historical vLLM null block zero.
+        skip_partly_null: Mark a chunk null when ANY kernel group of the object
+            group has only null blocks in it, instead of when ALL do.
 
     Returns:
-        ``mask[g][i]`` is True iff chunk ``i`` is all-null for object group ``g``.
+        ``mask[g][i]`` is True iff chunk ``i`` is null for object group ``g``.
     """
+    combine = any if skip_partly_null else all
     masks: list[list[bool]] = []
     for group in object_groups:
         chunk_null: list[bool] = []
         for i in range(num_chunks):
-            is_null = True
+            kernel_group_null: list[bool] = []
             for kg in group.kernel_group_indices:
                 bpc = blocks_per_chunk[kg]
-                if any(
-                    block != null_block_id
-                    for block in block_ids[kg][i * bpc : (i + 1) * bpc]
-                ):
-                    is_null = False
-                    break
-            chunk_null.append(is_null)
+                chunk_blocks = block_ids[kg][i * bpc : (i + 1) * bpc]
+                kernel_group_null.append(
+                    all(block == null_block_id for block in chunk_blocks)
+                )
+            chunk_null.append(combine(kernel_group_null))
         masks.append(chunk_null)
     return masks
 
@@ -180,10 +190,15 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
 
     @classmethod
     def create(cls, build_ctx: ModuleBuildContext) -> EngineModule | None:
-        """Build unless the transfer mode excludes the LMCache-driven path."""
+        """Build unless the transfer mode excludes the LMCache-driven path.
+
+        The built module advertises ``EXCLUSIVE_RETRIEVE``, since its retrieve
+        demotes loaded chunks for requests that ask for it.
+        """
         mode = build_ctx.mp_config.supported_transfer_mode
         if mode == "engine_driven":
             return None
+        build_ctx.add_experimental(EXCLUSIVE_RETRIEVE)
         return cls(build_ctx.engine_context)
 
     def __init__(self, ctx: MPCacheServerContext) -> None:
@@ -217,6 +232,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         self._device_host_func_dispatcher.register(
             "finish_read_by_owner",
             self._ctx.storage_manager.finish_read_by_owner,
+            payload_type=L1WriteCompletion,
+        )
+        self._device_host_func_dispatcher.register(
+            "demote_l1_keys",
+            self._ctx.storage_manager.demote_l1_keys,
             payload_type=L1WriteCompletion,
         )
         self._device_host_func_dispatcher.register(
@@ -718,7 +738,8 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             # Chunks whose block ids are all the null block (e.g. align-mode
             # Mamba chunks holding no real state) carry no valid KV and must not
             # be committed. Computed on the raw block ids before downsampling
-            # mutates them.
+            # mutates them. Exclusive re-stores also skip chunks that are null
+            # in only some kernel groups (see all_null_chunk_masks).
             null_block_id = self._ctx.null_block_id
             skipped_chunks = all_null_chunk_masks(
                 gpu_block_ids,
@@ -726,6 +747,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 blocks_per_chunk,
                 num_chunks,
                 null_block_id,
+                skip_partly_null=key.requests_exclusive_retrieve(),
             )
 
             block_ids_per_group_gpu = downsample_and_stage_block_ids(
@@ -780,6 +802,9 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
 
             reserved_dict: dict[ObjectKey, MemoryObj] = {}
             all_dict: dict[ObjectKey, MemoryObj] = {}
+            # Keys neither reserved nor out of memory: already resident (or
+            # being written), touched below for an exclusive-retrieve request.
+            resident_keys: list[ObjectKey] = []
             total_bytes: int = 0
             store_succeeded = False
             try:
@@ -794,8 +819,17 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         self._ctx.chunk_size,
                         object_group_id=obj_group_id,
                     )
+                    group_oom_keys: list[ObjectKey] = []
                     reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc, out_of_memory_keys
+                        keys_to_reserve, layout_desc, group_oom_keys
+                    )
+                    if out_of_memory_keys is not None:
+                        out_of_memory_keys.extend(group_oom_keys)
+                    oom_set = set(group_oom_keys)
+                    resident_keys.extend(
+                        k
+                        for k in keys_to_reserve
+                        if k not in reserved_dict and k not in oom_set
                     )
                     all_dict.update(reserved_dict)
                     if reserved_dict:
@@ -827,6 +861,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                     if all_dict
                     else []
                 )
+                # An exclusive retrieve demoted these keys when it loaded
+                # them; the engine stores them again only when it is about to
+                # drop its GPU copy, so the L1 copy becomes the primary again.
+                if resident_keys and key.requests_exclusive_retrieve():
+                    self._ctx.storage_manager.touch_cached_keys(resident_keys)
                 store_succeeded = True
             except Exception:
                 logger.exception("Cannot store keys due to exception")
@@ -1128,6 +1167,22 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         "finish_read_by_owner",
                         read_completion,
                     )
+                # A successful retrieve read every retained key, so
+                # read_completion holds exactly the loaded keys. Demoting
+                # after the copy keeps the L1 copy until the GPU has its own.
+                if (
+                    retrieve_succeeded
+                    and retained_keys
+                    and key.requests_exclusive_retrieve()
+                ):
+                    submit_callback_to_stream(
+                        cache_context.cupy_stream,
+                        "demote_l1_keys",
+                        read_completion,
+                    )
+                    self._ctx.session_manager.get_or_create(
+                        key.request_id
+                    ).record_demoted_keys(prefetched_keys)
                 num_tokens = (
                     num_chunks * self._ctx.chunk_size
                     if len(prefetched_keys) == expected_retained

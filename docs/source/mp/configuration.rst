@@ -1040,6 +1040,13 @@ from the in-process connector's ``save_decode_cache`` YAML/environment setting.
      - Lazy drain policy. ``EVICTION_AWARE`` drains blocks near the GPU free
        queue's eviction head. Set ``FIFO`` explicitly to keep the
        count-triggered behavior.
+   * - ``lmcache.mp.exclusive_retrieve``
+     - ``false``
+     - After a chunk is loaded from L1 into GPU blocks, move its L1 copy to
+       the front of the eviction order (it is not deleted), and store the
+       loaded chunk again lazily before vLLM evicts it. Keeps GPU and L1
+       contents mostly disjoint. Requires ``lmcache.mp.lazy_offload``;
+       LMCache-driven transfer only. See :doc:`lazy_offload`.
    * - ``lmcache.mp.lazy_offload_threshold``
      - ``100``
      - ``FIFO`` only: number of finished buffered requests that triggers a

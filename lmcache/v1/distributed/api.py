@@ -494,6 +494,16 @@ class AttnWindowDesc:
     Empty when the producer predates kinds (treat every group as
     attention)."""
 
+    engine_held_windows: tuple[int, ...] = ()
+    """Optional per-group rule for which chunks of a prefix the engine holds
+    in every layer of the group, parallel to ``num_chunks_in_sw``; see
+    :meth:`engine_held_chunks`. ``-1``: every chunk (full attention). ``w >=
+    1``: the trailing ``w`` chunks (sliding-window layers). ``0``: only the
+    chunk ending at the held prefix (recurrent-state layers, whose engine
+    keeps only its latest state). Unlike ``num_chunks_in_sw`` it reflects
+    every layer of a mixed object group. Empty when the producer predates it
+    (derived from ``group_kinds`` and ``num_chunks_in_sw``)."""
+
     _VALID_GROUP_KINDS = frozenset(get_args(GroupKind))
 
     def __post_init__(self) -> None:
@@ -517,6 +527,18 @@ class AttnWindowDesc:
             bad = set(self.group_kinds) - self._VALID_GROUP_KINDS
             if bad:
                 raise ValueError(f"AttnWindowDesc: unknown group kinds {bad!r}")
+        if self.engine_held_windows:
+            if len(self.engine_held_windows) != len(self.num_chunks_in_sw):
+                raise ValueError(
+                    f"AttnWindowDesc: engine_held_windows has "
+                    f"{len(self.engine_held_windows)} entries but "
+                    f"num_chunks_in_sw has {len(self.num_chunks_in_sw)}"
+                )
+            if any(w < -1 for w in self.engine_held_windows):
+                raise ValueError(
+                    "AttnWindowDesc: each engine-held window must be >= -1, "
+                    f"got {self.engine_held_windows}"
+                )
 
     @property
     def num_object_groups(self) -> int:
@@ -534,6 +556,41 @@ class AttnWindowDesc:
             bounded sliding window.
         """
         return self.num_chunks_in_sw[object_group_idx] < 0
+
+    def engine_held_chunks(
+        self, object_group_idx: int, held_tokens: int, chunk_size: int
+    ) -> range:
+        """Return the chunks whose every slice the engine holds for a prefix.
+
+        The engine (vLLM's GPU prefix cache) holds a request's prefix of
+        ``held_tokens`` tokens. A full-attention layer then holds every chunk
+        of it, a sliding-window layer only the chunks in its window, and a
+        recurrent (Mamba/linear) layer only its state at the prefix's end,
+        which is the state of the chunk ending exactly there.
+
+        Args:
+            object_group_idx: 0-based object group index.
+            held_tokens: Length of the engine-held prefix, in tokens.
+            chunk_size: Tokens per LMCache chunk.
+
+        Returns:
+            The chunk indices, within ``[0, held_tokens // chunk_size)``.
+        """
+        if self.engine_held_windows:
+            window = self.engine_held_windows[object_group_idx]
+        elif self.group_kinds and self.group_kinds[object_group_idx] == "recurrent":
+            window = 0
+        else:
+            window = self.num_chunks_in_sw[object_group_idx]
+        held_chunks = held_tokens // chunk_size
+        if window < 0:
+            return range(held_chunks)
+        if window == 0:
+            # A state that ends mid-chunk is no chunk's state.
+            if held_chunks and held_tokens % chunk_size == 0:
+                return range(held_chunks - 1, held_chunks)
+            return range(0)
+        return range(max(0, held_chunks - window), held_chunks)
 
 
 DEFAULT_ATTN_WINDOW_DESC = AttnWindowDesc(num_chunks_in_sw=[-1])

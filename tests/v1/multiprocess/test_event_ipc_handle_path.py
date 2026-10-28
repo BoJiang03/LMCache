@@ -86,6 +86,9 @@ class _FakeStorageManager:
     def finish_read_prefetched(self, keys: list[object]) -> None:
         return None
 
+    def demote_l1_keys(self, batch: list[tuple[int, list[object]]]) -> None:
+        return None
+
     def reserve_write(
         self,
         keys: list[object],
@@ -285,7 +288,12 @@ def test_server_store_and_retrieve_delegate_event_ordering(
         "get_and_touch_context_entry",
         lambda instance_id: entry,
     )
-    key = SimpleNamespace(request_id="request", cache_salt="", worker_id=0)
+    key = SimpleNamespace(
+        request_id="request",
+        cache_salt="",
+        worker_id=0,
+        requests_exclusive_retrieve=lambda: False,
+    )
 
     assert module.store(key, 1, [[]], b"store-producer") == (
         b"completion-handle",

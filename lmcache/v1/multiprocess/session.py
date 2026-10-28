@@ -57,6 +57,9 @@ class Session:
     _failed_retrieve_releases: set[tuple[int, int, int, int, int]] = field(
         default_factory=set, repr=False
     )
+    # Keys an exclusive retrieve demoted in L1; ``end_session`` leaves them
+    # out of its touch so the demotion holds. Bounded by the request's keys.
+    _demoted_keys: set[ObjectKey] = field(default_factory=set, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def set_tokens(self, packed_token_ids: bytes) -> None:
@@ -177,6 +180,30 @@ class Session:
             self.prefetch_hit_chunks = hit_chunks
             self.prefetch_locked_gids = locked_gids
             self._prefetch_owners = dict(l1_owners) if l1_owners is not None else {}
+
+    def record_demoted_keys(self, keys: list[ObjectKey]) -> None:
+        """Record keys whose L1 copies this request demoted.
+
+        Called by an exclusive retrieve when it submits the demotion, and by
+        ``free_lookup_locks`` when it demotes the engine-held prefix, so that
+        ``end_session`` can leave these keys out of its touch.
+
+        Args:
+            keys: The demoted keys.
+        """
+        with self._lock:
+            self._demoted_keys.update(keys)
+
+    def get_demoted_keys(self) -> set[ObjectKey]:
+        """Snapshot the keys recorded by :meth:`record_demoted_keys`.
+
+        Called by ``end_session``.
+
+        Returns:
+            A copy of the demoted keys; empty when nothing was demoted.
+        """
+        with self._lock:
+            return self._demoted_keys.copy()
 
     def get_prefetch_owners(self) -> dict[ObjectKey, int]:
         """Snapshot the L1 owners whose read locks this session's lookup retained."""

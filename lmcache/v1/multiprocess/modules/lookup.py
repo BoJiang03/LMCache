@@ -50,16 +50,40 @@ def resolve_prefetched_obj_keys(
     hit_chunks: int,
     locked_gids: tuple,
     group_windows: tuple[int, ...] | None = None,
+    prefix_hashes: list[bytes] | None = None,
 ) -> list[ObjectKey]:
     """Resolve the subset of a request range that lookup actually locked.
 
     ``key.worker_id=None`` resolves every KV rank for scheduler-owned cleanup.
     A worker-specific key resolves only that worker's shard (or one MLA reader
     share), which is required for per-instance RETRIEVE failure cleanup.
+
+    Args:
+        ctx: The server context (chunk size, token hasher, layout registry).
+        key: The request range to resolve, ``[key.start, key.end)``.
+        hit_chunks: The lookup's hit length in chunks; negative when unknown.
+        locked_gids: The object groups the lookup locked; empty means all.
+        group_windows: Per-group window in chunks; read from the layout
+            registry when None.
+        prefix_hashes: The chunk hashes of ``key.token_bytes`` from token 0,
+            covering every complete chunk below ``key.end``; computed here
+            when None.
+
+    Returns:
+        The object keys of the range that the lookup locked.
     """
-    chunk_hashes = ctx.token_hasher.compute_packed_chunk_hashes(
-        key.token_bytes, start=key.start, end=key.end
-    )
+    if prefix_hashes is None:
+        chunk_hashes = ctx.token_hasher.compute_packed_chunk_hashes(
+            key.token_bytes, start=key.start, end=key.end
+        )
+    else:
+        # The slice compute_packed_chunk_hashes(start=, end=) returns: the
+        # chunks that start at or after key.start and end by key.end.
+        chunk_size = ctx.chunk_size
+        first = -(-key.start // chunk_size)
+        chunk_hashes = prefix_hashes[
+            first : min(num_packed_tokens(key.token_bytes), key.end) // chunk_size
+        ]
     if not chunk_hashes:
         return []
 
@@ -322,7 +346,10 @@ class LookupModule(DiscoverableModule):
 
         # Keep the covered prefix's recency without locking or prefetching
         # it. After the load policy, so a declined lookup leaves no trace.
-        if start_chunk:
+        # Under exclusive retrieve the covered prefix is the GPU's copy: its
+        # L1 copy is demoted once vLLM allocates the request's blocks (see
+        # free_lookup_locks), so it is not touched here.
+        if start_chunk and not key.requests_exclusive_retrieve():
             self._ctx.storage_manager.touch_cached_keys(
                 [
                     obj_key
@@ -471,6 +498,13 @@ class LookupModule(DiscoverableModule):
         Releases the same per-object count the lookup reserved
         (``key.num_kv_readers``).
 
+        An exclusive-retrieve key that sets ``ENGINE_HELD_TOKENS_HINT``
+        first demotes the L1 copies of the prefix vLLM's prefix cache holds
+        for the request (see :meth:`_demote_engine_held_prefix`). The
+        connector sends it once vLLM has allocated the request's blocks, so
+        those blocks are lazy store candidates by then. The demotion and the
+        release share one rolling hash of the prompt.
+
         The release is derived from the lookup result recorded on the
         session (hit length, lock model, L1 owners). If that result has not
         been consumed yet it is handed over here first. While the prefetch
@@ -486,6 +520,19 @@ class LookupModule(DiscoverableModule):
                 exactly the keys it locked (sliding-window groups translate
                 from the hit).
         """
+        prefix_hashes: list[bytes] | None = None
+        if key.requests_exclusive_retrieve() and key.engine_held_tokens():
+            # The demotion and every release range hash from token 0: hash
+            # the prompt once, up to the furthest end, not once per range.
+            prefix_hashes = self._ctx.token_hasher.compute_packed_chunk_hashes(
+                key.token_bytes,
+                end=max(
+                    key.engine_held_tokens(),
+                    key.end,
+                    *(range_end for _, range_end in extra_ranges),
+                ),
+            )
+            self._demote_engine_held_prefix(key, prefix_hashes)
         if key.start >= key.end and not extra_ranges:
             return
 
@@ -533,6 +580,7 @@ class LookupModule(DiscoverableModule):
                     replace(key, start=max(key.start, lock_floor)),
                     hit_chunks,
                     session.prefetch_locked_gids,
+                    prefix_hashes=prefix_hashes,
                 )
             )
         for range_start, range_end in extra_ranges:
@@ -547,6 +595,7 @@ class LookupModule(DiscoverableModule):
                     replace(key, start=range_start, end=range_end),
                     range_end // self._ctx.chunk_size,
                     session.prefetch_locked_gids,
+                    prefix_hashes=prefix_hashes,
                 )
             )
         if not obj_keys:
@@ -561,6 +610,10 @@ class LookupModule(DiscoverableModule):
     @request_handler(HandlerType.BLOCKING)
     def end_session(self, request_id: str) -> None:
         """Remove the session for a finished request.
+
+        Touches every key of the request in L1 and L2, except the keys an
+        exclusive-retrieve request demoted (loaded by its retrieve, or held
+        by vLLM's prefix cache when its blocks were allocated).
 
         Args:
             request_id: The request ID whose session should be removed.
@@ -590,6 +643,12 @@ class LookupModule(DiscoverableModule):
 
         chunk_hashes = [TokenHasher.hash_to_bytes(h) for h in session.get_hashes(0)]
         obj_keys = self._all_object_keys(session.lookup_ipc_key, chunk_hashes)
+        # An exclusive-retrieve request demoted the keys its GPU blocks hold;
+        # touching them here would undo that, and a re-store has already
+        # promoted any it found.
+        demoted = session.get_demoted_keys()
+        if demoted:
+            obj_keys = [obj_key for obj_key in obj_keys if obj_key not in demoted]
         # unified touch of all keys, which include retrieved and stored keys
         # TODO(chunxiaozheng): when l2 is enabled, the prefetched keys from l2 are temp
         #  and will be deleted after finish_read_prefetched, when we touch all keys,
@@ -623,6 +682,51 @@ class LookupModule(DiscoverableModule):
         ).num_object_groups
         per_group = ipc_key_to_object_keys(key, chunk_hashes, list(range(num_groups)))
         return [obj_key for group_keys in per_group for obj_key in group_keys]
+
+    def _demote_engine_held_prefix(
+        self, key: IPCCacheServerKey, prefix_hashes: list[bytes]
+    ) -> None:
+        """Demote the L1 copies of the chunks vLLM's prefix cache holds.
+
+        Per object group, only the chunks whose every layer the engine
+        holds are demoted (``AttnWindowDesc.engine_held_chunks``); the
+        others are the only copy and keep their L1 position. The demoted
+        keys are recorded on the session so ``end_session`` skips them.
+
+        Args:
+            key: The FREE_LOOKUP_LOCKS key; ``key.engine_held_tokens()`` is
+                the held prefix length, ``key.token_bytes`` the prompt.
+            prefix_hashes: The chunk hashes of ``key.token_bytes`` from token
+                0, covering at least the held prefix's complete chunks.
+        """
+        held_tokens = key.engine_held_tokens()
+        chunk_size = self._ctx.chunk_size
+        chunk_hashes = prefix_hashes[: held_tokens // chunk_size]
+        if not chunk_hashes:
+            return
+        attn_desc = self._ctx.layout_desc_registry.find_attn_desc(
+            key.model_name, key.world_size
+        )
+        held_chunks = [
+            attn_desc.engine_held_chunks(group_idx, held_tokens, chunk_size)
+            for group_idx in range(attn_desc.num_object_groups)
+        ]
+        # Request order: the prefix's last chunk becomes the very next
+        # victim, so a suffix goes before the prefix it extends.
+        demoted: list[ObjectKey] = []
+        for chunk_idx, chunk_hash in enumerate(chunk_hashes):
+            group_ids = [
+                g for g, chunks in enumerate(held_chunks) if chunk_idx in chunks
+            ]
+            if group_ids:
+                for group_keys in ipc_key_to_object_keys(key, [chunk_hash], group_ids):
+                    demoted.extend(group_keys)
+        if not demoted:
+            return
+        self._ctx.storage_manager.demote_cached_keys(demoted)
+        self._ctx.session_manager.get_or_create(key.request_id).record_demoted_keys(
+            demoted
+        )
 
     def _register_prefetch_job(self, job: _PrefetchJob) -> None:
         with self._prefetch_job_lock:

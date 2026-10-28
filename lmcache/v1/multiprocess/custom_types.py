@@ -29,6 +29,17 @@ Key Types:
 """
 
 
+# Request config the vLLM MP connector sets on every request when
+# ``lmcache.mp.exclusive_retrieve`` is enabled; see
+# docs/design/integration/vllm/exclusive_retrieve.md.
+EXCLUSIVE_RETRIEVE_REQUEST_CONFIG = "lmcache.mp.exclusive_retrieve"
+
+# Request config an exclusive-retrieve connector sets on the FREE_LOOKUP_LOCKS
+# it sends once vLLM has allocated the request's blocks: the length of the
+# prefix vLLM's GPU prefix cache holds for it, whose L1 copies are demoted.
+ENGINE_HELD_TOKENS_HINT = "lmcache.hint.engine_held_tokens"
+
+
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
     """Cache key for the IPC (multiprocess) protocol.
@@ -170,6 +181,31 @@ class IPCCacheServerKey:
                 "client."
             )
         return self.num_kv_readers
+
+    def requests_exclusive_retrieve(self) -> bool:
+        """Whether the request asked for exclusive retrieve.
+
+        Under exclusive retrieve the server demotes the L1 copy of every
+        chunk it loads into GPU memory or vLLM's prefix cache already holds,
+        and touches chunks a store finds already resident (the engine
+        re-stores those chunks before evicting them).
+
+        Returns:
+            True when ``request_configs`` sets
+            ``EXCLUSIVE_RETRIEVE_REQUEST_CONFIG`` to a true value.
+        """
+        return bool(
+            (self.request_configs or {}).get(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, False)
+        )
+
+    def engine_held_tokens(self) -> int:
+        """Return the engine-held prefix length the request reported.
+
+        Returns:
+            ``request_configs[ENGINE_HELD_TOKENS_HINT]`` in tokens, or 0 when
+            it is not set.
+        """
+        return int((self.request_configs or {}).get(ENGINE_HELD_TOKENS_HINT, 0))
 
     def no_worker_id_version(self) -> "IPCCacheServerKey":
         """Create a copy with worker_id=None for lookup requests."""
@@ -409,6 +445,10 @@ def get_customized_decoder(type: Any) -> msgspec.msgpack.Decoder:
 # server module (lmcache.v1.multiprocess.plugin_modules.qstore); the vLLM
 # connector requests it for ``lmcache.mp.transfer_intermediate_tensors``.
 TRANSFER_QUERY = "transfer_query"
+# Experimental feature advertised through GET_EXPERIMENTAL by the built-in
+# LMCache-driven transfer module: the server demotes the L1 copy of each chunk
+# it retrieves for a request carrying EXCLUSIVE_RETRIEVE_REQUEST_CONFIG.
+EXCLUSIVE_RETRIEVE = "exclusive_retrieve"
 KV_EVENT_KIND_STORED = "stored"
 KV_EVENT_KIND_REMOVED = "removed"
 KV_EVENT_MEDIUM_CPU = "CPU"

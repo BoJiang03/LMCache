@@ -121,6 +121,21 @@ class EvictionPolicy:
         """
         pass
 
+    def on_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Notify the policy that keys should become the next eviction victims.
+
+        Called through ``L1Manager.demote_keys`` after an exclusive retrieve
+        copied the keys into GPU memory, whose copy is then the primary one:
+        the L1 copy stays resident but goes first under pressure. Within
+        ``keys``, later keys (a request's suffix chunks) are evicted first,
+        so an eviction never breaks the prefix chain early.
+
+        The default is a no-op, for policies without a recency order.
+
+        Args:
+            keys: The resident keys to demote, in request order.
+        """
+
     @abstractmethod
     def on_keys_removed(self, keys: list[ObjectKey]):
         """
@@ -224,6 +239,14 @@ class L1EvictionPolicy(L1ManagerListener):
 
     def on_l1_keys_accessed(self, keys: list[ObjectKey]):
         self._policy.on_keys_touched(keys)
+
+    def on_l1_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Forward a demotion to the policy's ``on_keys_demoted``.
+
+        Args:
+            keys: The keys to demote, in request order.
+        """
+        self._policy.on_keys_demoted(keys)
 
     def on_l1_out_of_memory(self, requested_bytes: int) -> None:
         """Forward a full-L1 write reservation to ``on_out_of_memory``.

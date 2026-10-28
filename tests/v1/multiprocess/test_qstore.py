@@ -18,7 +18,7 @@ import pytest
 # First Party
 from lmcache.v1.multiprocess import server as server_mod
 from lmcache.v1.multiprocess.config import CoordinatorConfig, MPServerConfig
-from lmcache.v1.multiprocess.custom_types import TRANSFER_QUERY
+from lmcache.v1.multiprocess.custom_types import EXCLUSIVE_RETRIEVE, TRANSFER_QUERY
 from lmcache.v1.multiprocess.engine_module import discover_modules
 from lmcache.v1.multiprocess.ext_server_module import (
     ExtServerModuleSpec,
@@ -306,7 +306,7 @@ def test_server_builds_q_store_module(
 
     qstore = next(m for m in modules if isinstance(m, QStoreModule))
     management = next(m for m in modules if isinstance(m, ManagementModule))
-    assert management.get_experimental() == [TRANSFER_QUERY]
+    assert set(management.get_experimental()) == {EXCLUSIVE_RETRIEVE, TRANSFER_QUERY}
     touch = MagicMock()
     monkeypatch.setattr(qstore, "touch_instance", touch)
     management.ping(123)
@@ -321,7 +321,7 @@ def test_server_omits_qstore_without_server_module(
 
     assert not any(isinstance(m, QStoreModule) for m in modules)
     management = next(m for m in modules if isinstance(m, ManagementModule))
-    assert management.get_experimental() == []
+    assert management.get_experimental() == [EXCLUSIVE_RETRIEVE]
 
 
 @pytest.mark.parametrize(
@@ -345,7 +345,7 @@ def test_server_wires_event_module_liveness(
     events = next(module for module in modules if isinstance(module, KVEventModule))
     management = next(m for m in modules if isinstance(m, ManagementModule))
     assert events.enabled is enabled
-    assert management.get_experimental() == []
+    assert management.get_experimental() == [EXCLUSIVE_RETRIEVE]
     touch = MagicMock()
     monkeypatch.setattr(events, "touch_instance", touch)
     management.ping(123)

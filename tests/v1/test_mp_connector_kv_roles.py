@@ -57,6 +57,11 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.utils import CacheStoreEvent  # noqa: E402
+from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
+    ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE,
+    EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+)
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 pytestmark = pytest.mark.no_shared_allocator
@@ -209,7 +214,8 @@ def lazy_offload(request: pytest.FixtureRequest) -> bool:
 @pytest.fixture
 def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Stub transport, telemetry and GPU resources, keeping worker logic real."""
-    scheduler = MagicMock(lmcache_tokens_per_chunk=4)
+    # A current server: it advertises exclusive retrieve.
+    scheduler = MagicMock(lmcache_tokens_per_chunk=4, experimental={EXCLUSIVE_RETRIEVE})
     scheduler.check_lookup_result.return_value = 0
     transfer = MagicMock()
     transfer.create_recorded_event.return_value = None
@@ -1121,5 +1127,268 @@ def test_full_prompt_hit_stays_chunk_aligned_under_prefix_replay(
         if replay:
             kwargs = mock_io.scheduler.free_lookup_locks.call_args.kwargs
             assert kwargs["extra_ranges"] == ((8, 12),)
+    finally:
+        scheduler.shutdown()
+
+
+def test_exclusive_retrieve_requires_lazy_offload(mock_io: SimpleNamespace) -> None:
+    """Without lazy offload nothing re-stores a demoted chunk: refuse it."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"lmcache.mp.exclusive_retrieve": True},
+        )
+    )
+    with pytest.raises(ValueError, match="exclusive_retrieve requires"):
+        LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+
+
+def test_exclusive_retrieve_turns_off_with_lazy_offload(
+    mock_io: SimpleNamespace,
+) -> None:
+    """Without a bound KV cache manager lazy offload turns off, and exclusive
+    retrieve with it: no request asks the server for it and the hit prefix
+    is not re-stored."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.exclusive_retrieve": True,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    scheduler.bind_gpu_block_pool(mock_io.pool)
+    request = _request()
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        assert scheduler.get_num_new_matched_tokens(request, 4) == (4, True)
+        assert not scheduler.exclusive_retrieve
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2],)), 4
+        )
+        assert scheduler.request_trackers[request.request_id].num_stored_tokens == 8
+        assert (
+            mock_io.scheduler.free_lookup_locks.call_args.kwargs["request_configs"]
+            is None
+        )
+        (retrieve,) = scheduler.build_connector_meta(_schedule()).requests
+        assert retrieve.request_configs is None
+    finally:
+        scheduler.shutdown()
+
+
+@pytest.mark.parametrize("advertised", [False, True])
+def test_exclusive_retrieve_needs_a_server_advertising_it(
+    mock_io: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, advertised: bool
+) -> None:
+    """Against a server that does not advertise exclusive retrieve, the
+    connector warns and runs lazy offload alone: the hit prefix is not
+    re-stored and no request asks the server for exclusive retrieve."""
+    mock_io.scheduler.experimental = {EXCLUSIVE_RETRIEVE} if advertised else set()
+    warnings: list[str] = []
+    # The module logger does not propagate, so caplog cannot see it.
+    monkeypatch.setattr(
+        connector_mod.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings.append(msg % args),
+    )
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.exclusive_retrieve": True,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    request = _request()
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        assert scheduler.get_num_new_matched_tokens(request, 4) == (4, True)
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2],)), 4
+        )
+        tracker = scheduler.request_trackers[request.request_id]
+        assert tracker.num_stored_tokens == (0 if advertised else 8)
+        (retrieve,) = scheduler.build_connector_meta(_schedule()).requests
+        assert retrieve.request_configs == (
+            {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if advertised else None
+        )
+        xr_warnings = [w for w in warnings if "exclusive_retrieve" in w]
+        assert len(xr_warnings) == (0 if advertised else 1)
+    finally:
+        scheduler.shutdown()
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_exclusive_retrieve_restores_the_loaded_chunks(
+    mock_io: SimpleNamespace, exclusive: bool
+) -> None:
+    """Exclusive mode stores from token 0, so the loaded chunks and vLLM's
+    local hit become lazy store candidates; the flag and the held prefix reach
+    the server only from the connector's own configuration."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.lazy_offload_threshold": 1,
+                "lmcache.mp.lazy_offload_select_count": 1,
+                "lmcache.mp.exclusive_retrieve": exclusive,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    request = _request()
+    # A request cannot turn the mode on by itself.
+    cast(Any, request).sampling_params = SimpleNamespace(
+        extra_args={
+            "kv_transfer_params": {
+                EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True,
+                ENGINE_HELD_TOKENS_HINT: 12,
+            }
+        }
+    )
+    expected_configs = {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if exclusive else None
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        # vLLM hits 4 tokens, LMCache 8: the retrieve loads chunk [4, 8).
+        assert scheduler.get_num_new_matched_tokens(request, 4) == (4, True)
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2],)), 4
+        )
+        tracker = scheduler.request_trackers[request.request_id]
+        assert tracker.num_lmcache_hit_tokens == 8
+        assert tracker.num_stored_tokens == (0 if exclusive else 8)
+        # The FREE after allocation reports the 4 tokens vLLM holds.
+        free = mock_io.scheduler.free_lookup_locks.call_args.kwargs
+        assert free["end"] == 4
+        assert free["request_configs"] == (
+            {**expected_configs, ENGINE_HELD_TOKENS_HINT: 4}
+            if expected_configs
+            else None
+        )
+        metadata = scheduler.build_connector_meta(_schedule())
+        (retrieve,) = metadata.requests
+        assert (retrieve.direction, retrieve.op.start, retrieve.op.end) == (
+            "RETRIEVE",
+            4,
+            8,
+        )
+        assert retrieve.request_configs == expected_configs
+
+        # The load finished; vLLM schedules the rest of the prompt.
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2, 3],)), 0
+        )
+        scheduler.build_connector_meta(
+            _schedule(num_tokens=4, block_ids=([3],), new=True, num_computed_tokens=8)
+        )
+        assert tracker.num_stored_tokens == 12
+        scheduler.request_finished(request, [1, 2, 3])
+
+        # A later step drains the finished request's buffered store.
+        trigger = _request("trigger")
+        assert scheduler.get_num_new_matched_tokens(trigger, 0) == (0, False)
+        scheduler.update_state_after_alloc(
+            trigger, MagicMock(get_block_ids=lambda: ([4],)), 0
+        )
+        metadata = scheduler.build_connector_meta(
+            _schedule("trigger", 1, ([4],), new=True)
+        )
+        (store,) = metadata.requests
+        assert (store.request_id, store.direction, store.op.start, store.op.end) == (
+            "request",
+            "STORE",
+            0 if exclusive else 8,
+            12,
+        )
+        assert store.op.block_ids == ([[1, 2, 3]] if exclusive else [[3]])
+        assert store.request_configs == expected_configs
+    finally:
+        scheduler.shutdown()
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_exclusive_local_hit_reports_and_restores_the_held_prefix(
+    mock_io: SimpleNamespace, exclusive: bool
+) -> None:
+    """A request LMCache serves nothing past vLLM's local hit: after
+    allocation the connector's FREE reports the held prefix (exclusive only),
+    and the local-hit chunks become lazy store candidates, so a demoted L1
+    copy is re-stored when vLLM evicts its blocks."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.lazy_offload_threshold": 1,
+                "lmcache.mp.lazy_offload_select_count": 1,
+                "lmcache.mp.exclusive_retrieve": exclusive,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    request = _request()
+    configs = {EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True} if exclusive else None
+    # The lookup counts vLLM's covered 8 tokens as its hit and finds no more.
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        assert scheduler.get_num_new_matched_tokens(request, 8) == (0, False)
+        assert (
+            mock_io.scheduler.maybe_submit_lookup_request.call_args.kwargs["start"] == 8
+        )
+        # No demotion before allocation: vLLM may still evict the hit.
+        mock_io.scheduler.free_lookup_locks.assert_not_called()
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2, 3],)), 0
+        )
+        free = mock_io.scheduler.free_lookup_locks.call_args.kwargs
+        assert (free["start"], free["end"]) == (0, 8)
+        assert free["request_configs"] == (
+            {**configs, ENGINE_HELD_TOKENS_HINT: 8} if configs else None
+        )
+        tracker = scheduler.request_trackers[request.request_id]
+        assert tracker.num_stored_tokens == (0 if exclusive else 8)
+
+        scheduler.build_connector_meta(
+            _schedule(
+                num_tokens=4, block_ids=([1, 2, 3],), new=True, num_computed_tokens=8
+            )
+        )
+        scheduler.request_finished(request, [1, 2, 3])
+        # A later step drains the finished request's buffered store.
+        trigger = _request("trigger")
+        assert scheduler.get_num_new_matched_tokens(trigger, 0) == (0, False)
+        scheduler.update_state_after_alloc(
+            trigger, MagicMock(get_block_ids=lambda: ([4],)), 0
+        )
+        metadata = scheduler.build_connector_meta(
+            _schedule("trigger", 1, ([4],), new=True)
+        )
+        (store,) = metadata.requests
+        assert (store.request_id, store.direction, store.op.start, store.op.end) == (
+            "request",
+            "STORE",
+            0 if exclusive else 8,
+            12,
+        )
+        assert store.op.block_ids == ([[1, 2, 3]] if exclusive else [[3]])
+        assert store.request_configs == configs
     finally:
         scheduler.shutdown()
