@@ -40,6 +40,21 @@ group: serving a prefix needs every chunk of it present."""
 _VALID_FETCHING_POLICIES = frozenset(get_args(FetchingPolicy))
 
 
+def window_tokens_to_chunks(sw_size_tokens: int, chunk_size: int) -> int:
+    """Convert a group's cross-chunk window from tokens to LMCache chunks.
+
+    Args:
+        sw_size_tokens: The window in tokens, or ``-1`` for full attention.
+        chunk_size: LMCache tokens per chunk.
+
+    Returns:
+        ``-1`` for full attention, else the window rounded up to whole chunks.
+    """
+    if sw_size_tokens == -1:
+        return FULL_ATTENTION_WINDOW_CHUNKS
+    return (sw_size_tokens + chunk_size - 1) // chunk_size
+
+
 def _lookup_kv_ranks(ipc_key: "IPCCacheServerKey") -> list[int]:
     """The kv ranks an IPC key addresses, in rank order.
 

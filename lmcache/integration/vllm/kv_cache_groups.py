@@ -19,6 +19,24 @@ from lmcache.v1.multiprocess.group_view import EngineGroupInfo
 logger = init_logger(__name__)
 
 
+def representative_spec(spec: Any) -> Any:
+    """Return one layer's spec of a vLLM KV cache group's spec.
+
+    ``UniformTypeKVCacheSpecs`` holds same-typed per-layer specs, so its first
+    leaf stands for the group; any other spec already applies to every layer.
+
+    Args:
+        spec: A vLLM KV cache spec, or a ``UniformTypeKVCacheSpecs`` container.
+
+    Returns:
+        The first per-layer spec of a container, else ``spec`` itself.
+    """
+    inner = getattr(spec, "kv_cache_specs", None)
+    if isinstance(inner, dict) and inner:
+        return next(iter(inner.values()))
+    return spec
+
+
 def _is_attention_spec(spec: Any) -> bool:
     """Return whether the KV cache spec is a vLLM attention spec.
 
@@ -26,9 +44,7 @@ def _is_attention_spec(spec: Any) -> bool:
     ``UniformTypeKVCacheSpecs`` is unwrapped first (same-typed layers, one
     leaf suffices); it does not derive from ``AttentionSpec`` itself.
     """
-    inner = getattr(spec, "kv_cache_specs", None)
-    if isinstance(inner, dict) and inner:
-        spec = next(iter(inner.values()))
+    spec = representative_spec(spec)
     return any(cls.__name__ == "AttentionSpec" for cls in type(spec).__mro__)
 
 
@@ -48,9 +64,7 @@ def is_scratch_spec(spec: Any) -> bool:
     Returns:
         ``True`` for a scratch spec, ``False`` for a prefix-cacheable one.
     """
-    inner = getattr(spec, "kv_cache_specs", None)
-    if isinstance(inner, dict) and inner:
-        spec = next(iter(inner.values()))
+    spec = representative_spec(spec)
     if hasattr(spec, "prefix_cacheable"):
         return not spec.prefix_cacheable
     return not getattr(spec, "participates_in_prefix_caching", True)
@@ -74,27 +88,59 @@ def get_tokens_per_block(kv_cache_spec: Any, dcp_size: int) -> int:
     return block_size
 
 
-def _is_sliding_window_spec(spec: Any) -> bool:
+def is_sliding_window_spec(spec: Any) -> bool:
     """Return whether the KV cache spec is a vLLM sliding-window spec.
 
     Checked by class name so this module stays importable without vLLM.
     Subclasses such as ``SlidingWindowMLASpec`` count.
+
+    Args:
+        spec: One layer's vLLM KV cache spec.
+
+    Returns:
+        ``True`` for a sliding-window attention spec.
     """
     return any(cls.__name__ == "SlidingWindowSpec" for cls in type(spec).__mro__)
 
 
-def _is_cachable_mamba_spec(spec: Any) -> bool:
+def is_cachable_mamba_spec(spec: Any) -> bool:
     """Return whether the spec is a snapshotting Mamba/linear-attention spec.
 
     Align mode snapshots only the last block; all mode snapshots every block
     boundary. Either way a restore consumes only the last matched block's
     page, so both behave like a cross-chunk sliding window of one block.
-    Checked by class name (like :func:`_is_sliding_window_spec`) so this
+    Checked by class name (like :func:`is_sliding_window_spec`) so this
     module stays importable without vLLM.
+
+    Args:
+        spec: One layer's vLLM KV cache spec.
+
+    Returns:
+        ``True`` for a Mamba spec in ``align`` or ``all`` cache mode.
     """
     return any(cls.__name__ == "MambaSpec" for cls in type(spec).__mro__) and getattr(
         spec, "mamba_cache_mode", "none"
     ) in ("align", "all")
+
+
+def layer_window_tokens(spec: Any) -> int:
+    """Return a layer's cross-chunk window in tokens, as LMCache groups it.
+
+    Under ``--separate-object-groups`` the server buckets groups by this
+    window (in chunks), so a scheduler that names object groups must use it.
+
+    Args:
+        spec: One layer's vLLM KV cache spec.
+
+    Returns:
+        The sliding window for sliding-window attention, the block size for
+        a snapshotting Mamba/linear layer (a one-block window), or ``-1``.
+    """
+    if is_sliding_window_spec(spec):
+        return spec.sliding_window
+    if is_cachable_mamba_spec(spec):
+        return spec.block_size
+    return -1
 
 
 def _resolve_per_layer_sw_sizes(
@@ -128,10 +174,7 @@ def _resolve_per_layer_sw_sizes(
         per_layer_specs = getattr(spec, "kv_cache_specs", None)
         for name in group.layer_names:
             layer_spec = per_layer_specs[name] if per_layer_specs else spec
-            if _is_sliding_window_spec(layer_spec):
-                per_layer_sw_size[layer_to_idx[name]] = layer_spec.sliding_window
-            elif _is_cachable_mamba_spec(layer_spec):
-                per_layer_sw_size[layer_to_idx[name]] = layer_spec.block_size
+            per_layer_sw_size[layer_to_idx[name]] = layer_window_tokens(layer_spec)
     return per_layer_sw_size
 
 
@@ -194,7 +237,7 @@ def _resolve_per_layer_recurrent(
 
     Returns:
         A list of length ``num_layers``: ``True`` for Mamba/linear-attention
-        layers in a snapshotting cache mode (see :func:`_is_cachable_mamba_spec`),
+        layers in a snapshotting cache mode (see :func:`is_cachable_mamba_spec`),
         ``False`` for attention layers.
     """
     per_layer_recurrent = [False] * num_layers
@@ -205,7 +248,7 @@ def _resolve_per_layer_recurrent(
         per_layer_specs = getattr(spec, "kv_cache_specs", None)
         for name in group.layer_names:
             layer_spec = per_layer_specs[name] if per_layer_specs else spec
-            if _is_cachable_mamba_spec(layer_spec):
+            if is_cachable_mamba_spec(layer_spec):
                 per_layer_recurrent[layer_to_idx[name]] = True
     return per_layer_recurrent
 

@@ -63,6 +63,7 @@ from lmcache.integration.vllm.kv_cache_groups import (
     get_tokens_per_block,
     is_scratch_spec,
 )
+from lmcache.integration.vllm.l1_duplication import L1DuplicationMeter
 from lmcache.integration.vllm.lazy_offload_manager import LazyOffloadManager
 from lmcache.integration.vllm.lmcache_mp_metadata import (
     LMCacheMPConnectorMetadata,
@@ -126,7 +127,7 @@ if TYPE_CHECKING:
     )
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.block_pool import BlockPool
-    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.request import Request
 
@@ -574,11 +575,17 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
       enters vLLM's waiting queue. Disabled by default.
     - lmcache.mp.save_decode_cache: also store chunks containing generated
       tokens. Defaults to False; only complete prompt chunks are stored.
+    - lmcache.mp.measure_l1_duplication: every 10 s, report through the
+      connector stats the share of this model's committed L1 that vLLM's
+      GPU prefix cache also holds. A boolean; disabled by default.
+      Requires the MP server to load lmcache.v1.multiprocess.l1_residency.
     """
 
     # Tail block slots vLLM may relocate for one request; 0 means vLLM only
     # appends. The scheduler role sets it from the vLLM config.
     _mamba_relocation_window: int = 0
+    # Set by bind_kv_cache_manager when lmcache.mp.measure_l1_duplication is on.
+    _l1_duplication_meter: L1DuplicationMeter | None = None
 
     def __init__(
         self,
@@ -633,6 +640,13 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         )
         if not isinstance(self._save_decode_cache, bool):
             raise ValueError("lmcache.mp.save_decode_cache must be a boolean")
+        self._measure_l1_duplication = (
+            vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.measure_l1_duplication", False
+            )
+        )
+        if not isinstance(self._measure_l1_duplication, bool):
+            raise ValueError("lmcache.mp.measure_l1_duplication must be a boolean")
 
         self._enable_kv_events = bool(
             getattr(vllm_config, "kv_events_config", None) is not None
@@ -1283,6 +1297,24 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             if self.lazy_offload:
                 self._lazy_offload_manager.bind_block_pool(gpu_block_pool)
 
+    def bind_kv_cache_manager(self, kv_cache_manager: "KVCacheManager") -> None:
+        """Bind the scheduler's KV cache manager; start measuring if enabled.
+
+        Args:
+            kv_cache_manager: vLLM's scheduler KV cache manager. Its
+                coordinator decides which chunks L0 holds.
+        """
+        super().bind_kv_cache_manager(kv_cache_manager)
+        if self._measure_l1_duplication:
+            self._l1_duplication_meter = L1DuplicationMeter(
+                self.scheduler_adapter,
+                kv_cache_manager.coordinator,
+                hash_block_size=kv_cache_manager.block_pool.hash_block_size,
+                chunk_size=self.scheduler_adapter.lmcache_tokens_per_chunk,
+                hash_algorithm=self.scheduler_adapter.hash_algorithm,
+                on_sample=self._connector_stats.record_l1_duplication,
+            )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1624,6 +1656,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             for request_id in actions.sessions_to_end:
                 self.scheduler_adapter.end_session(request_id)
 
+        if self._l1_duplication_meter is not None:
+            self._l1_duplication_meter.on_scheduler_step()
+
         if len(metadata) > 0:
             logger.debug("Final connector metadata: %s", metadata)
 
@@ -1699,6 +1734,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         # Clean up request tracker to prevent memory leak
         self._cleanup_request_tracker(request.request_id)
+        if self._l1_duplication_meter is not None:
+            self._l1_duplication_meter.on_request_finished(request.request_id)
 
         # Drop lookup state for a request aborted before its lookup was
         # consumed (update_state_after_alloc never ran for it). Both the eager
@@ -2000,6 +2037,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
             self.request_trackers[request_id] = new_tracker
+            if self._l1_duplication_meter is not None:
+                self._l1_duplication_meter.on_request_tracked(request, new_tracker)
         return self.request_trackers[request_id]
 
     def _cleanup_request_tracker(self, request_id: str) -> None:

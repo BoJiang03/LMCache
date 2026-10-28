@@ -14,6 +14,7 @@ pytest.importorskip("vllm", reason="MP connector metrics require vLLM")
 from prometheus_client import Counter, Gauge, Histogram  # noqa: E402
 
 # First Party
+from lmcache.integration.vllm.l1_duplication import DuplicationSample  # noqa: E402
 from lmcache.integration.vllm.lmcache_mp_metrics import (  # noqa: E402
     LMCacheMPConnectorStats,
     LMCacheMPPromMetrics,
@@ -52,6 +53,27 @@ def test_lookup_stats_snapshot_and_aggregation() -> None:
     assert aggregate.reduce() == {
         "LMCache MP lookup count": 1,
         "LMCache MP lookup avg latency (ms)": 25.0,
+    }
+
+
+def test_duplication_sample_is_a_latest_value() -> None:
+    stats = LMCacheMPConnectorStats()
+    stats.record_l1_duplication(DuplicationSample(1, 1, 1, 1))
+    stats.record_l1_duplication(DuplicationSample(3, 300, 4, 1200))
+    assert not stats.is_empty()
+
+    accumulated = LMCacheMPConnectorStats(data=dict(stats.clone_and_reset().data))
+    assert stats.is_empty()
+    # A later interval without a sample keeps the last one.
+    accumulated.aggregate(LMCacheMPConnectorStats())
+
+    assert accumulated.reduce() == {
+        "LMCache MP L1 dup byte_ratio": 0.25,
+        "LMCache MP L1 dup object_ratio": 0.75,
+        "LMCache MP L1 dup matched_objects": 3,
+        "LMCache MP L1 dup matched_bytes": 300,
+        "LMCache MP L1 dup model_objects": 4,
+        "LMCache MP L1 dup model_bytes": 1200,
     }
 
 

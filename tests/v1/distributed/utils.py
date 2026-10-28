@@ -103,12 +103,14 @@ def object_key(
     rank: int = 0,
     world_size: int = 1,
     cache_salt: str = "",
+    object_group_id: int = 0,
 ) -> ObjectKey:
     """The key of ``chunk_hash`` for kv rank ``rank`` of ``world_size``."""
     return ObjectKey(
         chunk_hash=chunk_hash,
         model_name=model_name,
         kv_rank=ObjectKey.ComputeKVRank(world_size, rank, world_size, rank),
+        object_group_id=object_group_id,
         cache_salt=cache_salt,
     )
 
