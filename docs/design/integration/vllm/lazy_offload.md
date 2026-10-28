@@ -385,14 +385,16 @@ also keeps the batch's operations: a batch that failed and is not orphaned
 goes back to the policy once every rank has reported, and is stored again,
 because its blocks were pinned and still hold the data.
 Overlapping emission remains a logic error because worker receipts are keyed
-only by request id. The completion receipt balances the pins with
-`free_blocks()`, returning the blocks to vLLM's own placement for a freed
-cached block. Failed stores are reported alongside completion receipts,
-so the scheduler requeues a failed range ahead of the request's later chunks
-and its prefix chain stays whole. After `MAX_STORE_ATTEMPTS` (3) failed
-batches in a row it gives the request's stores up: the policy's
-`mark_store_failed` drops its buffered chunks and breaks its chain, so a
-failure that outlasts the retries cannot keep the session open.
+only by request id. The completion receipt balances the pins: a block that
+sat in the free queue when it was pinned goes back to the queue head, where
+eviction order had it, unless another request's op still buffers it (step 4
+of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)). Failed stores
+are reported alongside completion receipts, so the scheduler requeues a
+failed range ahead of the request's later chunks and its prefix chain stays
+whole. After `MAX_STORE_ATTEMPTS` (3) failed batches in a row it gives the
+request's stores up: the policy's `mark_store_failed` drops its buffered
+chunks and breaks its chain, so a failure that outlasts the retries cannot
+keep the session open.
 
 Configuration in `kv_connector_extra_config`:
 
@@ -416,20 +418,27 @@ connector therefore fails construction when lazy offload is enabled without
 2. The manager replaces its hash-less blocks by the null block, snapshots
    the remaining block hashes and buffers it in the selected policy instead
    of sending it to the worker immediately.
-3. On a token-producing scheduler step, the connector forwards the scheduler
-   output to `LazyOffloadManager`, which bounds the next step's allocations
-   from the schedule and drains the selected policy once.
+3. On every scheduler step, the connector forwards the scheduler output to
+   `LazyOffloadManager`, which bounds the next step's allocations from the
+   schedule and drains the selected policy once.
 4. The manager validates, pins, and coalesces released operations per request,
    then returns them as explicit actions for the connector metadata.
-5. Worker completion and failure metadata returns on later token-producing
-   steps. The scheduler unpins only after all ranks have reported.
+5. Worker completion and failure metadata returns on later steps. The
+   scheduler unpins only after all ranks have reported.
 6. A finished request's LMCache session ends when its pending queue is dropped
    empty or its final in-flight store receipt arrives.
 
-An idle engine deliberately does not emit store metadata because vLLM's
-no-forward path would discard it. Consequently pending stores, receipts, pins,
-and sessions settle on the next token-producing step, not during the idle
-period.
+A step that schedules no tokens drains too. vLLM's no-forward path still binds
+the step's metadata, calls `wait_for_save` (which submits the stores) and
+returns the worker metadata carrying receipts. vLLM 0.18 to 0.30 skip
+`wait_for_save` there, so the scheduler flags the step's metadata
+`schedules_no_tokens` and the worker submits its stores from `get_finished`
+instead; steps with a forward never submit from there, because MTP defers
+`wait_for_save` past the draft forward. Such a step happens when no
+waiting request fits in the free blocks. If nothing runs, those steps are the
+only ones left, and the pins that keep a request from fitting are released
+only by storing them. An idle engine, with no requests at all, runs no steps
+and drains nothing.
 
 ## 3. Historical threshold-ratio proposal (superseded)
 
