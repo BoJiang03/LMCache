@@ -185,6 +185,11 @@ thread processes them in strict order before any GPU-callback events.
 | `MP_RETRIEVE_SUBMITTED` | `device` | `str` | `MPServer.retrieve` — CPU-synchronous, before the GPU retrieve is enqueued |
 | `MP_REQUEST_END` | *(none)* | — | `MPServer.handle_request` — after all CPU work; may precede GPU callbacks |
 
+A store that reserves no L1 object (every chunk already resident, all-null or
+out of memory) enqueues no GPU store, so it publishes none of
+`MP_STORE_SUBMITTED`, `MP_STORE_START` and `MP_STORE_END`; the session drain
+counts stay balanced and the store counters count only device transfers.
+
 ---
 
 ## MP Server Events

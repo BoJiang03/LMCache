@@ -6,6 +6,8 @@
   request or a failed retrieve demotes nothing.
 - ``end_session`` does not touch the demoted keys back to most recently used.
 - A store of an exclusive request touches the keys it finds already resident.
+- A store whose every chunk is resident submits no device work and returns an
+  empty completion handle; a store missing one chunk still writes it.
 - An exclusive request's lookup does not touch the prefix vLLM's prefix cache
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
@@ -55,6 +57,7 @@ from lmcache.v1.distributed.l1_manager import L1Manager
 from lmcache.v1.distributed.l2_adapters.config import L2AdaptersConfig
 from lmcache.v1.distributed.storage_manager import StorageManager
 from lmcache.v1.kv_layer_groups import ObjectGroupInfo
+from lmcache.v1.mp_observability.event import EventType
 from lmcache.v1.multiprocess import native_completion
 from lmcache.v1.multiprocess import server as server_mod
 from lmcache.v1.multiprocess.config import CoordinatorConfig, MPServerConfig
@@ -408,6 +411,84 @@ def test_restore_of_resident_keys_touches_them_only_when_exclusive(
         assert after[-len(loaded) :] == loaded[::-1]
     else:
         assert after == before
+
+
+def _store_event_types(srv: _Server) -> list[EventType]:
+    """The MP_STORE_* event types the server published, in order."""
+    bus = srv.ctx.event_bus
+    events = [c.args[0] for c in bus.publish.call_args_list] + [
+        c.args[1] for c in bus.publish_on_stream.call_args_list
+    ]
+    return [
+        e.event_type
+        for e in events
+        if e.event_type
+        in (
+            EventType.MP_STORE_SUBMITTED,
+            EventType.MP_STORE_START,
+            EventType.MP_STORE_END,
+        )
+    ]
+
+
+def test_store_of_resident_chunks_submits_no_device_work(server: _Server) -> None:
+    """A store whose every chunk is resident touches them as before, but
+    neither waits on the producer event, copies, nor publishes store events,
+    and its completion handle is empty: nothing reads the blocks."""
+    loaded = _loaded(server)
+    server.lock_for_read(loaded)
+    assert server.retrieve(exclusive=True)
+    entry = server.module.get_and_touch_context_entry(1)
+    entry.event_backend.reset_mock()
+    entry.cache_context.reset_mock()
+    server.ctx.event_bus.reset_mock()
+
+    handle, ok = server.module.store(_ipc_key(True), 1, RETRIEVE_BLOCKS, b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert handle == b""
+    entry.event_backend.import_event.assert_not_called()
+    entry.event_backend.wait_event.assert_not_called()
+    entry.cache_context.transfer_object_group.assert_not_called()
+    assert _store_event_types(server) == []
+    assert server.victims()[-len(loaded) :] == loaded[::-1]
+
+
+def test_store_missing_one_chunk_writes_it(server: _Server) -> None:
+    """A store with one chunk evicted and the others resident writes that
+    chunk behind the producer event and touches the resident ones."""
+    full, _ = server.keys()
+    loaded = _loaded(server)
+    server.lock_for_read(loaded)
+    assert server.retrieve(exclusive=True)
+    server.storage.delete_l1_keys([full[1]], force=True)
+    entry = server.module.get_and_touch_context_entry(1)
+    entry.event_backend.reset_mock()
+    entry.cache_context.reset_mock()
+    server.ctx.event_bus.reset_mock()
+
+    handle, ok = server.module.store(_ipc_key(True), 1, RETRIEVE_BLOCKS, b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert handle == entry.event_backend.export_event.return_value
+    entry.event_backend.wait_event.assert_called_once()
+    written = [
+        obj
+        for call in entry.cache_context.transfer_object_group.call_args_list
+        for obj in call.args[1]
+        if obj is not None
+    ]
+    assert len(written) == 1
+    assert full[1] in server.victims()
+    assert _store_event_types(server) == [
+        EventType.MP_STORE_SUBMITTED,
+        EventType.MP_STORE_START,
+        EventType.MP_STORE_END,
+    ]
+    # The resident keys were touched; the written one joined them at the MRU end.
+    assert set(server.victims()[-len(loaded) :]) == set(loaded)
 
 
 # The server's object groups as the transfer module registers them under

@@ -95,7 +95,11 @@ class _FakeStorageManager:
         layout: object,
         out_of_memory_keys: list[object] | None = None,
     ) -> dict[object, object]:
-        return {}
+        """Reserve every key, so a store of any chunk does device work."""
+        return {key: SimpleNamespace(get_size=lambda: 1) for key in keys}
+
+    def prepare_write_completion(self, objs: dict[object, object]) -> list[object]:
+        return []
 
     def prepare_read_completion(self, keys, l1_owners=None):
         return []
@@ -235,7 +239,10 @@ def test_server_store_and_retrieve_delegate_event_ordering(
     monkeypatch.setattr(
         lmcache_driven_transfer,
         "submit_callback_to_stream",
-        lambda stream, kind, payload: callbacks.append((kind, payload)),
+        # The store's write completion is not part of this contract.
+        lambda stream, kind, payload: (
+            kind == "finish_write_by_owner" or callbacks.append((kind, payload))
+        ),
     )
     held: list[tuple[str, bytes]] = []
     released: list[int] = []
@@ -254,8 +261,10 @@ def test_server_store_and_retrieve_delegate_event_ordering(
             publish_on_stream=lambda stream, event: None,
             has_subscribers=lambda event_type: False,
         ),
-        resolve_obj_keys=lambda key, group_ids: [[]],
+        # The store writes one chunk; the retrieve resolves none.
+        resolve_obj_keys=lambda key, group_ids: resolved.pop(0),
     )
+    resolved: list[list[list[object]]] = [[["chunk"]], [[]]]
     module = lmcache_driven_transfer.LMCacheDrivenTransferModule(
         cast(Any, server_context)
     )
@@ -295,7 +304,7 @@ def test_server_store_and_retrieve_delegate_event_ordering(
         requests_exclusive_retrieve=lambda: False,
     )
 
-    assert module.store(key, 1, [[]], b"store-producer") == (
+    assert module.store(key, 1, [[1]], b"store-producer") == (
         b"completion-handle",
         True,
     )
