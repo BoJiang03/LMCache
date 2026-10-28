@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 # Standard
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 # Third Party
@@ -17,12 +17,22 @@ from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
     PromMetricT,
 )
 
+# First Party
+from lmcache.integration.vllm.l1_duplication import DuplicationSample
+
 _LOOKUP_DURATION = "lookup_duration_seconds"
+# Latest L1 duplication sample, {name: value} for byte_ratio, object_ratio and
+# every DuplicationSample field; absent until one completes.
+_L1_DUPLICATION = "l1_duplication"
 
 
 @dataclass
 class LMCacheMPConnectorStats(KVConnectorStats):
-    """Lookup latency observations collected by the scheduler connector."""
+    """Lookup latencies and the latest L1 duplication sample.
+
+    Aggregation keeps the newer sample: duplication is a level, not a count
+    over the interval.
+    """
 
     def __post_init__(self) -> None:
         self.data.setdefault(_LOOKUP_DURATION, [])
@@ -30,10 +40,20 @@ class LMCacheMPConnectorStats(KVConnectorStats):
     def record_lookup(self, duration_seconds: float) -> None:
         self.data[_LOOKUP_DURATION].append(duration_seconds)
 
+    def record_l1_duplication(self, sample: DuplicationSample) -> None:
+        """Replace the latest L1 duplication sample.
+
+        Args:
+            sample: The completed sample.
+        """
+        self.data[_L1_DUPLICATION] = {
+            "byte_ratio": sample.byte_ratio,
+            "object_ratio": sample.object_ratio,
+            **asdict(sample),
+        }
+
     def clone_and_reset(self) -> "LMCacheMPConnectorStats":
-        snapshot = LMCacheMPConnectorStats(
-            data={_LOOKUP_DURATION: self.data[_LOOKUP_DURATION]}
-        )
+        snapshot = LMCacheMPConnectorStats(data=dict(self.data))
         self.reset()
         return snapshot
 
@@ -44,21 +64,26 @@ class LMCacheMPConnectorStats(KVConnectorStats):
         if not isinstance(other, LMCacheMPConnectorStats):
             raise TypeError(f"Cannot aggregate {type(other)}")
         self.data[_LOOKUP_DURATION].extend(other.data[_LOOKUP_DURATION])
+        if _L1_DUPLICATION in other.data:
+            self.data[_L1_DUPLICATION] = other.data[_L1_DUPLICATION]
         return self
 
     def reduce(self) -> dict[str, int | float]:
+        summary: dict[str, int | float] = {}
         durations = self.data[_LOOKUP_DURATION]
-        if not durations:
-            return {}
-        return {
-            "LMCache MP lookup count": len(durations),
-            "LMCache MP lookup avg latency (ms)": round(
+        if durations:
+            summary["LMCache MP lookup count"] = len(durations)
+            summary["LMCache MP lookup avg latency (ms)"] = round(
                 sum(durations) / len(durations) * 1000, 3
-            ),
-        }
+            )
+        for name, value in self.data.get(_L1_DUPLICATION, {}).items():
+            summary[f"LMCache MP L1 dup {name}"] = (
+                round(value, 3) if isinstance(value, float) else value
+            )
+        return summary
 
     def is_empty(self) -> bool:
-        return not self.data[_LOOKUP_DURATION]
+        return not self.data[_LOOKUP_DURATION] and _L1_DUPLICATION not in self.data
 
 
 class LMCacheMPPromMetrics(KVConnectorPromMetrics):

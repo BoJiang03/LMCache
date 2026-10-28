@@ -5,6 +5,18 @@
 import msgspec
 
 
+def unknown_method_error(method: str) -> str:
+    """Return the error a server answers when no module serves ``method``.
+
+    Args:
+        method: The namespaced server-module method.
+
+    Returns:
+        The ``ServerModuleCallResponse.error`` text.
+    """
+    return "unknown server module method: %s" % method
+
+
 class ServerModuleCallRequest(msgspec.Struct):
     """Opaque request envelope dispatched by namespaced extension method.
 
