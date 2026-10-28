@@ -103,6 +103,11 @@ class L1EvictionController(EvictionController):
         self._eviction_config = eviction_config
         self._eviction_policy = CreateEvictionPolicy(eviction_config)
         self._l1_manager = l1_manager
+        # make_room wakes the loop at once instead of letting a store that
+        # cannot lose its chunks fail until the next periodic check.
+        self._wake = threading.Event()
+        self._requested_lock = threading.Lock()
+        self._requested_bytes = 0
         self._listener = L1EvictionPolicy(self._eviction_policy)
         self._l1_manager.register_listener(self._listener)
         self._event_bus = get_event_bus()
@@ -162,11 +167,18 @@ class L1EvictionController(EvictionController):
         eviction_ratio = self._eviction_config.eviction_ratio
 
         while not self._stop_flag.is_set():
-            time.sleep(1)
+            self._wake.wait(1)
+            self._wake.clear()
+            with self._requested_lock:
+                requested_bytes, self._requested_bytes = self._requested_bytes, 0
             used_bytes, total_bytes = self._l1_manager.get_memory_usage()
             if self._eviction_config.extra_logging_enabled:
                 self._maybe_log_memory_usage(used_bytes, total_bytes)
-            usage = 0 if total_bytes == 0 else used_bytes / total_bytes
+            # A write waiting for room counts as if it had landed: L1 below
+            # the watermark can still be too full for a burst.
+            usage = (
+                0 if total_bytes == 0 else (used_bytes + requested_bytes) / total_bytes
+            )
             if usage < watermark:
                 logger.debug(
                     "L1 memory usage %.2f below watermark %.2f; skipping eviction.",
@@ -196,6 +208,20 @@ class L1EvictionController(EvictionController):
             logger.error("Unsupported eviction destination: %s", action.destination)
             logger.error("Treating it as DISCARD.")
             self._l1_manager.delete(action.keys)
+
+    def make_room(self, requested_bytes: int) -> None:
+        """Run the eviction check now, counting ``requested_bytes`` as used.
+
+        For a write that found L1 full and will be retried: the loop wakes
+        at once instead of at its next periodic check.
+
+        Args:
+            requested_bytes: Bytes the failed reservation asked for. The
+                largest since the last check decides whether to evict.
+        """
+        with self._requested_lock:
+            self._requested_bytes = max(self._requested_bytes, requested_bytes)
+        self._wake.set()
 
 
 class L2AdapterEvictionState:

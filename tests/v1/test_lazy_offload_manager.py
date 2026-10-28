@@ -45,6 +45,9 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
     LoadStoreOp,
 )
+from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
+    STORE_DUE_HINT,
+)
 from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
 
 TOKENS_PER_BLOCK = 4
@@ -273,6 +276,20 @@ def test_hash_less_block_is_not_protected_and_keeps_the_chain() -> None:
     assert first.op.block_ids == [attention[:1], [dropped_state]]
 
 
+def test_emitted_store_is_due() -> None:
+    """Every store lazy offload emits is marked due, so L1 must not skip a
+    chunk of it for lack of room."""
+    pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
+    attention = _hashed_blocks(pool, 1)
+    manager = _manager(pool)
+    manager.add_store_candidate(_store([attention, [pool.null_block.block_id]]))
+    _free_to_head(pool, attention)
+
+    [store] = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert (store.request_configs or {}).get(STORE_DUE_HINT) is True
+
+
 @pytest.mark.parametrize(
     ("num_tokens", "stored"),
     [(2 * TOKENS_PER_BLOCK - 1, False), (2 * TOKENS_PER_BLOCK, True)],
@@ -340,7 +357,7 @@ def test_coalesced_store_keeps_the_request_configs() -> None:
     assert len(actions.stores_to_submit) == 1
     stored = actions.stores_to_submit[0]
     assert stored.op.block_ids[0] == ids
-    assert stored.request_configs == configs
+    assert stored.request_configs == {**configs, STORE_DUE_HINT: True}
 
 
 def _blocked_with_freed_successor(

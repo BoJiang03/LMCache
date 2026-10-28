@@ -217,9 +217,11 @@ def _make_checkpoint_module(
     module.context.chunk_size = 2
     module.context.null_block_id = -1
     module.context.session_manager.get.return_value = None
-    module.context.storage_manager.reserve_write.side_effect = lambda keys, layout: {
-        key: MagicMock(get_size=MagicMock(return_value=10)) for key in keys
-    }
+    module.context.storage_manager.reserve_write.side_effect = (
+        lambda keys, layout, out_of_memory_keys=None: {
+            key: MagicMock(get_size=MagicMock(return_value=10)) for key in keys
+        }
+    )
     monkeypatch.setattr(
         mod, "downsample_and_stage_block_ids", downsample_and_stage_block_ids
     )
@@ -232,7 +234,7 @@ def test_store_reserves_real_page_zero_and_only_present_state_objects(
 ) -> None:
     module, context, _reads, transfers = _make_checkpoint_module(monkeypatch)
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1),
+        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: False),
         1,
         [[0, 1, 2, 3], [-1, -1, 0, 1], [-1, -1, 2, 3]],
         b"producer",

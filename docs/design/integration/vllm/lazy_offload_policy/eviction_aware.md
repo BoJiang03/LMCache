@@ -380,7 +380,8 @@ The invariant (L0 plus L1 covers every block vLLM retains) has three
 places where an op can go unstored. Each is either repaired or provably
 loses nothing servable:
 
-- **A failed batch** (L1 refused it, or a worker failed) is requeued and
+- **A failed batch** (L1 had no room for a chunk of this due store, or a
+  worker failed) is requeued and
   stored again when it comes due; its blocks were pinned, so the data is
   intact. A preempted request's batch is its own and is retried too
   (protocol step 7). Only an *orphaned* batch, whose finished request's id

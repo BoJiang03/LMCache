@@ -47,6 +47,7 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (
     LoadStoreOp,
 )
 from lmcache.utils import init_logger
+from lmcache.v1.multiprocess.custom_types import STORE_DUE_HINT
 
 if TYPE_CHECKING:
     # Third Party
@@ -802,13 +803,18 @@ class LazyOffloadManager:
                 self._held_block_ids[item.request_id] = held
             if not valid.metadatas:
                 continue
-            actions.stores_to_submit.append(
-                _coalesce_store_metadata(
-                    [meta for meta, _ in valid.metadatas],
-                    self._group_tokens_per_block,
-                    pool.null_block.block_id,
-                )
+            store = _coalesce_store_metadata(
+                [meta for meta, _ in valid.metadatas],
+                self._group_tokens_per_block,
+                pool.null_block.block_id,
             )
+            # Emitted just before vLLM may reuse the blocks: the server
+            # fails the store rather than skip a chunk, and it is retried.
+            store = replace(
+                store,
+                request_configs={**(store.request_configs or {}), STORE_DUE_HINT: True},
+            )
+            actions.stores_to_submit.append(store)
             self._requests.register_batch(item.request_id, valid_block_ids, valid)
         for request_id in drain.emptied_request_ids:
             if self._requests.can_end_session(request_id):

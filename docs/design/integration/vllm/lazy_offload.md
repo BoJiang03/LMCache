@@ -394,7 +394,13 @@ where eviction order had it, unless another request's op still buffers it
 (step 4 of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)).
 Failed stores are reported alongside completion receipts, so the scheduler
 requeues a failed range in token order among the request's buffered chunks
-and its prefix chain stays whole.
+and its prefix chain stays whole. Every store the drain emits carries
+`lmcache.hint.store_due`: it runs just before vLLM may reuse its blocks, so
+a chunk L1 has no room for would be lost. The server fails such a store
+rather than skip the chunk, and asks L1 eviction to make room at once
+(`StorageManager.make_room`), so the retry finds it. An eager store does not
+carry the hint and behaves as upstream: a chunk without room is skipped and
+eviction keeps its periodic, watermark-only check.
 
 Configuration in `kv_connector_extra_config`:
 

@@ -578,11 +578,36 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
     ) -> tuple[bytes, bool]:
-        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask."""
+        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask.
+
+        A chunk no L1 has room for is skipped, except in a due store
+        (``IPCCacheServerKey.store_is_due``): lazy offload emits it just
+        before vLLM may reuse the blocks, so a skipped chunk would be lost.
+        A due store fails instead, which makes the caller retry it, and L1
+        eviction runs at once to make room for the retry.
+
+        Args:
+            key: The IPC key for the KV cache blocks.
+            instance_id: The GPU instance ID (such as PID).
+            gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
+                group index.
+            event_ipc_handle: The IPC handle of the event to wait on.
+
+        Returns:
+            The completion event's IPC handle, and whether the store
+            succeeded; a due store succeeds only if every chunk was stored
+            or already resident.
+        """
+        if not key.store_is_due():
+            handle, ok, _ = self.store_with_chunk_mask(
+                key, instance_id, gpu_block_ids, event_ipc_handle
+            )
+            return handle, ok
+        out_of_memory_keys: list[ObjectKey] = []
         handle, ok, _ = self.store_with_chunk_mask(
-            key, instance_id, gpu_block_ids, event_ipc_handle
+            key, instance_id, gpu_block_ids, event_ipc_handle, out_of_memory_keys
         )
-        return handle, ok
+        return handle, ok and not out_of_memory_keys
 
     def store_with_chunk_mask(
         self,
@@ -590,6 +615,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         instance_id: int,
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> tuple[bytes, bool, list[bool]]:
         """Store the GPU KV cache blocks to CPU.
 
@@ -600,6 +626,8 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
                 group index.
             event_ipc_handle: The IPC handle of the event to wait on.
+            out_of_memory_keys: When given, extended with the object keys
+                skipped because no L1 could allocate them.
 
         Returns:
             A tuple where the first element is the IPC handle of the event
@@ -774,9 +802,14 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         self._ctx.chunk_size,
                         object_group_id=obj_group_id,
                     )
+                    group_oom_keys: list[ObjectKey] = []
                     reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc
+                        keys_to_reserve, layout_desc, group_oom_keys
                     )
+                    if out_of_memory_keys is not None and group_oom_keys:
+                        # The caller retries these, so L1 makes room now.
+                        out_of_memory_keys.extend(group_oom_keys)
+                        self._ctx.storage_manager.make_room(group_oom_keys, layout_desc)
                     all_dict.update(reserved_dict)
                     if reserved_dict:
                         total_bytes += next(

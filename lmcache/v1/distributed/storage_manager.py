@@ -14,6 +14,7 @@ import time
 # First Party
 from lmcache.lmcache_native import PeriodicEventNotifier
 from lmcache.logging import init_logger
+from lmcache.utils import get_size_bytes
 from lmcache.v1.distributed.api import (
     CapacitySnapshot,
     L1BackendType,
@@ -185,6 +186,13 @@ class StorageManager:
                 eviction_controller.start()
                 cleanup.callback(eviction_controller.stop)
             self._eviction_controller = self._eviction_controllers[0]
+            controller_by_owner = {
+                m.l1_manager_id: c
+                for m, c in zip(managers, self._eviction_controllers, strict=True)
+            }
+            self._write_eviction_controllers = tuple(
+                controller_by_owner[m.l1_manager_id] for m in self._write_managers
+            )
             self._l1_memory_desc = self._l1_manager.get_l1_memory_desc()
             self._next_adapter_id = 0
             # Serializes L1/L2 additions and L2 adapter registration/deletion.
@@ -300,6 +308,7 @@ class StorageManager:
         self,
         keys: list[ObjectKey],
         layout_desc: MemoryLayoutDesc,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> dict[ObjectKey, MemoryObj]:
         """
         Reserve the object for writing into the storage manager.
@@ -308,6 +317,9 @@ class StorageManager:
             keys (list[ObjectKey]): List of object keys to reserve for writing.
             layout_desc (MemoryLayoutDesc): Description of the memory layout
                 for the objects to be reserved.
+            out_of_memory_keys: When given, extended with the keys no L1
+                could allocate. The other unreserved keys are already
+                resident or being written, so their data is not lost.
         Returns:
             dict[ObjectKey, MemoryObj]: A dictionary mapping object keys to their
                 reserved memory objects. Note that not all requested keys could be
@@ -354,6 +366,8 @@ class StorageManager:
         oom_keys = [
             k for k, (e, _) in reserve_result.items() if e == L1Error.OUT_OF_MEMORY
         ]
+        if out_of_memory_keys is not None:
+            out_of_memory_keys.extend(oom_keys)
         if oom_keys:
             self._event_bus.publish(
                 Event(
@@ -363,6 +377,24 @@ class StorageManager:
             )
 
         return result
+
+    def make_room(self, keys: list[ObjectKey], layout_desc: MemoryLayoutDesc) -> None:
+        """Run L1 eviction now for a write that found no room and is retried.
+
+        Each write candidate's eviction check runs at once instead of at its
+        next periodic check, counting the keys' bytes as used, so that a
+        burst evicts even below the watermark. Without this call a write
+        that finds L1 full is skipped and eviction keeps its period.
+
+        Args:
+            keys: The keys no L1 could allocate.
+            layout_desc: Their memory layout, which sizes them.
+        """
+        requested_bytes = get_size_bytes(layout_desc.shapes, layout_desc.dtypes) * len(
+            keys
+        )
+        for controller in self._write_eviction_controllers:
+            controller.make_room(requested_bytes)
 
     def finish_write(
         self,

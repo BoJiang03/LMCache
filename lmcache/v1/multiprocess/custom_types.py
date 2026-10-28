@@ -29,6 +29,13 @@ Key Types:
 """
 
 
+# Request config lazy offload sets on every STORE it emits. Such a store is
+# due: it runs just before vLLM may reuse the blocks, so a chunk L1 has no
+# room for would be lost. The server fails the store instead, so that the
+# connector retries it, and runs L1 eviction at once to make room.
+STORE_DUE_HINT = "lmcache.hint.store_due"
+
+
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
     """Cache key for the IPC (multiprocess) protocol.
@@ -170,6 +177,15 @@ class IPCCacheServerKey:
                 "client."
             )
         return self.num_kv_readers
+
+    def store_is_due(self) -> bool:
+        """Whether this store must not skip a chunk for lack of room.
+
+        Returns:
+            True when ``request_configs`` sets ``STORE_DUE_HINT`` to a true
+            value.
+        """
+        return bool((self.request_configs or {}).get(STORE_DUE_HINT, False))
 
     def no_worker_id_version(self) -> "IPCCacheServerKey":
         """Create a copy with worker_id=None for lookup requests."""
