@@ -24,6 +24,7 @@ from lmcache.v1.distributed.api import (
 )
 from lmcache.v1.mp_coordinator.app import create_app
 from lmcache.v1.mp_coordinator.config import MPCoordinatorConfig
+from lmcache.v1.mp_coordinator.controllers.prefetch_manager import PrefetchManager
 from lmcache.v1.multiprocess.custom_types import IPCCacheServerKey
 from lmcache.v1.multiprocess.engine_context import LayoutDescRegistry
 from lmcache.v1.multiprocess.http_apis.cache_api import router as node_router
@@ -235,6 +236,10 @@ def test_prefetch_preserves_tags_on_every_rank_and_object_group(
         assert len({key.kv_rank for key in keys}) == 2
         assert all(dict(key.identity.tags) == tags for key in keys)
         assert all(key.chunk_hash == _store_key(tags).chunk_hash for key in keys)
+        if via_coordinator:
+            stats = client.app.state.ctx.controllers.get(PrefetchManager).stats()
+            assert stats.requests_submitted["submitted"] == 1
+            assert stats.requests_in_flight == {"node": 1}
 
 
 @pytest.mark.parametrize("tags", [{"": "bad"}, {"adapter": 1}, {"adapter": None}])
