@@ -127,7 +127,12 @@ def _make_module(
 def _store(module: LMCacheDrivenTransferModule, due: bool = True) -> bool:
     """Store the one-chunk request; return the store's ok."""
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: due),
+        SimpleNamespace(
+            request_id="req",
+            worker_id=1,
+            requests_exclusive_retrieve=lambda: False,
+            store_is_due=lambda: due,
+        ),
         1,
         [[1], [2]],
         b"producer",

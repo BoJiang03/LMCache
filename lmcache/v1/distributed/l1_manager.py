@@ -875,6 +875,22 @@ class L1Manager(L1ManagerInterface):
                 )
             )
 
+    def demote_keys(self, keys: list[ObjectKey]) -> None:
+        """Make the given resident keys the next eviction victims.
+
+        Called by ``StorageManager.demote_l1_keys`` and
+        ``StorageManager.demote_cached_keys``. The objects stay resident and
+        readable; only their eviction order changes. Like
+        :meth:`touch_keys`, this takes no lock: the listeners serialize
+        their own state.
+
+        Args:
+            keys: The keys to demote, in request order. Later keys are
+                evicted first; keys that are not tracked are ignored.
+        """
+        for listener in self._registered_listeners:
+            listener.on_l1_keys_demoted(keys)
+
     @l1_mgr_synchronized
     def clear(self, force: bool = False) -> None:
         """Clear objects from L1 cache.

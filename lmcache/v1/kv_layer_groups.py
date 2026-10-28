@@ -642,6 +642,7 @@ class KVLayerGroupsManager:
             "aux" if g.aux else ("recurrent" if g.recurrent else "attention")
             for g in self._object_groups
         )
+        held_windows = tuple(self._engine_held_window(g) for g in self._object_groups)
         if self._full_sw_kv:
             # full_sw_kv: attention groups report full attention;
             # recurrent-state groups keep their window (position-bound
@@ -654,6 +655,7 @@ class KVLayerGroupsManager:
                     for g in self._object_groups
                 ],
                 group_kinds=kinds,
+                engine_held_windows=held_windows,
             )
         return AttnWindowDesc(
             num_chunks_in_sw=[
@@ -661,6 +663,7 @@ class KVLayerGroupsManager:
                 for w in (g.sw_size_chunks for g in self._object_groups)
             ],
             group_kinds=kinds,
+            engine_held_windows=held_windows,
         )
 
     def calculate_num_blocks(self, kernel_group_idx: int, num_tokens: int) -> int:
@@ -745,6 +748,32 @@ class KVLayerGroupsManager:
                 key=lambda kv: (kv[0].extra_tag != 0, kv[1][0]),
             )
         ]
+
+    def _engine_held_window(self, group: ObjectGroupInfo) -> int:
+        """Return the engine-held window of an object group.
+
+        See ``AttnWindowDesc.engine_held_windows``. The engine holds a chunk
+        of the group only if every kernel group holds it, so the narrowest
+        rule wins: a recurrent layer anywhere (a mixed group without
+        object-group separation) means only the chunk at the prefix's end,
+        else the smallest sliding window, else every chunk.
+
+        Args:
+            group: The object group.
+
+        Returns:
+            ``0``, a window ``>= 1`` in chunks, or ``-1``.
+        """
+        kernel_groups = [self._kernel_groups[i] for i in group.kernel_group_indices]
+        if any(kg.recurrent_state for kg in kernel_groups):
+            return 0
+        chunk_size = self._lmcache_tokens_per_chunk
+        windows = [
+            (kg.sw_size_tokens + chunk_size - 1) // chunk_size
+            for kg in kernel_groups
+            if kg.sw_size_tokens != -1
+        ]
+        return min(windows, default=-1)
 
     @staticmethod
     def _validate_block_chunk_size_config(

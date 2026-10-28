@@ -747,6 +747,44 @@ class StorageManager:
         for adapter in adapters:
             adapter.submit_touch(keys)
 
+    def demote_l1_keys(self, completion: L1WriteCompletion) -> None:
+        """Make loaded keys the next L1 eviction victims, without deleting them.
+
+        Called from the transfer stream's ``demote_l1_keys`` host callback,
+        which an exclusive retrieve submits after its copy into GPU memory and
+        its ``finish_read_by_owner``. The GPU copy is then the primary one,
+        so the L1 copy should go first under pressure but stays readable
+        while there is room. L2 recency is not changed.
+
+        Args:
+            completion: Owner/key groups of the read keys, as produced by
+                :meth:`prepare_read_completion`; each owner demotes only
+                its own keys, in the given order.
+
+        Raises:
+            ValueError: An owner is not registered.
+        """
+        if any(owner not in self._l1_managers_by_id for owner, _ in completion):
+            raise ValueError("Demotion requires a registered L1 owner")
+        for owner, keys in completion:
+            self._l1_managers_by_id[owner].demote_keys(keys)
+
+    def demote_cached_keys(self, keys: list[ObjectKey]) -> None:
+        """Make resident keys the next L1 eviction victims, without I/O.
+
+        The counterpart of :meth:`touch_cached_keys` for keys whose GPU copy
+        is the primary one: an exclusive-retrieve request demotes the L1
+        copies of the prefix vLLM's prefix cache holds for it. Unlike
+        :meth:`demote_l1_keys` the keys need no read lock, so every L1
+        demotes the ones it tracks. L2 recency is not changed.
+
+        Args:
+            keys: The keys to demote, in request order. Later keys are
+                evicted first; keys no L1 tracks are ignored.
+        """
+        for manager in self._l1_managers_by_id.values():
+            manager.demote_keys(keys)
+
     def delete_l1_keys(
         self, keys: list[ObjectKey], force: bool = False
     ) -> tuple[int, int]:

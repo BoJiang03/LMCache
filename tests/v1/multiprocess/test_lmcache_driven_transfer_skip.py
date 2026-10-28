@@ -3,7 +3,8 @@
 ``lmcache_driven_transfer``.
 
 - ``all_null_chunk_masks`` (store side): mark chunks whose block ids are all the
-  null block so ``store`` never commits them.
+  null block so ``store`` never commits them; exclusive-retrieve re-stores also
+  skip chunks that are null in only some kernel groups.
 - ``retrieve`` (read side): read/transfer only each object group's in-window
   suffix, None-padding the skipped prefix so the transfer path is unchanged.
 """
@@ -93,6 +94,18 @@ def test_object_group_null_only_when_all_its_kernel_groups_null():
         num_chunks=2,
     )
     # chunk 0: kg0=0 and kg1=0 -> null; chunk 1: kg0=0 but kg1=4 -> not null.
+    assert masks == [[True, False]]
+
+
+def test_skip_partly_null_marks_chunk_null_in_any_kernel_group() -> None:
+    # Chunk 0 is null only in kernel group 1; chunk 1 is real in both.
+    masks = all_null_chunk_masks(
+        block_ids=[[3, 4], [0, 5]],
+        object_groups=[_og([0, 1])],
+        blocks_per_chunk=[1, 1],
+        num_chunks=2,
+        skip_partly_null=True,
+    )
     assert masks == [[True, False]]
 
 
@@ -203,12 +216,18 @@ def _make_module(monkeypatch, num_chunks, num_chunks_in_sw, group_kinds=()):
 
 def _make_checkpoint_module(
     monkeypatch: pytest.MonkeyPatch,
+    num_kernel_groups: int = 3,
+    object_groups: tuple[tuple[int, ...], ...] = ((0,), (1, 2)),
+    num_chunks_in_sw: tuple[int, ...] = (-1, 1),
+    group_kinds: tuple[str, ...] = ("attention", "recurrent"),
 ) -> tuple[LMCacheDrivenTransferModule, MagicMock, list, list]:
-    module, reads, transfers = _make_module(monkeypatch, 2, [-1, 1])
-    context = _staging_context(3, [_og([0]), _og([1, 2])])
-    context.kv_layer_groups_manager.num_object_groups = 2
+    module, reads, transfers = _make_module(monkeypatch, 2, list(num_chunks_in_sw))
+    context = _staging_context(
+        num_kernel_groups, [_og(group) for group in object_groups]
+    )
+    context.kv_layer_groups_manager.num_object_groups = len(object_groups)
     context.kv_layer_groups_manager.get_attn_desc = lambda: SimpleNamespace(
-        num_chunks_in_sw=[-1, 1], group_kinds=("attention", "recurrent")
+        num_chunks_in_sw=list(num_chunks_in_sw), group_kinds=group_kinds
     )
     entry = module.get_and_touch_context_entry(1)
     # Keep recording the copies made through the replacement context.
@@ -234,7 +253,12 @@ def test_store_reserves_real_page_zero_and_only_present_state_objects(
 ) -> None:
     module, context, _reads, transfers = _make_checkpoint_module(monkeypatch)
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: False),
+        SimpleNamespace(
+            request_id="req",
+            worker_id=1,
+            requests_exclusive_retrieve=lambda: False,
+            store_is_due=lambda: False,
+        ),
         1,
         [[0, 1, 2, 3], [-1, -1, 0, 1], [-1, -1, 2, 3]],
         b"producer",
@@ -254,6 +278,49 @@ def test_store_reserves_real_page_zero_and_only_present_state_objects(
     ]
 
 
+@pytest.mark.parametrize(
+    ("exclusive", "reserved"),
+    [(True, [["g0c1"]]), (False, [["g0c0", "g0c1"]])],
+)
+def test_mixed_object_group_store_skips_partly_null_chunks_only_when_exclusive(
+    monkeypatch: pytest.MonkeyPatch,
+    exclusive: bool,
+    reserved: list[list[str]],
+) -> None:
+    """An exclusive re-store must not commit a mixed chunk with a null state.
+
+    One object group holds an attention and a Mamba kernel group. Chunk 0 has
+    real attention blocks but only null Mamba blocks, as vLLM fills a loaded
+    chunk before the tail; chunk 1 is real in both. A plain store keeps both
+    chunks, an exclusive re-store stores only chunk 1.
+    """
+    module, _context, _reads, _transfers = _make_checkpoint_module(
+        monkeypatch,
+        num_kernel_groups=2,
+        object_groups=((0, 1),),
+        num_chunks_in_sw=(-1,),
+        group_kinds=("attention",),
+    )
+    _handle, ok = module.store(
+        SimpleNamespace(
+            request_id="req",
+            worker_id=1,
+            requests_exclusive_retrieve=lambda: exclusive,
+            store_is_due=lambda: False,
+        ),
+        1,
+        [[0, 1, 2, 3], [-1, -1, 0, 1]],
+        b"producer",
+    )
+    assert ok
+    assert [
+        call.args[0]
+        for call in cast(
+            MagicMock, module.context.storage_manager.reserve_write
+        ).call_args_list
+    ] == reserved
+
+
 def test_retrieve_reads_and_transfers_only_in_window(monkeypatch):
     # Group 0 = full attention (-1): whole prefix; group 1 = mamba window 1:
     # only the last chunk.
@@ -265,7 +332,11 @@ def test_retrieve_reads_and_transfers_only_in_window(monkeypatch):
     gpu_block_ids = [[1, 2, 3, 4, 5], [0, 0, 0, 0, 9]]
 
     _handle, ok = module.retrieve(
-        key=SimpleNamespace(request_id="req", cache_salt="salt"),
+        key=SimpleNamespace(
+            request_id="req",
+            cache_salt="salt",
+            requests_exclusive_retrieve=lambda: False,
+        ),
         instance_id=1,
         gpu_block_ids=gpu_block_ids,
         event_ipc_handle=b"x",
@@ -292,7 +363,11 @@ def test_retrieve_full_attention_only_reads_everything(monkeypatch):
         monkeypatch, num_chunks, num_chunks_in_sw=[-1]
     )
     _handle, ok = module.retrieve(
-        key=SimpleNamespace(request_id="req", cache_salt="salt"),
+        key=SimpleNamespace(
+            request_id="req",
+            cache_salt="salt",
+            requests_exclusive_retrieve=lambda: False,
+        ),
         instance_id=1,
         gpu_block_ids=[[1, 2, 3]],
         event_ipc_handle=b"x",
@@ -320,7 +395,11 @@ def test_retrieve_never_reads_aux_groups(monkeypatch):
     gpu_block_ids = [[0, 0, 7], [1, 2, 3], [9, 9, 9]]
 
     _handle, ok = module.retrieve(
-        key=SimpleNamespace(request_id="req", cache_salt="salt"),
+        key=SimpleNamespace(
+            request_id="req",
+            cache_salt="salt",
+            requests_exclusive_retrieve=lambda: False,
+        ),
         instance_id=1,
         gpu_block_ids=gpu_block_ids,
         event_ipc_handle=b"x",

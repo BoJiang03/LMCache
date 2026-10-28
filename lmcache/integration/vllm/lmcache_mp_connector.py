@@ -84,6 +84,11 @@ from lmcache.integration.vllm.utils import (
 )
 from lmcache.utils import CacheRemoveEvent
 from lmcache.utils import init_logger as lmcache_init_logger
+from lmcache.v1.multiprocess.custom_types import (
+    ENGINE_HELD_TOKENS_HINT,
+    EXCLUSIVE_RETRIEVE,
+    EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+)
 
 try:
     # First Party
@@ -872,6 +877,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 "lmcache.mp.lazy_offload requires vLLM prefix caching "
                 "(enable_prefix_caching=True)"
             )
+        # Exclusive retrieve: the server demotes the L1 copy of each chunk it
+        # loads, and the loaded chunks are stored again before vLLM evicts
+        # them. Only lazy offload guarantees that store, so it is required.
+        self.exclusive_retrieve = bool(
+            vllm_config.kv_transfer_config.get_from_extra_config(
+                "lmcache.mp.exclusive_retrieve", False
+            )
+        )
+        if self.exclusive_retrieve and not self.lazy_offload:
+            raise ValueError(
+                "lmcache.mp.exclusive_retrieve requires lmcache.mp.lazy_offload: "
+                "a demoted chunk is kept only by storing its GPU copy again "
+                "before vLLM evicts it"
+            )
 
         if self.role == KVConnectorRole.SCHEDULER:
             # Banner from the scheduler role only, so tensor-parallel
@@ -886,6 +905,20 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 extra_config=vllm_config.kv_transfer_config.kv_connector_extra_config,
                 required_chunk_alignment=scheduler_block_size,
             )
+            # A connector may be upgraded before its server; an older server
+            # ignores the XR request config, so XR there would only re-store
+            # hits. Lazy offload alone is safe against it.
+            if (
+                self.exclusive_retrieve
+                and EXCLUSIVE_RETRIEVE not in self.scheduler_adapter.experimental
+            ):
+                logger.warning(
+                    "lmcache.mp.exclusive_retrieve is disabled: the LMCache "
+                    "server does not advertise %s; running lazy offload "
+                    "without exclusive retrieve",
+                    EXCLUSIVE_RETRIEVE,
+                )
+                self.exclusive_retrieve = False
             self.request_trackers: dict[str, LMCacheMPRequestTracker] = {}
             # Worker events aggregated per step, awaiting take_events().
             self._kv_cache_events: list[KVCacheEvent] = []
@@ -1764,6 +1797,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 if condition
                 else LMCacheMPRequestState.READY
             )
+            if self.exclusive_retrieve:
+                # The server demotes the chunks this retrieve loads and the
+                # prefix vLLM's prefix cache holds (below the retrieve start),
+                # so the GPU copy of each is the primary one: store them all
+                # again, lazily.
+                tracker.num_stored_tokens = 0
             # Clean up lookup future in scheduler adapter
             self.scheduler_adapter.cleanup_lookup_result(request.request_id)
 
@@ -1785,13 +1824,25 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     free_end = tracker.num_vllm_hit_tokens
 
             if free_end > 0 or tracker.pending_free_ranges:
+                request_configs = tracker.request_configs
+                if self.exclusive_retrieve and tracker.num_vllm_hit_tokens > 0:
+                    # Sent only now that vLLM has allocated the blocks: the
+                    # held prefix is a lazy store candidate from here on, so
+                    # a demoted L1 copy is never the only copy left behind.
+                    # Every LMCache hit (even one only as long as the covered
+                    # prefix) reaches this FREE, as the lookup counts the
+                    # covered prefix as hit.
+                    request_configs = {
+                        **(request_configs or {}),
+                        ENGINE_HELD_TOKENS_HINT: tracker.num_vllm_hit_tokens,
+                    }
                 self.scheduler_adapter.free_lookup_locks(
                     packed_token_ids=tracker.packed_token_ids(),
                     start=0,
                     end=free_end,
                     request_id=request.request_id,
                     cache_salt=tracker.cache_salt,
-                    request_configs=tracker.request_configs,
+                    request_configs=request_configs,
                     extra_ranges=tuple(tracker.pending_free_ranges),
                 )
                 tracker.pending_free_ranges = []
@@ -2213,6 +2264,15 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 for session_id in actions.sessions_to_end:
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
+            # The connector alone decides exclusive retrieve and the held
+            # prefix it demotes: a request that set them without lazy offload
+            # behind it would lose its demoted chunks.
+            request_configs = dict(new_tracker.request_configs or {})
+            request_configs.pop(EXCLUSIVE_RETRIEVE_REQUEST_CONFIG, None)
+            request_configs.pop(ENGINE_HELD_TOKENS_HINT, None)
+            if self.exclusive_retrieve:
+                request_configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
+            new_tracker.request_configs = request_configs or None
             self.request_trackers[request_id] = new_tracker
         return self.request_trackers[request_id]
 
@@ -2224,8 +2284,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         call it has happened if it ever will; older vLLMs call only
         ``bind_gpu_block_pool``. Lazy offload needs the cache coordinator to
         know what vLLM's prefix cache serves, so without it the connector
-        stores eagerly. Decided once, before any store is buffered; the
-        workers follow through ``disable_lazy_offload`` in the metadata.
+        stores eagerly. Exclusive retrieve, which needs lazy offload, goes
+        off with it. Decided once, before any store is buffered or any
+        request is told to retrieve exclusively; the workers follow through
+        ``disable_lazy_offload`` in the metadata.
         """
         if self._kv_cache_manager_bind_checked:
             return
@@ -2234,9 +2296,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             logger.warning(
                 "lmcache.mp.lazy_offload is disabled: vLLM did not call "
                 "bind_kv_cache_manager, so lazy offload cannot see its prefix "
-                "cache; storing eagerly"
+                "cache; storing eagerly, without exclusive retrieve"
             )
             self.lazy_offload = False
+            self.exclusive_retrieve = False
             self._lazy_offload_unbound = True
 
     def _cleanup_request_tracker(self, request_id: str) -> None:

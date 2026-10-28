@@ -149,6 +149,17 @@ class L1ManagerListener(EventListener):
         """
         pass
 
+    def on_l1_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Notify the listener that keys should be evicted first (demoted).
+
+        Called by ``L1Manager.demote_keys``. Not abstract: only eviction
+        listeners keep a recency order.
+
+        Args:
+            keys: The keys to demote, in request order.
+        """
+        pass
+
 
 class L2AdapterListener(EventListener):
     """Listener for L2 adapter events, analogous to L1ManagerListener."""
@@ -325,6 +336,10 @@ class L1ManagerInterface(Protocol):
 
     def touch_keys(self, keys: list[ObjectKey]) -> None:
         """Record an access to the keys; takes no lock."""
+        ...
+
+    def demote_keys(self, keys: list[ObjectKey]) -> None:
+        """Move the keys to the front of the eviction order; takes no L1 lock."""
         ...
 
     def clear(self, force: bool = False) -> None:

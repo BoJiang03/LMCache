@@ -141,7 +141,10 @@ def test_store_owner_callback_round_trip(
             cast(
                 Any,
                 SimpleNamespace(
-                    request_id="req", worker_id=1, store_is_due=lambda: False
+                    request_id="req",
+                    worker_id=1,
+                    requests_exclusive_retrieve=lambda: False,
+                    store_is_due=lambda: False,
                 ),
             ),
             1,

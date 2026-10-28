@@ -109,6 +109,24 @@ class LRUEvictionPolicy(EvictionPolicy):
                     # Move to end (most recently used)
                     self._order.move_to_end(key)
 
+    def on_keys_demoted(self, keys: list[ObjectKey]) -> None:
+        """Move tracked keys to the least recently used position.
+
+        Keys are moved in request order, so the request's last key ends at
+        the very front: suffix chunks are evicted before the prefix they
+        extend, matching the order ``on_keys_created`` establishes.
+
+        Args:
+            keys: The keys to demote, in request order. Untracked keys
+                are ignored.
+        """
+        if not keys:
+            return
+        with self._lock:
+            for key in keys:
+                if key in self._order:
+                    self._order.move_to_end(key, last=False)
+
     def on_keys_removed(self, keys: list[ObjectKey]):
         """
         Notify the eviction policy that keys have been deleted.

@@ -367,8 +367,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         Returns:
             Per request, the ops to move to the tail or newly held.
         """
-        # One owner tuple per op, not per block: an op can cover hundreds of
-        # blocks.
+        # One owner tuple per op, not per block: an exclusive-retrieve op
+        # re-stores a whole loaded prompt, hundreds of blocks.
         owners: dict[int, tuple[str, int]] = {}
         for request_id, ops in self._pending.items():
             for index, op in enumerate(ops):
@@ -1075,7 +1075,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         # live. Splitting the check needs per-group token ranges in
         # LoadStoreOp.
         # A plain loop over a local, not all() over a generator: every drain
-        # checks every buffered block.
+        # checks every buffered block, and an exclusive-retrieve op covers a
+        # whole loaded prompt.
         blocks = self._pool.blocks
         for block_id, snapshot in op.block_hashes.items():
             if blocks[block_id].block_hash != snapshot:
