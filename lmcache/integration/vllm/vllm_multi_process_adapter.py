@@ -1798,10 +1798,10 @@ class LMCacheMPWorkerAdapter:
         if self._kv_events_enabled and not self._kv_event_server_source:
             # Own completion events are the fallback when the server's
             # cache-event log is not the source. A successful store result
-            # only means the request completed without a fatal error: chunks
-            # the server could not reserve are skipped silently, so when the
-            # log is the source, its write-finished records announce exactly
-            # the chunks written.
+            # only means no chunk was lost: chunks already resident or being
+            # written are skipped silently, and an L1 out-of-memory reject
+            # fails the store. When the log is the source, its write-finished
+            # records announce exactly the chunks written.
             self._pending_store_kv_events.setdefault(request_id, []).extend(
                 self._build_store_kv_events(key)
             )
