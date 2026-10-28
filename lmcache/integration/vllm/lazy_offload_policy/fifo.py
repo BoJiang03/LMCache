@@ -174,5 +174,17 @@ class FIFOOffloadPolicy(OffloadPolicy):
             item.metadatas.extend(pending.metadatas)
         self._pending_items[item.request_id] = item
 
+    def readmit(self, item: PendingStoreItem) -> None:
+        """Buffer stored operations again, in token order among the others.
+
+        Args:
+            item: The operations, in token order.
+        """
+        pending = self._pending_items.setdefault(
+            item.request_id, PendingStoreItem(request_id=item.request_id)
+        )
+        pending.metadatas.extend(item.metadatas)
+        pending.metadatas.sort(key=lambda entry: entry[0].op.start)
+
     def log_final_stats(self) -> None:
         """FIFO keeps no counters."""

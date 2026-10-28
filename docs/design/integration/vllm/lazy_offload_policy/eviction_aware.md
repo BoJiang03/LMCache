@@ -419,7 +419,7 @@ the true vLLM hit instead of 0.
   ```
 
   Holds are per op (`PendingStoreOp.held`), not a front prefix, and a
-  requeued op is inserted where its start sorts.
+  requeued or readmitted op is inserted where its start sorts.
 - Cross-request drain order = min due rank ascending; `MAX_DRAIN_PER_STEP`
   bounds the per-step D2H burst in operations. It is a constant, not a
   setting: rule 1 widens the window by it, so ops come due early enough
@@ -476,12 +476,16 @@ Two log hooks:
   custody depth at the same instant, which closes the line as an equation:
 
   ```
-  admitted + requeued == pending + emitted + dropped_evicted
+  admitted + requeued + readmitted == pending + emitted + dropped_evicted
                          + dropped_on_request_drop + dropped_id_reuse
   ```
 
   `requeued` counts emitted ops whose store failed and came back to be
-  retried; each retry counts in `emitted` again.
+  retried; each retry counts in `emitted` again. `readmitted` counts ops
+  the manager hands back after parking them: under exclusive retrieve, the
+  part of an emitted op vLLM still held is stored demoted and parked
+  outside the policy until vLLM drops a reference to one of its blocks
+  (see `docs/design/integration/vllm/exclusive_retrieve.md`, rule 9).
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
   turned away before `admitted`), and the `bound_*` counters are weights

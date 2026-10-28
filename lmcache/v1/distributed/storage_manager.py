@@ -716,6 +716,17 @@ class StorageManager:
         """
         for manager in self._l1_managers_by_id.values():
             manager.touch_keys(keys)
+        self.touch_l2_keys(keys)
+
+    def touch_l2_keys(self, keys: list[ObjectKey]) -> None:
+        """Refresh eviction recency in L2 only, without I/O.
+
+        For a caller whose L1 recency is decided elsewhere: an
+        exclusive-retrieve request's ``end_session``.
+
+        Args:
+            keys: The object keys to touch in every L2 adapter.
+        """
         with self._adapters_lock:
             adapters = list(self._l2_adapters.values())
         for adapter in adapters:

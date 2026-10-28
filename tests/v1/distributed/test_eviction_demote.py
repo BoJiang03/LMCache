@@ -172,6 +172,28 @@ class TestL1Demotion:
         finally:
             l1.close()
 
+    @pytest.mark.usefixtures("cpu_memory")
+    def test_demote_of_a_staged_key_lands_at_its_commit(self) -> None:
+        """A demote that overtakes the write it targets is not lost: the
+        write's commit, which would make the key most recently used, admits
+        it as the next victim instead; a later touch promotes it again."""
+        l1 = _l1()
+        lru = LRUEvictionPolicy()
+        l1.register_listener(L1EvictionPolicy(lru))
+        try:
+            _commit(l1, [_key(1), _key(2)])
+            results = l1.reserve_write([_key(3)], [False], LAYOUT)
+            assert results[_key(3)][0] == L1Error.SUCCESS
+
+            l1.demote_keys([_key(3)])
+            assert l1.finish_write([_key(3)]) == {_key(3): L1Error.SUCCESS}
+
+            assert _victims(lru) == [3, 2, 1]
+            l1.touch_keys([_key(3)])
+            assert _victims(lru) == [2, 1, 3]
+        finally:
+            l1.close()
+
 
 @pytest.fixture
 def two_l1s(
