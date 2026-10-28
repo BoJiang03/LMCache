@@ -338,8 +338,9 @@ not add policy-specific branches to the connector.
 Two policies are available:
 
 - `EVICTION_AWARE` (default) reads the free queue in LRU order and releases an
-  operation when one of its blocks enters the pressure-derived danger window,
-  or when the operation passes the configured deferral deadline. It validates
+  operation when one of its blocks enters the danger window -- the free-queue
+  head the running requests and one admission can allocate before the next
+  drain, bounded from the schedule rather than estimated. It validates
   admission-time block hashes and preserves prefix closure. Its full queue
   contract is in
   [lazy_offload_policy/eviction_aware.md](lazy_offload_policy/eviction_aware.md).
@@ -363,23 +364,23 @@ and records those block ids in the request's manager-owned state until
 every worker rank reports completion. Each request id has at most one
 submitted batch. A preemption reset or a finished-id reuse marks an
 outstanding batch orphaned: its receipt still releases its pins, but its
-failure is never charged to the request generation now using the id, and the
-receipt does not end the successor's shared session prematurely.
+failure is never retried for the request generation now using the id, and the
+receipt does not end the successor's shared session prematurely. The record
+also keeps the batch's operations: a batch that failed and is not orphaned
+goes back to the policy once every rank has reported, and is stored again,
+because its blocks were pinned and still hold the data.
 Overlapping emission remains a logic error because worker receipts are keyed
 only by request id. The completion receipt balances the pins with
 `free_blocks()`, returning the blocks to vLLM's own placement for a freed
 cached block. Failed stores are reported alongside completion receipts,
-allowing the scheduler to break the request's prefix chain before considering
-later chunks.
+so the scheduler requeues a failed range ahead of the request's later chunks
+and its prefix chain stays whole.
 
 Configuration in `kv_connector_extra_config`:
 
 ```text
 lmcache.mp.lazy_offload = true                         # default: false
 lmcache.mp.lazy_offload_policy = EVICTION_AWARE        # default
-lmcache.mp.lazy_offload_horizon_steps = 2.5
-lmcache.mp.lazy_offload_max_drain_per_step = 64
-lmcache.mp.lazy_offload_max_deferral_seconds = 0.0     # 0: no deadline
 
 # Explicit FIFO mode only
 lmcache.mp.lazy_offload_threshold = 100
