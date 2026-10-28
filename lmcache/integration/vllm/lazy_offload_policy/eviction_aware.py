@@ -21,6 +21,7 @@ from lmcache.integration.vllm.lazy_offload_policy.base import (
     BlockHashes,
     DrainSignals,
     LazyOffloadDrain,
+    LookupFlush,
     OffloadPolicy,
     PendingStoreItem,
 )
@@ -440,6 +441,93 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 op.held = True
                 past.append(op)
         return _pending_item(request_id, past)
+
+    def flush_for_lookup(self, start: int, ends: dict[str, int]) -> LookupFlush:
+        """Hold and expedite the ops a lookup needs; see
+        ``OffloadPolicy.flush_for_lookup``.
+
+        Per request, the ops ending past ``start`` and starting before its
+        end are taken in token order, up to the first one whose data is
+        already gone, which the next drain drops with its suffix. With
+        anchors, the server's hit, like vLLM's, ends at a chunk carrying a
+        state, so only the ops up to the last anchor op taken over all
+        requests are flushed: storing ops past it would serve nothing. The
+        flushed ops are held and expedited, as by :meth:`hold_past`, and the
+        ops before them ending by ``start`` are marked served, so the
+        segment holding them starts past the prefix vLLM serves.
+
+        Args:
+            start: Token vLLM's prefix cache serves the waiting request up
+                to.
+            ends: Request id -> token up to which its ops cover the waiting
+                request's prefix.
+
+        Returns:
+            The flushed ops' ranges and counts, and the newly held ones.
+        """
+        taken: dict[str, list[PendingStoreOp]] = {}
+        for request_id, end in ends.items():
+            ops: list[PendingStoreOp] = []
+            for op in self._pending.get(request_id, []):
+                if op.store_metadata.op.end <= start:
+                    continue
+                if op.store_metadata.op.start >= end or not self._snapshot_intact(op):
+                    break
+                ops.append(op)
+            if ops:
+                taken[request_id] = ops
+        if self._anchor_groups:
+            hit_end = max(
+                (
+                    op.store_metadata.op.end
+                    for ops in taken.values()
+                    for op in ops
+                    if op.has_anchor
+                ),
+                default=start,
+            )
+            taken = {
+                request_id: kept
+                for request_id, ops in taken.items()
+                if (kept := [op for op in ops if op.store_metadata.op.start < hit_end])
+            }
+        flush = LookupFlush()
+        for request_id, ops in taken.items():
+            for op in self._pending[request_id]:
+                if op.store_metadata.op.end > start:
+                    break
+                op.served = True
+            newly_held = [op for op in ops if not op.held]
+            for op in ops:
+                op.expedited = True
+                op.held = True
+            if newly_held:
+                flush.holds.append(_pending_item(request_id, newly_held))
+            flush.ends[request_id] = ops[-1].store_metadata.op.end
+            flush.num_ops += len(ops)
+            flush.num_tokens += sum(
+                op.store_metadata.op.end - op.store_metadata.op.start for op in ops
+            )
+        return flush
+
+    def is_flushing(self, request_id: str, start: int, end: int) -> bool:
+        """Whether a held or expedited op overlapping ``[start, end)`` is
+        buffered; see ``OffloadPolicy.is_flushing``.
+
+        Args:
+            request_id: A request whose ops a lookup flushed.
+            start: First token of the range.
+            end: Token the range ends at.
+
+        Returns:
+            True while such an op waits for a drain.
+        """
+        return any(
+            (op.held or op.expedited)
+            and op.store_metadata.op.start < end
+            and op.store_metadata.op.end > start
+            for op in self._pending.get(request_id, [])
+        )
 
     def diag_pending_ops(self) -> int:
         """DIAG: number of buffered operations across requests."""

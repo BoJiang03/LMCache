@@ -755,6 +755,7 @@ def test_store_over_the_drain_budget_survives_until_the_next_drain() -> None:
     for request_id, block_id in zip(request_ids, ids, strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -793,6 +794,7 @@ def test_backlog_the_budget_cannot_keep_up_with_starts_early(
     for request_id, block_id in zip(request_ids, ids[10:], strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -850,6 +852,7 @@ def test_stored_block_another_request_buffered_is_not_recycled_next() -> None:
     ]:
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -893,6 +896,7 @@ def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
     for request_id, block_id in (("first", ids[0]), ("second", ids[2])):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids])
 
@@ -1020,6 +1024,7 @@ def test_scratch_group_adds_no_reach(position: int, stored: bool) -> None:
         mamba_groups={0: 0, 2: 0},
     )
     manager.bind_block_pool(pool)
+    manager.on_request_arrived("req", [])
     manager.on_admission("running", 100, 0, 0, load_async=False)
     manager.add_store_candidate(
         _op(0, [[ids[MAMBA_RESERVE + position]], [null], [null]])
@@ -1196,6 +1201,7 @@ def test_deferred_op_is_pinned_when_the_next_step_can_take_the_whole_queue() -> 
     for request_id, block_id in zip(request_ids, ids, strict=False):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks(
         [pool.blocks[block_id] for block_id in ids[: len(request_ids) + 1]]
@@ -1226,6 +1232,7 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     for request_id, block_id in (("first", ids[0]), ("owned", ids[5])):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids[:2]])
 
@@ -1254,6 +1261,7 @@ def test_lasting_squeeze_stores_what_it_pinned() -> None:
     for request_id, block_id in (("first", ids[0]), ("owned", ids[5])):
         store = _store([[block_id], [null]])
         store.request_id = request_id
+        manager.on_request_arrived(request_id, [])
         manager.add_store_candidate(store)
     pool.free_blocks([pool.blocks[block_id] for block_id in ids[:2]])
 
@@ -2407,3 +2415,108 @@ def test_removed_config_key_is_warned_about(
     else:
         assert len(warnings) == 1
         assert removed_key in warnings[0]
+
+
+def _deferred_turn(
+    num_chunks: int, finished: bool = True
+) -> tuple[LazyOffloadManager, BlockPool, list[int]]:
+    """A request "req" whose chunks stay buffered.
+
+    Finished, its blocks are free: vLLM's hit over its own chain serves
+    every chunk, so none is stored at its finish, and no allocation reaches
+    its blocks. Running, its blocks are in use.
+
+    Args:
+        num_chunks: Chunks of the request, one op each.
+        finished: Whether the request finished.
+
+    Returns:
+        The manager, its pool and the request's attention blocks, by chunk.
+    """
+    coordinator = _coordinator()
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, block_ids = _held_manager(coordinator, num_chunks)
+    for chunk, block_id in enumerate(block_ids):
+        manager.add_store_candidate(_op(chunk * TOKENS_PER_BLOCK, [[block_id], [null]]))
+    if finished:
+        manager.on_request_finished("req")
+        pool.free_blocks([pool.blocks[block_id] for block_id in reversed(block_ids)])
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    return manager, pool, block_ids
+
+
+@pytest.mark.parametrize("finished", [True, False])
+@pytest.mark.parametrize("local_hit_chunks", [0, 1])
+def test_lookup_past_the_local_hit_waits_for_the_deferred_chunks(
+    local_hit_chunks: int, finished: bool
+) -> None:
+    """A request whose prefix another request still buffers, past what
+    vLLM's prefix cache serves it, has those chunks stored by the next
+    drain, and its lookup waits until their receipt. The chunks within the
+    local hit stay buffered."""
+    manager, pool, block_ids = _deferred_turn(3, finished)
+    manager.on_request_arrived("next", _chain(4))
+    local_hit = local_hit_chunks * TOKENS_PER_BLOCK
+
+    assert manager.flush_for_lookup("next", local_hit)
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+    assert manager.flush_for_lookup("next", local_hit)
+    manager.on_store_results(set(), {"req": 1})
+
+    assert not manager.flush_for_lookup("next", local_hit)
+    assert store.request_id == "req"
+    assert _span(store) == (local_hit_chunks, 3)
+    assert store.op.block_ids[0] == block_ids[local_hit_chunks:]
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert manager.diag_pending_ops() == (local_hit_chunks, 0)
+    counts = _counts(manager)
+    assert counts["lookup_flushes"] == 1
+    assert counts["lookup_flushed_ops"] == 3 - local_hit_chunks
+    assert counts["lookup_flushed_tokens"] == (3 - local_hit_chunks) * TOKENS_PER_BLOCK
+
+
+@pytest.mark.parametrize("case", ["other_prefix", "within_local_hit"])
+def test_lookup_without_deferred_chunks_past_its_hit_does_not_wait(
+    case: str,
+) -> None:
+    """A request sharing no buffered chunk, or only chunks vLLM's prefix
+    cache serves it, looks up at once and stores nothing."""
+    manager, pool, block_ids = _deferred_turn(3)
+    if case == "other_prefix":
+        chain = [BlockHash(bytes([i + 1]) * 31 + b"\x00") for i in range(4)]
+        local_hit = 0
+    else:
+        chain = _chain(4)
+        local_hit = 3 * TOKENS_PER_BLOCK
+    manager.on_request_arrived("next", chain)
+
+    assert not manager.flush_for_lookup("next", local_hit)
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+    assert manager.diag_pending_ops() == (3, 0)
+    assert "lookup_flushes" not in _counts(manager)
+
+
+def test_lookup_flushes_only_up_to_the_last_state() -> None:
+    """In a hybrid model a hit ends at a chunk carrying a Mamba state, so a
+    lookup flushes the deferred chunks up to the last one with a state."""
+    pool = BlockPool(num_gpu_blocks=64, enable_caching=True, hash_block_size=4)
+    manager = _manager(pool, receipts=_Receipts(), mamba_groups={1: 0})
+    null = pool.null_block.block_id
+    manager.on_request_arrived("req", _chain(4))
+    attention = _hashed_blocks(pool, 4)
+    (state,) = _hashed_blocks(pool, 1)
+    for chunk in range(4):
+        manager.add_store_candidate(
+            _op(
+                chunk * TOKENS_PER_BLOCK,
+                [[attention[chunk]], [state if chunk == 1 else null]],
+            )
+        )
+    manager.on_request_arrived("next", _chain(4))
+
+    assert manager.flush_for_lookup("next", 0)
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(store) == (0, 2)
+    assert store.op.block_ids == [attention[:2], [null, state]]

@@ -366,6 +366,19 @@ class LazyOffloadManager:
         # request the hashes of the chunks it holds, in token order.
         self._chunk_holders: dict["BlockHash", set[str]] = {}
         self._held_chunks: dict[str, list["BlockHash"]] = {}
+        # Per chunk, by the block hash ending it, the requests that offered
+        # an op storing it, and per such request those hashes: what finds
+        # the buffered ops covering a waiting request's prefix. An entry can
+        # outlive its op; the policy only flushes ops it still buffers.
+        self._chunk_offerers: dict["BlockHash", set[str]] = {}
+        self._offered_chunks: dict[str, set["BlockHash"]] = {}
+        # Waiting requests whose lookup flushed buffered ops -> the token
+        # vLLM's prefix cache serves them up to and, per request owning the
+        # flushed ops, the token the flushed range ends at.
+        self._lookup_flushes: dict[str, tuple[int, dict[str, int]]] = {}
+        # Requests whose lookup was checked for buffered ops, once per
+        # generation: a lookup submitted after it would not see a flush.
+        self._lookup_checked: set[str] = set()
 
     @property
     def admission_blocks(self) -> int:
@@ -453,6 +466,9 @@ class LazyOffloadManager:
             if not pool.blocks[block_id].is_null
         }
         self._require_policy().add(self._rebind_tokens(metadata), block_hashes)
+        self._index_offered_chunks(
+            metadata.request_id, metadata.op.start, metadata.op.end
+        )
         if _requests_exclusive_retrieve(metadata) and self._hold_chunks(
             metadata.request_id, metadata.op.end
         ):
@@ -483,6 +499,46 @@ class LazyOffloadManager:
                 already has a store batch in flight.
         """
         return self._drain(scheduler_output, self._require_block_pool())
+
+    def flush_for_lookup(self, request_id: str, num_computed_tokens: int) -> bool:
+        """Store the buffered ops a waiting request's lookup needs first.
+
+        Lazy offload defers a chunk while vLLM's prefix cache can serve it.
+        A request whose local hit stops short of chunks other requests
+        still buffer (in a hybrid model, a hit resumes only at a cached
+        state) can be served neither from the GPU nor from L1, and would
+        recompute them. So on its first call the ops covering its prefix
+        past the local hit are held and stored by the next drain, as eager
+        offload would have stored them; the ops the hit covers stay
+        buffered. Until their receipts settle, the caller defers the
+        lookup, which then hits L1. Found through the chunk hashes of the
+        request's chain, so the cost is linear in its chunks.
+
+        Args:
+            request_id: A waiting request whose lookup was not yet
+                submitted; it arrived and its session has not ended.
+            num_computed_tokens: Its local prefix hit, in tokens.
+
+        Returns:
+            True while the lookup must wait for flushed stores; False once
+            they settled, or when nothing needed flushing.
+        """
+        if request_id not in self._lookup_checked:
+            self._lookup_checked.add(request_id)
+            self._flush_offered_prefix(request_id, num_computed_tokens)
+        flush = self._lookup_flushes.get(request_id)
+        if flush is None:
+            return False
+        start, ends = flush
+        policy = self._require_policy()
+        if any(
+            policy.is_flushing(owner, start, end)
+            or self._requests.in_flight_overlaps(owner, start, end)
+            for owner, end in ends.items()
+        ):
+            return True
+        del self._lookup_flushes[request_id]
+        return False
 
     def on_admission(
         self,
@@ -661,6 +717,7 @@ class LazyOffloadManager:
         self._requests.finish(request_id)
         self._forget_progress(request_id)
         self._drop_holder(request_id)
+        self._forget_lookup(request_id)
         policy = self._require_policy()
         if policy.has_pending_request(request_id):
             held = policy.hold_past(request_id, self._hit_tokens(request_id))
@@ -687,6 +744,8 @@ class LazyOffloadManager:
         self._token_ledgers.pop(request_id, None)
         self._forget_progress(request_id)
         self._drop_holder(request_id)
+        self._forget_lookup(request_id)
+        self._unindex_offered_chunks(request_id)
         dropped = self._require_policy().drop_request(request_id)
         self._release_holds(request_id)
         self._drop_parked(request_id)
@@ -725,6 +784,8 @@ class LazyOffloadManager:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
         self._drop_holder(request_id)
+        self._forget_lookup(request_id)
+        self._unindex_offered_chunks(request_id)
         self._release_holds(request_id)
         self._drop_parked(request_id)
         self._token_ledgers.pop(request_id, None)
@@ -1960,6 +2021,7 @@ class LazyOffloadManager:
         self._requests.session_ended(request_id)
         self._token_ledgers.pop(request_id, None)
         self._block_hash_chains.pop(request_id, None)
+        self._unindex_offered_chunks(request_id)
 
     def _chunk_hash_index(self, num_chunks: int) -> int:
         """Index in a block-hash chain of the hash ending a chunk prefix.
@@ -2067,6 +2129,78 @@ class LazyOffloadManager:
                 if block_id != null_block_id and not shared[pos // blocks_per_chunk]
             )
         return demoted
+
+    def _index_offered_chunks(self, request_id: str, start: int, end: int) -> None:
+        """Record a request as offering the whole chunks ending in a range.
+
+        Args:
+            request_id: The request whose op was just offered.
+            start: First token of the op.
+            end: Token the op ends at. Chunks past the request's hash chain,
+                which hashes full blocks only, are left out.
+        """
+        chain = self._block_hash_chains[request_id]
+        offered = self._offered_chunks.setdefault(request_id, set())
+        num_chunks = start // self._chunk_size + 1
+        while num_chunks * self._chunk_size <= end and (
+            index := self._chunk_hash_index(num_chunks)
+        ) < len(chain):
+            self._chunk_offerers.setdefault(chain[index], set()).add(request_id)
+            offered.add(chain[index])
+            num_chunks += 1
+
+    def _unindex_offered_chunks(self, request_id: str) -> None:
+        """Forget the chunks a request offered.
+
+        Args:
+            request_id: A request whose ops were dropped or whose session
+                ended.
+        """
+        for chunk_hash in self._offered_chunks.pop(request_id, set()):
+            offerers = self._chunk_offerers[chunk_hash]
+            offerers.discard(request_id)
+            if not offerers:
+                del self._chunk_offerers[chunk_hash]
+
+    def _flush_offered_prefix(self, request_id: str, start: int) -> None:
+        """Hold the buffered ops covering a request's prefix past ``start``.
+
+        Args:
+            request_id: The waiting request.
+            start: Its local prefix hit, in tokens.
+        """
+        chain = self._block_hash_chains[request_id]
+        ends: dict[str, int] = {}
+        num_chunks = start // self._chunk_size + 1
+        while (index := self._chunk_hash_index(num_chunks)) < len(chain):
+            for owner in self._chunk_offerers.get(chain[index], ()):
+                if owner != request_id:
+                    ends[owner] = num_chunks * self._chunk_size
+            num_chunks += 1
+        if not ends:
+            return
+        flush = self._require_policy().flush_for_lookup(start, ends)
+        if not flush.ends:
+            return
+        self._pin_holds(flush.holds)
+        self._lookup_flushes[request_id] = (start, flush.ends)
+        self._require_policy().record_diagnostics(
+            {
+                "lookup_flushes": 1,
+                "lookup_flushed_ops": flush.num_ops,
+                "lookup_flushed_tokens": flush.num_tokens,
+            }
+        )
+
+    def _forget_lookup(self, request_id: str) -> None:
+        """Forget a request's lookup flush, so a new generation checks again.
+
+        Args:
+            request_id: A request that finished, was reset, or whose id a
+                new request took over.
+        """
+        self._lookup_checked.discard(request_id)
+        self._lookup_flushes.pop(request_id, None)
 
     def _require_policy(self) -> OffloadPolicy:
         """Return the bound policy or reject an invalid lifecycle call.

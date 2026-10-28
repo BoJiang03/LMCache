@@ -166,7 +166,9 @@ def _pool(unhashed: set[int]) -> MagicMock:
         )
         for block_id in range(16)
     ]
-    return MagicMock(null_block=blocks[NULL_BLOCK_ID], blocks=blocks)
+    return MagicMock(
+        null_block=blocks[NULL_BLOCK_ID], blocks=blocks, hash_block_size=BLOCK_SIZE
+    )
 
 
 @pytest.fixture

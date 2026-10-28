@@ -115,6 +115,28 @@ of the free queue, the receipt frees them to the tail as vLLM would have,
 and the ops the hit covers are marked `served`, so the held segment
 starts past them and they stay buffered.
 
+A request's own hit cannot foresee the next turn's: on Qwen3.8-27B (MTP 1,
+chunk of two blocks) a turn of 204,431 tokens kept its only state at 128
+blocks, so `hold_past` held nothing, and the next turn matched those 128
+attention blocks, lost one to the MTP drop and found no state at or below
+127: its local hit was 0, its lookup missed the buffered chunks, and it
+recomputed 202,752 tokens that the eager arm hit in L1. So the store is
+also triggered by the request that needs it. Before submitting a lookup,
+the connector calls `LazyOffloadManager.flush_for_lookup` with vLLM's local
+hit. The manager finds, by the chunk-ending block hashes of the request's
+chain (an index filled as ops are offered, so the cost is linear in the
+request's chunks), which other requests buffer chunks of its prefix past
+that hit, and `flush_for_lookup(start, ends)` holds and expedites those
+ops, as `hold_past` does, marking the ones ending by the hit `served`. With
+anchors only the ops up to the last anchor op are flushed: the server's
+hit, like vLLM's, ends at a chunk carrying a state. While a flushed op is
+buffered held or expedited (`is_flushing`) or in an open batch, the lookup
+reports "not yet known" (`None`), which vLLM answers by skipping the
+request for the step, without allocating for it or blocking the requests
+behind it. Once the receipts settle, the lookup goes out and hits L1. The
+check runs once per request generation; a lookup already submitted (eager
+prefetch) is not held back.
+
 ## Per-step protocol (policy-caller obligations)
 
 `LazyOffloadManager` is the production caller; the connector only forwards
@@ -207,7 +229,7 @@ lifecycle events to it.
    step. Pinning a block its request still owns costs no free block.
    A request in `preempted_request_ids` releases its whole buffer: vLLM
    freed its blocks, and once rescheduled its tracker restarts from token
-   zero, which discards whatever is still buffered (step 6).
+   zero, which discards whatever is still buffered (step 7).
 3. For every item in `LazyOffloadDrain.items` (already ordered): pin
    (`touch`) its blocks, coalesce each request's released ops into one store
    op, register the submitted batch, and put it into this
@@ -231,14 +253,18 @@ lifecycle events to it.
    owns those blocks. Record `FINISHED` in the registry; end immediately
    only under the same predicate, otherwise a later drain or receipt applies
    it.
-6. On preemption tracker reset, call `drop_request(id)`: buffered ops and
+6. Before a waiting request's lookup, `flush_for_lookup(start, ends)` with
+   its local hit and the requests buffering chunks of its prefix past it;
+   pin the returned holds, and defer the lookup while `is_flushing` or an
+   open batch covers a flushed range.
+7. On preemption tracker reset, call `drop_request(id)`: buffered ops and
    prefix-validity state are discarded, and the manager unpins held ops (as
    it does when `discard_for_reuse` drops them); an
    already submitted batch stays
    registered -- now marked orphaned -- and blocks new emission until its
    receipt. An abort is **not** a drop: its buffered ops remain storable
    until drained.
-7. On a failed receipt, mark the in-flight batch failed and wait for the
+8. On a failed receipt, mark the in-flight batch failed and wait for the
    rest of its receipts: another worker may still be reading its blocks.
    Once the batch settles, unpin it; a failed batch that is not orphaned
    goes back to the policy with `requeue_failed(item)`, in token order among the
@@ -251,7 +277,7 @@ lifecycle events to it.
    safe. An
    orphaned batch is never retried: the request generation now using the id
    restarted from token zero or is a different request.
-8. On request-id reuse, detect the `FINISHED` predecessor in the registry and
+9. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
    ending once through the successor's lifecycle. (vLLM's HTTP layer
@@ -454,8 +480,10 @@ Two log hooks:
   op due; `none` when no block did: a hold, an expedite or a preemption);
   and `held_ops_parked`,
   `held_ops_dropped` (parked ops a reset or id reuse discarded) and
-  `held_ops_lost` (parked ops whose block was reused first). A count
-  appears once it is nonzero.
+  `held_ops_lost` (parked ops whose block was reused first); and
+  `lookup_flushes`, `lookup_flushed_ops` and `lookup_flushed_tokens`
+  (lookups that flushed buffered ops, and the ops and tokens they
+  flushed). A count appears once it is nonzero.
 
   `rejected_unhashed` and `rejected_prefix_broken` stay out (those ops are
   turned away before `admitted`), and the `bound_*` counters are weights

@@ -1665,6 +1665,18 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             tracker.state = LMCacheMPRequestState.BYPASS_LMCACHE
             return self._report_admission(request, num_computed_tokens, 0, False)
 
+        # Lazy offload may still buffer chunks of this prefix past vLLM's
+        # hit, which a lookup submitted now would miss: it waits until they
+        # are stored. A lookup already submitted (eager prefetch) is kept.
+        if (
+            self.lazy_offload
+            and tracker.lookup_started_at is None
+            and self._lazy_offload_manager.flush_for_lookup(
+                request.request_id, num_computed_tokens
+            )
+        ):
+            return None, True
+
         # APC-covered lookup start (0 = none; stays 0 after a shrink):
         # the vLLM hit floored to every group's paged-chunk boundary and the
         # LMCache chunk size. It never exceeds the aligned lookup end since

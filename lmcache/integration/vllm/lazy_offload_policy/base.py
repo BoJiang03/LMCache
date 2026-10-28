@@ -179,6 +179,27 @@ class AdmissionProtection:
     holds: list[PendingStoreItem] = field(default_factory=list)
 
 
+@dataclass
+class LookupFlush:
+    """Buffered operations a request's lookup made due.
+
+    Attributes:
+        holds: The operations newly held, one entry per request, for the
+            manager to pin; ones already held keep their pins.
+        ends: Per request whose operations were flushed, the token the
+            flushed range ends at. The lookup waits while one of them
+            overlapping the range from its local hit is still buffered due
+            or in flight.
+        num_ops: Operations flushed, held now or before.
+        num_tokens: Tokens those operations cover.
+    """
+
+    holds: list[PendingStoreItem] = field(default_factory=list)
+    ends: dict[str, int] = field(default_factory=dict)
+    num_ops: int = 0
+    num_tokens: int = 0
+
+
 class OffloadPolicy(ABC):
     """Scheduler-side decision logic for deferring cache stores.
 
@@ -261,6 +282,43 @@ class OffloadPolicy(ABC):
             pin; empty when there are none.
         """
         return PendingStoreItem(request_id=request_id)
+
+    def flush_for_lookup(self, start: int, ends: dict[str, int]) -> LookupFlush:
+        """Hold the buffered operations a waiting request's lookup needs.
+
+        Called before a request's LMCache lookup, with ``start`` the prefix
+        vLLM's prefix cache serves it and ``ends`` the other requests whose
+        buffered operations cover chunks of its prefix past ``start``.
+        Deferred, those chunks are neither on the GPU for this request nor
+        in L1, so it would recompute them. The operations ending by
+        ``start`` are served from the GPU and stay buffered. A policy that
+        does not defer by what the GPU cache serves flushes nothing.
+
+        Args:
+            start: Token vLLM's prefix cache serves the waiting request up
+                to.
+            ends: Request id -> token up to which its operations cover the
+                waiting request's prefix.
+
+        Returns:
+            The operations flushed and the newly held ones to pin.
+        """
+        return LookupFlush()
+
+    def is_flushing(self, request_id: str, start: int, end: int) -> bool:
+        """Whether a due operation of a request in a range is still buffered.
+
+        Args:
+            request_id: A request whose operations a lookup flushed.
+            start: First token of the range.
+            end: Token the range ends at.
+
+        Returns:
+            True while a held or expedited operation overlapping
+            ``[start, end)`` is buffered; such an operation is stored by a
+            later drain.
+        """
+        return False
 
     def diag_pending_ops(self) -> int:
         """DIAG: number of buffered operations, -1 if not counted."""
