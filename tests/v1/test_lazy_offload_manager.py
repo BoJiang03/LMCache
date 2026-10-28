@@ -2052,10 +2052,11 @@ def test_chunk_past_the_hit_is_stored_when_its_request_finishes(
     use_eagle: bool,
 ) -> None:
     """A finished request's chunk that vLLM's hit over its chain does not
-    serve is stored by the next drain, without eviction pressure; the chunks
-    the hit serves stay buffered. Under speculative decoding vLLM drops the
-    last block of the hit, so that is the last chunk. Its blocks stay out of
-    the free queue until the store settles, then join the tail."""
+    serve is stored by the next drain, without eviction pressure, together
+    with the prefix the hit serves, so L1 ages them as one. Under speculative
+    decoding vLLM drops the last block of the hit, so that is the last chunk.
+    Its blocks stay out of the free queue until the store settles, then join
+    the tail."""
     coordinator = _coordinator(use_eagle=use_eagle)
     pool = coordinator.block_pool
     null = pool.null_block.block_id
@@ -2074,8 +2075,8 @@ def test_chunk_past_the_hit_is_stored_when_its_request_finishes(
         assert stores == []
         return
     (store,) = stores
-    assert (store.op.start, store.op.end) == (TOKENS_PER_BLOCK, 2 * TOKENS_PER_BLOCK)
-    assert store.op.block_ids[0] == [second]
+    assert (store.op.start, store.op.end) == (0, 2 * TOKENS_PER_BLOCK)
+    assert store.op.block_ids[0] == [first, second]
     queue = [block.block_id for block in pool.free_block_queue.get_all_free_blocks()]
     assert second not in queue
     manager.on_store_results(set(), {"req": 1})
@@ -2453,8 +2454,8 @@ def test_lookup_past_the_local_hit_waits_for_the_deferred_chunks(
 ) -> None:
     """A request whose prefix another request still buffers, past what
     vLLM's prefix cache serves it, has those chunks stored by the next
-    drain, and its lookup waits until their receipt. The chunks within the
-    local hit stay buffered."""
+    drain together with the prefix before them, so L1 ages them as one, and
+    its lookup waits until their receipt."""
     manager, pool, block_ids = _deferred_turn(3, finished)
     manager.on_request_arrived("next", _chain(4))
     local_hit = local_hit_chunks * TOKENS_PER_BLOCK
@@ -2466,10 +2467,10 @@ def test_lookup_past_the_local_hit_waits_for_the_deferred_chunks(
 
     assert not manager.flush_for_lookup("next", local_hit)
     assert store.request_id == "req"
-    assert _span(store) == (local_hit_chunks, 3)
-    assert store.op.block_ids[0] == block_ids[local_hit_chunks:]
+    assert _span(store) == (0, 3)
+    assert store.op.block_ids[0] == block_ids
     assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    assert manager.diag_pending_ops() == (local_hit_chunks, 0)
+    assert manager.diag_pending_ops() == (0, 0)
     counts = _counts(manager)
     assert counts["lookup_flushes"] == 1
     assert counts["lookup_flushed_ops"] == 3 - local_hit_chunks
@@ -2553,6 +2554,36 @@ def test_state_block_freed_before_its_request_finished_survives_the_store() -> N
     manager.on_store_results(set(), {"req": 1})
 
     assert pool.get_new_blocks(1)[0].block_id != state
+
+
+def test_state_past_the_hit_is_stored_with_the_prefix_the_hit_serves() -> None:
+    """A finished request whose hit ends at a state it does not store itself
+    (cached by another request) stores its own state past the hit together
+    with the prefix before it, in one segment, so L1 does not age the state
+    ahead of the prefix it needs."""
+    coordinator = _coordinator(mamba=True, num_blocks=64, use_eagle=True)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    chain = _chain(3)
+    attention = [block.block_id for block in pool.get_new_blocks(3)]
+    shared, own = [block.block_id for block in pool.get_new_blocks(2)]
+    _cache(pool, chain, [attention, [shared, null, own]])
+    manager = _manager(
+        pool, receipts=_Receipts(), group_kinds=("attention", "recurrent")
+    )
+    manager.bind_cache_coordinator(coordinator)
+    manager.on_request_arrived("req", chain)
+    manager.add_store_candidate(_op(0, [[attention[0]], [null]]))
+    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[attention[1]], [null]]))
+    manager.add_store_candidate(_op(2 * TOKENS_PER_BLOCK, [[attention[2]], [own]]))
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    manager.on_request_finished("req")
+    pool.free_blocks([pool.blocks[block_id] for block_id in reversed(attention)])
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert _span(store) == (0, 3)
+    assert store.op.block_ids[1] == [null, null, own]
 
 
 def test_block_a_lookup_flush_stored_is_not_evicted_next() -> None:

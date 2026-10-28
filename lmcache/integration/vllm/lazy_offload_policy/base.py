@@ -290,8 +290,7 @@ class OffloadPolicy(ABC):
         vLLM's prefix cache serves it and ``ends`` the other requests whose
         buffered operations cover chunks of its prefix past ``start``.
         Deferred, those chunks are neither on the GPU for this request nor
-        in L1, so it would recompute them. The operations ending by
-        ``start`` are served from the GPU and stay buffered. A policy that
+        in L1, so it would recompute them. A policy that
         does not defer by what the GPU cache serves flushes nothing.
 
         Args:

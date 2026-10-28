@@ -127,9 +127,9 @@ def _due_segment(
     does not end at an anchor cannot be hit, so it runs on to the first
     anchor at or after ``last_due``. Without anchors (attention-only models)
     the segment is the front up to ``last_due``, which keeps every stored
-    op's prefix stored. An op a finished request's hit covers (``served``)
-    is served from the GPU like one before an anchor, so the segment starts
-    past it too.
+    op's prefix stored. An op a finished request's hit covers is stored
+    with the segment too: L1 evicts by store age, so an anchor stored ahead
+    of its prefix ages first and its loss voids the whole prefix.
 
     Args:
         ops: One request's buffered operations, in prefix order.
@@ -140,11 +140,7 @@ def _due_segment(
         ``(start, end)``: ``ops[start:end]`` is the segment.
     """
     start = next(
-        (
-            index + 1
-            for index in range(first_due - 1, -1, -1)
-            if ops[index].has_anchor or ops[index].served
-        ),
+        (index + 1 for index in range(first_due - 1, -1, -1) if ops[index].has_anchor),
         0,
     )
     end = next(
@@ -170,9 +166,6 @@ class PendingStoreOp:
         held: Whether the manager pinned its blocks for a hold.
         expedited: Whether the manager made it due (see
             ``OffloadPolicy.expedite``); it stays due until emitted.
-        served: Whether vLLM's hit over its finished request's chain covers
-            it (see ``OffloadPolicy.hold_past``), so a due segment after it
-            leaves it buffered.
     """
 
     store_metadata: "LMCacheMPRequestMetadata"
@@ -180,7 +173,6 @@ class PendingStoreOp:
     has_anchor: bool
     held: bool = False
     expedited: bool = False
-    served: bool = False
 
 
 @dataclass
@@ -419,8 +411,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         squeeze that releases the holds leaves them due. The ops are taken
         in token order up to the first one whose data is already gone, which
         the next drain drops with its suffix. The ops ending by ``start``
-        are marked served: a segment closed around the held ones leaves
-        them buffered, to come due on their own blocks.
+        back to the previous anchor are held too: the segment storing the
+        held ones takes them along (see :func:`_due_segment`), and pinned
+        now, while the request owns their blocks, they rejoin the free queue
+        at the tail instead of the head.
 
         Args:
             request_id: The finishing request.
@@ -429,11 +423,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         Returns:
             The ops newly held, in token order.
         """
+        ops = self._pending.get(request_id, [])
+        first = next(
+            (index for index, op in enumerate(ops) if op.store_metadata.op.end > start),
+            len(ops),
+        )
         past: list[PendingStoreOp] = []
-        for op in self._pending.get(request_id, []):
-            if op.store_metadata.op.end <= start:
-                op.served = True
-                continue
+        for op in ops[self._segment_start(ops, first) :]:
             if not self._snapshot_intact(op):
                 break
             op.expedited = True
@@ -452,9 +448,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         anchors, the server's hit, like vLLM's, ends at a chunk carrying a
         state, so only the ops up to the last anchor op taken over all
         requests are flushed: storing ops past it would serve nothing. The
-        flushed ops are held and expedited, as by :meth:`hold_past`, and the
-        ops before them ending by ``start`` are marked served, so the
-        segment holding them starts past the prefix vLLM serves.
+        flushed ops are held and expedited, as by :meth:`hold_past`, with
+        the ops before them back to the previous anchor, which the segment
+        storing them takes along; the counts cover the flushed ops only.
 
         Args:
             start: Token vLLM's prefix cache serves the waiting request up
@@ -493,12 +489,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             }
         flush = LookupFlush()
         for request_id, ops in taken.items():
-            for op in self._pending[request_id]:
-                if op.store_metadata.op.end > start:
-                    break
-                op.served = True
-            newly_held = [op for op in ops if not op.held]
-            for op in ops:
+            pending = self._pending[request_id]
+            first = pending.index(ops[0])
+            prefix = pending[self._segment_start(pending, first) : first]
+            if not all(self._snapshot_intact(op) for op in prefix):
+                prefix = []
+            newly_held = [op for op in prefix + ops if not op.held]
+            for op in prefix + ops:
                 op.expedited = True
                 op.held = True
             if newly_held:
@@ -1072,6 +1069,22 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             for group_idx in self._anchor_groups
             for block_id in meta.op.block_ids[group_idx]
         )
+
+    def _segment_start(self, ops: list[PendingStoreOp], first: int) -> int:
+        """Index of the first op a segment containing ``ops[first]`` stores.
+
+        Args:
+            ops: One request's buffered operations, in prefix order.
+            first: Index of the first op the caller needs stored; may be
+                ``len(ops)`` when it needs none.
+
+        Returns:
+            The segment start per :func:`_due_segment`, or ``first`` when
+            ``first`` is past the last op.
+        """
+        if first >= len(ops):
+            return first
+        return _due_segment(ops, first, first)[0]
 
     def _insert_sorted(self, item: PendingStoreItem) -> None:
         """Buffer ``item``'s ops, unheld, where their starts sort.
