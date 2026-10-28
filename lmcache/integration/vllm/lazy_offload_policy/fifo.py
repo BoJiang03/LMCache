@@ -123,6 +123,19 @@ class FIFOOffloadPolicy(OffloadPolicy):
         """
         return request_id in self._pending_items
 
+    def buffered_block_ids(self) -> set[int]:
+        """Every GPU block a buffered operation covers.
+
+        Returns:
+            The block ids, possibly empty.
+        """
+        return {
+            block_id
+            for item in self._pending_items.values()
+            for _, block_hashes in item.metadatas
+            for block_id in block_hashes
+        }
+
     def drop_request(self, request_id: str) -> int:
         """Discard operations invalidated by a preemption reset.
 
