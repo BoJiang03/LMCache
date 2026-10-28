@@ -40,6 +40,8 @@ class FIFOOffloadPolicy(OffloadPolicy):
                 100 eligible requests and 10 requests per drain.
         """
         self._pending_items: dict[str, PendingStoreItem] = {}
+        # Requests the next drain releases whatever the threshold.
+        self._expedited: set[str] = set()
         # int() does the conversion; the cast only narrows ConfigValue to
         # what int() accepts, since a JSON config may carry the number as a
         # string.
@@ -80,6 +82,19 @@ class FIFOOffloadPolicy(OffloadPolicy):
             self._pending_items[meta.request_id] = item
         item.metadatas.append((meta, block_hashes))
 
+    def expedite(self, request_id: str, end: int) -> None:
+        """Release the request whole at the next drain; see ``OffloadPolicy``.
+
+        FIFO stores whole requests, so the range is not read.
+
+        Args:
+            request_id: The request to release, unless it has nothing
+                buffered.
+            end: Not read.
+        """
+        if request_id in self._pending_items:
+            self._expedited.add(request_id)
+
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Release eligible finished requests once the threshold is met.
 
@@ -91,16 +106,24 @@ class FIFOOffloadPolicy(OffloadPolicy):
                 pressure is ignored.
 
         Returns:
-            Up to ``select_count`` whole requests in admission order, each
-            also reported as emptied.
+            The expedited requests that are not blocked, then, once the
+            threshold is met, up to ``select_count`` whole requests in
+            admission order; each also reported as emptied.
         """
+        items: list[PendingStoreItem] = []
+        for request_id in sorted(self._expedited - signals.blocked_request_ids):
+            self._expedited.discard(request_id)
+            if request_id in self._pending_items:
+                items.append(self._pending_items.pop(request_id))
         eligible_ids = signals.finished_request_ids - signals.blocked_request_ids
         eligible_count = sum(
             request_id in self._pending_items for request_id in eligible_ids
         )
         if eligible_count < self._threshold:
-            return LazyOffloadDrain()
-        items: list[PendingStoreItem] = []
+            return LazyOffloadDrain(
+                items=items,
+                emptied_request_ids=[item.request_id for item in items],
+            )
         for request_id in list(self._pending_items):
             if request_id not in eligible_ids:
                 continue
@@ -145,6 +168,7 @@ class FIFOOffloadPolicy(OffloadPolicy):
         Returns:
             The number of buffered operations discarded.
         """
+        self._expedited.discard(request_id)
         item = self._pending_items.pop(request_id, None)
         return len(item.metadatas) if item is not None else 0
 

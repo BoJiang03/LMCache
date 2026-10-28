@@ -78,6 +78,10 @@ earlier**:
    ops are served after held ones, closed into their segment, and once a
    squeeze releases their hold they only take budget left over, like the
    ops past `D`; the mark persists until a drain emits them.
+   `expedite(request_id, end)` marks the request's ops starting before
+   `end` the same way without holding them. Exclusive retrieve uses it when
+   a chunk becomes, or stops being, shared-held (two running holders; see
+   `exclusive_retrieve.md`, rule 10).
 
 The proof obligations are then: `D` is an upper bound on what can allocate
 before the next drain (step 2 and the decision rule below), and no path

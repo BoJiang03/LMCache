@@ -51,7 +51,7 @@ MAX_DRAIN_PER_STEP = 64
 _HELD_RANK = 1 << 61
 
 # Rank of a request due only because some of its ops were expedited (see
-# ``hold_past`` and ``flush_for_lookup``) and their holds were released: no
+# ``hold_past``, ``flush_for_lookup`` and ``expedite``) and are not held: no
 # allocation reaches them before the next drain, so it goes after the held
 # ones and is never pinned.
 _EXPEDITED_RANK = _HELD_RANK + 1
@@ -163,9 +163,9 @@ class PendingStoreOp:
         has_anchor: Whether the range holds a real block of an anchor group
             (an align-mode Mamba state), so vLLM can resume a hit there.
         held: Whether the manager pinned its blocks for a hold.
-        expedited: Whether a finish or a lookup made it due (see
-            :meth:`EvictionAwareStoreQueue.hold_past`); it stays due until
-            emitted.
+        expedited: Whether a finish, a lookup or the manager made it due
+            (see :meth:`EvictionAwareStoreQueue.hold_past` and
+            ``OffloadPolicy.expedite``); it stays due until emitted.
     """
 
     store_metadata: "LMCacheMPRequestMetadata"
@@ -609,6 +609,22 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._insert_sorted(item)
         self._counters.readmitted += len(item.metadatas)
 
+    def expedite(self, request_id: str, end: int) -> None:
+        """Make the request's ops starting before ``end`` due; see
+        ``OffloadPolicy.expedite``.
+
+        An expedited op is due like a held one, closed into its segment,
+        but served after the held ones and only while the drain budget
+        lasts; past it, the op waits for a later drain.
+
+        Args:
+            request_id: The request whose ops are expedited.
+            end: Token the expedited range ends at.
+        """
+        for op in self._pending.get(request_id, []):
+            if op.store_metadata.op.start < end:
+                op.expedited = True
+
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
 
@@ -626,8 +642,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         discards what is still buffered, so it is not held to the budget.
         Requests are served most imminent first until
         ``MAX_DRAIN_PER_STEP``; due ops past the budget are held. Expedited
-        ops (see :meth:`hold_past`) whose holds a squeeze released are due
-        too, served after the held ones, and wait unheld once the budget is
+        ops (see :meth:`hold_past` and :meth:`expedite`) that are not held
+        are due too, served after the held ones, and wait unheld once the budget is
         spent. Past the window, ops come due as soon as the budget could not
         otherwise store them before allocations reach them (see
         :meth:`_budget_reach`); they take budget the window left over, after

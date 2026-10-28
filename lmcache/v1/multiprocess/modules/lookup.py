@@ -700,6 +700,9 @@ class LookupModule(DiscoverableModule):
         holds are demoted (``AttnWindowDesc.engine_held_chunks``); the
         others are the only copy and keep their L1 position. The demoted
         keys are recorded on the session so ``end_session`` skips them.
+        Chunks below ``key.shared_held_tokens()`` that the engine holds are
+        shared-held: another running request holds them too, and they are
+        touched instead of demoted.
 
         Args:
             key: The FREE_LOOKUP_LOCKS key; ``key.engine_held_tokens()`` is
@@ -721,14 +724,20 @@ class LookupModule(DiscoverableModule):
         ]
         # Request order: the prefix's last chunk becomes the very next
         # victim, so a suffix goes before the prefix it extends.
+        shared_chunks = key.shared_held_tokens() // chunk_size
         demoted: list[ObjectKey] = []
+        touched: list[ObjectKey] = []
         for chunk_idx, chunk_hash in enumerate(chunk_hashes):
             group_ids = [
                 g for g, chunks in enumerate(held_chunks) if chunk_idx in chunks
             ]
             if group_ids:
                 for group_keys in ipc_key_to_object_keys(key, [chunk_hash], group_ids):
-                    demoted.extend(group_keys)
+                    (touched if chunk_idx < shared_chunks else demoted).extend(
+                        group_keys
+                    )
+        if touched:
+            self._ctx.storage_manager.touch_cached_keys(touched)
         if not demoted:
             return
         self._ctx.storage_manager.demote_cached_keys(demoted)

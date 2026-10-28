@@ -36,6 +36,12 @@ ones defined in ``lazy_offload_policy.base``:
   so the manager *parks* it: it keeps the chunk's blocks aside, unpinned,
   and readmits it to the policy once the holder releases one of them, to be
   stored again before vLLM recycles it.
+- **Shared-held**: said of a chunk that two or more running
+  exclusive-retrieve requests hold on the GPU, each having been offered a
+  store of it. A hybrid model's hit resumes only at a cached state, so a
+  sibling sharing the chunk but forking past it can miss the GPU copy and
+  load the chunk from L1: its L1 copy is kept at the most recently used end
+  instead of demoted, and written there if missing.
 """
 
 # Standard
@@ -326,6 +332,11 @@ class LazyOffloadManager:
         # table, and its table length, which counts the lookahead slots the
         # last allocation covered too.
         self._handed_blocks: dict[str, list[set[int]]] = {}
+        # Per chunk, by the block hash its last token ends a block of, the
+        # running exclusive-retrieve requests holding it, and per such
+        # request the hashes of the chunks it holds, in token order.
+        self._chunk_holders: dict["BlockHash", set[str]] = {}
+        self._held_chunks: dict[str, list["BlockHash"]] = {}
         self._table_lengths: dict[str, list[int]] = {}
         # Per chunk, by the block hash ending it, the requests that offered
         # an op storing it, and per such request those hashes: what finds
@@ -410,6 +421,12 @@ class LazyOffloadManager:
         buffered, so deferring N operations of one request costs one copy of
         the token sequence rather than N.
 
+        Under exclusive retrieve the request holds the operation's whole
+        chunks from here on. When one of them gets its second holder, so
+        becomes shared-held, the operation is expedited: stored by the next
+        drain with budget, its shared-held chunks to L1's most recently used
+        end, written if missing (see :meth:`shared_held_tokens`).
+
         Args:
             metadata: The store operation offered by the tracker: the token
                 range and the GPU blocks holding its KV. Its ``op`` is not
@@ -425,6 +442,10 @@ class LazyOffloadManager:
         self._index_offered_chunks(
             metadata.request_id, metadata.op.start, metadata.op.end
         )
+        if _requests_exclusive_retrieve(metadata) and self._hold_chunks(
+            metadata.request_id, metadata.op.end
+        ):
+            self._require_policy().expedite(metadata.request_id, metadata.op.end)
 
     def on_scheduler_step(
         self, scheduler_output: "SchedulerOutput"
@@ -661,6 +682,7 @@ class LazyOffloadManager:
         """
         self._requests.finish(request_id)
         self._forget_progress(request_id)
+        self._drop_holder(request_id)
         self._forget_lookup(request_id)
         policy = self._require_policy()
         if policy.has_pending_request(request_id):
@@ -687,6 +709,7 @@ class LazyOffloadManager:
         self._requests.reset(request_id)
         self._token_ledgers.pop(request_id, None)
         self._forget_progress(request_id)
+        self._drop_holder(request_id)
         self._forget_lookup(request_id)
         self._unindex_offered_chunks(request_id)
         dropped = self._require_policy().drop_request(request_id)
@@ -728,6 +751,7 @@ class LazyOffloadManager:
         if not reused_finished_id:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
+        self._drop_holder(request_id)
         self._forget_lookup(request_id)
         self._unindex_offered_chunks(request_id)
         self._release_holds(request_id)
@@ -756,6 +780,31 @@ class LazyOffloadManager:
             True while at least one submitted batch awaits its receipt.
         """
         return bool(self._requests.in_flight_request_ids())
+
+    def shared_held_tokens(self, request_id: str) -> int:
+        """Return the prefix of a request whose chunks another request holds.
+
+        The longest chunk-aligned prefix of the request's tokens whose every
+        chunk a running exclusive-retrieve request other than this one holds
+        (see :meth:`add_store_candidate`). Under exclusive retrieve these
+        chunks are shared-held once the request holds them too, so the
+        server touches their L1 copies instead of demoting them when the
+        request loads them or vLLM's prefix cache serves them.
+
+        Args:
+            request_id: A request that arrived and whose session has not
+                ended.
+
+        Returns:
+            The prefix length in tokens, a multiple of the chunk size.
+        """
+        chain = self._block_hash_chains[request_id]
+        num_chunks = 0
+        while (index := self._chunk_hash_index(num_chunks + 1)) < len(
+            chain
+        ) and self._chunk_holders.get(chain[index], set()) - {request_id}:
+            num_chunks += 1
+        return num_chunks * self._chunk_size
 
     def log_final_stats(self) -> None:
         """Write the policy's final counter ledger, when one was built."""
@@ -878,7 +927,9 @@ class LazyOffloadManager:
                 )
                 if parked is not None:
                     engine_held.append(parked)
-                    engine_held_block_ids.extend(parked[1])
+                    engine_held_block_ids.extend(
+                        self._demoted_block_ids(item.request_id, parked[0])
+                    )
             if held:
                 # Held ops the drain budget left buffered keep their pins.
                 self._held_block_ids[item.request_id] = held
@@ -1606,6 +1657,96 @@ class LazyOffloadManager:
             num_chunks * self._chunk_size // self._require_block_pool().hash_block_size
             - 1
         )
+
+    def _hold_chunks(self, request_id: str, end: int) -> bool:
+        """Count a running request as holder of its whole chunks below ``end``.
+
+        Args:
+            request_id: An exclusive-retrieve request offering a store that
+                ends at ``end``; it holds every chunk it was offered before.
+            end: The token the offered store ends at.
+
+        Returns:
+            True when one of the newly held chunks got its second holder.
+        """
+        chain = self._block_hash_chains[request_id]
+        held = self._held_chunks.setdefault(request_id, [])
+        became_shared = False
+        # The chain hashes full blocks only, so a decode store may end past it.
+        while (len(held) + 1) * self._chunk_size <= end and (
+            index := self._chunk_hash_index(len(held) + 1)
+        ) < len(chain):
+            holders = self._chunk_holders.setdefault(chain[index], set())
+            holders.add(request_id)
+            held.append(chain[index])
+            became_shared |= len(holders) == 2
+        return became_shared
+
+    def _drop_holder(self, request_id: str) -> None:
+        """Stop counting a request as holder of its chunks.
+
+        A chunk left with one holder is no longer shared-held: that holder's
+        buffered ops up to it are expedited, so its L1 copy goes back to
+        the evict-first end once stored (when vLLM still holds it).
+
+        Args:
+            request_id: A request that finished or lost its blocks.
+        """
+        expedite: dict[str, int] = {}
+        for num_chunks, chunk_hash in enumerate(
+            self._held_chunks.pop(request_id, []), start=1
+        ):
+            holders = self._chunk_holders[chunk_hash]
+            holders.discard(request_id)
+            if len(holders) == 1:
+                (remaining,) = holders
+                expedite[remaining] = num_chunks * self._chunk_size
+            elif not holders:
+                del self._chunk_holders[chunk_hash]
+        policy = self._require_policy()
+        for holder, end in expedite.items():
+            policy.expedite(holder, end)
+
+    def _demoted_block_ids(
+        self, request_id: str, parked: LMCacheMPRequestMetadata
+    ) -> list[int]:
+        """The blocks of a parked op whose chunks the server demotes.
+
+        Every block the parked op keeps, but those of shared-held chunks:
+        those are stored to L1's most recently used end, still parked, so
+        they are stored again once vLLM releases them.
+
+        Args:
+            request_id: The emitting request, whose chain names the chunks.
+            parked: The engine-held part of an emitted op, as
+                :meth:`_engine_held_part` returns it.
+
+        Returns:
+            The block ids to list in ``ENGINE_HELD_BLOCKS_HINT``.
+        """
+        chain = self._block_hash_chains[request_id]
+        op = parked.op
+        first_chunk = op.start // self._chunk_size
+        shared: list[bool] = []
+        for chunk_idx in range(-(-(op.end - op.start) // self._chunk_size)):
+            index = self._chunk_hash_index(first_chunk + chunk_idx + 1)
+            shared.append(
+                index < len(chain)
+                and len(self._chunk_holders.get(chain[index], ())) >= 2
+            )
+        null_block_id = self._require_block_pool().null_block.block_id
+        demoted: list[int] = []
+        for group_idx, group_block_ids in enumerate(op.block_ids):
+            tokens_per_block = self._group_tokens_per_block[group_idx]
+            if not tokens_per_block:
+                continue
+            blocks_per_chunk = self._chunk_size // tokens_per_block
+            demoted.extend(
+                block_id
+                for pos, block_id in enumerate(group_block_ids)
+                if block_id != null_block_id and not shared[pos // blocks_per_chunk]
+            )
+        return demoted
 
     def _index_offered_chunks(self, request_id: str, start: int, end: int) -> None:
         """Record a request as offering the whole chunks ending in a range.
