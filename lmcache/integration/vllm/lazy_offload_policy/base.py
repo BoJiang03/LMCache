@@ -240,6 +240,28 @@ class OffloadPolicy(ABC):
         """
         return AdmissionProtection()
 
+    def hold_past(self, request_id: str, start: int) -> PendingStoreItem:
+        """Hold a request's buffered operations ending past ``start``, due now.
+
+        Called when the request finishes, before vLLM frees its blocks, with
+        ``start`` the prefix vLLM's prefix cache can serve from them. The
+        operations past it are not served from the GPU, so deferring them
+        only risks their data; pinned now, while the request still owns
+        their blocks, they keep their place in eviction order until stored.
+        A policy that does not defer by what the GPU cache serves holds
+        nothing.
+
+        Args:
+            request_id: The finishing request. An id with nothing buffered
+                is ignored.
+            start: Token the GPU cache serves the request's prefix up to.
+
+        Returns:
+            The newly held operations, in token order, for the manager to
+            pin; empty when there are none.
+        """
+        return PendingStoreItem(request_id=request_id)
+
     def diag_pending_ops(self) -> int:
         """DIAG: number of buffered operations, -1 if not counted."""
         return -1

@@ -2039,6 +2039,43 @@ def test_chunk_at_the_end_of_an_eagle_hit_counts_as_one_block_past() -> None:
     assert counts["not_held_past_servable_by_one_block"] == 1
 
 
+@pytest.mark.parametrize("use_eagle", [False, True])
+def test_chunk_past_the_hit_is_stored_when_its_request_finishes(
+    use_eagle: bool,
+) -> None:
+    """A finished request's chunk that vLLM's hit over its chain does not
+    serve is stored by the next drain, without eviction pressure; the chunks
+    the hit serves stay buffered. Under speculative decoding vLLM drops the
+    last block of the hit, so that is the last chunk. Its blocks stay out of
+    the free queue until the store settles, then join the tail."""
+    coordinator = _coordinator(use_eagle=use_eagle)
+    pool = coordinator.block_pool
+    null = pool.null_block.block_id
+    manager, (first, second) = _held_manager(coordinator, 2)
+    manager.add_store_candidate(_op(0, [[first], [null]]))
+    manager.add_store_candidate(_op(TOKENS_PER_BLOCK, [[second], [null]]))
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+    manager.on_request_finished("req")
+    # vLLM frees a finished request's blocks right after notifying the
+    # connector, last block first.
+    pool.free_blocks([pool.blocks[second], pool.blocks[first]])
+    stores = manager.on_scheduler_step(_step()).stores_to_submit
+
+    if not use_eagle:
+        assert stores == []
+        return
+    (store,) = stores
+    assert (store.op.start, store.op.end) == (TOKENS_PER_BLOCK, 2 * TOKENS_PER_BLOCK)
+    assert store.op.block_ids[0] == [second]
+    queue = [block.block_id for block in pool.free_block_queue.get_all_free_blocks()]
+    assert second not in queue
+    manager.on_store_results(set(), {"req": 1})
+    queue = [block.block_id for block in pool.free_block_queue.get_all_free_blocks()]
+    assert queue[-2:] == [first, second]
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
+
+
 def test_free_duplicate_does_not_cut_the_chunk_it_shadows() -> None:
     """vLLM's hit reading a free duplicate of the op's own in-use block does
     not rely on the duplicate: the in-use block keeps the hash cached, so

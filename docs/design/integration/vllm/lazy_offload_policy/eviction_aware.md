@@ -106,6 +106,15 @@ continuation's local hit ended one block sooner. On the c100 run (measured,
 two runs each) local hits fell from 33.4-34.6% to 25.0-25.2% of prompt
 tokens and TTFT p50 rose from 31.0-38.0 s to 42.9-60.6 s.
 
+The chunk holding that last block is still one the GPU cannot serve: with
+a chunk of two blocks, the next turn's local hit stops mid-chunk, and only
+an L1 copy saves recomputing the other half. So when a request finishes,
+`hold_past` holds every buffered op ending past vLLM's hit over the
+request's own chain, before vLLM frees the blocks. The pin keeps them out
+of the free queue, the receipt frees them to the tail as vLLM would have,
+and the ops the hit covers are marked `served`, so the held segment
+starts past them and they stay buffered.
+
 ## Per-step protocol (policy-caller obligations)
 
 `LazyOffloadManager` is the production caller; the connector only forwards
@@ -217,7 +226,9 @@ lifecycle events to it.
    that request's op and its whole suffix. At the tail it waits for the
    window like any buffered block. End the session only when the registry
    says the request is finished and the policy has nothing pending.
-5. On `request_finished`, record `FINISHED` in the registry; end immediately
+5. On `request_finished`, call `hold_past(id, hit)` with vLLM's hit over
+   the request's chain and pin what it returns, while the request still
+   owns those blocks. Record `FINISHED` in the registry; end immediately
    only under the same predicate, otherwise a later drain or receipt applies
    it.
 6. On preemption tracker reset, call `drop_request(id)`: buffered ops and

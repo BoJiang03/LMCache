@@ -126,7 +126,9 @@ def _due_segment(
     does not end at an anchor cannot be hit, so it runs on to the first
     anchor at or after ``last_due``. Without anchors (attention-only models)
     the segment is the front up to ``last_due``, which keeps every stored
-    op's prefix stored.
+    op's prefix stored. An op a finished request's hit covers (``served``)
+    is served from the GPU like one before an anchor, so the segment starts
+    past it too.
 
     Args:
         ops: One request's buffered operations, in prefix order.
@@ -137,7 +139,11 @@ def _due_segment(
         ``(start, end)``: ``ops[start:end]`` is the segment.
     """
     start = next(
-        (index + 1 for index in range(first_due - 1, -1, -1) if ops[index].has_anchor),
+        (
+            index + 1
+            for index in range(first_due - 1, -1, -1)
+            if ops[index].has_anchor or ops[index].served
+        ),
         0,
     )
     end = next(
@@ -163,6 +169,9 @@ class PendingStoreOp:
         held: Whether the manager pinned its blocks for a hold.
         expedited: Whether the manager made it due (see
             ``OffloadPolicy.expedite``); it stays due until emitted.
+        served: Whether vLLM's hit over its finished request's chain covers
+            it (see ``OffloadPolicy.hold_past``), so a due segment after it
+            leaves it buffered.
     """
 
     store_metadata: "LMCacheMPRequestMetadata"
@@ -170,6 +179,7 @@ class PendingStoreOp:
     has_anchor: bool
     held: bool = False
     expedited: bool = False
+    served: bool = False
 
 
 @dataclass
@@ -399,6 +409,37 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             else:
                 protection.to_tail.append(item)
         return protection
+
+    def hold_past(self, request_id: str, start: int) -> PendingStoreItem:
+        """Hold and expedite the request's ops ending past ``start``; see
+        ``OffloadPolicy.hold_past``.
+
+        Held, they are due like any hold. They are expedited too, so a
+        squeeze that releases the holds leaves them due. The ops are taken
+        in token order up to the first one whose data is already gone, which
+        the next drain drops with its suffix. The ops ending by ``start``
+        are marked served: a segment closed around the held ones leaves
+        them buffered, to come due on their own blocks.
+
+        Args:
+            request_id: The finishing request.
+            start: Token vLLM's prefix cache serves the request up to.
+
+        Returns:
+            The ops newly held, in token order.
+        """
+        past: list[PendingStoreOp] = []
+        for op in self._pending.get(request_id, []):
+            if op.store_metadata.op.end <= start:
+                op.served = True
+                continue
+            if not self._snapshot_intact(op):
+                break
+            op.expedited = True
+            if not op.held:
+                op.held = True
+                past.append(op)
+        return _pending_item(request_id, past)
 
     def diag_pending_ops(self) -> int:
         """DIAG: number of buffered operations across requests."""

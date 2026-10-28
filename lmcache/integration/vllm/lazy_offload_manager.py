@@ -641,6 +641,16 @@ class LazyOffloadManager:
     def on_request_finished(self, request_id: str) -> LazyOffloadActions:
         """Record request completion and decide whether its session can end.
 
+        Its buffered ops ending past the prefix vLLM's hit over its own
+        chain serves are held now and stored by the next drain with budget,
+        as eager offload would have stored them: no later request hits them
+        on the GPU. Under speculative decoding that is at least the chunk
+        holding the request's last cached block, which the hit drops. vLLM
+        calls this before it frees the request's blocks, so the pin keeps
+        them out of the free queue, and the receipt frees them to its tail
+        as vLLM would have, rather than to the head an op pinned while
+        free returns to.
+
         Args:
             request_id: The request vLLM reported as finished.
 
@@ -651,6 +661,11 @@ class LazyOffloadManager:
         self._requests.finish(request_id)
         self._forget_progress(request_id)
         self._drop_holder(request_id)
+        policy = self._require_policy()
+        if policy.has_pending_request(request_id):
+            held = policy.hold_past(request_id, self._hit_tokens(request_id))
+            if held.metadatas:
+                self._pin_holds([held])
         if self._has_buffered(request_id):
             return LazyOffloadActions()
         if self._requests.has_in_flight(request_id):
@@ -1540,6 +1555,27 @@ class LazyOffloadManager:
             chain, len(chain) * self._require_block_pool().hash_block_size
         )
         return hit_blocks
+
+    def _hit_tokens(self, request_id: str) -> int:
+        """Return the length of vLLM's hit over a request's chain.
+
+        The lookup :meth:`_hit_blocks` makes, with vLLM's rules for what a
+        later request extending the chain could hit: the speculative-decoding
+        drop of the last block and, in a hybrid model, a cached state at the
+        hit's end.
+
+        Args:
+            request_id: A request that arrived and whose session has not
+                ended.
+
+        Returns:
+            The hit length in tokens.
+        """
+        chain = self._block_hash_chains[request_id]
+        _, hit_tokens, _ = self._require_coordinator().find_longest_cache_hit(
+            chain, len(chain) * self._require_block_pool().hash_block_size
+        )
+        return hit_tokens
 
     def _servable_tokens(self, request_id: str, own_block_ids: list[int]) -> int:
         """Return how much of a request's prefix vLLM serves from blocks it keeps.
