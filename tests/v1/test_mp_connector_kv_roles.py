@@ -226,7 +226,7 @@ def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     pool = MagicMock(
         blocks=[
             # Owned by the running request, as a store's blocks are.
-            SimpleNamespace(block_hash=bytes([i]), is_null=False, ref_cnt=1)
+            SimpleNamespace(block_id=i, block_hash=bytes([i]), is_null=False, ref_cnt=1)
             for i in range(8)
         ],
         # One request block hash per 4-token block, the chunk size.
