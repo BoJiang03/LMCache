@@ -51,6 +51,7 @@ class LazyOffloadMode(enum.Enum):
 def create_offload_policy(
     configs: dict[str, ConfigValue],
     gpu_block_pool: "BlockPool",
+    anchor_groups: frozenset[int],
 ) -> OffloadPolicy:
     """Build the policy ``POLICY_CONFIG_KEY`` names, EVICTION_AWARE default.
 
@@ -61,6 +62,9 @@ def create_offload_policy(
         gpu_block_pool: The scheduler's GPU block pool, which the
             eviction-aware policy ranks by eviction order. It is held for
             the policy's lifetime and only ever read.
+        anchor_groups: KV-cache groups whose real blocks are the states
+            vLLM resumes a hit at (align-mode Mamba), which the
+            eviction-aware policy segments its stores by.
 
     Returns:
         A policy ready to buffer store operations.
@@ -81,4 +85,4 @@ def create_offload_policy(
     if mode is LazyOffloadMode.FIFO:
         return FIFOOffloadPolicy(configs)
     logger.info("lazy offload enabled with EVICTION_AWARE policy")
-    return EvictionAwareStoreQueue(gpu_block_pool)
+    return EvictionAwareStoreQueue(gpu_block_pool, anchor_groups)

@@ -126,7 +126,7 @@ if TYPE_CHECKING:
     )
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.block_pool import BlockPool
-    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.request import Request
 
@@ -700,6 +700,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     # Tail block slots vLLM may relocate for one request; 0 means vLLM only
     # appends. The scheduler role sets it from the vLLM config.
     _mamba_relocation_window: int = 0
+    # Set by bind_kv_cache_manager; read once, by the first scheduler call.
+    _kv_cache_manager_bound: bool = False
+    _kv_cache_manager_bind_checked: bool = False
+    # Set when lazy offload is configured but turned off for the run; sent to
+    # the workers in every step's metadata.
+    _lazy_offload_unbound: bool = False
 
     def __init__(
         self,
@@ -979,6 +985,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                         (spec_config.num_speculative_tokens or 0) if spec_config else 0
                     ),
                     max_model_len=vllm_config.model_config.max_model_len,
+                    chunk_size=lmcache_tokens_per_chunk,
                     mamba_groups=mamba_groups,
                     prefill_alignment=get_prefill_alignment(
                         vllm_config, kv_cache_config, mamba_groups
@@ -1062,6 +1069,24 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 vllm_config=self._vllm_config,
             )
         return
+
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        """Bind the step's metadata; follow the scheduler's lazy offload.
+
+        The scheduler turns lazy offload off when vLLM never bound its KV
+        cache manager (see ``_disable_lazy_offload_if_unbound``). A worker
+        then reports finished stores to vLLM as in eager mode, so vLLM frees
+        a finished request's blocks only after its stores. The flag arrives
+        with the first step, before any store.
+
+        Args:
+            connector_metadata: The scheduler's metadata for this step.
+        """
+        super().bind_connector_metadata(connector_metadata)
+        assert isinstance(connector_metadata, LMCacheMPConnectorMetadata)
+        if self.lazy_offload and connector_metadata.disable_lazy_offload:
+            self.lazy_offload = False
+            self.worker_adapter.lazy_offload = False
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         """
@@ -1434,6 +1459,21 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             if self.lazy_offload:
                 self._lazy_offload_manager.bind_block_pool(gpu_block_pool)
 
+    def bind_kv_cache_manager(self, kv_cache_manager: "KVCacheManager") -> None:
+        """Bind the scheduler's KV cache manager.
+
+        Args:
+            kv_cache_manager: vLLM's scheduler KV cache manager. Under lazy
+                offload its coordinator decides what vLLM's prefix cache
+                still serves of a finished request.
+        """
+        super().bind_kv_cache_manager(kv_cache_manager)
+        self._kv_cache_manager_bound = True
+        if self.role == KVConnectorRole.SCHEDULER and self.lazy_offload:
+            self._lazy_offload_manager.bind_cache_coordinator(
+                kv_cache_manager.coordinator
+            )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1502,6 +1542,18 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             tracker.apc_covered_tokens = 0
             tracker.state = LMCacheMPRequestState.BYPASS_LMCACHE
             return self._report_admission(request, num_computed_tokens, 0, False)
+
+        # Lazy offload may still buffer chunks of this prefix past vLLM's
+        # hit, which a lookup submitted now would miss: it waits until they
+        # are stored. A lookup already submitted (eager prefetch) is kept.
+        if (
+            self.lazy_offload
+            and tracker.lookup_started_at is None
+            and self._lazy_offload_manager.flush_for_lookup(
+                request.request_id, num_computed_tokens
+            )
+        ):
+            return None, True
 
         # APC-covered lookup start (0 = none; stays 0 after a shrink):
         # the vLLM hit floored to every group's paged-chunk boundary and the
@@ -1763,7 +1815,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
+        self._disable_lazy_offload_if_unbound()
         metadata = LMCacheMPConnectorMetadata()
+        metadata.disable_lazy_offload = self._lazy_offload_unbound
         metadata.need_flush_before_forward = _has_preemption_reqs(scheduler_output)
         metadata.schedules_no_tokens = not scheduler_output.total_num_scheduled_tokens
 
@@ -2132,6 +2186,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     def _get_or_create_request_tracker(
         self, request: "Request"
     ) -> LMCacheMPRequestTracker:
+        self._disable_lazy_offload_if_unbound()
         request_id = request.request_id
         # Remove the old trackers that is created before the preemption
         if (
@@ -2154,12 +2209,37 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         if request_id not in self.request_trackers:
             if self.lazy_offload:
-                actions = self._lazy_offload_manager.on_request_arrived(request_id)
+                actions = self._lazy_offload_manager.on_request_arrived(
+                    request_id, request.block_hashes
+                )
                 for session_id in actions.sessions_to_end:
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
             self.request_trackers[request_id] = new_tracker
         return self.request_trackers[request_id]
+
+    def _disable_lazy_offload_if_unbound(self) -> None:
+        """Turn lazy offload off for the run if vLLM never bound its KV cache
+        manager.
+
+        vLLM binds it in ``Scheduler.__init__``, so by the first scheduler
+        call it has happened if it ever will; older vLLMs call only
+        ``bind_gpu_block_pool``. Lazy offload needs the cache coordinator to
+        know what vLLM's prefix cache serves, so without it the connector
+        stores eagerly. Decided once, before any store is buffered; the
+        workers follow through ``disable_lazy_offload`` in the metadata.
+        """
+        if self._kv_cache_manager_bind_checked:
+            return
+        self._kv_cache_manager_bind_checked = True
+        if self.lazy_offload and not self._kv_cache_manager_bound:
+            logger.warning(
+                "lmcache.mp.lazy_offload is disabled: vLLM did not call "
+                "bind_kv_cache_manager, so lazy offload cannot see its prefix "
+                "cache; storing eagerly"
+            )
+            self.lazy_offload = False
+            self._lazy_offload_unbound = True
 
     def _cleanup_request_tracker(self, request_id: str) -> None:
         """

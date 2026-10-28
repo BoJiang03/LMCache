@@ -150,7 +150,18 @@ def _request(request_id: str = "request") -> Request:
             status=RequestStatus.WAITING,
             num_computed_tokens=0,
             kv_transfer_params=None,
+            block_hashes=[f"{request_id}-{i}".encode() for i in range(3)],
         ),
+    )
+
+
+def _bind_serving_whole_prompts(connector: LMCacheMPConnector, pool: Any) -> None:
+    """Bind a KV cache manager over ``pool`` whose coordinator serves every
+    request's 12-token prompt from the GPU prefix cache."""
+    coordinator = MagicMock()
+    coordinator.find_longest_cache_hit.return_value = ([], 12, 0)
+    connector.bind_kv_cache_manager(
+        cast(Any, SimpleNamespace(coordinator=coordinator, block_pool=pool))
     )
 
 
@@ -219,9 +230,11 @@ def mock_io(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     pool = MagicMock(
         blocks=[
             # Owned by the running request, as a store's blocks are.
-            SimpleNamespace(block_hash=bytes([i]), is_null=False, ref_cnt=1)
+            SimpleNamespace(block_id=i, block_hash=bytes([i]), is_null=False, ref_cnt=1)
             for i in range(8)
-        ]
+        ],
+        # One request block hash per 4-token block, the chunk size.
+        hash_block_size=4,
     )
     monkeypatch.setattr(
         connector_mod, "LMCacheMPSchedulerAdapter", lambda **kw: scheduler
@@ -267,7 +280,7 @@ def connectors(
     )
     scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
     worker = LMCacheMPConnector(config, KVConnectorRole.WORKER)
-    scheduler.bind_gpu_block_pool(mock_io.pool)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
     worker.register_kv_caches(mock_io.kv_caches)
     try:
         yield scheduler, worker
@@ -293,7 +306,7 @@ def test_decode_store_policy_through_scheduler(
         )
     )
     connector = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
-    connector.bind_gpu_block_pool(mock_io.pool)
+    _bind_serving_whole_prompts(connector, mock_io.pool)
     request = _request()
     request.num_prompt_tokens = 6
     try:
@@ -313,6 +326,54 @@ def test_decode_store_policy_through_scheduler(
                 assert metadata.requests == []
     finally:
         connector.shutdown()
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_lazy_offload_turns_off_without_a_bound_kv_cache_manager(
+    mock_io: SimpleNamespace, bound: bool
+) -> None:
+    """A vLLM that binds only the block pool, never the KV cache manager,
+    runs with lazy offload off: stores go out eagerly, the finished request
+    waits for them, and the worker reports them to vLLM. Bound, lazy offload
+    stays on and the store is buffered."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    worker = LMCacheMPConnector(config, KVConnectorRole.WORKER)
+    if bound:
+        _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    else:
+        scheduler.bind_gpu_block_pool(mock_io.pool)
+    worker.register_kv_caches(mock_io.kv_caches)
+    request = _request()
+    try:
+        assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+        assert scheduler.lazy_offload is bound
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1],)), 0
+        )
+        metadata = scheduler.build_connector_meta(
+            _schedule(num_tokens=4, block_ids=([1],), new=True)
+        )
+        stores = [(m.direction, m.op.start, m.op.end) for m in metadata.requests]
+        assert stores == ([] if bound else [("STORE", 0, 4)])
+        worker.bind_connector_metadata(metadata)
+        worker.wait_for_save()
+
+        assert scheduler.request_finished(request, [1]) == (not bound, None)
+        sending, _ = worker.get_finished({"request"})
+        assert (sending or set()) == (set() if bound else {"request"})
+    finally:
+        worker.shutdown()
+        scheduler.shutdown()
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
@@ -753,7 +814,7 @@ def _eviction_aware_connectors(
     )
     scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
     worker = LMCacheMPConnector(config, KVConnectorRole.WORKER)
-    scheduler.bind_gpu_block_pool(pool)
+    _bind_serving_whole_prompts(scheduler, pool)
     worker.register_kv_caches(mock_io.kv_caches)
     return scheduler, worker
 

@@ -245,6 +245,26 @@ class LazyOffloadRequestRegistry:
         slot = self._slots.get(request_id)
         return slot is not None and slot.in_flight is not None
 
+    def in_flight_overlaps(self, request_id: str, start: int, end: int) -> bool:
+        """Whether the request's open batch stores tokens of a range.
+
+        Args:
+            request_id: The request id to query.
+            start: First token of the range.
+            end: Token the range ends at.
+
+        Returns:
+            True while a batch is open with an operation overlapping
+            ``[start, end)``.
+        """
+        slot = self._slots.get(request_id)
+        return slot is not None and any(
+            metadata.op.start < end and metadata.op.end > start
+            for metadata, _ in (
+                slot.in_flight.operations.metadatas if slot.in_flight else []
+            )
+        )
+
     def in_flight_request_ids(self) -> set[str]:
         """The ids that must stay buffered because a batch is open.
 

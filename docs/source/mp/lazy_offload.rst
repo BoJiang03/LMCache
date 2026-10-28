@@ -17,7 +17,9 @@ are listed in :doc:`configuration`.
 
 Lazy offload requires vLLM prefix caching (``enable_prefix_caching=True``):
 eviction detection reads block hashes, which only exist while prefix caching
-maintains them.
+maintains them. It also needs a vLLM that calls the connector's
+``bind_kv_cache_manager``; with an older vLLM the connector logs a warning
+and stores eagerly instead.
 
 This feature is disabled by default and is available only with vLLM and
 ``LMCacheMPConnector``. The LMCache server needs no additional flags.
