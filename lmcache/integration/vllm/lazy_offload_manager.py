@@ -49,6 +49,8 @@ from lmcache.utils import init_logger
 if TYPE_CHECKING:
     # Third Party
     from vllm.v1.core.block_pool import BlockPool
+    from vllm.v1.core.kv_cache_coordinator import KVCacheCoordinator
+    from vllm.v1.core.kv_cache_utils import BlockHash
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
@@ -97,23 +99,30 @@ class LazyOffloadActions:
 
 def _coalesce_store_metadata(
     request_metas: list[LMCacheMPRequestMetadata],
+    group_tokens_per_block: list[int],
+    null_block_id: int,
 ) -> LMCacheMPRequestMetadata:
-    """Merge one request's contiguous STORE metadata, in prefix order, into one.
+    """Merge one request's STORE metadata, in prefix order, into one.
 
     The worker tracks one in-flight store future per request, so a drained
-    batch must be submitted as a single operation.
+    batch must be submitted as a single operation. A segment the policy
+    stored from the middle of the buffer leaves a range between two
+    operations unbuffered, since it was stored already; that range gets the
+    null block, whose chunks the server never stores.
 
     Args:
         request_metas: One request's buffered STORE metadata, in prefix
-            order, each covering the token range that follows the one
-            before it.
+            order, each starting at or after the end of the one before it.
+        group_tokens_per_block: Tokens per block of each cache group, which
+            sizes a gap's null blocks; scratch groups report ``0``.
+        null_block_id: vLLM's null block, which fills a gap.
 
     Returns:
         A single STORE metadata spanning the whole range, carrying the
         concatenated block ids of every cache group.
 
     Raises:
-        ValueError: If the input is empty, non-contiguous, or changes cache
+        ValueError: If the input is empty, overlapping, or changes cache
             group count mid-batch.
     """
     if not request_metas:
@@ -125,16 +134,22 @@ def _coalesce_store_metadata(
     merged_block_ids: list[list[int]] = [list(group) for group in first.op.block_ids]
     expected_start = first.op.end
     for meta in request_metas[1:]:
-        if meta.op.start != expected_start:
+        if meta.op.start < expected_start:
             raise ValueError(
-                f"non-contiguous store ops for request {first.request_id}: "
-                f"expected start {expected_start}, got {meta.op.start}"
+                f"overlapping store ops for request {first.request_id}: "
+                f"expected start {expected_start} or later, got {meta.op.start}"
             )
         if len(meta.op.block_ids) != len(merged_block_ids):
             raise ValueError(
                 f"cache-group count changed within store batch for request "
                 f"{first.request_id}"
             )
+        gap = meta.op.start - expected_start
+        for group_idx, tokens_per_block in enumerate(group_tokens_per_block):
+            if tokens_per_block:
+                merged_block_ids[group_idx].extend(
+                    [null_block_id] * (gap // tokens_per_block)
+                )
         expected_start = meta.op.end
         for group_idx, group_ids in enumerate(meta.op.block_ids):
             merged_block_ids[group_idx].extend(group_ids)
@@ -158,9 +173,10 @@ class LazyOffloadManager:
 
     The only lazy-offload object exposed to the connector: it turns scheduler
     events into policy signals, pins and unpins vLLM GPU blocks, and returns
-    connector actions. Every method other than :meth:`bind_block_pool` and
-    :meth:`log_final_stats` raises ``ValueError`` until the pool is bound.
-    Scheduler thread only.
+    connector actions. Every method other than :meth:`bind_block_pool`,
+    :meth:`bind_cache_coordinator` and :meth:`log_final_stats` raises
+    ``ValueError`` until the pool is bound; finishing a request and looking
+    a waiting request up also need the coordinator. Scheduler thread only.
     """
 
     def __init__(
@@ -171,6 +187,7 @@ class LazyOffloadManager:
         max_step_tokens: int,
         num_lookahead_tokens: int,
         max_model_len: int,
+        chunk_size: int,
         mamba_groups: dict[int, int] | None = None,
         prefill_alignment: int = 0,
     ) -> None:
@@ -190,6 +207,9 @@ class LazyOffloadManager:
                 draft tokens a decode step schedules.
             max_model_len: vLLM's ``max_model_len``: the most tokens one
                 request holds, which bounds what one admission allocates.
+            chunk_size: LMCache's tokens per chunk, a multiple of every
+                group's tokens per block: the unit the server stores, by
+                which a lookup finds the buffered ops covering its prefix.
             mamba_groups: Align-mode Mamba groups -> the blocks a running
                 request's step can take beyond its one state block: a
                 prefill checkpoint block and a partial-hit copy, where the
@@ -203,6 +223,7 @@ class LazyOffloadManager:
         """
         self._configs = dict(configs or {})
         self._group_tokens_per_block = list(group_tokens_per_block)
+        self._chunk_size = chunk_size
         self._max_step_tokens = max_step_tokens
         self._num_lookahead_tokens = num_lookahead_tokens
         self._mamba_groups = dict(mamba_groups or {})
@@ -211,13 +232,21 @@ class LazyOffloadManager:
         # Both are set by bind_block_pool: the policy reads the pool.
         self._gpu_block_pool: "BlockPool | None" = None
         self._policy: OffloadPolicy | None = None
+        # Set by bind_cache_coordinator: vLLM's hit decides what a finished
+        # request's and a waiting request's prefix cache serves.
+        self._coordinator: "KVCacheCoordinator | None" = None
+        # Per request, vLLM's live block-hash chain of its tokens, from its
+        # arrival until its session ends: what its servable prefix is
+        # looked up by, also after it finished.
+        self._block_hash_chains: dict[str, list["BlockHash"]] = {}
         self._requests = LazyOffloadRequestRegistry()
         # One token ledger per request whose operations are buffered.
         self._token_ledgers: dict[str, bytearray] = {}
         # Blocks pinned for held operations, per request, until submission.
         self._held_block_ids: dict[str, set[int]] = {}
-        # Pinned blocks that sat in the free queue when pinned: unpinning
-        # returns them to its head, where eviction order had them.
+        # Blocks the drain or a protection pinned while they sat in the free
+        # queue: unpinning returns them to its head, where eviction order had
+        # them.
         self._pinned_while_free: set[int] = set()
         # Token counts of admitted requests and, once scheduled, the tokens
         # they will have computed after their last scheduled step: what
@@ -240,6 +269,19 @@ class LazyOffloadManager:
         # last allocation covered too.
         self._handed_blocks: dict[str, list[set[int]]] = {}
         self._table_lengths: dict[str, list[int]] = {}
+        # Per chunk, by the block hash ending it, the requests that offered
+        # an op storing it, and per such request those hashes: what finds
+        # the buffered ops covering a waiting request's prefix. An entry can
+        # outlive its op; the policy only flushes ops it still buffers.
+        self._chunk_offerers: dict["BlockHash", set[str]] = {}
+        self._offered_chunks: dict[str, set["BlockHash"]] = {}
+        # Waiting requests whose lookup flushed buffered ops -> the token
+        # vLLM's prefix cache serves them up to and, per request owning the
+        # flushed ops, the token the flushed range ends at.
+        self._lookup_flushes: dict[str, tuple[int, dict[str, int]]] = {}
+        # Requests whose lookup was checked for buffered ops, once per
+        # generation: a lookup submitted after it would not see a flush.
+        self._lookup_checked: set[str] = set()
 
     @property
     def admission_blocks(self) -> int:
@@ -276,7 +318,20 @@ class LazyOffloadManager:
                 "would discard the buffered store operations"
             )
         self._gpu_block_pool = gpu_block_pool
-        self._policy = create_offload_policy(self._configs, gpu_block_pool)
+        self._policy = create_offload_policy(
+            self._configs, gpu_block_pool, frozenset(self._mamba_groups)
+        )
+
+    def bind_cache_coordinator(self, coordinator: "KVCacheCoordinator") -> None:
+        """Bind the scheduler's KV cache coordinator, whose hit decides what
+        a finished request's or a waiting request's prefix cache serves.
+
+        Args:
+            coordinator: The scheduler's ``KVCacheManager.coordinator``, over
+                the bound block pool. Only its read-only
+                ``find_longest_cache_hit`` is called.
+        """
+        self._coordinator = coordinator
 
     def add_store_candidate(self, metadata: LMCacheMPRequestMetadata) -> None:
         """Buffer one STORE metadata produced by the request tracker.
@@ -340,6 +395,9 @@ class LazyOffloadManager:
             rebound, op=replace(rebound.op, block_ids=protected_block_ids)
         )
         self._require_policy().add(rebound, block_hashes)
+        self._index_offered_chunks(
+            metadata.request_id, metadata.op.start, metadata.op.end
+        )
 
     def on_scheduler_step(
         self, scheduler_output: "SchedulerOutput"
@@ -365,6 +423,50 @@ class LazyOffloadManager:
                 already has a store batch in flight.
         """
         return self._drain(scheduler_output, self._require_block_pool())
+
+    def flush_for_lookup(self, request_id: str, num_computed_tokens: int) -> bool:
+        """Store the buffered ops a waiting request's lookup needs first.
+
+        Lazy offload defers a chunk while vLLM's prefix cache can serve it.
+        A request whose local hit stops short of chunks other requests
+        still buffer (in a hybrid model, a hit resumes only at a cached
+        state) can be served neither from the GPU nor from L1, and would
+        recompute them. So on its first call the ops covering its prefix
+        past the local hit are held and stored by the next drain, as eager
+        offload would have stored them, together with the ops before them
+        back to the previous Mamba state (see
+        ``EvictionAwareStoreQueue.hold_past``). Until their receipts settle,
+        the caller defers the lookup, which then hits L1. Found through the
+        chunk hashes of the request's chain, so the cost is linear in its
+        chunks. The receipt frees the flushed blocks to the free-queue tail,
+        not the head, so the flush does not evict the request's own
+        hit-point state block.
+
+        Args:
+            request_id: A waiting request whose lookup was not yet
+                submitted; it arrived and its session has not ended.
+            num_computed_tokens: Its local prefix hit, in tokens.
+
+        Returns:
+            True while the lookup must wait for flushed stores; False once
+            they settled, or when nothing needed flushing.
+        """
+        if request_id not in self._lookup_checked:
+            self._lookup_checked.add(request_id)
+            self._flush_offered_prefix(request_id, num_computed_tokens)
+        flush = self._lookup_flushes.get(request_id)
+        if flush is None:
+            return False
+        start, ends = flush
+        policy = self._require_policy()
+        if any(
+            policy.is_flushing(owner, start, end)
+            or self._requests.in_flight_overlaps(owner, start, end)
+            for owner, end in ends.items()
+        ):
+            return True
+        del self._lookup_flushes[request_id]
+        return False
 
     def on_admission(
         self,
@@ -504,6 +606,18 @@ class LazyOffloadManager:
     def on_request_finished(self, request_id: str) -> LazyOffloadActions:
         """Record request completion and decide whether its session can end.
 
+        Its buffered ops ending past the prefix vLLM's hit over its own
+        chain serves are held now and stored by the next drain with budget,
+        as eager offload would have stored them: no later request hits them
+        on the GPU. Under speculative decoding that is at least the chunk
+        holding the request's last cached block, which the hit drops. vLLM
+        calls this before it frees the request's blocks, so the pin keeps
+        them out of the free queue, and the receipt frees them to its tail
+        as vLLM would have. That holds too for a block vLLM already freed,
+        such as an align-mode Mamba state block: the hold does not send it
+        to the head on release, where the next allocation would evict the
+        state the next turn's hit resumes at.
+
         Args:
             request_id: The request vLLM reported as finished.
 
@@ -513,7 +627,13 @@ class LazyOffloadManager:
         """
         self._requests.finish(request_id)
         self._forget_progress(request_id)
-        if self._require_policy().has_pending_request(request_id):
+        self._forget_lookup(request_id)
+        policy = self._require_policy()
+        if policy.has_pending_request(request_id):
+            held = policy.hold_past(request_id, self._hit_tokens(request_id))
+            if held.metadatas:
+                self._pin_holds([held], release_to_head=False)
+        if policy.has_pending_request(request_id):
             return LazyOffloadActions()
         if self._requests.has_in_flight(request_id):
             return LazyOffloadActions()
@@ -533,6 +653,8 @@ class LazyOffloadManager:
         self._requests.reset(request_id)
         self._token_ledgers.pop(request_id, None)
         self._forget_progress(request_id)
+        self._forget_lookup(request_id)
+        self._unindex_offered_chunks(request_id)
         dropped = self._require_policy().drop_request(request_id)
         self._release_holds(request_id)
         if dropped:
@@ -542,13 +664,18 @@ class LazyOffloadManager:
                 request_id,
             )
 
-    def on_request_arrived(self, request_id: str) -> LazyOffloadActions:
+    def on_request_arrived(
+        self, request_id: str, block_hashes: list["BlockHash"]
+    ) -> LazyOffloadActions:
         """Reclaim residual state if a new request reuses a finished id.
 
         Args:
             request_id: The id whose tracker vLLM just created, which may be
                 a first arrival, a preempted request coming back, or a new
                 request taking over a finished id.
+            block_hashes: The request's ``Request.block_hashes``, which vLLM
+                extends as tokens arrive; kept by reference until the
+                request's session ends, to look its servable prefix up.
 
         Returns:
             A session-release action for the predecessor when the id is
@@ -560,9 +687,12 @@ class LazyOffloadManager:
         reused_finished_id = self._requests.is_finished(request_id)
         predecessor_in_flight = self._requests.has_in_flight(request_id)
         self._requests.arrive(request_id)
+        self._block_hash_chains[request_id] = block_hashes
         if not reused_finished_id:
             return LazyOffloadActions()
         self._require_policy().discard_for_reuse(request_id)
+        self._forget_lookup(request_id)
+        self._unindex_offered_chunks(request_id)
         self._release_holds(request_id)
         self._token_ledgers.pop(request_id, None)
         if predecessor_in_flight:
@@ -637,7 +767,7 @@ class LazyOffloadManager:
         )
         for request_id in drain.releases:
             self._release_holds(request_id)
-        self._pin_holds(drain.holds)
+        self._pin_holds(drain.holds, release_to_head=True)
         actions = LazyOffloadActions()
         for item in drain.items:
             if self._requests.has_in_flight(item.request_id):
@@ -677,7 +807,11 @@ class LazyOffloadManager:
             if not valid.metadatas:
                 continue
             actions.stores_to_submit.append(
-                _coalesce_store_metadata([meta for meta, _ in valid.metadatas])
+                _coalesce_store_metadata(
+                    [meta for meta, _ in valid.metadatas],
+                    self._group_tokens_per_block,
+                    pool.null_block.block_id,
+                )
             )
             self._requests.register_batch(item.request_id, valid_block_ids, valid)
         for request_id in drain.emptied_request_ids:
@@ -976,7 +1110,7 @@ class LazyOffloadManager:
         """
         protection = self._require_policy().protect(num_blocks)
         self._move_to_tail(protection.to_tail)
-        self._pin_holds(protection.holds)
+        self._pin_holds(protection.holds, release_to_head=True)
 
     def _move_to_tail(self, items: list[PendingStoreItem]) -> None:
         """Move buffered blocks to the free-queue tail, unpinned.
@@ -1007,7 +1141,9 @@ class LazyOffloadManager:
         self._handed_blocks.pop(request_id, None)
         self._table_lengths.pop(request_id, None)
 
-    def _pin_holds(self, holds: list[PendingStoreItem]) -> None:
+    def _pin_holds(
+        self, holds: list[PendingStoreItem], *, release_to_head: bool
+    ) -> None:
         """Pin the blocks of operations the policy just marked held.
 
         The policy checked these snapshots in the same call, and nothing
@@ -1015,11 +1151,19 @@ class LazyOffloadManager:
 
         Args:
             holds: The policy's new holds, one entry per request.
+            release_to_head: Whether the unpin returns blocks pinned while
+                free to the free-queue head. Only for holds the danger
+                window met near the head; a hold taken to store a chunk
+                eager offload would have stored (a finished request's tail,
+                a lookup flush) can sit anywhere in the queue, and at the
+                head the next allocation would evict a block vLLM still
+                serves hits from, such as a Mamba state block vLLM freed
+                before the request finished.
         """
         for hold in holds:
             held = self._held_block_ids.setdefault(hold.request_id, set())
             for _, block_hashes in hold.metadatas:
-                self._pin(list(block_hashes))
+                self._pin(list(block_hashes), release_to_head=release_to_head)
                 held.update(block_hashes)
 
     def _release_holds(self, request_id: str) -> None:
@@ -1033,27 +1177,54 @@ class LazyOffloadManager:
         """
         self._unpin(list(self._held_block_ids.pop(request_id, set())))
 
-    def _pin(self, block_ids: list[int]) -> None:
+    def _hit_tokens(self, request_id: str) -> int:
+        """Return the length of vLLM's hit over a request's chain.
+
+        vLLM's own read-only ``find_longest_cache_hit``, with its rules for
+        what a later request extending the chain could hit: the
+        speculative-decoding drop of the last block and, in a hybrid model,
+        a cached state at the hit's end.
+
+        Args:
+            request_id: A request that arrived and whose session has not
+                ended.
+
+        Returns:
+            The hit length in tokens.
+        """
+        chain = self._block_hash_chains[request_id]
+        _, hit_tokens, _ = self._require_coordinator().find_longest_cache_hit(
+            chain, len(chain) * self._require_block_pool().hash_block_size
+        )
+        return hit_tokens
+
+    def _pin(self, block_ids: list[int], *, release_to_head: bool = True) -> None:
         """Pin blocks, remembering which ones were waiting for eviction.
 
         Args:
             block_ids: The blocks to pin, in eviction order.
+            release_to_head: Whether :meth:`_unpin` returns the ones that
+                were free to the queue head. False leaves them where
+                ``BlockPool.free_blocks`` puts them, the tail.
         """
         pool = self._require_block_pool()
         blocks = [pool.blocks[block_id] for block_id in block_ids]
-        self._pinned_while_free.update(
-            block_id
-            for block_id, block in zip(block_ids, blocks, strict=True)
-            if block.ref_cnt == 0
-        )
+        if release_to_head:
+            self._pinned_while_free.update(
+                block_id
+                for block_id, block in zip(block_ids, blocks, strict=True)
+                if block.ref_cnt == 0
+            )
         pool.touch(blocks)
 
     def _unpin(self, block_ids: list[int]) -> None:
         """Release pins, returning formerly free blocks to the queue head.
 
         ``BlockPool.free_blocks`` appends a cached block to the tail as if
-        just used; a block this manager pinned out of the free queue was
-        near the head, so the head is closer to its place in eviction order.
+        just used; a block the drain or a protection pinned out of the free
+        queue was near the head, so the head is closer to its place in
+        eviction order. Blocks pinned with ``release_to_head=False`` stay
+        at the tail.
         A block another request still owns stays wherever vLLM puts it, and
         so does one a buffered operation still covers: a request sharing the
         prefix buffered it too, and at the head it would sit inside the danger
@@ -1093,6 +1264,88 @@ class LazyOffloadManager:
         self._require_policy().release_request(request_id)
         self._requests.session_ended(request_id)
         self._token_ledgers.pop(request_id, None)
+        self._block_hash_chains.pop(request_id, None)
+        self._unindex_offered_chunks(request_id)
+
+    def _chunk_hash_index(self, num_chunks: int) -> int:
+        """Index in a block-hash chain of the hash ending a chunk prefix.
+
+        Args:
+            num_chunks: Chunks in the prefix, at least one.
+
+        Returns:
+            The index of the hash of the block holding the prefix's last
+            token, the one that identifies the prefix.
+        """
+        return (
+            num_chunks * self._chunk_size // self._require_block_pool().hash_block_size
+            - 1
+        )
+
+    def _index_offered_chunks(self, request_id: str, start: int, end: int) -> None:
+        """Record a request as offering the whole chunks ending in a range.
+
+        Args:
+            request_id: The request whose op was just offered.
+            start: First token of the op.
+            end: Token the op ends at. Chunks past the request's hash chain,
+                which hashes full blocks only, are left out.
+        """
+        chain = self._block_hash_chains[request_id]
+        offered = self._offered_chunks.setdefault(request_id, set())
+        num_chunks = start // self._chunk_size + 1
+        while num_chunks * self._chunk_size <= end and (
+            index := self._chunk_hash_index(num_chunks)
+        ) < len(chain):
+            self._chunk_offerers.setdefault(chain[index], set()).add(request_id)
+            offered.add(chain[index])
+            num_chunks += 1
+
+    def _unindex_offered_chunks(self, request_id: str) -> None:
+        """Forget the chunks a request offered.
+
+        Args:
+            request_id: A request whose ops were dropped or whose session
+                ended.
+        """
+        for chunk_hash in self._offered_chunks.pop(request_id, set()):
+            offerers = self._chunk_offerers[chunk_hash]
+            offerers.discard(request_id)
+            if not offerers:
+                del self._chunk_offerers[chunk_hash]
+
+    def _flush_offered_prefix(self, request_id: str, start: int) -> None:
+        """Hold the buffered ops covering a request's prefix past ``start``.
+
+        Args:
+            request_id: The waiting request.
+            start: Its local prefix hit, in tokens.
+        """
+        chain = self._block_hash_chains[request_id]
+        ends: dict[str, int] = {}
+        num_chunks = start // self._chunk_size + 1
+        while (index := self._chunk_hash_index(num_chunks)) < len(chain):
+            for owner in self._chunk_offerers.get(chain[index], ()):
+                if owner != request_id:
+                    ends[owner] = num_chunks * self._chunk_size
+            num_chunks += 1
+        if not ends:
+            return
+        flush = self._require_policy().flush_for_lookup(start, ends)
+        if not flush.ends:
+            return
+        self._pin_holds(flush.holds, release_to_head=False)
+        self._lookup_flushes[request_id] = (start, flush.ends)
+
+    def _forget_lookup(self, request_id: str) -> None:
+        """Forget a request's lookup flush, so a new generation checks again.
+
+        Args:
+            request_id: A request that finished, was reset, or whose id a
+                new request took over.
+        """
+        self._lookup_checked.discard(request_id)
+        self._lookup_flushes.pop(request_id, None)
 
     def _require_policy(self) -> OffloadPolicy:
         """Return the bound policy or reject an invalid lifecycle call.
@@ -1106,6 +1359,19 @@ class LazyOffloadManager:
         if self._policy is None:
             raise ValueError("lazy offload GPU block pool is not bound")
         return self._policy
+
+    def _require_coordinator(self) -> "KVCacheCoordinator":
+        """Return the bound coordinator or reject a lookup of vLLM's hit.
+
+        Returns:
+            The coordinator :meth:`bind_cache_coordinator` bound.
+
+        Raises:
+            ValueError: If no coordinator has been bound yet.
+        """
+        if self._coordinator is None:
+            raise ValueError("lazy offload KV cache coordinator is not bound")
+        return self._coordinator
 
     def _require_block_pool(self) -> "BlockPool":
         """Return the bound block pool or reject an invalid lifecycle call.

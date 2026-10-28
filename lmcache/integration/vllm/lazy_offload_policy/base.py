@@ -30,8 +30,8 @@ Terms used throughout this package:
   too are they held instead.
 - **Requeued**: an emitted operation whose store failed, handed back to the
   policy once its batch settled. Its blocks were pinned in flight, so its
-  hash snapshot still holds, and it is buffered again ahead of the
-  request's later operations.
+  hash snapshot still holds, and it is buffered again in token order among
+  the request's buffered operations.
 - **Session**: the LMCache-side state a request owns while it is storing.
   ``LazyOffloadManager`` ends it once the request has finished and has
   nothing buffered and nothing in flight.
@@ -132,8 +132,8 @@ class LazyOffloadDrain:
             with the request's phase and in-flight batch before tearing a
             session down.
         holds: Operations whose blocks the manager must pin now, one entry
-            per request. Each entry extends the request's held operations,
-            which always form a prefix of its buffer. They stay buffered.
+            per request. Each entry adds to the request's held operations,
+            which need not be a prefix of its buffer. They stay buffered.
         releases: Requests whose held operations the manager must unpin
             before pinning ``holds``. They stay buffered, unheld.
     """
@@ -154,13 +154,30 @@ class AdmissionProtection:
             admission is not refused for them, and stay buffered: the
             danger window meets them again when the head reaches the tail.
         holds: Operations to pin, because the allocation would reach the
-            tail too. Like ``LazyOffloadDrain.holds``, each entry extends
-            the request's held prefix; pinning may make vLLM defer the
+            tail too. Like ``LazyOffloadDrain.holds``, each entry adds to
+            the request's held operations; pinning may make vLLM defer the
             admission, which is cheaper than losing the store.
     """
 
     to_tail: list[PendingStoreItem] = field(default_factory=list)
     holds: list[PendingStoreItem] = field(default_factory=list)
+
+
+@dataclass
+class LookupFlush:
+    """Buffered operations a request's lookup made due.
+
+    Attributes:
+        holds: The operations newly held, one entry per request, for the
+            manager to pin; ones already held keep their pins.
+        ends: Per request whose operations were flushed, the token the
+            flushed range ends at. The lookup waits while one of them
+            overlapping the range from its local hit is still buffered due
+            or in flight.
+    """
+
+    holds: list[PendingStoreItem] = field(default_factory=list)
+    ends: dict[str, int] = field(default_factory=dict)
 
 
 class OffloadPolicy(ABC):
@@ -223,6 +240,64 @@ class OffloadPolicy(ABC):
             The operations to move to the tail and the ones to pin.
         """
         return AdmissionProtection()
+
+    def hold_past(self, request_id: str, start: int) -> PendingStoreItem:
+        """Hold a request's buffered operations ending past ``start``, due now.
+
+        Called when the request finishes, before vLLM frees its blocks, with
+        ``start`` the prefix vLLM's prefix cache can serve from them. The
+        operations past it are not served from the GPU, so deferring them
+        only risks their data; pinned now, while the request still owns
+        their blocks, they keep their place in eviction order until stored.
+        A policy that does not defer by what the GPU cache serves holds
+        nothing.
+
+        Args:
+            request_id: The finishing request. An id with nothing buffered
+                is ignored.
+            start: Token the GPU cache serves the request's prefix up to.
+
+        Returns:
+            The newly held operations, in token order, for the manager to
+            pin; empty when there are none.
+        """
+        return PendingStoreItem(request_id=request_id)
+
+    def flush_for_lookup(self, start: int, ends: dict[str, int]) -> LookupFlush:
+        """Hold the buffered operations a waiting request's lookup needs.
+
+        Called before a request's LMCache lookup, with ``start`` the prefix
+        vLLM's prefix cache serves it and ``ends`` the other requests whose
+        buffered operations cover chunks of its prefix past ``start``.
+        Deferred, those chunks are neither on the GPU for this request nor
+        in L1, so it would recompute them. A policy that
+        does not defer by what the GPU cache serves flushes nothing.
+
+        Args:
+            start: Token vLLM's prefix cache serves the waiting request up
+                to.
+            ends: Request id -> token up to which its operations cover the
+                waiting request's prefix.
+
+        Returns:
+            The operations flushed and the newly held ones to pin.
+        """
+        return LookupFlush()
+
+    def is_flushing(self, request_id: str, start: int, end: int) -> bool:
+        """Whether a due operation of a request in a range is still buffered.
+
+        Args:
+            request_id: A request whose operations a lookup flushed.
+            start: First token of the range.
+            end: Token the range ends at.
+
+        Returns:
+            True while a held or expedited operation overlapping
+            ``[start, end)`` is buffered; such an operation is stored by a
+            later drain.
+        """
+        return False
 
     @abstractmethod
     def has_pending_request(self, request_id: str) -> bool:
@@ -298,9 +373,9 @@ class OffloadPolicy(ABC):
         The worker rejected the store (L1 was out of space, or the server
         was unhealthy), but the data is still on the GPU: the batch pinned
         its blocks until every worker reported. Every later operation of the
-        request depends on this prefix, so the policy buffers ``item`` ahead
-        of them and submits it again. A store of keys that are already
-        resident succeeds, so a retry of a partly stored batch is safe.
+        request depends on this range, so the policy buffers ``item`` in
+        token order among them and submits it again. A store of keys that are
+        already resident succeeds, so a retry of a partly stored batch is safe.
 
         Args:
             item: The failed batch's operations in token order, with the

@@ -385,13 +385,13 @@ also keeps the batch's operations: a batch that failed and is not orphaned
 goes back to the policy once every rank has reported, and is stored again,
 because its blocks were pinned and still hold the data.
 Overlapping emission remains a logic error because worker receipts are keyed
-only by request id. The completion receipt balances the pins: a block that
-sat in the free queue when it was pinned goes back to the queue head, where
-eviction order had it, unless another request's op still buffers it (step 4
-of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)). Failed stores
-are reported alongside completion receipts, so the scheduler requeues a
-failed range ahead of the request's later chunks and its prefix chain stays
-whole.
+only by request id. The completion receipt balances the pins: a block the
+drain pinned while it sat in the free queue goes back to the queue head,
+where eviction order had it, unless another request's op still buffers it
+(step 4 of [eviction_aware.md](lazy_offload_policy/eviction_aware.md)).
+Failed stores are reported alongside completion receipts, so the scheduler
+requeues a failed range in token order among the request's buffered chunks
+and its prefix chain stays whole.
 
 Configuration in `kv_connector_extra_config`:
 
@@ -407,7 +407,11 @@ lmcache.mp.lazy_offload_select_count = 10
 Lazy offload requires vLLM prefix caching. Eviction-aware mode depends on block
 hashes to prove that buffered data still occupies the same GPU blocks; the
 connector therefore fails construction when lazy offload is enabled without
-`enable_prefix_caching=True`.
+`enable_prefix_caching=True`. It also needs vLLM's cache coordinator: if vLLM
+never calls `bind_kv_cache_manager` (older vLLMs call only
+`bind_gpu_block_pool`), the first scheduler call turns lazy offload off for
+the run with one warning, and the step metadata turns it off on the workers,
+so stores go out eagerly.
 
 ### 2.1 Scheduler-step flow
 

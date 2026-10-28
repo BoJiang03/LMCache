@@ -12,6 +12,7 @@ data approach the free queue's eviction head. Pure policy: it decides,
 from collections.abc import Container, Iterator
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
+import bisect
 import time
 
 # First Party
@@ -20,6 +21,7 @@ from lmcache.integration.vllm.lazy_offload_policy.base import (
     BlockHashes,
     DrainSignals,
     LazyOffloadDrain,
+    LookupFlush,
     OffloadPolicy,
     PendingStoreItem,
 )
@@ -48,10 +50,16 @@ MAX_DRAIN_PER_STEP = 64
 # length).
 _HELD_RANK = 1 << 61
 
+# Rank of a request due only because some of its ops were expedited (see
+# ``hold_past`` and ``flush_for_lookup``) and their holds were released: no
+# allocation reaches them before the next drain, so it goes after the held
+# ones and is never pinned.
+_EXPEDITED_RANK = _HELD_RANK + 1
+
 # Rank base of a request due only because the budget would fall behind: no
-# allocation reaches it before the next drain, so it goes after the held ones,
-# in queue order, and is never pinned.
-_AHEAD_RANK = _HELD_RANK + 1
+# allocation reaches it before the next drain, so it goes after the expedited
+# ones, in queue order, and is never pinned.
+_AHEAD_RANK = _EXPEDITED_RANK + 1
 
 _STATS_LOG_INTERVAL_S = 5.0  # Minimum seconds between ledger log lines.
 _DROP_LOG_SAMPLE_REQUESTS = 8  # Dropped requests named in the drop line.
@@ -94,22 +102,51 @@ def _min_rank(ops: "list[PendingStoreOp]", ranks: dict[int, int]) -> int | None:
     )
 
 
-def _due_front_length(ops: "list[PendingStoreOp]", window: "Container[int]") -> int:
-    """Length of the front segment up to the last op with a block in ``window``.
-
-    Taking from the front keeps a stored operation's prefix stored.
+def _in_window(op: "PendingStoreOp", window: "Container[int]") -> bool:
+    """Whether a block of ``op`` is in ``window``.
 
     Args:
-        ops: One request's buffered operations, in prefix order.
+        op: A buffered operation.
         window: The block ids in reach. Only membership is read.
 
     Returns:
-        How many leading ops of ``ops`` are due, zero when none of them is.
+        True when any block the op covers is in ``window``.
     """
-    for index in range(len(ops) - 1, -1, -1):
-        if any(block_id in window for block_id in ops[index].block_hashes):
-            return index + 1
-    return 0
+    return any(block_id in window for block_id in op.block_hashes)
+
+
+def _due_segment(
+    ops: "list[PendingStoreOp]", first_due: int, last_due: int
+) -> tuple[int, int]:
+    """The ops to store so that every due op is stored, as a slice.
+
+    vLLM resumes a hybrid model only at a cached Mamba state (an anchor), so
+    the ops up to the last anchor before ``first_due`` are still served from
+    the GPU through it: the segment starts past that anchor. A segment that
+    does not end at an anchor cannot be hit, so it runs on to the first
+    anchor at or after ``last_due``. Without anchors (attention-only models)
+    the segment is the front up to ``last_due``, which keeps every stored
+    op's prefix stored. An op a finished request's hit covers is stored
+    with the segment too: L1 evicts by store age, so an anchor stored ahead
+    of its prefix ages first and its loss voids the whole prefix.
+
+    Args:
+        ops: One request's buffered operations, in prefix order.
+        first_due: Index of the first due op.
+        last_due: Index of the last due op, at least ``first_due``.
+
+    Returns:
+        ``(start, end)``: ``ops[start:end]`` is the segment.
+    """
+    start = next(
+        (index + 1 for index in range(first_due - 1, -1, -1) if ops[index].has_anchor),
+        0,
+    )
+    end = next(
+        (index + 1 for index in range(last_due, len(ops)) if ops[index].has_anchor),
+        last_due + 1,
+    )
+    return start, end
 
 
 @dataclass
@@ -123,10 +160,19 @@ class PendingStoreOp:
             snapshotted at admission. It never holds a None -- an unhashed
             operation is rejected rather than buffered -- so a later
             mismatch means the block was recycled and the data is gone.
+        has_anchor: Whether the range holds a real block of an anchor group
+            (an align-mode Mamba state), so vLLM can resume a hit there.
+        held: Whether the manager pinned its blocks for a hold.
+        expedited: Whether a finish or a lookup made it due (see
+            :meth:`EvictionAwareStoreQueue.hold_past`); it stays due until
+            emitted.
     """
 
     store_metadata: "LMCacheMPRequestMetadata"
     block_hashes: BlockHashes
+    has_anchor: bool
+    held: bool = False
+    expedited: bool = False
 
 
 @dataclass
@@ -181,9 +227,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     blocks sits within the *danger depth* of the free queue -- what the
     running requests, the resumed loads and one admission can allocate
     before the next drain -- and nothing else makes it due but its request's
-    preemption. A due operation is emitted, or, when
-    its request has a batch in flight or the drain budget is spent, held:
-    the manager pins its blocks until a later drain emits it. When the
+    preemption. A due operation is emitted with the segment
+    :func:`_due_segment` closes it into: its request's front, or, on a model
+    with Mamba anchors, only the ops vLLM cannot serve through an earlier
+    anchor. A due segment is emitted, or, when its request has a batch in
+    flight or the drain budget is spent, held: the manager pins its blocks
+    until a later drain emits it. When the
     window reaches the free-queue tail, every block freed before the next
     step is in reach, so every operation the drain does not emit is held
     too, and released unpinned by the next drain whose window stops short
@@ -195,23 +244,29 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     never stored stale. Scheduler thread only.
     """
 
-    def __init__(self, pool: "BlockPool") -> None:
+    def __init__(
+        self,
+        pool: "BlockPool",
+        anchor_groups: frozenset[int],
+    ) -> None:
         """Create an empty queue over ``pool``.
 
         Args:
             pool: The scheduler's GPU block pool. It is only ever read here:
                 free-queue order and block hashes.
+            anchor_groups: KV-cache groups whose real blocks are states vLLM
+                resumes a hit at (align-mode Mamba); empty for a model
+                without them, whose due ops are stored as front segments.
         """
         self._pool = pool
+        self._anchor_groups = anchor_groups
         # Insertion order is admission order (a re-entering request goes to
         # the back), so the dict is also the drain's tie-break order.
         self._pending: dict[str, list[PendingStoreOp]] = {}
         # Prefix validity is policy; phase and batches are the manager's.
         self._broken_prefixes: set[str] = set()
-        # Request id -> length of the held prefix of its buffer.
-        self._held: dict[str, int] = {}
-        # Requests whose held prefix a squeezed drain pinned without it being
-        # due: the next unsqueezed drain releases it rather than emitting it.
+        # Requests whose held ops a squeezed drain pinned without them being
+        # due: the next unsqueezed drain releases them rather than emitting.
         self._squeeze_held: set[str] = set()
         # The last drain's bound, which this drain's allocations are checked
         # against.
@@ -250,6 +305,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             PendingStoreOp(
                 store_metadata=meta,
                 block_hashes=block_hashes,
+                has_anchor=self._has_anchor(meta),
             )
         )
         self._counters.admitted += 1
@@ -268,8 +324,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
 
         A walk that reaches the queue tail first means the allocation would
         recycle the tail as well, and with it any block freed before the
-        allocation runs. So every buffered op is held instead, back to the
-        held prefix: the pin may defer the admission, but loses nothing.
+        allocation runs. So every buffered op not yet held is held instead:
+        the pin may defer the admission, but loses nothing.
         Pinning a block a request still owns does not shrink the queue.
 
         Args:
@@ -300,21 +356,142 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             }
         protection = AdmissionProtection()
         for request_id, last in last_met.items():
-            ops = self._pending[request_id]
-            # Held ops are pinned, so the walk never meets them.
-            start = self._held.get(request_id, 0)
-            end = start
-            while end <= last and self._snapshot_intact(ops[end]):
-                end += 1
-            if end <= start:
+            met: list[PendingStoreOp] = []
+            for op in self._pending[request_id][: last + 1]:
+                if not self._snapshot_intact(op):
+                    break
+                # Held ops are pinned, so the walk never meets them.
+                if not op.held:
+                    met.append(op)
+            if not met:
                 continue
-            item = _pending_item(request_id, ops[start:end])
+            item = _pending_item(request_id, met)
             if reaches_tail:
-                self._held[request_id] = end
+                for op in met:
+                    op.held = True
                 protection.holds.append(item)
             else:
                 protection.to_tail.append(item)
         return protection
+
+    def hold_past(self, request_id: str, start: int) -> PendingStoreItem:
+        """Hold and expedite the request's ops ending past ``start``; see
+        ``OffloadPolicy.hold_past``.
+
+        Held, they are due like any hold. They are expedited too, so a
+        squeeze that releases the holds leaves them due. The ops are taken
+        in token order up to the first one whose data is already gone, which
+        the next drain drops with its suffix. The ops ending by ``start``
+        back to the previous anchor are held too: the segment storing the
+        held ones takes them along (see :func:`_due_segment`), and pinned
+        now, while the request owns their blocks, they rejoin the free queue
+        at the tail instead of the head.
+
+        Args:
+            request_id: The finishing request.
+            start: Token vLLM's prefix cache serves the request up to.
+
+        Returns:
+            The ops newly held, in token order.
+        """
+        ops = self._pending.get(request_id, [])
+        first = next(
+            (index for index, op in enumerate(ops) if op.store_metadata.op.end > start),
+            len(ops),
+        )
+        past: list[PendingStoreOp] = []
+        for op in ops[self._segment_start(ops, first) :]:
+            if not self._snapshot_intact(op):
+                break
+            op.expedited = True
+            if not op.held:
+                op.held = True
+                past.append(op)
+        return _pending_item(request_id, past)
+
+    def flush_for_lookup(self, start: int, ends: dict[str, int]) -> LookupFlush:
+        """Hold and expedite the ops a lookup needs; see
+        ``OffloadPolicy.flush_for_lookup``.
+
+        Per request, the ops ending past ``start`` and starting before its
+        end are taken in token order, up to the first one whose data is
+        already gone, which the next drain drops with its suffix. With
+        anchors, the server's hit, like vLLM's, ends at a chunk carrying a
+        state, so only the ops up to the last anchor op taken over all
+        requests are flushed: storing ops past it would serve nothing. The
+        flushed ops are held and expedited, as by :meth:`hold_past`, with
+        the ops before them back to the previous anchor, which the segment
+        storing them takes along.
+
+        Args:
+            start: Token vLLM's prefix cache serves the waiting request up
+                to.
+            ends: Request id -> token up to which its ops cover the waiting
+                request's prefix.
+
+        Returns:
+            The flushed ops' ranges and the newly held ones.
+        """
+        taken: dict[str, list[PendingStoreOp]] = {}
+        for request_id, end in ends.items():
+            ops: list[PendingStoreOp] = []
+            for op in self._pending.get(request_id, []):
+                if op.store_metadata.op.end <= start:
+                    continue
+                if op.store_metadata.op.start >= end or not self._snapshot_intact(op):
+                    break
+                ops.append(op)
+            if ops:
+                taken[request_id] = ops
+        if self._anchor_groups:
+            hit_end = max(
+                (
+                    op.store_metadata.op.end
+                    for ops in taken.values()
+                    for op in ops
+                    if op.has_anchor
+                ),
+                default=start,
+            )
+            taken = {
+                request_id: kept
+                for request_id, ops in taken.items()
+                if (kept := [op for op in ops if op.store_metadata.op.start < hit_end])
+            }
+        flush = LookupFlush()
+        for request_id, ops in taken.items():
+            pending = self._pending[request_id]
+            first = pending.index(ops[0])
+            prefix = pending[self._segment_start(pending, first) : first]
+            if not all(self._snapshot_intact(op) for op in prefix):
+                prefix = []
+            newly_held = [op for op in prefix + ops if not op.held]
+            for op in prefix + ops:
+                op.expedited = True
+                op.held = True
+            if newly_held:
+                flush.holds.append(_pending_item(request_id, newly_held))
+            flush.ends[request_id] = ops[-1].store_metadata.op.end
+        return flush
+
+    def is_flushing(self, request_id: str, start: int, end: int) -> bool:
+        """Whether a held or expedited op overlapping ``[start, end)`` is
+        buffered; see ``OffloadPolicy.is_flushing``.
+
+        Args:
+            request_id: A request whose ops a lookup flushed.
+            start: First token of the range.
+            end: Token the range ends at.
+
+        Returns:
+            True while such an op waits for a drain.
+        """
+        return any(
+            (op.held or op.expedited)
+            and op.store_metadata.op.start < end
+            and op.store_metadata.op.end > start
+            for op in self._pending.get(request_id, [])
+        )
 
     def has_pending_request(self, request_id: str) -> bool:
         """Whether this request currently owns buffered operations.
@@ -351,7 +528,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
-        self._held.pop(request_id, None)
         self._squeeze_held.discard(request_id)
         self._counters.dropped_on_request_drop += len(dropped)
         return len(dropped)
@@ -365,7 +541,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
-        self._held.pop(request_id, None)
         self._squeeze_held.discard(request_id)
         self._counters.dropped_id_reuse += len(dropped)
 
@@ -381,43 +556,41 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._broken_prefixes.discard(request_id)
 
     def requeue_failed(self, item: PendingStoreItem) -> None:
-        """Buffer a failed batch ahead of its request's later ops.
+        """Buffer a failed batch in token order among its request's ops.
 
         The manager moves the ops' blocks to the free-queue tail, so they
         come due again when the head reaches them, rather than being
-        resubmitted at once into an L1 that just rejected them. A held
-        prefix of the later ops grows by the requeued ops, which precede it.
+        resubmitted at once into an L1 that just rejected them. A failed
+        later segment goes behind the earlier ops that stayed buffered.
 
         Args:
             item: The failed batch's operations, in token order. The
                 manager filters out orphaned batches first.
         """
-        request_id = item.request_id
-        ops = [
-            PendingStoreOp(store_metadata=meta, block_hashes=block_hashes)
-            for meta, block_hashes in item.metadatas
-        ]
-        self._pending[request_id] = ops + self._pending.get(request_id, [])
-        if request_id in self._held:
-            self._held[request_id] += len(ops)
-        self._counters.requeued += len(ops)
+        self._insert_sorted(item)
+        self._counters.requeued += len(item.metadatas)
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
 
         Per request: the suffix from the first op whose blocks were recycled
-        is dropped, then the front up to the last op with a block in the
-        danger window is due (prefix closure). Requests in
-        ``blocked_request_ids`` stay pending, since the worker holds one
-        in-flight batch per request; their due ops are held instead, so a
-        slow store cannot let them be recycled. Once unblocked, a request
-        with held ops is due, up to the last of them. A request in
-        ``preempted_request_ids`` releases its whole buffer: its tracker
-        restarts when it is scheduled again, which discards what is still
-        buffered, so it is not held to the budget. Requests are served most
-        imminent first until ``MAX_DRAIN_PER_STEP``; due ops past the budget
-        are held. Past the window, ops come due as soon as the budget could
-        not otherwise store them before allocations reach them (see
+        is dropped, then the ops with a block in the danger window are due,
+        closed into the segment :func:`_due_segment` gives: the front up to
+        the last due op, or, with Mamba anchors, the ops past the last
+        anchor before the first due op through the first anchor at or after
+        the last one. Requests in ``blocked_request_ids`` stay pending, since
+        the worker holds one in-flight batch per request; their due segment
+        is held instead, so a slow store cannot let it be recycled. Once
+        unblocked, a request with held ops is due, held ops counting as due
+        ones. A request in ``preempted_request_ids`` releases its whole
+        buffer: its tracker restarts when it is scheduled again, which
+        discards what is still buffered, so it is not held to the budget.
+        Requests are served most imminent first until
+        ``MAX_DRAIN_PER_STEP``; due ops past the budget are held. Expedited
+        ops (see :meth:`hold_past`) whose holds a squeeze released are due
+        too, served after the held ones, and wait unheld once the budget is
+        spent. Past the window, ops come due as soon as the budget could not
+        otherwise store them before allocations reach them (see
         :meth:`_budget_reach`); they take budget the window left over, after
         the held ones, and are never held.
 
@@ -484,7 +657,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             # Pinned, these blocks were not walked; unpinned, they join the
             # tail, past the depth just counted.
             for request_id in self._squeeze_held:
-                if self._held.pop(request_id, 0):
+                squeezed = self._pending.get(request_id, [])
+                if any(op.held for op in squeezed):
+                    for op in squeezed:
+                        op.held = False
                     drain.releases.append(request_id)
             self._squeeze_held.clear()
             ranks_ahead = self._budget_reach(depth, op_of_block)
@@ -492,9 +668,11 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         dropped_ids: list[str] = []
         # Due now, as (imminence rank, admission order, request id).
         candidates: list[tuple[int, int, str]] = []
-        # Of those, the ones only the budget made due: they go if budget is left,
-        # unpinned, since no allocation reaches them before the next drain.
+        # Of those, the ones only the budget or an expedite made due: they go
+        # if budget is left, unpinned, since no allocation reaches them before
+        # the next drain.
         ahead_ids: set[str] = set()
+        expedited_ids: set[str] = set()
         for order, request_id in enumerate(list(self._pending)):
             ops = self._pending[request_id]
             surviving = self._drop_evicted_suffix(request_id, ops)
@@ -510,18 +688,16 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # Pin what an unblocked request would release now; the rest
                 # stays where the window can see it, unless the window reached
                 # the tail and so sees everything.
-                self._hold(
-                    drain,
-                    request_id,
-                    surviving,
-                    len(surviving)
-                    if reaches_tail
-                    else _due_front_length(surviving, ranks),
-                )
                 if reaches_tail:
+                    self._hold(drain, request_id, surviving)
                     self._squeeze_held.add(request_id)
+                else:
+                    start, end = self._segment(
+                        surviving, ranks, held_due=False, expedited_due=False
+                    )
+                    self._hold(drain, request_id, surviving[start:end])
                 continue
-            if (window_rank := _min_rank(surviving, ranks)) is not None:
+            if (imminent := _min_rank(surviving, ranks)) is not None:
                 # TODO: free-queue pressure is the only retirement mechanism
                 # modelled here. A sliding-window layer retires a block on a
                 # token schedule instead, which is predictable but invisible
@@ -529,13 +705,17 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 # data is about to go.
                 # Size the release per attention type: one due-predictor per
                 # mechanism, emit up to the last index any of them marks due.
-                candidates.append((window_rank, order, request_id))
+                candidates.append((imminent, order, request_id))
             elif (
-                self._held.get(request_id, 0) and request_id not in self._squeeze_held
+                any(op.held for op in surviving)
+                and request_id not in self._squeeze_held
             ) or request_id in signals.preempted_request_ids:
                 candidates.append((_HELD_RANK, order, request_id))
-            elif (ahead_rank := _min_rank(surviving, ranks_ahead)) is not None:
-                candidates.append((_AHEAD_RANK + ahead_rank, order, request_id))
+            elif any(op.expedited for op in surviving):
+                candidates.append((_EXPEDITED_RANK, order, request_id))
+                expedited_ids.add(request_id)
+            elif (ahead := _min_rank(surviving, ranks_ahead)) is not None:
+                candidates.append((_AHEAD_RANK + ahead, order, request_id))
                 ahead_ids.add(request_id)
         if dropped_ops:
             # INFO, not DEBUG: each drop is a unit of cache-quality loss and
@@ -551,28 +731,28 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         ops_left = MAX_DRAIN_PER_STEP
         for _, _, request_id in candidates:
             ops = self._pending[request_id]
-            is_ahead = request_id in ahead_ids
+            is_ahead = request_id in ahead_ids or request_id in expedited_ids
             if is_ahead and ops_left <= 0:
                 # Nothing about to be recycled made it due: it waits in place.
                 continue
-            held = self._held.pop(request_id, 0)
-            # A squeeze hold is not due; only the window makes its ops due.
-            due_held = 0 if request_id in self._squeeze_held else held
-            is_preempted = request_id in signals.preempted_request_ids
-            if is_preempted:
-                due = len(ops)
+            if request_id in signals.preempted_request_ids:
+                emitted, remaining = ops, []
             else:
-                window = ranks_ahead if is_ahead else ranks
-                due = max(due_held, _due_front_length(ops, window))
-            emitted = ops if is_preempted else ops[: min(due, max(ops_left, 0))]
+                # A squeeze hold is not due; only the window makes its ops
+                # due.
+                start, end = self._segment(
+                    ops,
+                    ranks_ahead if is_ahead else ranks,
+                    held_due=request_id not in self._squeeze_held,
+                )
+                cut = start + min(end - start, max(ops_left, 0))
+                emitted = ops[start:cut]
+                remaining = ops[:start] + ops[cut:]
+                if not is_ahead:
+                    # Over budget, yet the running requests may recycle these
+                    # before the next drain: pin them.
+                    self._hold(drain, request_id, ops[cut:end])
             ops_left -= len(emitted)
-            remaining = ops[len(emitted) :]
-            if held > len(emitted):
-                self._held[request_id] = held - len(emitted)
-            if not is_ahead:
-                # Over budget, yet the running requests may recycle these
-                # before the next drain: pin them.
-                self._hold(drain, request_id, remaining, due - len(emitted))
             if not emitted:
                 continue
             self._counters.emitted += len(emitted)
@@ -586,9 +766,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             for request_id, ops in self._pending.items():
                 if request_id in signals.blocked_request_ids:
                     continue
-                if len(ops) > self._held.get(request_id, 0):
+                if not all(op.held for op in ops):
                     self._squeeze_held.add(request_id)
-                    self._hold(drain, request_id, ops, len(ops))
+                    self._hold(drain, request_id, ops)
         self._maybe_log_stats()
         return drain
 
@@ -743,22 +923,104 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         drain: LazyOffloadDrain,
         request_id: str,
         ops: list[PendingStoreOp],
-        length: int,
     ) -> None:
-        """Extend a request's held prefix of ``ops`` to ``length`` ops.
+        """Hold every op of ``ops`` that is not held yet.
 
         Args:
             drain: The drain result; the newly held ops join its holds, for
                 the manager to pin.
             request_id: The request the ops belong to.
-            ops: Its buffered operations, in prefix order.
-            length: How many of them must be held. A held prefix already
-                that long is left as it is.
+            ops: Some of its buffered operations, in prefix order.
         """
-        held = self._held.get(request_id, 0)
-        if length > held:
-            self._held[request_id] = length
-            drain.holds.append(_pending_item(request_id, ops[held:length]))
+        newly_held = [op for op in ops if not op.held]
+        if not newly_held:
+            return
+        for op in newly_held:
+            op.held = True
+        drain.holds.append(_pending_item(request_id, newly_held))
+
+    def _segment(
+        self,
+        ops: list[PendingStoreOp],
+        window: "Container[int]",
+        held_due: bool,
+        expedited_due: bool = True,
+    ) -> tuple[int, int]:
+        """The due segment of one request's ops, as a slice.
+
+        Args:
+            ops: The request's buffered operations, in prefix order.
+            window: The block ids in reach. Only membership is read.
+            held_due: Whether held ops count as due.
+            expedited_due: Whether expedited ops count as due; not when the
+                segment is held, since an expedite never pins.
+
+        Returns:
+            ``(start, end)`` per :func:`_due_segment`, or ``(0, 0)`` when no
+            op is due.
+        """
+        due = [
+            index
+            for index, op in enumerate(ops)
+            if (held_due and op.held)
+            or (expedited_due and op.expedited)
+            or _in_window(op, window)
+        ]
+        if not due:
+            return 0, 0
+        return _due_segment(ops, due[0], due[-1])
+
+    def _has_anchor(self, meta: "LMCacheMPRequestMetadata") -> bool:
+        """Whether an op holds a real block of an anchor group.
+
+        Args:
+            meta: A store operation.
+
+        Returns:
+            True when one of its anchor-group blocks is not the null block.
+        """
+        null_block_id = self._pool.null_block.block_id
+        return any(
+            block_id != null_block_id
+            for group_idx in self._anchor_groups
+            for block_id in meta.op.block_ids[group_idx]
+        )
+
+    def _segment_start(self, ops: list[PendingStoreOp], first: int) -> int:
+        """Index of the first op a segment containing ``ops[first]`` stores.
+
+        Args:
+            ops: One request's buffered operations, in prefix order.
+            first: Index of the first op the caller needs stored; may be
+                ``len(ops)`` when it needs none.
+
+        Returns:
+            The segment start per :func:`_due_segment`, or ``first`` when
+            ``first`` is past the last op.
+        """
+        if first >= len(ops):
+            return first
+        return _due_segment(ops, first, first)[0]
+
+    def _insert_sorted(self, item: PendingStoreItem) -> None:
+        """Buffer ``item``'s ops, unheld, where their starts sort.
+
+        Args:
+            item: Ops of one request, in token order, with their snapshots.
+        """
+        ops = self._pending.setdefault(item.request_id, [])
+        for meta, block_hashes in item.metadatas:
+            index = bisect.bisect_right(
+                [op.store_metadata.op.start for op in ops], meta.op.start
+            )
+            ops.insert(
+                index,
+                PendingStoreOp(
+                    store_metadata=meta,
+                    block_hashes=block_hashes,
+                    has_anchor=self._has_anchor(meta),
+                ),
+            )
 
     def _snapshot_intact(self, op: PendingStoreOp) -> bool:
         """Whether every covered block still holds its admission-time hash.
