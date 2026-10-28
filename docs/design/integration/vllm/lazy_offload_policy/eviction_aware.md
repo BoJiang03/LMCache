@@ -350,13 +350,14 @@ lifecycle events to it.
    among the request's buffered ops, and its blocks move to the free-queue
    tail.
    The data is still on the GPU, so the request's prefix chain stays whole.
-   The batch failed because a worker failed or the server was unhealthy;
-   the retry waits for the window like any buffered op. Keys already
-   resident count as stored, so retrying a partly stored batch is safe. An
-   orphaned batch is never retried: a different request now uses the id
-   (step 9). After three failed batches in a row the manager gives up
-   instead: `mark_store_failed` drops the request's ops
-   (`dropped_failed_store`) and breaks its prefix chain.
+   The batch failed because a worker failed, the server was unhealthy, or
+   L1 had no room for one of its chunks; the retry waits for the window
+   like any buffered op rather than being resubmitted into the L1 that just
+   refused it. Keys already resident count as stored, so retrying a partly
+   stored batch is safe. An orphaned batch is never retried: a different
+   request now uses the id (step 9). After three failed batches in a row
+   the manager gives up instead: `mark_store_failed` drops the request's
+   ops (`dropped_failed_store`) and breaks its prefix chain.
 9. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
@@ -383,13 +384,13 @@ The invariant (L0 plus L1 covers every block vLLM retains) has three
 places where an op can go unstored. Each is either repaired or provably
 loses nothing servable:
 
-- **A failed batch** (a worker failed, or the server was unhealthy) is
-  requeued and stored again when it comes due; its blocks were pinned, so
-  the data is intact. A preempted request's batch is its own and is
-  retried too (protocol step 7). Only an *orphaned* batch, whose finished request's id
-  a new request took over, is not retried (step 9): the worker keeps one
-  store per id, and the successor's ops are another token sequence under
-  that id.
+- **A failed batch** (a worker failed, the server was unhealthy, or L1 had
+  no room for one of its chunks) is requeued and stored again when it comes
+  due; its blocks were pinned, so the data is intact. A preempted request's
+  batch is its own and is retried too (protocol step 7). Only an
+  *orphaned* batch, whose finished request's id a new request took over, is
+  not retried (step 9): the worker keeps one store per id, and the
+  successor's ops are another token sequence under that id.
 - **A hash mismatch at emission** (the manager re-reads hashes before it
   pins). For this policy it is unreachable: `drain()` checked the same
   hashes synchronously and nothing allocates in between. For FIFO, which

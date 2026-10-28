@@ -14,7 +14,7 @@ import time
 # First Party
 from lmcache.lmcache_native import PeriodicEventNotifier
 from lmcache.logging import init_logger
-from lmcache.utils import lmcache_deprecate
+from lmcache.utils import get_size_bytes, lmcache_deprecate
 from lmcache.v1.distributed.api import (
     CapacitySnapshot,
     L1BackendType,
@@ -157,10 +157,13 @@ class StorageManager:
             self._write_policy = create_write_policy(config.write_policy)
 
             # L1 Eviction:
-            self._eviction_controllers = [
-                L1EvictionController(m, m.config.eviction or config.eviction_config)
+            self._eviction_controllers_by_id = {
+                m.l1_manager_id: L1EvictionController(
+                    m, m.config.eviction or config.eviction_config
+                )
                 for m in self._l1_managers
-            ]
+            }
+            self._eviction_controllers = list(self._eviction_controllers_by_id.values())
             for eviction_controller in self._eviction_controllers:
                 eviction_controller.start()
                 cleanup.callback(eviction_controller.stop)
@@ -279,11 +282,12 @@ class StorageManager:
             cleanup.pop_all()
 
     # External APIs for serving engine integration code to call
-    @enable_tracing()
+    @enable_tracing(redact=("out_of_memory_keys",))
     def reserve_write(
         self,
         keys: list[ObjectKey],
         layout_desc: MemoryLayoutDesc,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> dict[ObjectKey, MemoryObj]:
         """
         Reserve the object for writing into the storage manager.
@@ -292,6 +296,9 @@ class StorageManager:
             keys (list[ObjectKey]): List of object keys to reserve for writing.
             layout_desc (MemoryLayoutDesc): Description of the memory layout
                 for the objects to be reserved.
+            out_of_memory_keys: When given, extended with the keys no L1
+                could allocate. The other unreserved keys are already
+                resident or being written, so their data is not lost.
         Returns:
             dict[ObjectKey, MemoryObj]: A dictionary mapping object keys to their
                 reserved memory objects. Note that not all requested keys could be
@@ -329,6 +336,8 @@ class StorageManager:
         )
 
         oom_keys = [k for k in keys if reserve_result[k][0] == L1Error.OUT_OF_MEMORY]
+        if out_of_memory_keys is not None:
+            out_of_memory_keys.extend(oom_keys)
         if oom_keys:
             self._event_bus.publish(
                 Event(
@@ -338,6 +347,61 @@ class StorageManager:
             )
 
         return result
+
+    def make_room(self, keys: list[ObjectKey], layout_desc: MemoryLayoutDesc) -> None:
+        """Wake L1 eviction for a write that found no room and is retried.
+
+        The write policy places the keys again, and each target L1's
+        eviction loop is woken before its next periodic check, counting its
+        keys' bytes as used, so that a burst evicts even below the
+        watermark.
+
+        Args:
+            keys: The keys no L1 could allocate.
+            layout_desc: Their memory layout, which sizes them.
+
+        Raises:
+            ValueError: The write policy selected an unregistered L1 manager
+                or did not place every key exactly once.
+        """
+        targets = self._write_policy.select_write_targets(keys, self._l1_managers)
+        _validate_write_targets(keys, targets, self._l1_managers_by_id)
+        object_bytes = get_size_bytes(layout_desc.shapes, layout_desc.dtypes)
+        for owner, group in targets.items():
+            self._eviction_controllers_by_id[owner].make_room(object_bytes * len(group))
+
+    def fits_in_l1(
+        self, writes: list[tuple[list[ObjectKey], MemoryLayoutDesc]]
+    ) -> bool:
+        """Whether a write could be resident in L1 all at once.
+
+        The write policy places each part of the write, as
+        :meth:`reserve_write` would, and the bytes each target L1 receives
+        are compared with its capacity: a write larger than that finds no
+        room however much L1 evicts, so retrying it is futile.
+
+        Args:
+            writes: The write's keys, one list per memory layout, each with
+                that layout.
+
+        Returns:
+            True if every target L1 can hold its share of the write.
+
+        Raises:
+            ValueError: The write policy selected an unregistered L1 manager
+                or did not place every key exactly once.
+        """
+        needed: Counter[int] = Counter()
+        for keys, layout_desc in writes:
+            targets = self._write_policy.select_write_targets(keys, self._l1_managers)
+            _validate_write_targets(keys, targets, self._l1_managers_by_id)
+            object_bytes = get_size_bytes(layout_desc.shapes, layout_desc.dtypes)
+            for owner, group in targets.items():
+                needed[owner] += object_bytes * len(group)
+        return all(
+            num_bytes <= self._l1_managers_by_id[owner].get_memory_usage()[1]
+            for owner, num_bytes in needed.items()
+        )
 
     @enable_tracing(redact=("l1_owners",))
     def finish_write(

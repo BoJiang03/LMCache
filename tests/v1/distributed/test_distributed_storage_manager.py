@@ -283,6 +283,40 @@ class TestStorageManagerBasic:
 
         storage_manager.close()
 
+    def test_reserve_write_reports_out_of_memory_keys(
+        self,
+        small_storage_manager_config: StorageManagerConfig,
+        large_layout: MemoryLayoutDesc,
+    ) -> None:
+        """Every key no L1 could allocate is reported, and only those."""
+        storage_manager = StorageManager(small_storage_manager_config)
+        keys = [make_object_key(i) for i in range(20)]
+        out_of_memory_keys: list[ObjectKey] = []
+
+        ret = storage_manager.reserve_write(keys, large_layout, out_of_memory_keys)
+
+        assert out_of_memory_keys
+        assert set(out_of_memory_keys) == set(keys) - set(ret)
+        storage_manager.close()
+
+    def test_reserve_write_does_not_report_resident_keys(
+        self,
+        basic_storage_manager_config: StorageManagerConfig,
+        basic_layout: MemoryLayoutDesc,
+    ) -> None:
+        """A key already stored is not reserved again, and its data is not lost."""
+        storage_manager = StorageManager(basic_storage_manager_config)
+        key = make_object_key(chunk_hash=777)
+        reserved = storage_manager.reserve_write([key], basic_layout)
+        storage_manager.finish_write(list(reserved), l1_owners_of(reserved))
+        out_of_memory_keys: list[ObjectKey] = []
+
+        ret = storage_manager.reserve_write([key], basic_layout, out_of_memory_keys)
+
+        assert key not in ret
+        assert out_of_memory_keys == []
+        storage_manager.close()
+
     def test_basic_prefetch(self, basic_storage_manager_config, basic_layout):
         """Test basic prefetch functionality."""
         storage_manager = StorageManager(basic_storage_manager_config)

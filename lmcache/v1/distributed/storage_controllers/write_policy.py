@@ -4,7 +4,8 @@ Write policy interface and default implementation for L1 placement decisions.
 
 The write policy decides, for every key an engine store reserves, which L1
 manager holds the object. ``StorageManager.reserve_write`` asks it once per
-batch, before any allocation.
+batch, before any allocation, and ``StorageManager.make_room`` asks it again
+to find the L1 whose eviction a failed reservation wakes.
 """
 
 # Standard

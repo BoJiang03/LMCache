@@ -115,6 +115,21 @@ the result: there is no overflow to another L1. The default policy sends every
 key to the first L1 in placement order. See
 `l1_manager/l1-manager-types.md` for the policy registry.
 
+A caller that retries a write L1 had no room for passes
+`out_of_memory_keys`, a list `reserve_write` extends with the keys no L1
+could allocate (the other omitted keys are already resident or being
+written, so their data is not lost), and then calls
+`make_room(keys, layout)`. That places the keys again with the write policy
+and wakes each target L1's eviction loop before its next periodic check,
+counting their bytes as used, so a burst evicts even below the watermark.
+The LMCache-driven store path does this for a lazy-offload store, which runs
+just before vLLM may reuse its blocks and so cannot skip a chunk. First it
+asks `fits_in_l1(writes)` whether the whole store, placed by the write
+policy, fits the capacity of each target L1; a store that never could is
+skipped with a warning instead, since no eviction would make room for its
+retry. Tracing redacts `out_of_memory_keys`: it is an output, and a replay
+passes none.
+
 `BaseL1Manager.reserve_write` stamps each new object with its process-local
 integer `l1_manager_id`, including direct and prefetch reservations.
 `MemoryObj` starts unowned, rejects a different live owner, and resets

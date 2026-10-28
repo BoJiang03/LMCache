@@ -398,7 +398,17 @@ requeues a failed range in token order among the request's buffered chunks
 and its prefix chain stays whole. After `MAX_STORE_ATTEMPTS` (3) failed
 batches in a row it gives the request's stores up: the policy's
 `mark_store_failed` drops its buffered chunks and breaks its chain, so a
-failure that outlasts the retries cannot keep the session open.
+failure that outlasts the retries cannot keep the session open. Every store
+the drain emits carries `lmcache.hint.store_due`: it runs just before vLLM
+may reuse its blocks, so a chunk L1 has no room for would be lost. On the
+LMCache-driven transfer path (`lmcache_driven_transfer.py`) the server fails
+such a store rather than skip the chunk, and asks L1 eviction to make room at
+once (`StorageManager.make_room`), so the retry finds it. A batch larger than
+its L1 instances could ever hold is skipped instead, with a warning: no
+retry would find room for it. The other store paths (`server_transfer.py`,
+`qstore.py`) ignore the hint and skip the chunk. An eager store does not
+carry the hint: a chunk without room is skipped and eviction keeps its
+periodic, watermark-only check.
 
 Configuration in `kv_connector_extra_config`:
 

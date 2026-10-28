@@ -13,6 +13,7 @@ from lmcache.logging import init_logger
 from lmcache.utils import (
     EngineType,
     _lmcache_nvtx_annotate,
+    get_size_bytes,
 )
 from lmcache.v1.distributed.api import (
     MemoryLayoutDesc,
@@ -583,11 +584,33 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
     ) -> tuple[bytes, bool]:
-        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask."""
+        """Store the GPU KV cache blocks to CPU; see store_with_chunk_mask.
+
+        A chunk no L1 has room for is skipped, except in a due store
+        (``IPCCacheServerKey.store_is_due``): lazy offload emits it just
+        before vLLM may reuse the blocks, so a skipped chunk would be lost.
+        A due store fails instead, which makes the caller retry it, and L1
+        eviction runs at once to make room for the retry. A due store larger
+        than its L1 could ever hold is skipped with a warning instead: no
+        retry would find room for it.
+
+        Args:
+            key: The IPC key for the KV cache blocks.
+            instance_id: The GPU instance ID (such as PID).
+            gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
+                group index.
+            event_ipc_handle: The IPC handle of the event to wait on.
+
+        Returns:
+            The completion event's IPC handle, and whether the store
+            succeeded; a due store succeeds only if every chunk was stored
+            or already resident.
+        """
+        out_of_memory_keys: list[ObjectKey] | None = [] if key.store_is_due() else None
         handle, ok, _ = self.store_with_chunk_mask(
-            key, instance_id, gpu_block_ids, event_ipc_handle
+            key, instance_id, gpu_block_ids, event_ipc_handle, out_of_memory_keys
         )
-        return handle, ok
+        return handle, ok and not out_of_memory_keys
 
     def store_with_chunk_mask(
         self,
@@ -595,6 +618,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
         instance_id: int,
         gpu_block_ids: list[list[int]],
         event_ipc_handle: bytes,
+        out_of_memory_keys: list[ObjectKey] | None = None,
     ) -> tuple[bytes, bool, list[bool]]:
         """Store the GPU KV cache blocks to CPU.
 
@@ -605,6 +629,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             gpu_block_ids: GPU block IDs to store, indexed by LMCache KV
                 group index.
             event_ipc_handle: The IPC handle of the event to wait on.
+            out_of_memory_keys: When given, extended with the object keys
+                skipped because no L1 could allocate them, and L1 eviction is
+                woken to make room for them: pass it only when the caller
+                retries the store. Left as is, and the skip logged, when the
+                whole store exceeds the capacity of the L1 it targets.
 
         Returns:
             A tuple where the first element is the IPC handle of the event
@@ -768,20 +797,47 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             total_bytes: int = 0
             store_succeeded = False
             try:
-                for obj_group_id in range(num_object_groups):
+                # Per object group, the keys to reserve and their layout.
+                writes = [
+                    (
+                        [
+                            k
+                            for i, k in enumerate(obj_keys_per_obj_group[obj_group_id])
+                            if not skipped_chunks[obj_group_id][i]
+                        ],
+                        get_layout_desc(
+                            cache_context,
+                            self._ctx.chunk_size,
+                            object_group_id=obj_group_id,
+                        ),
+                    )
+                    for obj_group_id in range(num_object_groups)
+                ]
+                # Decided at the first key without room: whether L1 could
+                # ever hold the whole store, so that a retry may succeed.
+                retry_fits: bool | None = None
+                unretried_keys = 0
+                unretried_bytes = 0
+                for obj_group_id, (keys_to_reserve, layout_desc) in enumerate(writes):
                     obj_keys = obj_keys_per_obj_group[obj_group_id]
-                    skip_mask = skipped_chunks[obj_group_id]
-                    keys_to_reserve = [
-                        k for i, k in enumerate(obj_keys) if not skip_mask[i]
-                    ]
-                    layout_desc = get_layout_desc(
-                        cache_context,
-                        self._ctx.chunk_size,
-                        object_group_id=obj_group_id,
-                    )
+                    group_oom_keys: list[ObjectKey] = []
                     reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc
+                        keys_to_reserve, layout_desc, group_oom_keys
                     )
+                    if out_of_memory_keys is not None and group_oom_keys:
+                        if retry_fits is None:
+                            retry_fits = self._ctx.storage_manager.fits_in_l1(writes)
+                        if retry_fits:
+                            # The caller retries these, so L1 makes room now.
+                            out_of_memory_keys.extend(group_oom_keys)
+                            self._ctx.storage_manager.make_room(
+                                group_oom_keys, layout_desc
+                            )
+                        else:
+                            unretried_keys += len(group_oom_keys)
+                            unretried_bytes += len(group_oom_keys) * get_size_bytes(
+                                layout_desc.shapes, layout_desc.dtypes
+                            )
                     all_dict.update(reserved_dict)
                     if reserved_dict:
                         total_bytes += next(
@@ -807,6 +863,14 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                         block_ids_host=gpu_block_ids,
                     )
 
+                if unretried_keys:
+                    logger.warning(
+                        "Due store of request %s is larger than its L1 can "
+                        "hold; skipped %d keys (%d bytes) without a retry",
+                        key.request_id,
+                        unretried_keys,
+                        unretried_bytes,
+                    )
                 l1_owners = l1_owners_of(all_dict)
                 store_succeeded = True
             except Exception:

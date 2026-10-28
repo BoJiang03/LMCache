@@ -391,13 +391,13 @@ class OffloadPolicy(ABC):
         An operation that overlaps one the request offered since is dropped:
         the newer offer stores the same tokens.
 
-        The store failed (a worker failed, or the server was unhealthy),
-        but the data is still on the GPU: the batch pinned its blocks until
-        every worker reported. Every later operation of the request depends
-        on this range, so the policy buffers ``item`` in token order among
-        them; it is emitted again under the policy's normal rule. A store of
-        keys that are already resident succeeds, so a retry of a partly
-        stored batch is safe.
+        The store failed (a worker failed, the server was unhealthy, or L1
+        had no room for one of its chunks), but the data is still on the
+        GPU: the batch pinned its blocks until every worker reported. Every
+        later operation of the request depends on this range, so the policy
+        buffers ``item`` in token order among them; it is emitted again under
+        the policy's normal rule. A store of keys that are already resident
+        succeeds, so a retry of a partly stored batch is safe.
         After repeated failures the manager follows this call with
         ``mark_store_failed``.
 

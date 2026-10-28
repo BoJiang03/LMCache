@@ -392,6 +392,31 @@ def test_single_l1_completion_trace_replays_without_process_local_owners(
     assert target_l1.get_object_state(key(1)) is not None
 
 
+def test_reserve_write_trace_records_no_out_of_memory_keys(
+    storage_factory: StorageFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reservation that reports the keys no L1 could allocate is traced
+    with its inputs only: the list it fills is not recorded."""
+    store, _ = storage_factory((4096,))
+    objects = store.reserve_write([key(1)], LAYOUT)
+    store.finish_write(list(objects), l1_owners_of(objects))
+    events: list[Event] = []
+    bus = Mock()
+    bus.publish.side_effect = events.append
+    monkeypatch.setattr(trace_decorator, "get_event_bus", lambda: bus)
+    out_of_memory_keys: list[ObjectKey] = []
+    trace_decorator.set_tracing_enabled(True)
+    try:
+        assert store.reserve_write([key(2)], LAYOUT, out_of_memory_keys) == {}
+    finally:
+        trace_decorator.set_tracing_enabled(False)
+
+    assert out_of_memory_keys == [key(2)]
+    (event,) = events
+    assert event.metadata["args"] == {"keys": [key(2)], "layout_desc": LAYOUT}
+
+
 def test_read_release_trace_redacts_owners_and_replays_on_single_l1(
     storage_factory: StorageFactory,
     monkeypatch: pytest.MonkeyPatch,

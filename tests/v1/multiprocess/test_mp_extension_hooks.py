@@ -105,7 +105,7 @@ def test_store_copies_only_through_the_cache_context(monkeypatch):
     module, cache_context, _reads, _copied = _make_checkpoint_module(monkeypatch)
 
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1),
+        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: False),
         1,
         [[0, 1, 2, 3], [-1, -1, 0, 1], [-1, -1, 2, 3]],
         b"producer",

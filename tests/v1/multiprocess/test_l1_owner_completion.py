@@ -137,7 +137,12 @@ def test_store_owner_callback_round_trip(
     monkeypatch.setattr(module, "get_and_touch_context_entry", lambda _: entry)
     try:
         _, succeeded = module.store(
-            cast(Any, SimpleNamespace(request_id="req", worker_id=1)),
+            cast(
+                Any,
+                SimpleNamespace(
+                    request_id="req", worker_id=1, store_is_due=lambda: False
+                ),
+            ),
             1,
             [[1], [2]],
             b"producer",
