@@ -22,9 +22,10 @@ operation whose blocks come under eviction pressure.
   whole queue -- nothing at danger depth 0.
 - **`PendingStoreOp`** -- one deferred store: opaque `store_metadata` (the
   ready `LMCacheMPRequestMetadata`), the covered blocks' hash snapshot taken
-  at admission, and its admission timestamp. Its request id and token range
-  are not copied out: the buffer is keyed by request id and holds each
-  request's ops in token order.
+  at admission, its admission timestamp, whether it holds a real block of an
+  anchor group (`has_anchor`, see the anchor rule) and whether it is held.
+  Its request id and token range are not copied out: the buffer is keyed by
+  request id and holds each request's ops in token order.
 - **`EvictionAwareStoreQueue`** -- the policy object, one per connector.
 
 ## The invariant, and the one rule built on it
@@ -41,7 +42,7 @@ buffered block:
 | `append_n` (free, cached)   | vLLM `free_blocks`, `unpin_blocks`   | joins the tail                         |
 | `prepend_n` (free, no hash) | vLLM `free_blocks`                   | never buffered (`add()` rejects it)    |
 | `remove` (touch)            | prefix hit, our pin                  | leaves the queue                       |
-| head return on unpin        | `LazyOffloadManager._unpin`          | stored blocks only, never a buffered one (step 4) |
+| head return on unpin        | `LazyOffloadManager._unpin`          | stored blocks only, never a buffered one (step 4); not for `hold_past` or lookup-flush pins |
 | tail move                   | `LazyOffloadManager._move_to_tail`   | joins the tail                         |
 
 So nothing is lost if, before every allocation of `n` blocks, the first
@@ -53,11 +54,12 @@ earlier**:
    outside buffered ops, `D` = running requests' bound + unscheduled
    resumed loads + one admission (`admission_blocks`). Every op met is due:
    emitted, or held (pinned) when its request has a batch in flight or the
-   drain budget is spent. The budget stores at most `B` ops per drain, so
-   the window also widens when it would fall behind: if the first `m`
-   buffered ops in queue order lie within `k` drains' allocations
-   (`k * D` blocks outside buffered ops), `m - (k - 1) * B` of them are
-   due now. Those past `D` only take budget the window left over and are
+   drain budget is spent. The budget stores at most `B` ops per drain
+   (`MAX_DRAIN_PER_STEP`, 64), so the window also widens when it would fall
+   behind: if the first `m` buffered ops in queue order lie within `k`
+   drains' allocations (`k * D` blocks outside buffered ops),
+   `m - (k - 1) * B` of them are due now. Those past `D` only take budget
+   the window left over and are
    never held, since no allocation reaches them before the next drain.
 2. A second admission in the same step reaches past `D`; `protect()` moves
    the ops it would reach to the tail, still buffered.
@@ -70,6 +72,12 @@ earlier**:
    storing any of it.
 4. A failed store is buffered again and its blocks go to the tail.
 5. A stored block returns to the head on unpin unless an op still buffers it.
+6. The one exception to "no earlier": `hold_past` and `flush_for_lookup`
+   (below) hold and expedite ops wherever their blocks sit, to store chunks
+   eager offload would have stored that the GPU no longer serves. Expedited
+   ops are served after held ones, closed into their segment, and once a
+   squeeze releases their hold they only take budget left over, like the
+   ops past `D`; the mark persists until a drain emits them.
 
 The proof obligations are then: `D` is an upper bound on what can allocate
 before the next drain (step 2 and the decision rule below), and no path
@@ -97,6 +105,53 @@ continuation's local hit ended one block sooner. On the c100 run (measured,
 two runs each) local hits fell from 33.4-34.6% to 25.0-25.2% of prompt
 tokens and TTFT p50 rose from 31.0-38.0 s to 42.9-60.6 s.
 
+The chunk holding that last block is still one the GPU cannot serve: with
+a chunk of two blocks, the next turn's local hit stops mid-chunk, and only
+an L1 copy saves recomputing the other half. So when a request finishes,
+`hold_past` holds every buffered op ending past vLLM's hit over the
+request's own chain, before vLLM frees the blocks. The pin keeps them out
+of the free queue and the receipt frees them to the tail as vLLM would
+have. The ops the hit covers back to the previous anchor op (see the
+anchor rule) are held with them and stored in the same segment: a state
+stored ahead of the prefix its hit serves would age first in L1, and its
+eviction would void that prefix.
+
+A request's own hit cannot foresee the next turn's: on Qwen3.8-27B (MTP 1,
+chunk of two blocks) a turn of 204,431 tokens kept its only state at 128
+blocks, so `hold_past` held nothing, and the next turn matched those 128
+attention blocks, lost one to the MTP drop and found no state at or below
+127: its local hit was 0, its lookup missed the buffered chunks, and it
+recomputed 202,752 tokens that the eager arm hit in L1. So the store is
+also triggered by the request that needs it. Before submitting a lookup,
+the connector calls `LazyOffloadManager.flush_for_lookup` with vLLM's local
+hit. The manager finds, by the chunk-ending block hashes of the request's
+chain (an index filled as ops are offered, so the cost is linear in the
+request's chunks), which other requests buffer chunks of its prefix past
+that hit, and `flush_for_lookup(start, ends)` holds and expedites those
+ops, with the ops before them back to the previous anchor op, as
+`hold_past` does. With anchors only the ops up to the last anchor op are
+flushed: the server's hit, like vLLM's, ends at a chunk carrying a state.
+While a flushed op is
+buffered held or expedited (`is_flushing`) or in an open batch, the lookup
+reports "not yet known" (`None`), which vLLM answers by skipping the
+request for the step, without allocating for it or blocking the requests
+behind it. Once the receipts settle, the lookup goes out and hits L1. The
+check runs once per request generation; a lookup already submitted (eager
+prefetch) is not held back.
+
+Neither pin may change vLLM's eviction order, since lazy offload decides
+when a chunk is stored, never whether vLLM keeps it. Their receipts free
+the blocks to the tail, unlike the drain's, which return a block pinned
+while free to the head (step 4 of the per-step protocol below): a drain
+only pins blocks its window met near the head, but these pins reach
+anywhere. An align-mode Mamba group frees a request's prompt-end state
+block before
+`request_finished`, so `hold_past` pins it while it is free; returned to
+the head, the next allocation evicted it, and the next turn's local hit
+fell back to an earlier state (measured offline on the real scheduler:
+from 19 blocks to 15, and to 10 when a lookup flush did the same to the
+waiting request's own hit-point state).
+
 ## Per-step protocol (policy-caller obligations)
 
 `LazyOffloadManager` is the production caller; the connector only forwards
@@ -122,7 +177,7 @@ lifecycle events to it.
    the point of lazy offload. Every drain revalidates every pending request's
    hash snapshots, including those of requests blocked by a submitted batch.
    A blocked request is never emitted -- the worker accepts one store future
-   per request -- but the ops it would release now (its due front segment)
+   per request -- but the ops it would release now (its due segment)
    are returned in
    `LazyOffloadDrain.holds`: the manager pins those blocks so they cannot be
    recycled while the batch is in flight, and once the receipt arrives the
@@ -189,7 +244,7 @@ lifecycle events to it.
    step. Pinning a block its request still owns costs no free block.
    A request in `preempted_request_ids` releases its whole buffer: vLLM
    freed its blocks, and once rescheduled its tracker restarts from token
-   zero, which discards whatever is still buffered (step 6).
+   zero, which discards whatever is still buffered (step 7).
 3. For every item in `LazyOffloadDrain.items` (already ordered): pin
    (`touch`) its blocks, coalesce each request's released ops into one store
    op, register the submitted batch, and put it into this
@@ -197,7 +252,7 @@ lifecycle events to it.
    transition -- teardown additionally requires the registry to say the
    request is finished with no submitted batch.
 4. On a store-completion receipt, complete the batch and unpin. A block
-   that sat in the free queue when it was pinned goes back to the queue
+   the drain pinned while it sat in the free queue goes back to the queue
    **head**, in order: `free_blocks` would append it as most recently used,
    while eviction order had it next, so every lazy store would otherwise
    refresh the GPU prefix cache's LRU. A block a request still owns is left
@@ -208,21 +263,30 @@ lifecycle events to it.
    that request's op and its whole suffix. At the tail it waits for the
    window like any buffered block. End the session only when the registry
    says the request is finished and the policy has nothing pending.
-5. On `request_finished`, record `FINISHED` in the registry; end immediately
+5. On `request_finished`, call `hold_past(id, hit)` with vLLM's hit over
+   the request's chain and pin what it returns, while the request still
+   owns those blocks; on its receipt they go to the tail, also a block
+   vLLM already freed. Record `FINISHED` in the registry; end immediately
    only under the same predicate, otherwise a later drain or receipt applies
    it.
-6. On preemption tracker reset, call `drop_request(id)`: buffered ops and
+6. Before a waiting request's lookup, `flush_for_lookup(start, ends)` with
+   its local hit and the requests buffering chunks of its prefix past it;
+   pin the returned holds (released to the tail, like step 5's), and
+   defer the lookup while `is_flushing` or an open batch covers a flushed
+   range.
+7. On preemption tracker reset, call `drop_request(id)`: buffered ops and
    prefix-validity state are discarded, and the manager unpins held ops (as
    it does when `discard_for_reuse` drops them); an
    already submitted batch stays
    registered -- now marked orphaned -- and blocks new emission until its
    receipt. An abort is **not** a drop: its buffered ops remain storable
    until drained.
-7. On a failed receipt, mark the in-flight batch failed and wait for the
+8. On a failed receipt, mark the in-flight batch failed and wait for the
    rest of its receipts: another worker may still be reading its blocks.
    Once the batch settles, unpin it; a failed batch that is not orphaned
-   goes back to the policy with `requeue_failed(item)`, ahead of the
-   request's later ops, and its blocks move to the free-queue tail.
+   goes back to the policy with `requeue_failed(item)`, in token order
+   among the request's buffered ops, and its blocks move to the free-queue
+   tail.
    The data is still on the GPU, so the request's prefix chain stays whole.
    An L1 rejection (out of memory) is the common cause, so the retry waits
    for the window like any buffered op rather than being resubmitted into
@@ -230,7 +294,7 @@ lifecycle events to it.
    retrying a partly stored batch is safe. An orphaned batch is never
    retried: the request generation now using the id restarted from token
    zero or is a different request.
-8. On request-id reuse, detect the `FINISHED` predecessor in the registry and
+9. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
    ending once through the successor's lifecycle. (vLLM's HTTP layer
@@ -331,12 +395,38 @@ the true vLLM hit instead of 0.
   through the last due one; a data-loss drop (hash mismatch) drops from the
   first lost op through the tail and blacklists the request's later chunks;
   the intact stored prefix stays pending and stays valuable.
+- **Anchor segments** (align-mode Mamba hybrids): vLLM resumes a hit at `p`
+  only with the attention KV of `[0, p)` and the Mamba state block at `p`
+  (the *anchor*), so chunks up to a cached anchor `p'` are still a GPU hit
+  and front closure only copied them from L0 into L1 (0.10-0.16 of L1 bytes
+  on a hybrid run). An op with a real block in a Mamba group
+  (`anchor_groups`) is an anchor op; with `f` the first due op, the segment
+  starts past the last anchor op before `f`, whose blocks are all outside
+  the window, and ends at the first anchor op at or after the last due op
+  (a segment not ending at an anchor cannot be hit), else at the last due
+  op. The ops before it stay buffered and come due on their own blocks: the
+  rule changes when they are stored, not whether. A suffix store is
+  servable because the server looks up from vLLM's hit (`key.start`) and
+  chunk keys hash from token zero. Attention-only models have no anchors and
+  keep front closure.
+
+  ```
+  ops      0    1*   2    3    4*        * = anchor op
+  window                       ##        chunk 4's state is due
+  emitted            [2 .. 4]            0..1 served from L0 via 1*
+  later         ##                       chunk 1's state is due
+  emitted  [0 .. 1]
+  ```
+
+  Holds are per op (`PendingStoreOp.held`), not a front prefix, and a
+  requeued op is inserted where its start sorts.
 - Cross-request drain order = min due rank ascending; `MAX_DRAIN_PER_STEP`
-  (64) bounds the per-step D2H burst in operations. It is a constant, not a
-  setting. The cap may split a request's due segment but only ever emits a
-  front slice of it, so within-request prefix order is preserved. Due ops
-  past the cap are not lost: they are held for the next drain, which emits
-  them first.
+  bounds the per-step D2H burst in operations. It is a constant, not a
+  setting: rule 1 widens the window by it, so ops come due early enough
+  that none is recycled unstored. The cap may split a request's due
+  segment but only ever emits a front slice of it, so within-request prefix
+  order is preserved. Due ops past the cap are not lost: they are held for
+  the next drain, which emits them first.
 - **Idle consequences**: receipts travel in worker metadata, which flows on
   every step, including steps that schedule no tokens. Those steps drain as
   well, which a squeezed admission needs: its pins can leave no waiting
