@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 # First Party
 from lmcache.integration.vllm.lazy_offload_policy.base import (
     BlockHashes,
+    BufferedOpView,
     ConfigValue,
     DrainSignals,
     LazyOffloadDrain,
@@ -135,6 +136,28 @@ class FIFOOffloadPolicy(OffloadPolicy):
             True while at least one of its operations is buffered.
         """
         return request_id in self._pending_items
+
+    def buffered_ops(self) -> list[BufferedOpView]:
+        """Copy every queued operation; see ``OffloadPolicy``.
+
+        FIFO neither holds nor expedites, so both flags are False.
+
+        Returns:
+            One view per queued operation, requests in admission order, ops
+            in token order.
+        """
+        return [
+            BufferedOpView(
+                request_id=request_id,
+                start=meta.op.start,
+                end=meta.op.end,
+                block_ids=tuple(tuple(group) for group in meta.op.block_ids),
+                held=False,
+                expedited=False,
+            )
+            for request_id, item in self._pending_items.items()
+            for meta, _ in item.metadatas
+        ]
 
     def buffered_block_ids(self) -> set[int]:
         """Every GPU block a buffered operation covers.

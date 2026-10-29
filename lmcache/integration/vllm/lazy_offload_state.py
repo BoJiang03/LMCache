@@ -263,6 +263,18 @@ class LazyOffloadRequestRegistry:
             if slot.in_flight is not None
         }
 
+    def in_flight_batches(self) -> dict[str, SubmittedStoreBatch]:
+        """The open batch of every request that has one.
+
+        Returns:
+            A new dict, request id -> its submitted batch, orphaned or not.
+        """
+        return {
+            request_id: slot.in_flight
+            for request_id, slot in self._slots.items()
+            if slot.in_flight is not None
+        }
+
     def can_end_session(self, request_id: str) -> bool:
         """Whether manager-owned state permits session teardown.
 

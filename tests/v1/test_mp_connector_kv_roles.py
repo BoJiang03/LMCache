@@ -3,6 +3,7 @@
 
 # Standard
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -46,6 +47,7 @@ from vllm.v1.request import Request, RequestStatus  # noqa: E402
 
 # First Party
 from lmcache.integration.vllm import lmcache_mp_connector as connector_mod  # noqa: E402
+from lmcache.integration.vllm import state_snapshot as state_snapshot_mod  # noqa: E402
 from lmcache.integration.vllm import vllm_multi_process_adapter as adapter_mod
 from lmcache.integration.vllm.lmcache_mp_connector import (  # noqa: E402
     LMCacheMPConnector,
@@ -57,6 +59,12 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.utils import CacheStoreEvent  # noqa: E402
+from lmcache.v1.multiprocess.protocols.state_snapshot import (  # noqa: E402
+    L1_SNAPSHOT_METHOD,
+    RequestMappingRecord,
+    iter_records,
+    read_l0_snapshot,
+)
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 pytestmark = pytest.mark.no_shared_allocator
@@ -364,6 +372,71 @@ def test_lazy_offload_turns_off_without_a_bound_kv_cache_manager(
     finally:
         worker.shutdown()
         scheduler.shutdown()
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+@pytest.mark.parametrize("lazy", [False, True])
+def test_state_snapshot_is_off_unless_a_directory_is_set(
+    mock_io: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    snapshot: bool,
+    lazy: bool,
+) -> None:
+    """Without lmcache.mp.snapshot_dir no server is asked and nothing is
+    written, even when every step is due; with it, each step writes an L0
+    file, asks the servers for L1, and the tracked prompt is mapped."""
+    monkeypatch.setattr(state_snapshot_mod, "SNAPSHOT_INTERVAL_S", 0.0)
+    mock_io.scheduler.configure_mock(
+        hash_algorithm="blake3", model_name="test-model", world_size=1
+    )
+    mock_io.scheduler.is_healthy = True
+    mock_io.scheduler.server_module_call.return_value = {}
+    options: dict[str, Any] = {
+        "lmcache.mp.lazy_offload": lazy,
+        "lmcache.mp.lazy_offload_policy": "FIFO",
+    }
+    if snapshot:
+        options["lmcache.mp.snapshot_dir"] = str(tmp_path)
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config=options,
+        )
+    )
+    pool = BlockPool(num_gpu_blocks=8, enable_caching=True, hash_block_size=4)
+    [block] = pool.get_new_blocks(1)
+    block.set_block_hash(make_block_hash_with_group_id(BlockHash(b"h" * 32), 0))
+    connector = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(connector, pool)
+    request = _request()
+    try:
+        assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+        connector.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([block.block_id],)), 0
+        )
+        connector.build_connector_meta(
+            _schedule(num_tokens=4, block_ids=([block.block_id],), new=True)
+        )
+        connector.request_finished(request, [block.block_id])
+    finally:
+        connector.shutdown()
+
+    calls = mock_io.scheduler.server_module_call.call_args_list
+    if not snapshot:
+        assert calls == []
+        assert list(tmp_path.iterdir()) == []
+        return
+    assert [c.args[0] for c in calls] == [L1_SNAPSHOT_METHOD]
+    [l0_path] = tmp_path.glob("l0-*.msgpack")
+    header, body = read_l0_snapshot(str(l0_path))
+    assert [e.block_hash for e in body.cached_blocks] == [b"h" * 32]
+    assert (body.lazy is not None) is lazy
+    [requests_file] = tmp_path.glob("requests-*.bin")
+    [record] = iter_records(str(requests_file), RequestMappingRecord)
+    assert record.request_id == "request"
+    assert record.block_hashes == request.block_hashes
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, None])

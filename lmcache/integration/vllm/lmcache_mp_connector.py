@@ -78,6 +78,7 @@ from lmcache.integration.vllm.lmcache_mp_metrics import (
 from lmcache.integration.vllm.mp_server_launcher import (
     is_mp_server_autostart_enabled,
 )
+from lmcache.integration.vllm.state_snapshot import StateSnapshotter
 from lmcache.integration.vllm.utils import (
     mla_only,
     vllm_layout_hints,
@@ -695,6 +696,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
       enters vLLM's waiting queue. Disabled by default.
     - lmcache.mp.save_decode_cache: also store chunks containing generated
       tokens. Defaults to False; only complete prompt chunks are stored.
+    - lmcache.mp.snapshot_dir: a directory to write, every 10 s, the GPU
+      prefix cache, the lazy-offload buffer and every server's L1 to, for
+      offline analysis. Unset by default (no snapshots). Every server must
+      load lmcache.v1.multiprocess.l1_snapshot.
     """
 
     # Tail block slots vLLM may relocate for one request; 0 means vLLM only
@@ -706,6 +711,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     # Set when lazy offload is configured but turned off for the run; sent to
     # the workers in every step's metadata.
     _lazy_offload_unbound: bool = False
+    # Set by bind_kv_cache_manager when lmcache.mp.snapshot_dir is set.
+    _state_snapshotter: StateSnapshotter | None = None
 
     def __init__(
         self,
@@ -760,6 +767,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         )
         if not isinstance(self._save_decode_cache, bool):
             raise ValueError("lmcache.mp.save_decode_cache must be a boolean")
+        self._snapshot_dir = vllm_config.kv_transfer_config.get_from_extra_config(
+            "lmcache.mp.snapshot_dir", None
+        )
+        if self._snapshot_dir is not None and not isinstance(self._snapshot_dir, str):
+            raise ValueError("lmcache.mp.snapshot_dir must be a directory path")
 
         self._enable_kv_events = bool(
             getattr(vllm_config, "kv_events_config", None) is not None
@@ -1419,6 +1431,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if hasattr(self, "scheduler_adapter"):
             if self.lazy_offload:
                 self._lazy_offload_manager.log_final_stats()
+            if self._state_snapshotter is not None:
+                self._state_snapshotter.close()
             self.scheduler_adapter.shutdown()
         return None
 
@@ -1470,6 +1484,14 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         if self.role == KVConnectorRole.SCHEDULER and self.lazy_offload:
             self._lazy_offload_manager.bind_cache_coordinator(
                 kv_cache_manager.coordinator
+            )
+        if self.role == KVConnectorRole.SCHEDULER and self._snapshot_dir is not None:
+            self._state_snapshotter = StateSnapshotter(
+                self._snapshot_dir,
+                self.scheduler_adapter,
+                kv_cache_manager.block_pool,
+                self._lazy_offload_manager if self.lazy_offload else None,
+                self._group_tokens_per_block,
             )
 
     def get_num_new_matched_tokens(
@@ -1830,6 +1852,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             for request_id in actions.sessions_to_end:
                 self.scheduler_adapter.end_session(request_id)
 
+        if self._state_snapshotter is not None:
+            self._state_snapshotter.on_scheduler_step()
+
         if len(metadata) > 0:
             logger.debug("Final connector metadata: %s", metadata)
 
@@ -1909,6 +1934,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         # Clean up request tracker to prevent memory leak
         self._cleanup_request_tracker(request.request_id)
+        if self._state_snapshotter is not None:
+            self._state_snapshotter.on_request_finished(request.request_id)
 
         # Drop lookup state for a request aborted before its lookup was
         # consumed (update_state_after_alloc never ran for it). Both the eager
@@ -2214,6 +2241,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     self.scheduler_adapter.end_session(session_id)
             new_tracker = LMCacheMPRequestTracker(request)
             self.request_trackers[request_id] = new_tracker
+            if self._state_snapshotter is not None:
+                self._state_snapshotter.on_request_tracked(request, new_tracker)
         return self.request_trackers[request_id]
 
     def _disable_lazy_offload_if_unbound(self) -> None:

@@ -78,6 +78,30 @@ class PendingStoreItem:
 
 
 @dataclass(frozen=True)
+class BufferedOpView:
+    """A read-only copy of one buffered operation, for observability.
+
+    Attributes:
+        request_id: The request the operation belongs to.
+        start: First token of its range.
+        end: Token its range ends at.
+        block_ids: Per KV cache group, the GPU blocks holding the range; the
+            null block stands for a hash-less block.
+        held: Whether the manager pinned its blocks while it waits (see the
+            module terms); the operation is due.
+        expedited: Whether a finish or a lookup made it due before its
+            blocks neared eviction.
+    """
+
+    request_id: str
+    start: int
+    end: int
+    block_ids: tuple[tuple[int, ...], ...]
+    held: bool
+    expedited: bool
+
+
+@dataclass(frozen=True)
 class DrainSignals:
     """One scheduler step's inputs to a drain decision.
 
@@ -308,6 +332,17 @@ class OffloadPolicy(ABC):
 
         Returns:
             True while at least one of its operations is still buffered.
+        """
+
+    @abstractmethod
+    def buffered_ops(self) -> list[BufferedOpView]:
+        """Copy every buffered operation, for observability.
+
+        Read-only: the buffer and every decision stay as they are.
+
+        Returns:
+            One view per buffered operation, grouped by request in drain
+            order and in token order within a request.
         """
 
     @abstractmethod

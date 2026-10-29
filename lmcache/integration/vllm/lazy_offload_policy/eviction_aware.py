@@ -19,6 +19,7 @@ import time
 from lmcache.integration.vllm.lazy_offload_policy.base import (
     AdmissionProtection,
     BlockHashes,
+    BufferedOpView,
     DrainSignals,
     LazyOffloadDrain,
     LookupFlush,
@@ -536,6 +537,28 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             True while at least one of its operations is buffered.
         """
         return request_id in self._pending
+
+    def buffered_ops(self) -> list[BufferedOpView]:
+        """Copy every buffered operation; see ``OffloadPolicy``.
+
+        Returns:
+            One view per buffered operation, requests in admission order
+            (the drain's tie-break order), ops in token order.
+        """
+        return [
+            BufferedOpView(
+                request_id=request_id,
+                start=op.store_metadata.op.start,
+                end=op.store_metadata.op.end,
+                block_ids=tuple(
+                    tuple(group) for group in op.store_metadata.op.block_ids
+                ),
+                held=op.held,
+                expedited=op.expedited,
+            )
+            for request_id, ops in self._pending.items()
+            for op in ops
+        ]
 
     def buffered_block_ids(self) -> set[int]:
         """Every GPU block a buffered operation covers.

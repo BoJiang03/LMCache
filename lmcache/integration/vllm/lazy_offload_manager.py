@@ -36,12 +36,16 @@ from typing import TYPE_CHECKING, Protocol
 from lmcache.integration.vllm.lazy_offload_policy import create_offload_policy
 from lmcache.integration.vllm.lazy_offload_policy.base import (
     BlockHashes,
+    BufferedOpView,
     ConfigValue,
     DrainSignals,
     OffloadPolicy,
     PendingStoreItem,
 )
-from lmcache.integration.vllm.lazy_offload_state import LazyOffloadRequestRegistry
+from lmcache.integration.vllm.lazy_offload_state import (
+    LazyOffloadRequestRegistry,
+    SubmittedStoreBatch,
+)
 from lmcache.integration.vllm.lmcache_mp_metadata import (
     LMCacheMPRequestMetadata,
     LoadStoreOp,
@@ -98,6 +102,25 @@ class LazyOffloadActions:
 
     stores_to_submit: list[LMCacheMPRequestMetadata] = field(default_factory=list)
     sessions_to_end: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LazyBufferSnapshot:
+    """What lazy offload holds back from the server at one moment.
+
+    Attributes:
+        ops: Every buffered operation (see ``OffloadPolicy.buffered_ops``).
+        in_flight: Per request with a submitted batch awaiting its receipt,
+            that batch: its pinned blocks, its operations, and whether it
+            failed (its operations are buffered again once it settles) or
+            was orphaned.
+        finished_request_ids: Requests whose generation finished but whose
+            state lazy offload still keeps.
+    """
+
+    ops: list[BufferedOpView]
+    in_flight: dict[str, SubmittedStoreBatch]
+    finished_request_ids: set[str]
 
 
 def _coalesce_store_metadata(
@@ -716,6 +739,23 @@ class LazyOffloadManager:
             True while at least one submitted batch awaits its receipt.
         """
         return bool(self._requests.in_flight_request_ids())
+
+    def buffer_snapshot(self) -> LazyBufferSnapshot:
+        """Copy what lazy offload buffers, has in flight, and keeps finished.
+
+        Read-only, for observability.
+
+        Returns:
+            The snapshot (see :class:`LazyBufferSnapshot`).
+
+        Raises:
+            ValueError: If no GPU block pool has been bound yet.
+        """
+        return LazyBufferSnapshot(
+            ops=self._require_policy().buffered_ops(),
+            in_flight=self._requests.in_flight_batches(),
+            finished_request_ids=self._requests.finished_request_ids(),
+        )
 
     def log_final_stats(self) -> None:
         """Write the policy's final counter ledger, when one was built."""
