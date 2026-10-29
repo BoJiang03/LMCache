@@ -24,6 +24,13 @@ from lmcache.integration.vllm.lazy_offload_policy.base import (  # noqa: E402
 from lmcache.integration.vllm.lazy_offload_policy.fifo import (  # noqa: E402
     FIFOOffloadPolicy,
 )
+from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
+    LMCacheMPRequestMetadata,
+)
+from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
+    LoadStoreOp,
+)
+from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
 
 pytestmark = pytest.mark.no_shared_allocator
 
@@ -89,3 +96,57 @@ def test_scheduler_step_skips_scratch_groups_in_block_estimate(
 
     assert actions == LazyOffloadActions()
     assert [s.est_next_step_blocks for s in policies[0].signals] == [expected_blocks]
+
+
+class _FakeBlockPool:
+    """Block pool whose blocks keep stable hashes and ignore pinning."""
+
+    def __init__(self, num_blocks: int) -> None:
+        self.blocks = [
+            SimpleNamespace(block_hash=f"hash-{i}".encode()) for i in range(num_blocks)
+        ]
+
+    def touch(self, blocks: list[Any]) -> None:
+        pass
+
+    def free_blocks(self, blocks: list[Any]) -> None:
+        pass
+
+
+def test_coalesced_store_keeps_request_configs() -> None:
+    """Matching tags select the key namespace, so coalescing must keep them."""
+    manager = LazyOffloadManager(
+        {
+            "lmcache.mp.lazy_offload_policy": "FIFO",
+            "lmcache.mp.lazy_offload_threshold": 1,
+        },
+        [16],
+        _NoopCompletionTracker(),
+    )
+    manager.bind_block_pool(cast(Any, _FakeBlockPool(2)))
+    request_configs = {"lmcache.tag.lora": "adapter-a"}
+    token_bytes = pack_token_ids(range(32))
+    manager.on_request_arrived("req")
+    for block_id in range(2):
+        manager.add_store_candidate(
+            LMCacheMPRequestMetadata(
+                request_id="req",
+                direction="STORE",
+                op=LoadStoreOp(
+                    token_bytes=token_bytes,
+                    block_ids=[[block_id]],
+                    start=16 * block_id,
+                    end=16 * (block_id + 1),
+                ),
+                cache_salt="salt",
+                request_configs=request_configs,
+            )
+        )
+    manager.on_request_finished("req")
+
+    actions = manager.on_scheduler_step(_scheduler_output(1))
+
+    [store] = actions.stores_to_submit
+    assert (store.op.start, store.op.end) == (0, 32)
+    assert store.cache_salt == "salt"
+    assert store.request_configs == request_configs

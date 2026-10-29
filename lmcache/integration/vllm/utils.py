@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 ENGINE_NAME = "vllm-instance"
+# Matching tag that isolates each LoRA adapter's KV; set only by the connector.
+LORA_TAG_KEY = "lmcache.tag.lora"
 
 
 def is_false(value: str) -> bool:
@@ -149,10 +151,32 @@ def extract_request_configs_from_sampling_params(
 def extract_request_configs_from_request(
     request: "Request",
 ) -> dict[str, Any] | None:
-    """Extract LMCache request configs from a vLLM request object."""
-    return extract_request_configs_from_sampling_params(
-        getattr(request, "sampling_params", None)
+    """Extract LMCache request configs from a vLLM request object.
+
+    A LoRA request's KV depends on its adapter, so its ``lora_name`` is
+    written as the ``LORA_TAG_KEY`` matching tag, the same identity vLLM
+    puts in its own block hashes. The tag is reserved: a client-supplied
+    value is always discarded, otherwise a request could claim another
+    adapter's namespace.
+
+    Args:
+        request: The vLLM request.
+
+    Returns:
+        The ``lmcache.*`` configs from the request's ``kv_transfer_params``
+        plus the LoRA tag, or ``None`` if there are none.
+    """
+    request_configs = (
+        extract_request_configs_from_sampling_params(
+            getattr(request, "sampling_params", None)
+        )
+        or {}
     )
+    request_configs.pop(LORA_TAG_KEY, None)
+    lora_request = getattr(request, "lora_request", None)
+    if lora_request is not None:
+        request_configs[LORA_TAG_KEY] = lora_request.lora_name
+    return request_configs or None
 
 
 # Number of bits kept per substituted placeholder token. 31 bits keeps the
