@@ -38,7 +38,7 @@ L1_SNAPSHOT_METHOD = "l1_snapshot.take"
 SNAPSHOT_INTERVAL_S = 10.0
 
 #: Bumped whenever a file schema below changes incompatibly.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 _RECORD_LENGTH = struct.Struct(">I")
 _T = TypeVar("_T")
@@ -63,72 +63,79 @@ class L1SnapshotReply(msgspec.Struct):
     """What a server collected; its file is written after the reply.
 
     Args:
-        path: The L1 file the server writes.
+        skipped: The server's previous file was still being written, so
+            nothing was collected and no file is written.
+        path: The L1 file the server writes; empty when skipped.
         num_objects: Objects listed, over every L1 manager.
         lock_ms: Wall time spent listing objects under the L1 manager locks
             (see :class:`L1ManagerSection`), summed over managers.
     """
 
+    skipped: bool
     path: str
     num_objects: int
     lock_ms: float
 
 
-class L1ObjectEntry(msgspec.Struct, array_like=True):
-    """One L1 object: its ``ObjectKey`` fields, size, state and LRU rank.
+class L1KeyColumns(msgspec.Struct):
+    """``ObjectKey`` fields of many keys, one list per field.
+
+    Columns rather than one row per key: a server builds and encodes each
+    column with one C-level pass, which keeps a 100k-object L1 cheap.
 
     Args:
-        chunk_hash: ``ObjectKey.chunk_hash``.
+        chunk_hash: ``ObjectKey.chunk_hash`` of each key.
         model_name: ``ObjectKey.model_name``.
         kv_rank: ``ObjectKey.kv_rank`` (packed, as the key stores it).
         object_group_id: ``ObjectKey.object_group_id``.
         cache_salt: ``ObjectKey.cache_salt``.
-        size_bytes: Logical size in bytes.
-        state: ``committed``, ``temporary`` or ``staging`` (write-reserved,
-            not yet committed).
-        eviction_rank: Position in the eviction policy's order, 0 for the
-            next victim; -1 when the policy keeps no order or does not list
-            the key.
     """
 
-    chunk_hash: bytes
-    model_name: str
-    kv_rank: int
-    object_group_id: int
-    cache_salt: str
-    size_bytes: int
-    state: str
-    eviction_rank: int
+    chunk_hash: list[bytes]
+    model_name: list[str]
+    kv_rank: list[int]
+    object_group_id: list[int]
+    cache_salt: list[str]
 
 
 class L1ManagerSection(msgspec.Struct):
     """One L1 manager in an L1 file.
 
+    Object ``i`` is entry ``i`` of every column of ``objects`` and of
+    ``size_bytes`` and ``state``. :func:`eviction_ranks` places each object
+    in ``eviction_order``.
+
     Args:
         l1_manager_id: The manager's process-local id.
         tag: The manager's configured tag.
-        has_eviction_order: Whether its policy keeps an order
-            (``eviction_rank`` is meaningful).
-        num_unlisted_ordered_keys: Keys in the policy's order that the
-            object listing did not have: evicted or written between the two
-            reads, or tracked by the policy before their write finished.
         list_ms: Wall time of listing the objects under the manager's lock,
             including the wait for it.
         order_ms: Wall time of copying the policy's order under its lock.
-        objects: Every listed object.
+        objects: Every listed object's key.
+        size_bytes: Each object's logical size in bytes.
+        state: ``committed``, ``temporary`` or ``staging`` (write-reserved,
+            not yet committed).
+        eviction_order: Every key the eviction policy tracks, the next
+            victim first; ``None`` when the policy keeps no single order.
+            Read right after the objects, under another lock, so it can
+            hold keys the listing lacks and lack keys it holds.
     """
 
     l1_manager_id: int
     tag: str
-    has_eviction_order: bool
-    num_unlisted_ordered_keys: int
     list_ms: float
     order_ms: float
-    objects: list[L1ObjectEntry]
+    objects: L1KeyColumns
+    size_bytes: list[int]
+    state: list[str]
+    eviction_order: L1KeyColumns | None
 
 
 class L1SnapshotFile(msgspec.Struct):
     """An L1 file: one server's L1 at one snapshot.
+
+    Every ``*_ms`` field is time the server's Python threads spent on this
+    snapshot, so their sum bounds what it took from serving (the GIL).
 
     Args:
         format_version: :data:`FORMAT_VERSION`.
@@ -138,9 +145,13 @@ class L1SnapshotFile(msgspec.Struct):
         wall_time: Server ``time.time()`` when the request was handled.
         monotonic_time: Server ``time.monotonic()`` at the same moment.
         lock_ms: ``list_ms`` summed over managers.
-        total_ms: Server wall time from receiving the request to the body's
-            encoding finished, including the wait for the writer thread;
-            only the final file write is left out.
+        collect_ms: Request thread: listing every manager and copying its
+            order (``lock_ms`` and every ``order_ms`` included).
+        build_ms: Writer thread: turning the keys into columns.
+        encode_ms: Writer thread: encoding the sections.
+        total_ms: ``collect_ms + build_ms + encode_ms``. Writing the file
+            comes after and is not included; it is file I/O, which runs
+            without the GIL.
         managers: Encoded ``list[L1ManagerSection]``.
     """
 
@@ -151,31 +162,11 @@ class L1SnapshotFile(msgspec.Struct):
     wall_time: float
     monotonic_time: float
     lock_ms: float
+    collect_ms: float
+    build_ms: float
+    encode_ms: float
     total_ms: float
     managers: msgspec.Raw
-
-
-class CachedBlockEntry(msgspec.Struct, array_like=True):
-    """One prefix-cache entry of a GPU block.
-
-    Args:
-        block_id: The block.
-        group_id: The KV cache group its hash belongs to.
-        block_hash: vLLM's block hash, without the group id.
-        ref_cnt: The block's reference count; 0 for a free block.
-        hash_num_tokens: The tokens the hash covers (fewer than a block's
-            for a partial Mamba-state entry); ``None`` when vLLM does not
-            record it, as for a non-primary entry.
-        primary: Whether this is the block's own hash, or an extra entry
-            vLLM registered for it (``BlockPool.cached_block_hashes_by_block``).
-    """
-
-    block_id: int
-    group_id: int
-    block_hash: bytes
-    ref_cnt: int
-    hash_num_tokens: int | None
-    primary: bool
 
 
 class BufferedOpEntry(msgspec.Struct, array_like=True):
@@ -232,15 +223,33 @@ class LazyBufferSection(msgspec.Struct):
 
 
 class L0Body(msgspec.Struct):
-    """The bulk of an L0 file.
+    """The bulk of an L0 file: the GPU prefix cache, one list per field.
+
+    Entry ``i`` of ``block_ids``, ``block_keys``, ``ref_cnts`` and
+    ``hash_num_tokens`` is one prefix-cache entry. The first
+    ``num_primary`` entries are blocks' own hashes, in block id order; the
+    rest are extra entries vLLM registered for a block
+    (``BlockPool.cached_block_hashes_by_block``).
 
     Args:
-        cached_blocks: Every prefix-cache entry of every GPU block.
+        block_ids: The entry's block.
+        block_keys: vLLM's ``BlockHashWithGroupId``: the block hash followed
+            by the KV cache group id, 4 bytes big-endian (see
+            :func:`split_block_key`).
+        ref_cnts: The block's reference count; 0 for a free block.
+        hash_num_tokens: The tokens the hash covers (fewer than a block's
+            for a partial Mamba-state entry); ``None`` where vLLM does not
+            record it, as for an extra entry.
+        num_primary: How many leading entries are blocks' own hashes.
         free_queue: The free blocks' ids, the next to be reused first.
         lazy: The lazy-offload state, or ``None`` when lazy offload is off.
     """
 
-    cached_blocks: list[CachedBlockEntry]
+    block_ids: list[int]
+    block_keys: list[bytes]
+    ref_cnts: list[int]
+    hash_num_tokens: list[int | None]
+    num_primary: int
     free_queue: list[int]
     lazy: LazyBufferSection | None
 
@@ -270,7 +279,9 @@ class L0SnapshotFile(msgspec.Struct):
             send the L1 request, hand off to the writer thread.
         mapping_ms: Scheduler-thread time copying prompts for the request
             file since the previous snapshot.
-        encode_ms: Writer-thread time encoding the body.
+        encode_ms: Writer-thread time encoding the body. ``dump_ms +
+            encode_ms`` is what the snapshot took from the scheduler
+            process's GIL; writing the file runs without it.
         body: Encoded :class:`L0Body`.
     """
 
@@ -459,6 +470,62 @@ def read_l1_snapshot(path: str) -> tuple[L1SnapshotFile, list[L1ManagerSection]]
     with open(path, "rb") as f:
         header = msgspec.msgpack.decode(f.read(), type=L1SnapshotFile)
     return header, msgspec.msgpack.decode(header.managers, type=list[L1ManagerSection])
+
+
+def split_block_key(block_key: bytes) -> tuple[bytes, int]:
+    """Split an ``L0Body.block_keys`` entry as vLLM's ``get_block_hash`` and
+    ``get_group_id`` do.
+
+    Args:
+        block_key: A ``BlockHashWithGroupId``.
+
+    Returns:
+        The block hash and the KV cache group id.
+    """
+    return block_key[:-4], int.from_bytes(block_key[-4:], "big")
+
+
+def key_tuples(columns: L1KeyColumns) -> list[tuple[bytes, str, int, int, str]]:
+    """Zip key columns back into one hashable tuple per key.
+
+    Args:
+        columns: The columns.
+
+    Returns:
+        ``(chunk_hash, model_name, kv_rank, object_group_id, cache_salt)``
+        per key, in column order.
+    """
+    return list(
+        zip(
+            columns.chunk_hash,
+            columns.model_name,
+            columns.kv_rank,
+            columns.object_group_id,
+            columns.cache_salt,
+            strict=True,
+        )
+    )
+
+
+def eviction_ranks(section: L1ManagerSection) -> tuple[list[int], int]:
+    """Place each listed object in the section's eviction order.
+
+    Args:
+        section: An L1 manager section.
+
+    Returns:
+        Each object's position in ``eviction_order`` (0 for the next
+        victim, -1 when the policy keeps no order or does not track it),
+        and how many ordered keys the object listing lacks.
+    """
+    keys = key_tuples(section.objects)
+    if section.eviction_order is None:
+        return [-1] * len(keys), 0
+    order = key_tuples(section.eviction_order)
+    rank = {key: index for index, key in enumerate(order)}
+    listed = set(keys)
+    unlisted = sum(key not in listed for key in order)
+    return [rank.get(key, -1) for key in keys], unlisted
 
 
 def log_failed_write(future: "Future[Any]") -> None:

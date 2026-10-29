@@ -19,12 +19,14 @@ from lmcache.v1.multiprocess.protocols.state_snapshot import (
     L1ManagerSection,
     L1SnapshotFile,
     RequestMappingRecord,
+    eviction_ranks,
     iter_records,
     l0_snapshot_path,
     l1_snapshot_path,
     read_l0_snapshot,
     read_l1_snapshot,
     requests_path,
+    split_block_key,
 )
 
 # An L1 chunk across kv ranks and object groups: (chunk hash, cache salt).
@@ -86,7 +88,7 @@ class L1ServerSummary:
     Args:
         server_id: ``<hostname>-<pid>`` of the server.
         lock_ms: Time listing objects under the L1 manager locks.
-        total_ms: Server time from request to encoded file.
+        total_ms: Server Python time of the snapshot (``L1SnapshotFile``).
         num_unlisted_ordered_keys: Summed over its L1 managers.
     """
 
@@ -165,7 +167,7 @@ def summarize(
         snapshot_id=snapshot_id,
         l0_header=header,
         l0_blocks_per_group=dict(
-            Counter(entry.group_id for entry in body.cached_blocks)
+            Counter(split_block_key(key)[1] for key in body.block_keys)
         ),
         num_free_blocks=len(body.free_queue),
         num_buffered_ops=0 if body.lazy is None else len(body.lazy.ops),
@@ -253,11 +255,13 @@ def _read_l1_files(summary: SnapshotSummary, snapshot_dir: str) -> set[_ChunkId]
         l1_header, sections = read_l1_snapshot(path)
         summary.l1_servers.append(_server_summary(l1_header, sections))
         for section in sections:
-            for entry in section.objects:
-                key = (entry.object_group_id, entry.state)
-                objects[key] += 1
-                nbytes[key] += entry.size_bytes
-                chunks.add((entry.chunk_hash, entry.cache_salt))
+            columns = section.objects
+            for group_id, state, size in zip(
+                columns.object_group_id, section.state, section.size_bytes, strict=True
+            ):
+                objects[(group_id, state)] += 1
+                nbytes[(group_id, state)] += size
+            chunks.update(zip(columns.chunk_hash, columns.cache_salt, strict=True))
     summary.l1_objects = dict(objects)
     summary.l1_bytes = dict(nbytes)
     summary.num_l1_chunks = len(chunks)
@@ -280,7 +284,7 @@ def _server_summary(
         server_id=header.server_id,
         lock_ms=header.lock_ms,
         total_ms=header.total_ms,
-        num_unlisted_ordered_keys=sum(s.num_unlisted_ordered_keys for s in sections),
+        num_unlisted_ordered_keys=sum(eviction_ranks(s)[1] for s in sections),
     )
 
 
@@ -302,7 +306,7 @@ def _count_chunks_in_l0(
     records = list(iter_records(path, RequestMappingRecord))
     header = summary.l0_header
     mapping = _chunk_block_hashes(records, header.chunk_size, header.hash_block_size)
-    in_l0 = {entry.block_hash for entry in body.cached_blocks}
+    in_l0 = {split_block_key(key)[0] for key in body.block_keys}
     for chunk in l1_chunks:
         block_hashes = mapping.get(chunk)
         if block_hashes is None:

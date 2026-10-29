@@ -59,7 +59,8 @@ analysis reading the files.
 scheduler step (build_connector_meta, after the lazy drain)
   StateSnapshotter.on_scheduler_step()
     read replies of the last L1 request, if all arrived   (never waits)
-    every 10 s (monotonic):
+    every 10 s (monotonic), unless the previous L0 file is still being
+    written (then skipped, logged at debug):
       copy BlockPool + lazy buffer         -> collect_ms
       server_module_call("l1_snapshot.take") to every server, async
       queue L0 file on writer thread       -> dump_ms (whole scheduler cost)
@@ -68,11 +69,17 @@ writer thread (scheduler):  encode body (encode_ms), write l0-*.msgpack
                             hash prompts, append requests-*.bin
 
 MP server, l1_snapshot.take handler:
-  StorageManager.snapshot_l1()
+  previous file still being written? reply skipped, collect nothing
+  StorageManager.snapshot_l1()                        -> collect_ms
     per L1 manager: list_objects() under its lock     -> list_ms (lock_ms)
                     eviction_order() under policy lock -> order_ms
-  reply at once; writer thread encodes and writes l1-*.msgpack (total_ms)
+  reply at once; writer thread builds columns (build_ms), encodes
+  (encode_ms) and writes l1-*.msgpack
 ```
+
+Skipping instead of queueing keeps at most one snapshot in memory per
+side: a slow disk or a burst of requests costs missing files, never a
+growing backlog of 100k-entry listings.
 
 A server that has not answered when the next snapshot is due is logged and
 forgotten; there are no retries. A failed file write is logged by the
@@ -82,7 +89,7 @@ writer thread's done callback.
 
 All files are msgpack (`msgspec`). Schemas live in
 `lmcache/v1/multiprocess/protocols/state_snapshot.py` with
-`FORMAT_VERSION = 1`; read them with `read_l0_snapshot`,
+`FORMAT_VERSION = 2`; read them with `read_l0_snapshot`,
 `read_l1_snapshot` and `iter_records`.
 
 | File | Written | Content |
@@ -95,6 +102,11 @@ All files are msgpack (`msgspec`). Schemas live in
 `server_id` is `<hostname>-<pid>` of the server. One snapshot id ties an L0
 file to its L1 files.
 
+Both snapshot files are columnar: one list per field rather than one row
+per entry. Building a row object per entry was most of the cost in format
+1 (see Cost); a column is one C-level `map` pass and encodes as one msgpack
+array.
+
 ### L0 file
 
 Header (`L0SnapshotFile`): `format_version`, `run_id`, `snapshot_id`,
@@ -104,13 +116,15 @@ Header (`L0SnapshotFile`): `format_version`, `run_id`, `snapshot_id`,
 `mapping_ms`, `encode_ms`, and `body` (nested msgpack, so `encode_ms` can be
 stored in the same file). Body (`L0Body`):
 
-- `cached_blocks`: one `[block_id, group_id, block_hash, ref_cnt,
-  hash_num_tokens, primary]` row per prefix-cache entry. `block_hash` is
-  vLLM's hash without the group id. `hash_num_tokens` is
+- `block_ids`, `block_keys`, `ref_cnts`, `hash_num_tokens`: one entry per
+  prefix-cache entry. `block_keys` holds vLLM's `BlockHashWithGroupId` as
+  is (block hash, then the group id in 4 bytes big-endian);
+  `split_block_key` splits it. `hash_num_tokens` is
   `KVCacheBlock.block_hash_num_tokens` (fewer than a block's tokens for a
-  partial Mamba-state entry). Extra entries vLLM registered for a block
-  (`BlockPool.cached_block_hashes_by_block`) have `primary = false` and
-  `hash_num_tokens = null`.
+  partial Mamba-state entry; null where vLLM records none).
+- `num_primary`: the first `num_primary` entries are blocks' own hashes;
+  the rest are extra entries vLLM registered for a block
+  (`BlockPool.cached_block_hashes_by_block`), with null `hash_num_tokens`.
 - `free_queue`: free block ids, the next one vLLM reuses first.
 - `lazy` (null when lazy offload is off): `ops`, one `[request_id, start,
   end, block_ids per group, held, expedited]` row per buffered store (held or
@@ -122,21 +136,26 @@ stored in the same file). Body (`L0Body`):
 ### L1 file
 
 Header (`L1SnapshotFile`): `format_version`, `run_id`, `snapshot_id`,
-`server_id`, `wall_time`, `monotonic_time`, `lock_ms`, `total_ms`,
-`managers`. One `L1ManagerSection` per L1 manager: `l1_manager_id`, `tag`,
-`has_eviction_order`, `num_unlisted_ordered_keys`, `list_ms`, `order_ms`,
-and `objects`, one row per object:
+`server_id`, `wall_time`, `monotonic_time`, the costs `lock_ms`,
+`collect_ms`, `build_ms`, `encode_ms`, `total_ms`, and `managers`. One
+`L1ManagerSection` per L1 manager: `l1_manager_id`, `tag`, `list_ms`,
+`order_ms`, and
 
-```text
-[chunk_hash, model_name, kv_rank, object_group_id, cache_salt,
- size_bytes, state, eviction_rank]
-```
+- `objects`: `L1KeyColumns` (`chunk_hash`, `model_name`, `kv_rank`,
+  `object_group_id`, `cache_salt` lists), one entry per object;
+- `size_bytes`, `state`: per object, same order;
+- `eviction_order`: `L1KeyColumns` of every key the policy tracks, the
+  next victim first, or null when the policy keeps no single order (no-op,
+  ARC, isolated LRU). Only LRU implements `EvictionPolicy.eviction_order()`
+  today.
 
 `state` is `committed`, `temporary` (committed, deleted after its read), or
 `staging` (write-reserved, not committed). `kv_rank` is the packed value
-`ObjectKey` stores. `eviction_rank` is 0 for the next victim and -1 when the
-policy keeps no single order (no-op, ARC, isolated LRU) or did not list the
-key. Only LRU implements `EvictionPolicy.eviction_order()` today.
+`ObjectKey` stores. `eviction_ranks(section)` returns each object's
+position in the order (0 for the next victim, -1 when untracked) and the
+number of ordered keys the listing lacks. The order is stored as keys
+rather than as ranks because matching 100k keys on the server costs about
+as much as everything else together; the loader matches offline.
 
 ### Request mapping
 
@@ -151,8 +170,8 @@ token ids, as the server's lookup computes them), `wall_time`,
 Chunk `i` covers block hashes `[i*chunk_size // hash_block_size,
 ceil((i+1)*chunk_size / hash_block_size))`. With vLLM's
 `BlockHashListWithBlockSize`, a group with larger blocks uses one of these
-same hashes, so `block_hash` in the L0 file can be matched against
-`block_hashes` directly.
+same hashes, so the block hash part of an L0 `block_keys` entry can be
+matched against `block_hashes` directly.
 
 ## What is read, and from where
 
@@ -161,10 +180,9 @@ Nothing in vLLM is modified. Attributes read, all public:
 | vLLM (705e124c0) | Use |
 |---|---|
 | `BlockPool.blocks`, `num_gpu_blocks`, `hash_block_size` | block list, header |
-| `KVCacheBlock.block_id`, `block_hash`, `block_hash_num_tokens`, `ref_cnt` | `cached_blocks` rows |
+| `KVCacheBlock.block_id`, `block_hash`, `block_hash_num_tokens`, `ref_cnt` | body columns |
 | `BlockPool.cached_block_hashes_by_block` | extra (non-primary) entries |
 | `BlockPool.free_block_queue.get_all_free_blocks()` | `free_queue` |
-| `kv_cache_utils.get_block_hash`, `get_group_id` | split the stored key |
 | `Request.request_id`, `num_prompt_tokens`, `block_hashes` | mapping |
 
 LMCache accessors added for this (public, read-only):
@@ -176,29 +194,58 @@ LMCache accessors added for this (public, read-only):
 
 ## Cost
 
-Measured once with a CPU-only script (not committed) that builds a real
-`BlockPool` and a real LRU `StorageManager` in one process, three snapshots
-each; the server requests ran back to back, so the writer thread was busy
-and the spread reflects GIL contention:
+Budget at 100k GPU blocks and 100k L1 objects, per snapshot: server
+Python time under 100 ms with the L1 lock held under 20 ms; scheduler
+`dump_ms + encode_ms` under 30 ms (the writer thread takes the GIL from
+the scheduler thread too).
 
-| Scale | Scheduler `collect_ms` / `dump_ms` | Writer `encode_ms` | Server `lock_ms` | Server `order_ms` | Server `total_ms` |
-|---|---|---|---|---|---|
-| 100k GPU blocks (half free), 100k L1 objects | 18-35 / 18-35 | 37-80 | 41-77, one 513 | 29-65 | 820-960 |
+Measured with a CPU-only script that builds a real `BlockPool` (100k
+blocks, all cached, half free) and a real LRU `StorageManager` (100k
+committed objects) in one process. Snapshots spaced as at the 10 s cadence
+(each waits for the previous file); format 1 over 7 snapshots, format 2
+over 20. Values are min / median / max, in ms:
 
-Files are 4.4 MB (L0) and 5.5 MB (L1) at that scale. The scheduler pays
-`dump_ms` once per 10 s and one `is not None` check per step otherwise; the
-mapping costs one prompt copy per new request (`mapping_ms`, summed between
-snapshots). On the server, `lock_ms` is the time L1 writers and readers of
-that manager wait; `total_ms` is mostly Python encoding on the writer
-thread, which competes for the GIL with the server's request threads.
+| Component | Format 1 | Format 2 |
+|---|---|---|
+| Scheduler `dump_ms` (scheduler thread) | 15.2 / 15.8 / 18.6 | 15.4 / 15.8 / 18.9 |
+| Scheduler `encode_ms` (writer thread) | 43.2 / 45.8 / 49.5 | 1.5 / 1.6 / 5.0 |
+| Scheduler total | 58.5 / 61.6 / 68.1 | 16.9 / 17.4 / 22.9 |
+| Server `lock_ms` (L1 lock) | 31.5 / 35.4 / 458.1 | 8.3 / 9.8 / 17.5 |
+| Server `order_ms` (policy lock) | 32.5 / 36.2 / 41.7 | 25.4 / 26.8 / 31.8 |
+| Server `build_ms` + `encode_ms` | (in total) | 24.6 / 28.2 / 36.0 |
+| Server `total_ms` | 220.6 / 247.9 / 661.3 | 62.0 / 65.6 / 79.0 |
+| Server file write (I/O, not in total) | | 5.6 / 14.8 / 20.7 |
+
+Where format 1 spent it (one profile, 100k objects): about 145 ms building
+one msgspec row per object, 27 ms listing under the L1 lock (one
+NamedTuple per object; the 458 ms outlier was not root-caused, one
+suspect is a garbage collection those allocations trigger under the lock),
+30 ms copying the LRU order.
+On the scheduler, 31-36 ms of the writer's `encode_ms` built one row per
+block. Format 2 lists into per-field lists under the lock, reads key
+fields through `ObjectKey.identity` with `attrgetter` maps, and stores the
+eviction order as keys.
+
+Copying the LRU order is now the largest server item: iterating an
+`OrderedDict` hashes every key, and `ObjectKey.__hash__` is Python code.
+It runs under the policy lock, which L1 listener callbacks also take while
+holding the L1 lock, so L1 operations can wait up to `order_ms` on it.
+
+Files are 4.5 MB (L0) and 8.9 MB (L1, the order is stored as keys) at
+that scale. Between snapshots the scheduler pays one `is not None` check
+per step, plus one prompt copy per new request for the mapping
+(`mapping_ms`, summed between snapshots).
+
+Back to back, 20 requests sent while the first file was still being
+written: 19 were skipped.
 
 ## Limits
 
 - L0 and L1 are not one instant. The L1 request leaves after L0 is copied
   and is handled a few ms later; each L1 manager is listed under its own
   lock, then its eviction order is copied under the policy lock. Keys
-  evicted or written between those two reads show up in
-  `num_unlisted_ordered_keys` or with `eviction_rank = -1`.
+  evicted or written between those two reads show up as ordered keys the
+  listing lacks, or as listed objects with rank -1 (`eviction_ranks`).
 - Nothing between snapshots is recorded: a chunk stored and evicted within
   10 s never appears.
 - The mapping is taken when the request is first tracked, prompts only. It
@@ -206,5 +253,6 @@ thread, which competes for the GIL with the server's request threads.
   tokens), so a mapped chunk need not have been stored.
 - Every server in the scheduler adapter's list is asked; a TP deployment
   records each object's packed `kv_rank` as stored.
-- The interval is fixed at 10 s; a slow server is not waited for, so its
-  L1 file for a snapshot may be missing.
+- The interval is fixed at 10 s; a slow server is not waited for, and a
+  side still writing its previous file skips the snapshot, so an L0 or L1
+  file for a snapshot id may be missing.

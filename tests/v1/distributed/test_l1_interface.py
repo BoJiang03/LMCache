@@ -135,19 +135,23 @@ def test_tags_are_independent_writers(l1: L1ManagerInterface) -> None:
 
 
 def test_list_objects_reports_size_and_state(l1: L1ManagerInterface) -> None:
-    assert l1.list_objects() == []
+    empty = l1.list_objects()
+    assert (empty.keys, empty.size_bytes, empty.states) == ([], [], [])
     l1.reserve_write([key(5), key(6)], [False, True], LAYOUT)
     l1.finish_write([key(5), key(6)])
     l1.reserve_write([key(7)], [False], LAYOUT)
 
-    records = sorted(l1.list_objects(), key=lambda record: record.key.chunk_hash)
-    assert [(r.key, r.state) for r in records] == [
-        (key(5), "committed"),
-        (key(6), "temporary"),
-        (key(7), "staging"),
+    listing = l1.list_objects()
+    rows = sorted(
+        zip(listing.keys, listing.size_bytes, listing.states, strict=True),
+        key=lambda row: row[0].chunk_hash,
+    )
+    assert rows == [
+        (key(5), ALIGN, "committed"),
+        (key(6), ALIGN, "temporary"),
+        (key(7), ALIGN, "staging"),
     ]
-    assert all(r.size_bytes == ALIGN for r in records)
 
     # Listing reserves nothing: the staged key is still the writer's.
     assert l1.finish_write([key(7)]) == {key(7): L1Error.SUCCESS}
-    assert {r.state for r in l1.list_objects()} == {"committed", "temporary"}
+    assert set(l1.list_objects().states) == {"committed", "temporary"}

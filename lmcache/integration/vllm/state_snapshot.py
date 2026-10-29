@@ -8,14 +8,15 @@ File formats: ``lmcache.v1.multiprocess.protocols.state_snapshot``. Design:
 """
 
 # Standard
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from itertools import compress, repeat
+from operator import attrgetter, is_not
 from typing import TYPE_CHECKING, Callable
 import os
 import socket
 import time
 
 # Third Party
-from vllm.v1.core.kv_cache_utils import get_block_hash, get_group_id
 import msgspec
 
 # First Party
@@ -28,7 +29,6 @@ from lmcache.v1.multiprocess.protocols.state_snapshot import (
     L1_SNAPSHOT_METHOD,
     SNAPSHOT_INTERVAL_S,
     BufferedOpEntry,
-    CachedBlockEntry,
     InFlightBatchEntry,
     L0Body,
     L0SnapshotFile,
@@ -59,31 +59,48 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-# (block id, BlockHashWithGroupId, ref_cnt, hash token count or None,
-# primary): one prefix-cache entry as the scheduler thread copies it.
-_RawEntry = tuple[int, bytes, int, "int | None", bool]
+_BLOCK_HASH = attrgetter("block_hash")
+_BLOCK_ID = attrgetter("block_id")
+_REF_CNT = attrgetter("ref_cnt")
+_HASH_NUM_TOKENS = attrgetter("block_hash_num_tokens")
 
 
-def _cached_block_entries(raw: list[_RawEntry]) -> list[CachedBlockEntry]:
-    """Split each copied entry's hash into vLLM's block hash and group id.
+def _collect_cached_blocks(pool: "BlockPool") -> L0Body:
+    """Copy every prefix-cache entry and the free queue of ``pool``.
+
+    One C-level ``map`` pass per field keeps a 100k-block pool cheap on the
+    scheduler thread.
 
     Args:
-        raw: The entries the scheduler thread copied.
+        pool: vLLM's block pool; only read.
 
     Returns:
-        One file entry per copied entry.
+        The body, without the lazy-offload section.
     """
-    return [
-        CachedBlockEntry(
-            block_id=block_id,
-            group_id=get_group_id(key),
-            block_hash=get_block_hash(key),
-            ref_cnt=ref_cnt,
-            hash_num_tokens=num_tokens,
-            primary=primary,
-        )
-        for block_id, key, ref_cnt, num_tokens, primary in raw
-    ]
+    blocks = pool.blocks
+    keys = list(map(_BLOCK_HASH, blocks))
+    hashed = list(map(is_not, keys, repeat(None)))
+    cached = list(compress(blocks, hashed))
+    block_ids = list(map(_BLOCK_ID, cached))
+    block_keys = list(compress(keys, hashed))
+    ref_cnts = list(map(_REF_CNT, cached))
+    hash_num_tokens: list[int | None] = list(map(_HASH_NUM_TOKENS, cached))
+    num_primary = len(block_ids)
+    for block_id, extra_keys in pool.cached_block_hashes_by_block.items():
+        for key in extra_keys:
+            block_ids.append(block_id)
+            block_keys.append(key)
+            ref_cnts.append(blocks[block_id].ref_cnt)
+            hash_num_tokens.append(None)
+    return L0Body(
+        block_ids=block_ids,
+        block_keys=block_keys,
+        ref_cnts=ref_cnts,
+        hash_num_tokens=hash_num_tokens,
+        num_primary=num_primary,
+        free_queue=list(map(_BLOCK_ID, pool.free_block_queue.get_all_free_blocks())),
+        lazy=None,
+    )
 
 
 def _lazy_section(snapshot: LazyBufferSnapshot) -> LazyBufferSection:
@@ -180,6 +197,9 @@ class StateSnapshotter:
         # Response future per server URL of the last L1 request; empty once
         # every server answered.
         self._inflight: dict[str, MessagingFuture[ServerModuleCallResponse]] = {}
+        # The last queued L0 write; a snapshot due before it finishes is
+        # skipped rather than queued.
+        self._last_write: Future[None] | None = None
         logger.info(
             "State snapshot: writing run %s to %s every %.0f s",
             self._run_id,
@@ -253,6 +273,13 @@ class StateSnapshotter:
                 SNAPSHOT_INTERVAL_S,
             )
             self._inflight = {}
+        if self._last_write is not None and not self._last_write.done():
+            logger.debug(
+                "State snapshot %d skipped: the previous L0 file is still "
+                "being written",
+                self._next_snapshot_id,
+            )
+            return
         self._take_snapshot()
 
     def close(self) -> None:
@@ -269,32 +296,11 @@ class StateSnapshotter:
         self._next_snapshot_id += 1
 
         pool = self._pool
-        raw: list[_RawEntry] = [
-            (
-                block.block_id,
-                block.block_hash,
-                block.ref_cnt,
-                block.block_hash_num_tokens,
-                True,
-            )
-            for block in pool.blocks
-            if block.block_hash is not None
-        ]
-        raw.extend(
-            (block_id, key, pool.blocks[block_id].ref_cnt, None, False)
-            for block_id, keys in pool.cached_block_hashes_by_block.items()
-            for key in keys
-        )
-        free_queue = [
-            block.block_id for block in pool.free_block_queue.get_all_free_blocks()
-        ]
-        # Converted here, not on the writer: the in-flight batches are live
-        # objects the next step mutates.
-        lazy = (
-            _lazy_section(self._lazy.buffer_snapshot())
-            if self._lazy is not None
-            else None
-        )
+        body = _collect_cached_blocks(pool)
+        if self._lazy is not None:
+            # Converted here, not on the writer: the in-flight batches are
+            # live objects the next step mutates.
+            body.lazy = _lazy_section(self._lazy.buffer_snapshot())
         collected_at = time.perf_counter()
 
         l1_requested = self._adapter.is_healthy
@@ -334,9 +340,8 @@ class StateSnapshotter:
             body=msgspec.Raw(b""),
         )
         self._mapping_ms = 0.0
-        self._writer.submit(
-            self._write_l0, header, raw, free_queue, lazy
-        ).add_done_callback(log_failed_write)
+        self._last_write = self._writer.submit(self._write_l0, header, body)
+        self._last_write.add_done_callback(log_failed_write)
 
     def _collect_replies(self) -> None:
         """Log the servers' answers once every one has answered."""
@@ -362,6 +367,13 @@ class StateSnapshotter:
                 )
                 continue
             reply = msgspec.msgpack.decode(response.payload, type=L1SnapshotReply)
+            if reply.skipped:
+                logger.debug(
+                    "State snapshot: server %s skipped the L1 request; its "
+                    "previous file is still being written",
+                    url,
+                )
+                continue
             logger.debug(
                 "State snapshot: server %s lists %d L1 objects in %.1f ms into %s",
                 url,
@@ -385,33 +397,18 @@ class StateSnapshotter:
         )
         append_record(self._requests_file, record)
 
-    def _write_l0(
-        self,
-        header: L0SnapshotFile,
-        raw: list[_RawEntry],
-        free_queue: list[int],
-        lazy: LazyBufferSection | None,
-    ) -> None:
+    def _write_l0(self, header: L0SnapshotFile, body: L0Body) -> None:
         """Encode and write one L0 file; writer thread only.
 
         Args:
             header: The file's header, without its body and encode time.
-            raw: The copied prefix-cache entries.
-            free_queue: The copied free-queue order.
-            lazy: The lazy-offload section, or ``None``.
+            body: The copied prefix cache, free queue and lazy section.
 
         Raises:
             OSError: If the file cannot be written.
         """
         started_at = time.perf_counter()
-        body = msgspec.msgpack.encode(
-            L0Body(
-                cached_blocks=_cached_block_entries(raw),
-                free_queue=free_queue,
-                lazy=lazy,
-            )
-        )
-        header.body = msgspec.Raw(body)
+        header.body = msgspec.Raw(msgspec.msgpack.encode(body))
         header.encode_ms = (time.perf_counter() - started_at) * 1e3
         write_atomically(
             l0_snapshot_path(self._snapshot_dir, header.run_id, header.snapshot_id),

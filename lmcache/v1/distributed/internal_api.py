@@ -6,7 +6,7 @@ Class for distributed storage manager internal API data structures
 # Standard
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 import enum
 
 # First Party
@@ -63,26 +63,28 @@ class L1ObjectMeta:
     backend: L1BackendType
 
 
-#: Lifecycle state of one L1 object in :class:`L1ObjectRecord`: ``committed``
+#: Lifecycle state of one L1 object in :class:`L1ObjectListing`: ``committed``
 #: (resident, readable), ``temporary`` (resident, deleted after its read),
 #: or ``staging`` (write-reserved, its write not finished, unreadable).
 L1ObjectStateName = Literal["committed", "temporary", "staging"]
 
 
-class L1ObjectRecord(NamedTuple):
-    """One L1 object as :meth:`L1ManagerInterface.list_objects` lists it.
+@dataclass(frozen=True)
+class L1ObjectListing:
+    """Every L1 object, as parallel lists (one entry per object).
 
-    A tuple, so listing a large L1 under its lock allocates little.
+    Parallel lists rather than one record per object, so listing a large L1
+    under its lock allocates one list per field.
 
     Attributes:
-        key: The object's key.
+        keys: Each object's key.
         size_bytes: Its logical size (``MemoryObj.get_size``).
-        state: Its lifecycle state (see :data:`L1ObjectStateName`).
+        states: Its lifecycle state (see :data:`L1ObjectStateName`).
     """
 
-    key: ObjectKey
-    size_bytes: int
-    state: L1ObjectStateName
+    keys: list[ObjectKey]
+    size_bytes: list[int]
+    states: list[L1ObjectStateName]
 
 
 @dataclass(frozen=True)
@@ -109,7 +111,7 @@ class L1ManagerSnapshot:
 
     l1_manager_id: int
     tag: str
-    objects: list[L1ObjectRecord]
+    objects: L1ObjectListing
     eviction_order: list[ObjectKey] | None
     list_ms: float
     order_ms: float
@@ -446,14 +448,14 @@ class L1ManagerInterface(Protocol):
         """Return a status dictionary for the status endpoints."""
         ...
 
-    def list_objects(self) -> list[L1ObjectRecord]:
+    def list_objects(self) -> L1ObjectListing:
         """List every resident and staging object, under one lock hold.
 
         No side effects: no read lock, recency update, listener call or
         event.
 
         Returns:
-            One record per resident object and one per writer's staging
+            One entry per resident object and one per writer's staging
             object, in no particular order.
         """
         ...

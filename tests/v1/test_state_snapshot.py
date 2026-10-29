@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
+import os
+import threading
+import time
 
 # Third Party
 import msgspec
@@ -64,6 +67,7 @@ from lmcache.v1.multiprocess.protocols.state_snapshot import (  # noqa: E402
     l0_snapshot_path,
     read_l0_snapshot,
     requests_path,
+    split_block_key,
 )
 from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
 from lmcache.v1.multiprocess.token_hasher import TokenHasher  # noqa: E402
@@ -207,6 +211,12 @@ def _router_answer(module: L1SnapshotModule) -> Any:
     )
 
 
+def _wait_for(path: str) -> None:
+    deadline = time.monotonic() + 30
+    while not os.path.exists(path) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def _key(chunk_hash: bytes) -> ObjectKey:
     return ObjectKey(chunk_hash=chunk_hash, model_name="m", kv_rank=0)
 
@@ -253,14 +263,22 @@ def test_l0_file_holds_cached_blocks_free_queue_and_costs(tmp_path: Path) -> Non
     assert header.l1_requested
     assert header.dump_ms >= header.collect_ms >= 0
     assert header.encode_ms >= 0
-    assert [
-        (e.block_id, e.group_id, e.block_hash, e.ref_cnt, e.primary)
-        for e in body.cached_blocks
-    ] == [
-        (block_ids[0], 0, BLOCK_HASHES[0], 1, True),
-        (block_ids[1], 0, BLOCK_HASHES[1], 1, True),
-        (block_ids[2], 0, BLOCK_HASHES[2], 0, True),
+    rows = list(
+        zip(
+            body.block_ids,
+            map(split_block_key, body.block_keys),
+            body.ref_cnts,
+            body.hash_num_tokens,
+            strict=True,
+        )
+    )
+    assert rows == [
+        # set_block_hash without a token count: vLLM records none.
+        (block_ids[0], (BLOCK_HASHES[0], 0), 1, None),
+        (block_ids[1], (BLOCK_HASHES[1], 0), 1, None),
+        (block_ids[2], (BLOCK_HASHES[2], 0), 0, None),
     ]
+    assert body.num_primary == 3
     assert body.free_queue == expected_free
     assert body.lazy is None
 
@@ -342,6 +360,35 @@ def test_l0_file_lists_the_lazy_offload_buffer(tmp_path: Path) -> None:
     assert body.lazy.in_flight == []
 
 
+def test_snapshot_due_during_a_running_write_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool, _ = _pool_caching(1)
+    clock = _Clock()
+    adapter = _Adapter(answer=lambda *a: _Pending())
+    release = threading.Event()
+    write = state_snapshot_mod.write_atomically
+
+    def slow_write(path: str, data: bytes) -> None:
+        release.wait(timeout=30)
+        write(path, data)
+
+    monkeypatch.setattr(state_snapshot_mod, "write_atomically", slow_write)
+    snapshotter = _snapshotter(tmp_path, adapter, pool, clock)
+
+    clock.now = SNAPSHOT_INTERVAL_S
+    snapshotter.on_scheduler_step()
+    clock.now = 2 * SNAPSHOT_INTERVAL_S
+    snapshotter.on_scheduler_step()
+    release.set()
+    snapshotter.close()
+
+    assert [request.snapshot_id for request in adapter.calls] == [0]
+    assert [p.name for p in tmp_path.glob("l0-*")] == [
+        Path(l0_snapshot_path(str(tmp_path), snapshotter.run_id, 0)).name
+    ]
+
+
 def test_server_failures_are_logged_and_never_raised(tmp_path: Path) -> None:
     pool, _ = _pool_caching(1)
     clock = _Clock()
@@ -366,6 +413,8 @@ def test_server_failures_are_logged_and_never_raised(tmp_path: Path) -> None:
             clock.now = step * SNAPSHOT_INTERVAL_S
             snapshotter.on_scheduler_step()
             snapshotter.on_scheduler_step()
+            # The next snapshot is skipped while this file is being written.
+            _wait_for(l0_snapshot_path(str(tmp_path), snapshotter.run_id, step - 1))
     snapshotter.close()
 
     assert len(adapter.calls) == 4

@@ -64,6 +64,7 @@ from lmcache.v1.multiprocess.protocols.state_snapshot import (  # noqa: E402
     RequestMappingRecord,
     iter_records,
     read_l0_snapshot,
+    split_block_key,
 )
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
@@ -431,7 +432,7 @@ def test_state_snapshot_is_off_unless_a_directory_is_set(
     assert [c.args[0] for c in calls] == [L1_SNAPSHOT_METHOD]
     [l0_path] = tmp_path.glob("l0-*.msgpack")
     header, body = read_l0_snapshot(str(l0_path))
-    assert [e.block_hash for e in body.cached_blocks] == [b"h" * 32]
+    assert [split_block_key(k) for k in body.block_keys] == [(b"h" * 32, 0)]
     assert (body.lazy is not None) is lazy
     [requests_file] = tmp_path.glob("requests-*.bin")
     [record] = iter_records(str(requests_file), RequestMappingRecord)
