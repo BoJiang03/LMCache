@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Scheduler-step contracts of ``LazyOffloadManager`` for hybrid group spans."""
+"""Scheduler-step contracts of ``LazyOffloadManager``."""
 
 # Standard
 from types import SimpleNamespace
@@ -60,6 +60,21 @@ def _scheduler_output(total_num_scheduled_tokens: int) -> Any:
     )
 
 
+class _FakeBlockPool:
+    """Block pool whose blocks keep stable hashes and ignore pinning."""
+
+    def __init__(self, num_blocks: int) -> None:
+        self.blocks = [
+            SimpleNamespace(block_hash=f"hash-{i}".encode()) for i in range(num_blocks)
+        ]
+
+    def touch(self, blocks: list[Any]) -> None:
+        pass
+
+    def free_blocks(self, blocks: list[Any]) -> None:
+        pass
+
+
 @pytest.mark.parametrize(
     "group_tokens_per_block, scheduled_tokens, expected_blocks",
     [
@@ -98,21 +113,6 @@ def test_scheduler_step_skips_scratch_groups_in_block_estimate(
     assert [s.est_next_step_blocks for s in policies[0].signals] == [expected_blocks]
 
 
-class _FakeBlockPool:
-    """Block pool whose blocks keep stable hashes and ignore pinning."""
-
-    def __init__(self, num_blocks: int) -> None:
-        self.blocks = [
-            SimpleNamespace(block_hash=f"hash-{i}".encode()) for i in range(num_blocks)
-        ]
-
-    def touch(self, blocks: list[Any]) -> None:
-        pass
-
-    def free_blocks(self, blocks: list[Any]) -> None:
-        pass
-
-
 def test_coalesced_store_keeps_request_configs() -> None:
     """Matching tags select the key namespace, so coalescing must keep them."""
     manager = LazyOffloadManager(
@@ -124,7 +124,7 @@ def test_coalesced_store_keeps_request_configs() -> None:
         _NoopCompletionTracker(),
     )
     manager.bind_block_pool(cast(Any, _FakeBlockPool(2)))
-    request_configs = {"lmcache.tag.lora": "adapter-a"}
+    request_configs = {"lmcache.tag.tenant": "a"}
     token_bytes = pack_token_ids(range(32))
     manager.on_request_arrived("req")
     for block_id in range(2):

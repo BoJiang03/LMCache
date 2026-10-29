@@ -151,7 +151,7 @@ def extract_request_configs_from_sampling_params(
 def extract_request_configs_from_request(
     request: "Request",
 ) -> dict[str, Any] | None:
-    """Extract LMCache request configs from a vLLM request object.
+    """Extract LMCache request configs from a vLLM request in the MP connector.
 
     A LoRA request's KV depends on its adapter, so its ``lora_name`` is
     written as the ``LORA_TAG_KEY`` matching tag, the same identity vLLM

@@ -45,16 +45,19 @@ def _object_keys(request: Any) -> list[ObjectKey]:
 
 
 def test_lora_request_is_tagged_with_adapter_name() -> None:
+    """A LoRA request carries its adapter name as the reserved tag."""
     configs = extract_request_configs_from_request(_request("sql-adapter"))
     assert configs == {LORA_TAG_KEY: "sql-adapter"}
 
 
 def test_base_request_has_no_lora_tag() -> None:
+    """A base-model request keeps the untagged namespace."""
     assert extract_request_configs_from_request(_request(None)) is None
 
 
 @pytest.mark.parametrize("lora_name", [None, "own-adapter"])
 def test_client_cannot_set_lora_tag(lora_name: str | None) -> None:
+    """A client-supplied LoRA tag is replaced; other tags pass through."""
     params = {LORA_TAG_KEY: "victim-adapter", "lmcache.tag.user": "alice"}
     configs = extract_request_configs_from_request(_request(lora_name, params))
     assert configs is not None
@@ -63,6 +66,7 @@ def test_client_cannot_set_lora_tag(lora_name: str | None) -> None:
 
 
 def test_same_tokens_under_different_adapters_get_different_keys() -> None:
+    """Same tokens and chunk hash map to distinct storage keys per adapter."""
     adapter_a = _object_keys(_request("adapter-a"))
     assert _object_keys(_request("adapter-a")) == adapter_a
     assert _object_keys(_request("adapter-b")) != adapter_a
