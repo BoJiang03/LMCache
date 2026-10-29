@@ -378,10 +378,13 @@ For either policy, the manager coalesces each request's released chunks into
 one store operation, calls `BlockPool.touch()` to pin its surviving blocks,
 and records those block ids in the request's manager-owned state until
 every worker rank reports completion. Each request id has at most one
-submitted batch. A preemption reset or a finished-id reuse marks an
-outstanding batch orphaned: its receipt still releases its pins, but its
-failure is never retried for the request generation now using the id, and the
-receipt does not end the successor's shared session prematurely. The record
+submitted batch. A finished-id reuse marks an outstanding batch orphaned:
+its receipt still releases its pins, but its failure is never retried for
+the request now using the id, and the receipt does not end the successor's
+shared session prematurely. A preempted request keeps its batch, its
+buffered and held operations: vLLM freed its hashed blocks with their
+hashes, so they are victims like any other, and the restarted request's
+offers supersede the operations they overlap. The record
 also keeps the batch's operations: a batch that failed and is not orphaned
 goes back to the policy once every rank has reported, and is stored again,
 because its blocks were pinned and still hold the data.

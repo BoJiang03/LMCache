@@ -64,7 +64,7 @@ class FIFOOffloadPolicy(OffloadPolicy):
         self,
         meta: "LMCacheMPRequestMetadata",
         block_hashes: BlockHashes,
-    ) -> None:
+    ) -> PendingStoreItem:
         """Queue one store operation under its request id.
 
         Args:
@@ -73,12 +73,25 @@ class FIFOOffloadPolicy(OffloadPolicy):
                 for the manager to re-validate. This policy does not read
                 them, so it never drops an operation whose blocks were
                 recycled.
+
+        Returns:
+            The queued operations of the request the offer overlaps, which
+            it supersedes.
         """
-        item = self._pending_items.get(meta.request_id)
-        if item is None:
-            item = PendingStoreItem(request_id=meta.request_id)
-            self._pending_items[meta.request_id] = item
-        item.metadatas.append((meta, block_hashes))
+        item = self._pending_items.setdefault(
+            meta.request_id, PendingStoreItem(request_id=meta.request_id)
+        )
+        superseded = PendingStoreItem(request_id=meta.request_id)
+        kept: list[tuple["LMCacheMPRequestMetadata", BlockHashes]] = []
+        for entry in item.metadatas:
+            overlaps = (
+                entry[0].op.start < meta.op.end and entry[0].op.end > meta.op.start
+            )
+            (superseded.metadatas if overlaps else kept).append(entry)
+        kept.append((meta, block_hashes))
+        kept.sort(key=lambda entry: entry[0].op.start)
+        item.metadatas = kept
+        return superseded
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Release eligible finished requests once the threshold is met.
@@ -136,17 +149,15 @@ class FIFOOffloadPolicy(OffloadPolicy):
             for block_id in block_hashes
         }
 
-    def drop_request(self, request_id: str) -> int:
-        """Discard operations invalidated by a preemption reset.
+    def restart_request(self, request_id: str) -> None:
+        """FIFO keeps no per-request state a restart invalidates.
+
+        The restarted request's offers supersede the operations they
+        overlap (see :meth:`add`).
 
         Args:
-            request_id: The preempted request.
-
-        Returns:
-            The number of buffered operations discarded.
+            request_id: The preempted request. Unused.
         """
-        item = self._pending_items.pop(request_id, None)
-        return len(item.metadatas) if item is not None else 0
 
     def discard_for_reuse(self, request_id: str) -> None:
         """Discard what the finished holder of this id left buffered.
@@ -154,7 +165,7 @@ class FIFOOffloadPolicy(OffloadPolicy):
         Args:
             request_id: The id a new request is taking over.
         """
-        self.drop_request(request_id)
+        self._pending_items.pop(request_id, None)
 
     def release_request(self, request_id: str) -> None:
         """FIFO has no non-pending per-request state to release.
@@ -169,10 +180,23 @@ class FIFOOffloadPolicy(OffloadPolicy):
         Args:
             item: The failed batch's operations, in token order.
         """
-        pending = self._pending_items.get(item.request_id)
-        if pending is not None:
-            item.metadatas.extend(pending.metadatas)
-        self._pending_items[item.request_id] = item
+        pending = self._pending_items.setdefault(
+            item.request_id, PendingStoreItem(request_id=item.request_id)
+        )
+        # An op overlapping a queued one predates it: a preempted request
+        # restarted and offered the same tokens again.
+        pending.metadatas.extend(
+            [
+                entry
+                for entry in item.metadatas
+                if not any(
+                    entry[0].op.start < queued.op.end
+                    and entry[0].op.end > queued.op.start
+                    for queued, _ in pending.metadatas
+                )
+            ]
+        )
+        pending.metadatas.sort(key=lambda entry: entry[0].op.start)
 
     def mark_store_failed(self, request_id: str) -> int:
         """Drop the request's buffered operations.
@@ -186,7 +210,8 @@ class FIFOOffloadPolicy(OffloadPolicy):
         Returns:
             The number of buffered operations dropped.
         """
-        return self.drop_request(request_id)
+        item = self._pending_items.pop(request_id, None)
+        return len(item.metadatas) if item is not None else 0
 
     def log_final_stats(self) -> None:
         """FIFO keeps no counters."""

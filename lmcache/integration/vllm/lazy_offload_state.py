@@ -30,10 +30,10 @@ class SubmittedStoreBatch:
             completion receipt unpins exactly these.
         operations: The operations the batch submitted, with their hash
             snapshots, handed back to the policy if the batch fails.
-        orphaned: Whether a preemption reset or an id reuse detached the
-            batch from the request generation now using its id. An orphaned
-            batch still owns its pins, but a failure of it is not retried:
-            its operations belong to a generation that no longer exists.
+        orphaned: Whether a new request took over the id of the finished
+            request that submitted the batch. An orphaned batch still owns
+            its pins, but a failure of it is not retried: its operations
+            hold another request's tokens.
         failed: Whether a worker reported the store failed. The receipt
             still settles the batch once every worker has reported.
     """
@@ -63,11 +63,12 @@ class RequestSlot:
 class LazyOffloadRequestRegistry:
     """Own request lifecycle state and the single submitted batch per id.
 
-    A request id outlives one request: vLLM recreates a tracker under the
-    same id after preemption, and a later, unrelated request may reuse a
-    finished id while its store receipt is still outstanding. Both events
-    orphan whatever batch is in flight, so its late receipt releases pins
-    without its failure being blamed on the generation now using the id.
+    A request id outlives one request: a later, unrelated request may reuse
+    a finished id while its store receipt is still outstanding. That orphans
+    the batch in flight, so its late receipt releases pins without its
+    failure being retried for the request now using the id. vLLM also
+    recreates a tracker under the same id after preemption; that request
+    keeps its tokens, so its batch stays its own.
 
     Methods are grouped into those that update the internal state and
     those that query it. Scheduler thread only.
@@ -86,9 +87,9 @@ class LazyOffloadRequestRegistry:
 
         Three arrivals reach here and the slot's phase tells them apart: a
         first arrival has no slot; a preempted request comes back ACTIVE,
-        :meth:`reset` having already orphaned its batch; a distinct request
-        reusing a finished id finds the slot FINISHED, and its predecessor's
-        outstanding batch is orphaned here.
+        its batch still its own; a distinct request reusing a finished id
+        finds the slot FINISHED, and its predecessor's outstanding batch is
+        orphaned here.
 
         Args:
             request_id: The id whose tracker vLLM just created.
@@ -99,21 +100,6 @@ class LazyOffloadRequestRegistry:
             return
         if slot.phase is RequestPhase.FINISHED:
             self._orphan_in_flight(slot)
-        slot.phase = RequestPhase.ACTIVE
-
-    def reset(self, request_id: str) -> None:
-        """Detach submitted state before a preempted tracker is recreated.
-
-        The resumed request restarts at token zero under the same id, so a
-        batch submitted before the preemption belongs to no live generation
-        and is orphaned here. The slot stays ACTIVE, so the re-arrival that
-        follows is not mistaken for a distinct request reusing a finished id.
-
-        Args:
-            request_id: The preempted request.
-        """
-        slot = self._slots.setdefault(request_id, RequestSlot())
-        self._orphan_in_flight(slot)
         slot.phase = RequestPhase.ACTIVE
 
     def finish(self, request_id: str) -> None:
@@ -170,7 +156,7 @@ class LazyOffloadRequestRegistry:
 
         Returns:
             The closed batch, whose ``block_ids`` the caller unpins, whose
-            ``orphaned`` flag says whether it outlived its generation, and
+            ``orphaned`` flag says whether a new request took over its id, and
             whose ``failed`` flag says whether its operations need a retry.
 
         Raises:

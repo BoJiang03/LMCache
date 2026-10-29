@@ -114,9 +114,6 @@ class DrainSignals:
             flight. The worker tracks one store future per request id, so
             these must stay buffered until their receipt arrives; a policy
             may ask the manager to hold their blocks meanwhile.
-        preempted_request_ids: Requests this step preempted. Their blocks
-            are freed, and once rescheduled they restart from token zero,
-            which discards whatever is still buffered for them.
         running_blocks_allocated: Blocks this step allocated to requests
             that were already running, which the previous drain's
             ``next_step_blocks`` bounds. Read only to check that bound.
@@ -127,7 +124,6 @@ class DrainSignals:
     admission_blocks: int
     finished_request_ids: set[str]
     blocked_request_ids: set[str]
-    preempted_request_ids: set[str]
     running_blocks_allocated: int
 
 
@@ -208,17 +204,17 @@ class OffloadPolicy(ABC):
         self,
         meta: "LMCacheMPRequestMetadata",
         block_hashes: BlockHashes,
-    ) -> None:
+    ) -> PendingStoreItem:
         """Buffer one store operation instead of submitting it.
 
         One request's operations arrive in token order, each starting
         where the previous one ended, and a policy must keep them in that
-        order: they are submitted as one coalesced store.
+        order: they are submitted as one coalesced store. A preempted
+        request restarts and offers its tokens again; such an offer
+        supersedes the request's buffered operations it overlaps.
 
-        An operation the policy cannot take custody of is dropped here
-        rather than buffered: one covered by a block that carries no
-        prefix-cache hash (its later eviction would be undetectable), or one
-        belonging to a request whose prefix chain is already broken.
+        An operation belonging to a request whose prefix chain is already
+        broken is dropped here rather than buffered.
 
         Args:
             meta: The store operation: the request id, the token range, and
@@ -227,6 +223,10 @@ class OffloadPolicy(ABC):
                 ``meta``'s token range, read now. The policy keeps this
                 snapshot and compares against it later; a block whose hash
                 changed was recycled, so the buffered data is gone.
+
+        Returns:
+            The superseded operations, for the manager to release their
+            pins; empty when the offer superseded none.
         """
 
     @abstractmethod
@@ -340,19 +340,20 @@ class OffloadPolicy(ABC):
         """
 
     @abstractmethod
-    def drop_request(self, request_id: str) -> int:
-        """Discard operations invalidated by a preemption reset.
+    def restart_request(self, request_id: str) -> None:
+        """Note that a preempted request restarts under its id.
 
-        Called when vLLM preempts a request and frees its GPU blocks: every
-        buffered operation of that request points at blocks it no longer
-        owns. The request keeps its id and restarts from token zero, so the
-        policy must also forget that its prefix chain was broken.
+        vLLM freed the request's blocks when it preempted it. Its hashed
+        blocks keep their hashes in the free queue, so they are prefix-cache
+        victims like any other and its buffered operations stay, to be
+        stored if they come due. The restarted request offers its tokens
+        again from where its hit ends, and those offers supersede the
+        buffered operations they overlap (see :meth:`add`). The policy
+        forgets that the request's prefix chain was broken: the restart
+        computes the lost range again.
 
         Args:
-            request_id: The preempted request whose buffer is discarded.
-
-        Returns:
-            The number of buffered operations discarded.
+            request_id: The preempted request.
         """
 
     @abstractmethod
@@ -386,6 +387,9 @@ class OffloadPolicy(ABC):
     @abstractmethod
     def requeue_failed(self, item: PendingStoreItem) -> None:
         """Buffer again the operations of a store batch that failed.
+
+        An operation that overlaps one the request offered since is dropped:
+        the newer offer stores the same tokens.
 
         The store failed (a worker failed, or the server was unhealthy),
         but the data is still on the GPU: the batch pinned its blocks until
