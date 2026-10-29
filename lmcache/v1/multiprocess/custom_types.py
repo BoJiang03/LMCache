@@ -52,6 +52,14 @@ ENGINE_HELD_TOKENS_HINT = "lmcache.hint.engine_held_tokens"
 # them, since the engine re-stores it before it evicts it.
 ENGINE_HELD_BLOCKS_HINT = "lmcache.hint.engine_held_blocks"
 
+# Request config an exclusive-retrieve connector sets on a RETRIEVE and on the
+# post-allocation FREE_LOOKUP_LOCKS: the length of the request's prefix whose
+# chunks another running request holds on the GPU too. Those chunks are
+# shared-held: their L1 copies are touched instead of demoted, since the
+# engine's hit on them can stop short of the fork (a hybrid model resumes
+# only at a cached state) and the next sibling then loads them from L1.
+SHARED_HELD_TOKENS_HINT = "lmcache.hint.shared_held_tokens"
+
 
 @dataclass(order=True, frozen=True)
 class IPCCacheServerKey:
@@ -230,6 +238,15 @@ class IPCCacheServerKey:
             it is not set.
         """
         return int((self.request_configs or {}).get(ENGINE_HELD_TOKENS_HINT, 0))
+
+    def shared_held_tokens(self) -> int:
+        """Return the shared-held prefix length the request reported.
+
+        Returns:
+            ``request_configs[SHARED_HELD_TOKENS_HINT]`` in tokens, or 0 when
+            it is not set.
+        """
+        return int((self.request_configs or {}).get(SHARED_HELD_TOKENS_HINT, 0))
 
     def engine_held_block_ids(self) -> frozenset[int]:
         """Return the GPU block ids a store reported vLLM still held.

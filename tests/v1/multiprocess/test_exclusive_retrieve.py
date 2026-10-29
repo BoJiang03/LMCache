@@ -14,6 +14,9 @@
   touched demoted, a new key too when its write finishes after the demote;
   only under exclusive retrieve.
 - Under exclusive retrieve ``end_session`` touches no L1 key.
+- Chunks below ``SHARED_HELD_TOKENS_HINT`` (another running request holds
+  them on the GPU too) are touched instead of demoted, by a retrieve and by
+  the post-allocation FREE_LOOKUP_LOCKS.
 - The server advertises exclusive retrieve when it serves LMCache-driven
   retrieves.
 
@@ -60,6 +63,7 @@ from lmcache.v1.multiprocess.custom_types import (
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+    SHARED_HELD_TOKENS_HINT,
     IPCCacheServerKey,
 )
 from lmcache.v1.multiprocess.engine_context import LayoutDescRegistry
@@ -67,6 +71,7 @@ from lmcache.v1.multiprocess.modules import lmcache_driven_transfer as transfer
 from lmcache.v1.multiprocess.modules.lookup import LookupModule
 from lmcache.v1.multiprocess.modules.management import ManagementModule
 from lmcache.v1.multiprocess.session import SessionManager
+from lmcache.v1.multiprocess.token_codec import unpack_token_ids
 from lmcache.v1.multiprocess.token_hasher import TokenHasher
 import lmcache.v1.memory_management as memory_management
 
@@ -302,6 +307,38 @@ def test_exclusive_retrieve_demotes_exactly_the_read_keys(server: _Server) -> No
     assert session.get_demoted_keys() == set(loaded)
 
 
+def test_exclusive_retrieve_touches_the_shared_held_chunks(server: _Server) -> None:
+    """Loaded chunks below the shared-held hint go to the most recently used
+    end instead of being demoted; the rest of the read keys are demoted and
+    recorded as before."""
+    full, _ = server.keys()
+    loaded = _loaded(server)
+    server.lock_for_read(loaded)
+    key = _ipc_key(True)
+    key = IPCCacheServerKey.from_token_ids(
+        model_name=key.model_name,
+        world_size=key.world_size,
+        worker_id=key.worker_id,
+        token_ids=unpack_token_ids(key.token_bytes),
+        start=key.start,
+        end=key.end,
+        request_id=key.request_id,
+        request_configs={**(key.request_configs or {}), SHARED_HELD_TOKENS_HINT: CHUNK},
+    )
+
+    _, ok = server.module.retrieve(key, 1, RETRIEVE_BLOCKS, b"p")
+    server.drain_callbacks()
+
+    assert ok
+    demoted = [k for k in loaded if k != full[0]]
+    victims = server.victims()
+    assert victims[: len(demoted)] == demoted[::-1]
+    assert victims[-1] == full[0]
+    session = server.sessions.get("req")
+    assert session is not None
+    assert session.get_demoted_keys() == set(demoted)
+
+
 def test_plain_retrieve_keeps_the_eviction_order(server: _Server) -> None:
     """A retrieve without the flag leaves the eviction order unchanged."""
     loaded = _loaded(server)
@@ -480,6 +517,39 @@ def test_local_hit_demotes_the_held_prefix_instead_of_touching_it(
     victims = server.victims()
     assert victims[: len(held)] == held[::-1]
     assert victims[len(held)] == OTHER_KEY
+
+
+def test_local_hit_touches_the_shared_held_chunks(server: _Server) -> None:
+    """Chunks of the held prefix below the shared-held hint are touched to
+    most recently used instead of demoted; the rest of the held prefix is
+    demoted."""
+    lookup = _lookup_module(server, SEPARATE_GROUPS)
+    full, recurrent = server.keys()
+    assert _look_up(lookup, True, 12) == NUM_CHUNKS
+    key = _scheduler_key(True, 0, 12, held_tokens=12)
+    key = IPCCacheServerKey.from_token_ids(
+        model_name=key.model_name,
+        world_size=key.world_size,
+        worker_id=None,
+        token_ids=unpack_token_ids(key.token_bytes),
+        start=key.start,
+        end=key.end,
+        request_id=key.request_id,
+        request_configs={
+            **(key.request_configs or {}),
+            SHARED_HELD_TOKENS_HINT: 2 * CHUNK,
+        },
+    )
+
+    lookup.free_lookup_locks(key, 1)
+
+    demoted = [full[2], recurrent[2]]
+    victims = server.victims()
+    assert victims[: len(demoted)] == demoted[::-1]
+    assert set(victims[-2:]) == {full[0], full[1]}
+    session = server.sessions.get("req")
+    assert session is not None
+    assert session.get_demoted_keys() == set(demoted)
 
 
 def test_plain_local_hit_touches_the_covered_prefix(server: _Server) -> None:

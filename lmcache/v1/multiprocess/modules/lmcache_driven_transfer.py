@@ -1278,19 +1278,40 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 # A successful retrieve read every retained key, so
                 # read_completion holds exactly the loaded keys. Demoting
                 # after the copy keeps the L1 copy until the GPU has its own.
+                # Shared-held chunks, which another running request holds
+                # too, are touched instead: the next sibling's hit can stop
+                # short of them on the GPU and load them from L1.
                 if (
                     retrieve_succeeded
                     and retained_keys
                     and key.requests_exclusive_retrieve()
                 ):
+                    chunk_size = self._ctx.chunk_size
+                    num_shared = (
+                        key.shared_held_tokens() // chunk_size - key.start // chunk_size
+                    )
+                    shared_keys = {
+                        obj_key
+                        for keys in obj_keys_per_obj_group
+                        for obj_key in keys[: max(0, num_shared)]
+                    }
+                    if shared_keys:
+                        self._ctx.storage_manager.touch_cached_keys(
+                            [k for k in retained_keys if k in shared_keys]
+                        )
                     submit_callback_to_stream(
                         cache_context.cupy_stream,
                         "demote_l1_keys",
-                        read_completion,
+                        [
+                            (owner, [k for k in keys if k not in shared_keys])
+                            for owner, keys in read_completion
+                        ],
                     )
                     self._ctx.session_manager.get_or_create(
                         key.request_id
-                    ).record_demoted_keys(prefetched_keys)
+                    ).record_demoted_keys(
+                        [k for k in prefetched_keys if k not in shared_keys]
+                    )
                 num_tokens = (
                     num_chunks * self._ctx.chunk_size
                     if len(prefetched_keys) == expected_retained

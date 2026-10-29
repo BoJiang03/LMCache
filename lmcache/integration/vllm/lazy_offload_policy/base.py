@@ -418,5 +418,24 @@ class OffloadPolicy(ABC):
         """
 
     @abstractmethod
+    def expedite(self, request_id: str, end: int) -> None:
+        """Make a request's buffered operations below ``end`` due now.
+
+        Exclusive retrieve keeps a chunk that two running requests hold in
+        L1's most recently used end, written there if missing, and lets it
+        fall back to the evict-first end once one holder is left; the
+        manager stores the chunk again for each change. The operations stay
+        buffered until a drain emits them, which is the next one that has
+        budget and finds the request without a batch in flight; they are
+        never held for it, since nothing is about to recycle their blocks.
+
+        Args:
+            request_id: The request whose operations are expedited. An id
+                with nothing buffered is ignored.
+            end: Token the expedited range ends at: every buffered
+                operation of the request starting before it is due.
+        """
+
+    @abstractmethod
     def log_final_stats(self) -> None:
         """Write the policy's final counters at connector shutdown."""

@@ -62,6 +62,7 @@ from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
+    SHARED_HELD_TOKENS_HINT,
     STORE_DUE_HINT,
 )
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
@@ -1401,5 +1402,72 @@ def test_exclusive_local_hit_reports_and_restores_the_held_prefix(
         assert store.request_configs == (
             {**configs, ENGINE_HELD_BLOCKS_HINT: [1, 2, 3]} if configs else {}
         ) | {STORE_DUE_HINT: True}
+    finally:
+        scheduler.shutdown()
+
+
+@pytest.mark.parametrize(
+    "num_prompt_tokens, expected_hint",
+    [
+        # 2 tokens past the 8-token hit: less than one 4-token block.
+        (10, 8),
+        # 4 tokens past the hit: a full block, and nothing else holds it.
+        (12, None),
+    ],
+)
+def test_exclusive_hint_keeps_the_hit_of_a_request_adding_no_block(
+    mock_io: SimpleNamespace, num_prompt_tokens: int, expected_hint: int | None
+) -> None:
+    """A request that computes less than one scheduler block past its hit
+    caches no new state in vLLM, so its RETRIEVE and post-allocation FREE
+    carry ``SHARED_HELD_TOKENS_HINT`` up to the hit end; a request that
+    computes a full block past it, with no sibling holding its prefix,
+    carries no hint."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={
+                "lmcache.mp.lazy_offload": True,
+                "lmcache.mp.lazy_offload_policy": "FIFO",
+                "lmcache.mp.lazy_offload_threshold": 1,
+                "lmcache.mp.lazy_offload_select_count": 1,
+                "lmcache.mp.exclusive_retrieve": True,
+            },
+        )
+    )
+    scheduler = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    _bind_serving_whole_prompts(scheduler, mock_io.pool)
+    request = _request()
+    cast(Any, request).all_token_ids = list(range(num_prompt_tokens))
+    cast(Any, request).num_prompt_tokens = num_prompt_tokens
+    cast(Any, request).block_hashes = [
+        f"request-{i}".encode() for i in range(num_prompt_tokens // 4)
+    ]
+    hint = {} if expected_hint is None else {SHARED_HELD_TOKENS_HINT: expected_hint}
+    mock_io.scheduler.check_lookup_result.side_effect = [8, 0]
+    try:
+        # vLLM hits 4 tokens, LMCache 8: the retrieve loads chunk [4, 8).
+        assert scheduler.get_num_new_matched_tokens(request, 4) == (4, True)
+        scheduler.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2],)), 4
+        )
+        free = mock_io.scheduler.free_lookup_locks.call_args.kwargs
+        assert free["request_configs"] == {
+            EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True,
+            ENGINE_HELD_TOKENS_HINT: 4,
+            **hint,
+        }
+        metadata = scheduler.build_connector_meta(_schedule())
+        (retrieve,) = metadata.requests
+        assert (retrieve.direction, retrieve.op.start, retrieve.op.end) == (
+            "RETRIEVE",
+            4,
+            8,
+        )
+        assert retrieve.request_configs == {
+            EXCLUSIVE_RETRIEVE_REQUEST_CONFIG: True,
+            **hint,
+        }
     finally:
         scheduler.shutdown()

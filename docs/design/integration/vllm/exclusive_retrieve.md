@@ -31,6 +31,9 @@ no-op re-store there.
 | Lazy re-store at L0 eviction, L1 copy gone | written again |
 | Lazy store of a chunk L0 still holds (another block of the op made it due) | committed or touched demoted, and buffered again for its own eviction (rule 9) |
 | `end_session` | no L1 touch (rule 4) |
+| Chunk held by 2+ running requests (shared-held): loaded, local hit, or stored | touched, or written if missing, never demoted (rule 10) |
+| Shared-held chunk back to one holder | that holder's buffered store is expedited, demoted as rule 9 says (rule 10) |
+| Hit of a request computing less than one scheduler block past it: loaded or local hit | touched, never demoted (rule 11) |
 
 1. **Demote after a fully successful retrieve.** The server's retrieve
    submits a `demote_l1_keys` host callback on the transfer stream right after
@@ -180,6 +183,67 @@ lookup hit ──> RETRIEVE [s, e) ──> finish_read_by_owner ──> demote_l
     reserve_write skips it -> touch (MRU)           write it again (MRU)
 ```
 
+## Shared-held chunks (rule 10)
+
+A chunk two or more running exclusive requests hold is shared-held.
+Siblings of an agentic workload share a head of several chunks; one loads
+it and it is demoted, but on a hybrid model the next sibling's local hit
+stops short of the fork (vLLM resumes only at a cached Mamba state, and
+there is none at the fork), so it needs the head from L1, where the demoted
+copy may already be gone. The manager counts holders per chunk, keyed by
+the request's block hash that ends the chunk: a request holds a chunk from
+the store offer (`add_store_candidate`) that covers it, which under
+exclusive retrieve starts at token 0, until it finishes or is reset.
+
+- When a chunk gets its second holder, that holder's buffered store is
+  expedited (`OffloadPolicy.expedite`): the next drain with budget emits
+  it, never holding it, and its shared-held chunks are left out of
+  `engine_held_blocks`, so the server touches a resident copy and writes
+  a missing one at MRU. Engine-held chunks are still parked, so they are
+  stored again once vLLM releases them.
+- A RETRIEVE and the post-allocation FREE_LOOKUP_LOCKS carry
+  `request_configs["lmcache.hint.shared_held_tokens"] = S`, the prefix
+  another running request holds (`shared_held_tokens`; omitted when 0).
+  The server touches instead of demoting the keys of chunks below `S`.
+- When a chunk drops back to one holder, that holder's buffered stores
+  up to it are expedited: emitted while vLLM holds the chunk, the store
+  demotes it (rule 9), so it is an ordinary exclusive chunk again. If
+  the remaining holder has nothing buffered for it (its store already
+  went out while the chunk was shared), the copy stays where it is,
+  which costs L1 capacity, never data.
+
+```text
+A loads head H (sole holder)          -> H demoted (rule 1)
+B allocates, H held by A              -> RETRIEVE/FREE carry shared_held_tokens:
+                                         H touched, not demoted
+B offered the store of H (2nd holder) -> B's store expedited: H touched or
+                                         written MRU, parked if vLLM holds it
+B finishes (H back to holder A)       -> A's buffered store expedited:
+                                         H demoted (rule 9), parked
+```
+
+An expedited store is a store ahead of an L0 eviction to keep a hit
+servable: every candidate is still stored, an expedited one earlier, and an
+engine-held chunk again once vLLM releases it. No block is pinned except
+while its copy is in flight.
+
+## Hit of a request that adds no block (rule 11)
+
+If `num_prompt_tokens - max(vLLM hit, LMCache hit) < scheduler block size`,
+the RETRIEVE and post-allocation FREE carry
+`shared_held_tokens >= hit end`, so the whole hit is touched instead of
+demoted. Why: such a request fills no new full block, so vLLM caches no
+recurrent state past the hit; the next turn of its session resumes from the
+hit end, and on a hybrid model only the L1 copy ending there can serve it.
+Demoting that copy made the next turn a full recompute: in an e2e run,
+own-session continuations after a turn that computed under 1584 tokens hit
+0 in 25/130 cases under exclusive retrieve, against 0/254 under eager.
+
+```text
+prompt 10, block 4, hit 8 (10 - 8 < 4) -> RETRIEVE/FREE shared_held_tokens = 8
+prompt 12, block 4, hit 8 (12 - 8 = 4) -> no hint unless rule 10 sets one
+```
+
 ## Why nothing is dropped
 
 The L1 copy of a loaded chunk is not removed by the retrieve; it only moves to
@@ -275,6 +339,15 @@ The held prefix travels only on the post-allocation FREE_LOOKUP_LOCKS:
 LMCacheMPRequestTracker.num_vllm_hit_tokens
   -> request_configs["lmcache.hint.engine_held_tokens"]   (FREE_LOOKUP_LOCKS)
   -> IPCCacheServerKey.engine_held_tokens() on the server
+```
+
+The shared-held prefix (or the hit end, rule 11) travels on the RETRIEVE
+and on the post-allocation FREE_LOOKUP_LOCKS:
+
+```text
+max(LazyOffloadManager.shared_held_tokens(request_id), hit end if rule 11)
+  -> request_configs["lmcache.hint.shared_held_tokens"]   (RETRIEVE, FREE)
+  -> IPCCacheServerKey.shared_held_tokens() on the server
 ```
 
 The held blocks of a lazy store travel only on that STORE:
