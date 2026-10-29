@@ -2,7 +2,7 @@
 """LMCache-driven KV cache transfer operations for the MPCacheServer."""
 
 # Standard
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 import threading
 import time
@@ -190,6 +190,28 @@ def engine_held_chunk_masks(
             mask.append(bool(real) and all(block in held_block_ids for block in real))
         masks.append(mask)
     return masks
+
+
+@dataclass
+class _StoreReservation:
+    """The L1 reservation of one store, taken before any device work.
+
+    Attributes:
+        reserved_by_group: Per object group, the objects reserved for writing.
+        all_dict: Every reserved object, over all object groups.
+        resident_keys: Keys neither reserved nor out of memory: already
+            resident (or being written).
+        held_keys_by_group: Per object group, chunk index -> key of a chunk
+            the engine holds, reserved or resident: demoted instead of made
+            MRU.
+        total_bytes: Bytes of every reserved object.
+    """
+
+    reserved_by_group: list[dict[ObjectKey, MemoryObj]] = field(default_factory=list)
+    all_dict: dict[ObjectKey, MemoryObj] = field(default_factory=dict)
+    resident_keys: list[ObjectKey] = field(default_factory=list)
+    held_keys_by_group: list[dict[int, ObjectKey]] = field(default_factory=list)
+    total_bytes: int = 0
 
 
 @dataclass
@@ -719,6 +741,11 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
             Failed copies or completion preparation retain staging reservations
             under the existing write-TTL rules; queued GPU writes may still
             reference those buffers.
+            An exclusive-retrieve store reserves L1 before any device work.
+            If it reserves nothing (every chunk resident, all-null or out of
+            memory) it still touches or demotes its resident keys, but
+            submits no device work and publishes no MP_STORE_SUBMITTED /
+            START / END; its event handle is empty.
         """
         st = time.perf_counter()
 
@@ -826,6 +853,33 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 else None
             )
 
+            # An exclusive retrieve demoted the chunks it loaded and the
+            # engine re-stores them before it drops its GPU copy, so most of
+            # its re-stores find every chunk resident: re-storing one is a
+            # metadata flip (touch or demote), with no copy. L1 is reserved
+            # before any device work, and a store that reserves nothing skips
+            # the staging, the producer-event wait and the store events; its
+            # empty completion handle lets the client release the blocks at
+            # once. Other stores keep the copy-path order.
+            reservation: _StoreReservation | None = None
+            if key.requests_exclusive_retrieve():
+                self._maybe_publish_token_bindings(key, obj_keys_per_obj_group[0])
+                try:
+                    reservation = self._reserve_store_objects(
+                        cache_context,
+                        obj_keys_per_obj_group,
+                        skipped_chunks,
+                        held_chunks,
+                        out_of_memory_keys,
+                    )
+                    if not reservation.all_dict:
+                        self._touch_resident_keys(reservation, num_chunks)
+                except Exception:
+                    logger.exception("Cannot store keys due to exception")
+                    return b"", False, [False] * num_chunks
+                if not reservation.all_dict:
+                    return b"", True, [False] * num_chunks
+
             block_ids_per_group_gpu = downsample_and_stage_block_ids(
                 cache_context, gpu_block_ids
             )
@@ -852,14 +906,8 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 )
             )
 
-            # Worker 0 only: bindings depend on token content alone, so one
-            # report covers every rank's keys. Published before finish_write
-            # is enqueued so the token bindings precede the write-finished
-            # events on the bus.
-            if key.worker_id == 0 and self._ctx.event_bus.has_subscribers(
-                EventType.MP_TOKENS
-            ):
-                self._publish_token_bindings(key, obj_keys_per_obj_group[0])
+            if reservation is None:
+                self._maybe_publish_token_bindings(key, obj_keys_per_obj_group[0])
 
             transfer_key = next_transfer_key(key.request_id)
             self._ctx.event_bus.publish_on_stream(
@@ -876,64 +924,28 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 ),
             )
 
-            reserved_dict: dict[ObjectKey, MemoryObj] = {}
             all_dict: dict[ObjectKey, MemoryObj] = {}
-            # Keys neither reserved nor out of memory: already resident (or
-            # being written), touched below for an exclusive-retrieve request
-            # unless the engine holds them.
-            resident_keys: list[ObjectKey] = []
-            # Per object group, chunk index -> key of a chunk the engine
-            # holds, reserved or resident: demoted instead of made MRU.
-            held_keys_by_group: list[dict[int, ObjectKey]] = [
-                {} for _ in range(num_object_groups)
-            ]
-            total_bytes: int = 0
+            total_bytes = 0
             store_succeeded = False
             try:
-                for obj_group_id in range(num_object_groups):
-                    obj_keys = obj_keys_per_obj_group[obj_group_id]
-                    skip_mask = skipped_chunks[obj_group_id]
-                    keys_to_reserve = [
-                        k for i, k in enumerate(obj_keys) if not skip_mask[i]
-                    ]
-                    layout_desc = get_layout_desc(
+                if reservation is None:
+                    reservation = self._reserve_store_objects(
                         cache_context,
-                        self._ctx.chunk_size,
-                        object_group_id=obj_group_id,
+                        obj_keys_per_obj_group,
+                        skipped_chunks,
+                        held_chunks,
+                        out_of_memory_keys,
                     )
-                    group_oom_keys: list[ObjectKey] = []
-                    reserved_dict = self._ctx.storage_manager.reserve_write(
-                        keys_to_reserve, layout_desc, group_oom_keys
-                    )
-                    if out_of_memory_keys is not None and group_oom_keys:
-                        # The caller retries these, so L1 makes room now.
-                        out_of_memory_keys.extend(group_oom_keys)
-                        self._ctx.storage_manager.make_room(group_oom_keys, layout_desc)
-                    oom_set = set(group_oom_keys)
-                    resident_keys.extend(
-                        k
-                        for k in keys_to_reserve
-                        if k not in reserved_dict and k not in oom_set
-                    )
-                    if held_chunks is not None:
-                        held_keys_by_group[obj_group_id] = {
-                            i: k
-                            for i, k in enumerate(obj_keys)
-                            if held_chunks[obj_group_id][i]
-                            and not skip_mask[i]
-                            and k not in oom_set
-                        }
-                    all_dict.update(reserved_dict)
-                    if reserved_dict:
-                        total_bytes += next(
-                            iter(reserved_dict.values())
-                        ).get_size() * len(reserved_dict)
-
+                all_dict = reservation.all_dict
+                total_bytes = reservation.total_bytes
+                for obj_group_id in range(num_object_groups):
+                    reserved_dict = reservation.reserved_by_group[obj_group_id]
                     # Keys not in reserved_dict (all-null chunks skipped above, or
                     # skipped by the storage manager) become None entries; the
                     # helper skips them for D2H.
                     memory_objs: list[MemoryObj | None] = [
-                        reserved_dict.get(obj_key) for obj_key in obj_keys
+                        reserved_dict.get(obj_key)
+                        for obj_key in obj_keys_per_obj_group[obj_group_id]
                     ]
 
                     # NOTE: batch_size must stay 1 for store.
@@ -954,26 +966,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                     else []
                 )
                 if key.requests_exclusive_retrieve():
-                    # An exclusive retrieve demoted these keys when it loaded
-                    # them; the engine stores them again when it is about to
-                    # drop its GPU copy, so the L1 copy becomes the primary
-                    # again. A chunk the engine still holds is not about to
-                    # be dropped (another block of the store made it due),
-                    # so it stays demoted, a new key too once its write
-                    # finishes; the engine stores it again later.
-                    # Chunk order, so a suffix is evicted before its prefix.
-                    held_keys = [
-                        group_keys[i]
-                        for i in range(num_chunks)
-                        for group_keys in held_keys_by_group
-                        if i in group_keys
-                    ]
-                    held_set = set(held_keys)
-                    touched = [k for k in resident_keys if k not in held_set]
-                    if touched:
-                        self._ctx.storage_manager.touch_cached_keys(touched)
-                    if held_keys:
-                        self._ctx.storage_manager.demote_cached_keys(held_keys)
+                    self._touch_resident_keys(reservation, num_chunks)
                 store_succeeded = True
             except Exception:
                 logger.exception("Cannot store keys due to exception")
@@ -1413,3 +1406,119 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 },
             )
         )
+
+    def _reserve_store_objects(
+        self,
+        cache_context: BaseCacheContext,
+        obj_keys_per_obj_group: list[list[ObjectKey]],
+        skipped_chunks: list[list[bool]],
+        held_chunks: list[list[bool]] | None,
+        out_of_memory_keys: list[ObjectKey] | None,
+    ) -> _StoreReservation:
+        """Reserve L1 objects for every object group of one store.
+
+        Args:
+            cache_context: The cache context of the storing engine.
+            obj_keys_per_obj_group: The store's object keys per object group.
+            skipped_chunks: Per object group, the chunks not to store.
+            held_chunks: Per object group, the chunks the engine still holds,
+                or ``None`` when the store reports none.
+            out_of_memory_keys: When given, extended with the object keys no
+                L1 could allocate, for which L1 is asked to make room: the
+                caller fails the store and it is retried.
+
+        Returns:
+            The reserved objects, and the keys that are already resident.
+
+        Raises:
+            Exception: Allocation exceptions of ``reserve_write`` propagate.
+        """
+        reservation = _StoreReservation()
+        for obj_group_id, obj_keys in enumerate(obj_keys_per_obj_group):
+            skip_mask = skipped_chunks[obj_group_id]
+            keys_to_reserve = [k for i, k in enumerate(obj_keys) if not skip_mask[i]]
+            layout_desc = get_layout_desc(
+                cache_context,
+                self._ctx.chunk_size,
+                object_group_id=obj_group_id,
+            )
+            group_oom_keys: list[ObjectKey] = []
+            reserved_dict = self._ctx.storage_manager.reserve_write(
+                keys_to_reserve, layout_desc, group_oom_keys
+            )
+            if out_of_memory_keys is not None and group_oom_keys:
+                # The caller retries these, so L1 makes room now.
+                out_of_memory_keys.extend(group_oom_keys)
+                self._ctx.storage_manager.make_room(group_oom_keys, layout_desc)
+            oom_set = set(group_oom_keys)
+            reservation.resident_keys.extend(
+                k
+                for k in keys_to_reserve
+                if k not in reserved_dict and k not in oom_set
+            )
+            reservation.held_keys_by_group.append(
+                {
+                    i: k
+                    for i, k in enumerate(obj_keys)
+                    if held_chunks[obj_group_id][i]
+                    and not skip_mask[i]
+                    and k not in oom_set
+                }
+                if held_chunks is not None
+                else {}
+            )
+            reservation.reserved_by_group.append(reserved_dict)
+            reservation.all_dict.update(reserved_dict)
+            if reserved_dict:
+                reservation.total_bytes += next(
+                    iter(reserved_dict.values())
+                ).get_size() * len(reserved_dict)
+        return reservation
+
+    def _maybe_publish_token_bindings(
+        self, key: IPCCacheServerKey, obj_keys: list[ObjectKey]
+    ) -> None:
+        """Publish a store's token bindings from worker 0, when subscribed.
+
+        Bindings depend on token content alone, so one report covers every
+        rank's keys. Called before finish_write is enqueued, so the bindings
+        precede the write-finished events on the bus.
+
+        Args:
+            key: The store's IPC key.
+            obj_keys: The object keys of the store's first object group.
+        """
+        if key.worker_id == 0 and self._ctx.event_bus.has_subscribers(
+            EventType.MP_TOKENS
+        ):
+            self._publish_token_bindings(key, obj_keys)
+
+    def _touch_resident_keys(
+        self, reservation: _StoreReservation, num_chunks: int
+    ) -> None:
+        """Make an exclusive-retrieve store's resident keys primary again.
+
+        An exclusive retrieve demoted these keys when it loaded them; the
+        engine stores them again when it is about to drop its GPU copy, so
+        the L1 copy becomes the primary again. A chunk the engine still holds
+        is not about to be dropped (another block of the store made it due),
+        so it stays demoted, a new key too once its write finishes; the
+        engine stores it again later.
+
+        Args:
+            reservation: The store's reservation.
+            num_chunks: The number of chunks the store covers.
+        """
+        # Chunk order, so a suffix is evicted before its prefix.
+        held_keys = [
+            group_keys[i]
+            for i in range(num_chunks)
+            for group_keys in reservation.held_keys_by_group
+            if i in group_keys
+        ]
+        held_set = set(held_keys)
+        touched = [k for k in reservation.resident_keys if k not in held_set]
+        if touched:
+            self._ctx.storage_manager.touch_cached_keys(touched)
+        if held_keys:
+            self._ctx.storage_manager.demote_cached_keys(held_keys)

@@ -60,9 +60,16 @@ no-op re-store there.
    `num_stored_tokens` to 0, so the loaded chunks and the local-hit prefix
    below them become ordinary lazy store candidates again (with their block
    hashes snapshotted on admission; Mamba null blocks are filtered as usual).
-6. **A re-store of a resident key promotes it.** If the demoted copy is still
-   in L1 when the store arrives, `reserve_write` skips it (already resident),
-   and the store touches it in L1 and L2. The L1 copy is the primary again.
+6. **A re-store of a resident key promotes it, as a metadata flip.** If the
+   demoted copy is still in L1 when the store arrives, `reserve_write` skips
+   it (already resident), and the store touches it in L1 and L2. The L1 copy
+   is the primary again. An exclusive store reserves L1 before any device
+   work, so a re-store whose every chunk is resident (the common case: the
+   connector re-offers every loaded chunk) copies nothing, skips the
+   producer-event wait and the store events, and returns an empty
+   completion handle, which releases its blocks at once. A store without
+   the flag keeps the copy-path order, as upstream: it is rarely all
+   resident, and only when another request stored the same chunks first.
 7. **The connector alone decides.** The flag reaches the server per request as
    `request_configs["lmcache.mp.exclusive_retrieve"] = True` on the LOOKUP,
    FREE_LOOKUP_LOCKS, RETRIEVE and STORE keys. The connector strips a
