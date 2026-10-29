@@ -129,7 +129,8 @@ def _coalesce_store_metadata(
 
     Returns:
         A single STORE metadata spanning the whole range, carrying the
-        concatenated block ids of every cache group.
+        concatenated block ids of every cache group and the request's salt
+        and request configs, whose matching tags are part of the key.
 
     Raises:
         ValueError: If the input is empty, non-contiguous, or changes cache
@@ -168,6 +169,7 @@ def _coalesce_store_metadata(
         direction="STORE",
         op=merged_op,
         cache_salt=first.cache_salt,
+        request_configs=first.request_configs,
     )
 
 
