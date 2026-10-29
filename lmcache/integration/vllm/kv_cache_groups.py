@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 # Standard
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -19,6 +19,24 @@ from lmcache.v1.multiprocess.group_view import EngineGroupInfo
 logger = init_logger(__name__)
 
 
+def representative_spec(spec: Any) -> Any:
+    """Return one layer's spec of a vLLM KV cache group's spec.
+
+    ``UniformTypeKVCacheSpecs`` holds same-typed per-layer specs, so its first
+    leaf stands for the group; any other spec already applies to every layer.
+
+    Args:
+        spec: A vLLM KV cache spec, or a ``UniformTypeKVCacheSpecs`` container.
+
+    Returns:
+        The first per-layer spec of a container, else ``spec`` itself.
+    """
+    inner = getattr(spec, "kv_cache_specs", None)
+    if isinstance(inner, dict) and inner:
+        return next(iter(inner.values()))
+    return spec
+
+
 def _is_attention_spec(spec: Any) -> bool:
     """Return whether the KV cache spec is a vLLM attention spec.
 
@@ -26,9 +44,7 @@ def _is_attention_spec(spec: Any) -> bool:
     ``UniformTypeKVCacheSpecs`` is unwrapped first (same-typed layers, one
     leaf suffices); it does not derive from ``AttentionSpec`` itself.
     """
-    inner = getattr(spec, "kv_cache_specs", None)
-    if isinstance(inner, dict) and inner:
-        spec = next(iter(inner.values()))
+    spec = representative_spec(spec)
     return any(cls.__name__ == "AttentionSpec" for cls in type(spec).__mro__)
 
 
@@ -48,9 +64,7 @@ def is_scratch_spec(spec: Any) -> bool:
     Returns:
         ``True`` for a scratch spec, ``False`` for a prefix-cacheable one.
     """
-    inner = getattr(spec, "kv_cache_specs", None)
-    if isinstance(inner, dict) and inner:
-        spec = next(iter(inner.values()))
+    spec = representative_spec(spec)
     if hasattr(spec, "prefix_cacheable"):
         return not spec.prefix_cacheable
     return not getattr(spec, "participates_in_prefix_caching", True)
@@ -74,11 +88,17 @@ def get_tokens_per_block(kv_cache_spec: Any, dcp_size: int) -> int:
     return block_size
 
 
-def _is_sliding_window_spec(spec: Any) -> bool:
+def is_sliding_window_spec(spec: Any) -> bool:
     """Return whether the KV cache spec is a vLLM sliding-window spec.
 
     Checked by class name so this module stays importable without vLLM.
     Subclasses such as ``SlidingWindowMLASpec`` count.
+
+    Args:
+        spec: One layer's vLLM KV cache spec.
+
+    Returns:
+        ``True`` for a sliding-window attention spec.
     """
     return any(cls.__name__ == "SlidingWindowSpec" for cls in type(spec).__mro__)
 
@@ -89,12 +109,59 @@ def _is_cachable_mamba_spec(spec: Any) -> bool:
     Align mode snapshots only the last block; all mode snapshots every block
     boundary. Either way a restore consumes only the last matched block's
     page, so both behave like a cross-chunk sliding window of one block.
-    Checked by class name (like :func:`_is_sliding_window_spec`) so this
+    Checked by class name (like :func:`is_sliding_window_spec`) so this
     module stays importable without vLLM.
     """
     return any(cls.__name__ == "MambaSpec" for cls in type(spec).__mro__) and getattr(
         spec, "mamba_cache_mode", "none"
     ) in ("align", "all")
+
+
+def hit_tokens_before_free(
+    coordinator: Any,
+    block_hashes: Sequence[Any],
+    hit_blocks: Sequence[Sequence[Any]],
+    hit_tokens: int,
+    is_free: Callable[[Any], bool],
+) -> int:
+    """Cut vLLM's hit until it relies on no free block.
+
+    A hit that reads a non-null block ``is_free`` calls free is cut below
+    that block's start and looked up again with vLLM's read-only
+    ``find_longest_cache_hit``, until no such block is read. A Mamba state
+    or sliding window anchoring the hit past a chunk thus counts only while
+    vLLM cannot recycle it.
+
+    Args:
+        coordinator: vLLM's ``KVCacheCoordinator``.
+        block_hashes: The prefix's vLLM block hashes.
+        hit_blocks: Per KV cache group, the blocks ``coordinator``'s hit over
+            ``block_hashes`` reads, by position.
+        hit_tokens: That hit's length in tokens.
+        is_free: Whether a ``KVCacheBlock`` the hit reads may be recycled.
+
+    Returns:
+        The cut hit's length in tokens, the same for every KV cache group.
+    """
+    while True:
+        max_tokens = min(
+            (
+                position * manager.block_size
+                for manager, blocks in zip(
+                    coordinator.single_type_managers, hit_blocks, strict=True
+                )
+                for position, block in enumerate(blocks)
+                if position * manager.block_size < hit_tokens
+                and not block.is_null
+                and is_free(block)
+            ),
+            default=hit_tokens,
+        )
+        if max_tokens in (hit_tokens, 0):
+            return max_tokens
+        hit_blocks, hit_tokens, _ = coordinator.find_longest_cache_hit(
+            block_hashes, max_tokens
+        )
 
 
 def _resolve_per_layer_sw_sizes(
@@ -128,7 +195,7 @@ def _resolve_per_layer_sw_sizes(
         per_layer_specs = getattr(spec, "kv_cache_specs", None)
         for name in group.layer_names:
             layer_spec = per_layer_specs[name] if per_layer_specs else spec
-            if _is_sliding_window_spec(layer_spec):
+            if is_sliding_window_spec(layer_spec):
                 per_layer_sw_size[layer_to_idx[name]] = layer_spec.sliding_window
             elif _is_cachable_mamba_spec(layer_spec):
                 per_layer_sw_size[layer_to_idx[name]] = layer_spec.block_size

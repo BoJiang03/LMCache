@@ -177,6 +177,14 @@ class FIFOOffloadPolicy(OffloadPolicy):
         Args:
             item: The failed batch's operations, in token order.
         """
+        self.readmit(item)
+
+    def readmit(self, item: PendingStoreItem) -> None:
+        """Buffer operations again, in token order among the others.
+
+        Args:
+            item: The operations, in token order.
+        """
         pending = self._pending_items.setdefault(
             item.request_id, PendingStoreItem(request_id=item.request_id)
         )

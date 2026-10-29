@@ -58,6 +58,7 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.utils import CacheStoreEvent  # noqa: E402
 from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
+    ENGINE_HELD_BLOCKS_HINT,
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
@@ -1317,10 +1318,13 @@ def test_exclusive_retrieve_restores_the_loaded_chunks(
             12,
         )
         assert store.op.block_ids == ([[1, 2, 3]] if exclusive else [[3]])
+        # The mock pool's blocks stay referenced, so vLLM still holds them.
         # A lazy store is due either way.
-        assert store.request_configs == (expected_configs or {}) | {
-            STORE_DUE_HINT: True
-        }
+        assert store.request_configs == (
+            {**expected_configs, ENGINE_HELD_BLOCKS_HINT: [1, 2, 3]}
+            if expected_configs
+            else {}
+        ) | {STORE_DUE_HINT: True}
     finally:
         scheduler.shutdown()
 
@@ -1393,6 +1397,9 @@ def test_exclusive_local_hit_reports_and_restores_the_held_prefix(
             12,
         )
         assert store.op.block_ids == ([[1, 2, 3]] if exclusive else [[3]])
-        assert store.request_configs == (configs or {}) | {STORE_DUE_HINT: True}
+        # The mock pool's blocks stay referenced, so vLLM still holds them.
+        assert store.request_configs == (
+            {**configs, ENGINE_HELD_BLOCKS_HINT: [1, 2, 3]} if configs else {}
+        ) | {STORE_DUE_HINT: True}
     finally:
         scheduler.shutdown()

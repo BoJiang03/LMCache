@@ -70,14 +70,15 @@ an allocation can reach it.
 
 ### Known limits
 
-This comes from the separate Mamba null-page commit bug (a recurrent chunk
-whose last block is null commits null page 0 as its state) and keeps the
+Both come from the separate Mamba null-page commit bug (a recurrent chunk
+whose last block is null commits null page 0 as its state) and keep the
 behaviour the policy had before hash-less blocks were nulled at admission:
 
 - When a prompt's kept state lands mid-chunk (prompt length modulo the
   chunk in `1..block_size-1` with chunk = 2 blocks), the chunk ending at
   the hit point carries that state in its first block and null in its
   last; storing it hits the bug.
+- A hash-less state an exclusive retrieve loaded is not stored again.
 
 ## The invariant, and the one rule built on it
 
@@ -333,13 +334,13 @@ lifecycle events to it.
    defer the lookup while `is_flushing` or an open batch covers a flushed
    range.
 7. On preemption tracker reset, call `restart_request(id)`: buffered and
-   held ops and an already submitted batch all stay the request's own;
-   only its broken-chain marker is cleared, since the restart computes the
-   lost range again. The restarted request offers its tokens again from
-   where its hit ends, and `add()` drops the buffered ops each offer
-   overlaps (`dropped_superseded`); the manager unpins those that were
-   held. `requeue_failed` drops an op that overlaps a newer offer the same
-   way. A buffered op lost before the restart
+   held ops, parked ops and an already submitted batch all stay the
+   request's own; only its broken-chain marker is cleared, since the
+   restart computes the lost range again. The restarted request offers its
+   tokens again from where its hit ends, and `add()` drops the buffered ops
+   each offer overlaps (`dropped_superseded`); the manager unpins those
+   that were held. `requeue_failed` and `readmit` drop an op that overlaps
+   a newer offer the same way. A buffered op lost before the restart
    offers its range again is dropped without breaking the chain. An abort
    is **not** a drop: its buffered ops remain storable until drained.
 8. On a failed receipt, mark the in-flight batch failed and wait for the
@@ -510,7 +511,7 @@ loses nothing servable:
   ```
 
   Holds are per op (`PendingStoreOp.held`), not a front prefix, and a
-  requeued op is inserted where its start sorts.
+  requeued or readmitted op is inserted where its start sorts.
 - Cross-request drain order = min due rank ascending; `MAX_DRAIN_PER_STEP`
   bounds the per-step D2H burst in operations. It is a constant, not a
   setting: rule 1 widens the window by it, so ops come due early enough
@@ -567,12 +568,16 @@ Two log hooks:
   custody depth at the same instant, which closes the line as an equation:
 
   ```
-  admitted + requeued == pending + emitted + dropped_evicted
+  admitted + requeued + readmitted == pending + emitted + dropped_evicted
                          + dropped_superseded + dropped_id_reuse
   ```
 
   `requeued` counts emitted ops whose store failed and came back to be
-  retried; each retry counts in `emitted` again.
+  retried; each retry counts in `emitted` again. `readmitted` counts ops
+  the manager hands back after parking them: under exclusive retrieve, the
+  part of an emitted op vLLM still held is stored demoted and parked
+  outside the policy until vLLM drops a reference to one of its blocks
+  (see `docs/design/integration/vllm/exclusive_retrieve.md`, rule 9).
 
   `rejected_prefix_broken` stays out (those ops are
   turned away before `admitted`), and the `bound_*` counters are weights

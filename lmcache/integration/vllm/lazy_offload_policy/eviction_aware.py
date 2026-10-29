@@ -193,8 +193,9 @@ class PendingStoreOp:
 class LazyOffloadCounters:
     """Cumulative policy counters for observability.
 
-    The counts close as a ledger: ``admitted`` plus ``requeued`` equals the
-    pending depth plus ``emitted`` plus every ``dropped_*`` counter.
+    The counts close as a ledger: ``admitted`` plus ``requeued`` plus
+    ``readmitted`` equals the pending depth plus ``emitted`` plus every
+    ``dropped_*`` counter.
     The ``bound_*`` counters stand beside the equation, not in it.
 
     Attributes:
@@ -205,11 +206,14 @@ class LazyOffloadCounters:
             the same request that the loss made unreachable.
         rejected_prefix_broken: Operations refused at admission because the
             request's prefix chain was already broken.
-        dropped_superseded: Buffered or requeued operations
+        dropped_superseded: Buffered, requeued or readmitted operations
             replaced by a later offer of the same tokens: a preempted
             request restarts and offers its tokens again.
         requeued: Emitted operations whose store failed, buffered again to
             be retried. A retried operation counts as emitted once more.
+        readmitted: Stored operations buffered again because vLLM's GPU
+            prefix cache held their blocks when they were emitted (see
+            ``OffloadPolicy.readmit``). Each counts as emitted once more.
         bound_exceeded: Steps whose running requests allocated more blocks
             than the previous drain bounded. Nonzero means the danger depth
             is not a bound for this model, and buffered blocks may have
@@ -226,6 +230,7 @@ class LazyOffloadCounters:
     admitted: int = 0
     emitted: int = 0
     requeued: int = 0
+    readmitted: int = 0
     bound_exceeded: int = 0
     bound_blocks: int = 0
     bound_allocated_blocks: int = 0
@@ -600,6 +605,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._counters.requeued += len(item.metadatas)
         self._insert_sorted(item)
 
+    def readmit(self, item: PendingStoreItem) -> None:
+        """Buffer stored ops again in token order; see ``OffloadPolicy``.
+
+        Each op goes, unheld, where its start sorts among the request's
+        buffered ops.
+
+        Args:
+            item: The ops, in token order, with the snapshots of the blocks
+                they still cover.
+        """
+        self._counters.readmitted += len(item.metadatas)
+        self._insert_sorted(item)
+
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
 
@@ -656,10 +674,6 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 self._next_step_blocks,
             )
         self._next_step_blocks = signals.next_step_blocks
-        if not self._pending:
-            self._maybe_log_stats()
-            return LazyOffloadDrain()
-
         # A second admission in one step allocates further, but the manager
         # protects buffered blocks from it right before it does. A resumed
         # load still unscheduled was protected for a step that has passed, so
@@ -669,12 +683,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             + signals.resuming_blocks
             + signals.admission_blocks
         )
+        if not self._pending:
+            self._maybe_log_stats()
+            # With nothing buffered the walk would count every free block.
+            return LazyOffloadDrain(
+                reaches_tail=0 < depth
+                and self._pool.free_block_queue.num_free_blocks < depth
+            )
         # Depth zero makes nothing due and the queue is not walked; the loss
         # check below reads hashes, not ranks, and still runs. Built once:
         # both walks below read it, and nothing changes the buffer between.
         op_of_block = self._op_of_block()
         ranks, reaches_tail = self._free_queue_ranks(depth, op_of_block)
-        drain = LazyOffloadDrain()
+        drain = LazyOffloadDrain(reaches_tail=reaches_tail)
         ranks_ahead: dict[int, int] = {}
         if reaches_tail:
             # A squeeze hold bets the squeeze passes by the next drain. Lost,
@@ -1104,8 +1125,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     def _ledger_line(self) -> str:
         """Render the ledger as one greppable ``key=value`` line body.
 
-        Ends with the pending depth, so the counts close as
-        ``admitted + requeued == pending + emitted + every dropped_* counter``.
+        Ends with the pending depth, so the counts close as ``admitted +
+        requeued + readmitted == pending + emitted + every dropped_*
+        counter``.
 
         Returns:
             The counter names and values, space separated.

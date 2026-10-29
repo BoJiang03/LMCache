@@ -9,6 +9,11 @@
 - An exclusive request's lookup does not touch the prefix vLLM's prefix cache
   holds; its FREE_LOOKUP_LOCKS demotes the keys of that prefix the engine
   holds in every layer, per object group, and ``end_session`` keeps them.
+- A store's keys whose blocks ``ENGINE_HELD_BLOCKS_HINT`` lists, per object
+  group (the engine can serve and still holds them) are committed or
+  touched demoted, a new key too when its write finishes after the demote;
+  only under exclusive retrieve.
+- Under exclusive retrieve ``end_session`` touches no L1 key.
 - The server advertises exclusive retrieve when it serves LMCache-driven
   retrieves.
 
@@ -51,6 +56,7 @@ from lmcache.v1.multiprocess import native_completion
 from lmcache.v1.multiprocess import server as server_mod
 from lmcache.v1.multiprocess.config import CoordinatorConfig, MPServerConfig
 from lmcache.v1.multiprocess.custom_types import (
+    ENGINE_HELD_BLOCKS_HINT,
     ENGINE_HELD_TOKENS_HINT,
     EXCLUSIVE_RETRIEVE,
     EXCLUSIVE_RETRIEVE_REQUEST_CONFIG,
@@ -80,10 +86,14 @@ OTHER_KEY = ObjectKey(ObjectKey.IntHash2Bytes(7), "model", 0)
 LATER_KEY = ObjectKey(ObjectKey.IntHash2Bytes(8), "model", 0)
 
 
-def _ipc_key(exclusive: bool) -> IPCCacheServerKey:
+def _ipc_key(
+    exclusive: bool, held_block_ids: list[int] | None = None
+) -> IPCCacheServerKey:
     configs: dict[str, Any] = {}
     if exclusive:
         configs[EXCLUSIVE_RETRIEVE_REQUEST_CONFIG] = True
+    if held_block_ids is not None:
+        configs[ENGINE_HELD_BLOCKS_HINT] = held_block_ids
     return IPCCacheServerKey.from_token_ids(
         model_name="model",
         world_size=1,
@@ -209,9 +219,11 @@ class _Server:
         self.drain_callbacks()
         return ok
 
-    def store(self, exclusive: bool) -> bool:
+    def store(self, exclusive: bool, held_block_ids: list[int] | None = None) -> bool:
         """Store the request's three chunks and run the host callbacks."""
-        _, ok = self.module.store(_ipc_key(exclusive), 1, RETRIEVE_BLOCKS, b"p")
+        _, ok = self.module.store(
+            _ipc_key(exclusive, held_block_ids), 1, RETRIEVE_BLOCKS, b"p"
+        )
         self.drain_callbacks()
         return ok
 
@@ -682,6 +694,163 @@ def test_engine_held_chunks(attn_desc: AttnWindowDesc, mid_chunk: range) -> None
     assert attn_desc.engine_held_chunks(0, 12, CHUNK) == range(3)
     assert attn_desc.engine_held_chunks(1, 12, CHUNK) == range(2, 3)
     assert attn_desc.engine_held_chunks(1, 11, CHUNK) == mid_chunk
+
+
+def _demoted(srv: _Server, keys: list[ObjectKey]) -> list[ObjectKey]:
+    """The keys a demote put ahead of ``OTHER_KEY``, which nothing touches."""
+    victims = srv.victims()
+    ahead = set(victims[: victims.index(OTHER_KEY)])
+    return [k for k in keys if k in ahead]
+
+
+def test_store_of_held_resident_chunks_demotes_them(server: _Server) -> None:
+    """Resident chunks the engine still holds are demoted, last chunk first;
+    the store's other resident chunks are touched to the MRU end."""
+    full, recurrent = server.keys()
+
+    # Blocks 1 and 2 are full-attention chunks 0 and 1.
+    assert server.store(exclusive=True, held_block_ids=[1, 2])
+
+    victims = server.victims()
+    assert victims[:2] == [full[1], full[0]]
+    assert set(victims[-2:]) == {full[2], recurrent[2]}
+    assert set(_demoted(server, full + recurrent)) == {full[0], full[1]}
+
+
+def test_store_of_held_new_chunks_commits_them_demoted(server: _Server) -> None:
+    """New keys of held chunks are admitted demoted, although the demote is
+    issued before their write finishes."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    # Block 5 is the recurrent state of chunk 2.
+    assert server.store(exclusive=True, held_block_ids=[1, 2, 3, 5])
+
+    stored = full + recurrent[2:]
+    assert set(stored) <= set(server.victims())
+    assert set(_demoted(server, stored)) == set(stored)
+    assert set(server.victims()[:4]) == set(stored)
+
+
+@pytest.mark.parametrize(
+    ("held_block_ids", "held_chunk_2"),
+    [
+        # Chunk 2's attention is held, its own Mamba state is not.
+        ([1, 2, 3], "full"),
+        ([1, 2, 5], "recurrent"),
+    ],
+    ids=["attention_only", "state_only"],
+)
+def test_chunk_is_demoted_per_object_group(
+    server: _Server, held_block_ids: list[int], held_chunk_2: str
+) -> None:
+    """Each object group of a chunk is demoted when the hint lists its
+    blocks; the chunk's other object group is written MRU."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    assert server.store(exclusive=True, held_block_ids=held_block_ids)
+
+    held, unheld = (
+        (full[2], recurrent[2]) if held_chunk_2 == "full" else (recurrent[2], full[2])
+    )
+    assert set(_demoted(server, full + recurrent[2:])) == {full[0], full[1], held}
+    assert server.victims()[-1] == unheld
+
+
+def _mix_object_groups(srv: _Server) -> list[ObjectKey]:
+    """Make the server's two kernel groups one mixed object group.
+
+    Returns:
+        The request's mixed keys, none of them resident.
+    """
+    full, recurrent = srv.keys()
+    srv.storage.delete_l1_keys(full + recurrent)
+    cache_context = srv.module.get_and_touch_context_entry(1).cache_context
+    cache_context.kv_layer_groups_manager = SimpleNamespace(
+        num_object_groups=1,
+        num_kernel_groups=2,
+        object_groups=[ObjectGroupInfo(kernel_group_indices=[0, 1])],
+    )
+    return full
+
+
+@pytest.mark.parametrize(
+    ("held_block_ids", "demoted"),
+    [([1, 2, 3], False), ([1, 2, 3, 5], True)],
+    ids=["state_free", "state_held"],
+)
+def test_mixed_chunk_is_demoted_only_with_its_state(
+    server: _Server, held_block_ids: list[int], demoted: bool
+) -> None:
+    """One mixed object group is demoted only when the hint lists its Mamba
+    state too. A re-store of the attention alone, the state nulled, skips
+    the chunk and leaves its copy resident: nothing is lost."""
+    mixed = _mix_object_groups(server)
+
+    assert server.store(exclusive=True, held_block_ids=held_block_ids)
+    assert mixed[2] in server.victims()
+    assert _demoted(server, mixed) == ([mixed[2]] if demoted else [])
+    used = server.storage.get_l1_usage()[0]
+
+    _, ok = server.module.store(_ipc_key(True), 1, [[1, 2, 3], [-1, -1, -1]], b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert server.storage.get_l1_usage()[0] == used
+    assert mixed[2] in server.victims()
+
+
+def test_held_hint_without_exclusive_retrieve_changes_nothing(
+    server: _Server,
+) -> None:
+    """A plain store ignores the hint: resident keys keep their order and new
+    keys are written MRU."""
+    full, recurrent = server.keys()
+    before = server.victims()
+
+    assert server.store(exclusive=False, held_block_ids=[1, 2, 3, 5])
+
+    assert server.victims() == before
+    server.storage.delete_l1_keys(full + recurrent)
+    assert server.store(exclusive=False, held_block_ids=[1, 2, 3, 5])
+    assert _demoted(server, full + recurrent) == []
+
+
+def test_partly_held_chunk_is_not_demoted(server: _Server) -> None:
+    """A hint that lists only some blocks of a chunk leaves it unheld."""
+    full, recurrent = server.keys()
+    server.storage.delete_l1_keys(full + recurrent)
+
+    # A chunk of two blocks per kernel group, only the first one held.
+    blocks = [[1, 2, 3, 4, 5, 6], [-1, -1, -1, -1, 7, 8]]
+    cache_context = server.module.get_and_touch_context_entry(1).cache_context
+    cache_context.calculate_num_blocks.return_value = 2
+    _, ok = server.module.store(_ipc_key(True, [1, 2, 3, 5, 7]), 1, blocks, b"p")
+    server.drain_callbacks()
+
+    assert ok
+    assert set(_demoted(server, full + recurrent)) == {full[0]}
+
+
+def test_exclusive_end_session_touches_no_l1_key(server: _Server) -> None:
+    """Under exclusive retrieve ``end_session`` leaves the L1 order as is: a
+    chunk that is not demoted was made MRU by its own store or lookup."""
+    session = server.sessions.get("req")
+    assert session is not None
+    session.lookup_ipc_key = _ipc_key(True).no_worker_id_version()
+    server.commit([LATER_KEY])
+    before = server.victims()
+    lookup_ctx = MagicMock()
+    lookup_ctx.session_manager = server.sessions
+    lookup_ctx.storage_manager = server.storage
+    lookup_ctx.layout_desc_registry.find_attn_desc.return_value = SimpleNamespace(
+        num_object_groups=2
+    )
+
+    LookupModule(lookup_ctx).end_session("req")
+
+    assert server.victims() == before
 
 
 @pytest.mark.parametrize(

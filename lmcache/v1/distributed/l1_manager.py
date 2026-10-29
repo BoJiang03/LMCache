@@ -112,6 +112,10 @@ class L1ObjectState:
     is_temporary: bool
     """ Whether the object is temporary (need to be deleted after read). """
 
+    demoted: bool = False
+    """ On a staging object: a demote arrived before the write finished, so
+    ``finish_write`` admits it demoted; guarded by ``_lock``. """
+
 
 def l1_mgr_synchronized(func):
     """
@@ -625,6 +629,7 @@ class L1Manager(L1ManagerInterface):
         ret: dict[ObjectKey, L1Error] = {}
         notification_keys: list[ObjectKey] = []
         notification_keys_meta: list[L1ObjectMeta] = []
+        demote_pending: list[ObjectKey] = []
         discarded: list[MemoryObj] = []
 
         for key in keys:
@@ -645,12 +650,17 @@ class L1Manager(L1ManagerInterface):
             if not entry.is_temporary:
                 notification_keys.append(key)
                 notification_keys_meta.append(self._object_meta(entry.memory_obj))
+                if entry.demoted:
+                    demote_pending.append(key)
 
         self._memory_manager.free(discarded)
 
         if notification_keys:
             for listener in self._registered_listeners:
                 listener.on_l1_keys_write_finished(notification_keys)
+            if demote_pending:
+                for listener in self._registered_listeners:
+                    listener.on_l1_keys_demoted(demote_pending)
             self._event_bus.publish(
                 Event(
                     event_type=EventType.L1_WRITE_FINISHED,
@@ -881,15 +891,34 @@ class L1Manager(L1ManagerInterface):
         Called by ``StorageManager.demote_l1_keys`` and
         ``StorageManager.demote_cached_keys``. The objects stay resident and
         readable; only their eviction order changes. Like
-        :meth:`touch_keys`, this takes no lock: the listeners serialize
-        their own state.
+        :meth:`touch_keys`, this takes no lock while every key is resident:
+        the listeners serialize their own state.
+
+        A key that is only being written (staged, not yet resident) is
+        demoted when its write finishes: a store that finishes after the
+        demote must not leave it at the MRU end.
 
         Args:
             keys: The keys to demote, in request order. Later keys are
-                evicted first; keys that are not tracked are ignored.
+                evicted first; keys that are neither resident nor staged are
+                ignored.
         """
         for listener in self._registered_listeners:
             listener.on_l1_keys_demoted(keys)
+        staged_keys = [key for key in keys if key not in self._objects]
+        if not staged_keys:
+            return
+        # finish_write admits and notifies under the L1 lock: a key either is
+        # still staged, and its write admits it demoted, or was admitted
+        # after the demote above, and is demoted here.
+        with self._lock:
+            admitted = [key for key in staged_keys if key in self._objects]
+            for key in staged_keys:
+                for staged in self._staging.get(key, {}).values():
+                    staged.demoted = True
+            if admitted:
+                for listener in self._registered_listeners:
+                    listener.on_l1_keys_demoted(admitted)
 
     @l1_mgr_synchronized
     def clear(self, force: bool = False) -> None:

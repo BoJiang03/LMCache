@@ -62,6 +62,8 @@ from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
     get_tokens_per_block,
     is_scratch_spec,
+    is_sliding_window_spec,
+    representative_spec,
 )
 from lmcache.integration.vllm.lazy_offload_manager import LazyOffloadManager
 from lmcache.integration.vllm.lmcache_mp_metadata import (
@@ -482,6 +484,34 @@ def get_mamba_step_extra_blocks(
             getattr(spec, "num_prefill_checkpoint_blocks", 0) > 0
         ) + int(hash_block_size < spec.block_size)
     return extra
+
+
+def get_group_kinds(
+    kv_cache_config: "KVCacheConfig | None", num_groups: int
+) -> list[str]:
+    """Name each KV cache group's kind, for lazy offload's engine-held rule.
+
+    Args:
+        kv_cache_config: vLLM's resolved KV cache group configuration.
+        num_groups: The number of engine groups, used when there is no
+            group metadata (one non-hybrid group).
+
+    Returns:
+        Per group, ``"sliding_window"``, ``"recurrent"`` (Mamba) or
+        ``"attention"``.
+    """
+    if kv_cache_config is None:
+        return ["attention"] * num_groups
+    kinds: list[str] = []
+    for group in kv_cache_config.kv_cache_groups:
+        spec = representative_spec(group.kv_cache_spec)
+        if is_sliding_window_spec(spec):
+            kinds.append("sliding_window")
+        elif _is_mamba_spec(spec):
+            kinds.append("recurrent")
+        else:
+            kinds.append("attention")
+    return kinds
 
 
 def get_prefill_alignment(
@@ -1019,6 +1049,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     ),
                     max_model_len=vllm_config.model_config.max_model_len,
                     chunk_size=lmcache_tokens_per_chunk,
+                    group_kinds=get_group_kinds(
+                        kv_cache_config, len(self._group_tokens_per_block)
+                    ),
                     mamba_groups=mamba_groups,
                     prefill_alignment=get_prefill_alignment(
                         vllm_config, kv_cache_config, mamba_groups
@@ -1496,7 +1529,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         Args:
             kv_cache_manager: vLLM's scheduler KV cache manager. Under lazy
                 offload its coordinator decides what vLLM's prefix cache
-                serves a finished request's successor or a waiting request.
+                serves a finished request's successor or a waiting request,
+                and which chunks are engine-held.
         """
         super().bind_kv_cache_manager(kv_cache_manager)
         self._kv_cache_manager_bound = True
