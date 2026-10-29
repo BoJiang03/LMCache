@@ -1,0 +1,38 @@
+[
+ {
+  "req": "A",
+  "model": "lora-a",
+  "lmcache_hit_tokens": 0,
+  "vllm_local_hit_tokens": 0,
+  "output_matches_reference": true,
+  "text": "* 100000000000000000000000000000",
+  "ref": "* 100000000000000000000000000000"
+ },
+ {
+  "req": "base",
+  "model": "base",
+  "lmcache_hit_tokens": 4095,
+  "vllm_local_hit_tokens": 0,
+  "output_matches_reference": false,
+  "text": "ing_100000000000000000000000000000",
+  "ref": "_1000000000000000000000000000000"
+ },
+ {
+  "req": "B",
+  "model": "lora-b",
+  "lmcache_hit_tokens": 4095,
+  "vllm_local_hit_tokens": 0,
+  "output_matches_reference": true,
+  "text": "_1000000000000000000000000000000",
+  "ref": "_1000000000000000000000000000000"
+ },
+ {
+  "req": "A-again",
+  "model": "lora-a",
+  "lmcache_hit_tokens": 4095,
+  "vllm_local_hit_tokens": 0,
+  "output_matches_reference": true,
+  "text": "* 100000000000000000000000000000",
+  "ref": "* 100000000000000000000000000000"
+ }
+]
