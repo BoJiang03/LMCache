@@ -204,6 +204,20 @@ def _free_to_head(pool: BlockPool, block_ids: list[int]) -> None:
     pool.free_blocks(ahead)
 
 
+def _flush(manager: LazyOffloadManager, request_id: str = "req") -> SimpleNamespace:
+    """Finish ``request_id`` and drain once.
+
+    Its buffered ops past what vLLM's prefix cache serves it (all of them
+    under ``_EmptyPrefixCache``) are held and stored by the drain, unless
+    their blocks were recycled.
+
+    Returns:
+        The drain's actions.
+    """
+    manager.on_request_finished(request_id)
+    return manager.on_scheduler_step(_step())
+
+
 def test_null_blocks_do_not_block_the_store() -> None:
     """A mamba group's null blocks (align mode) leave the store to its live blocks."""
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
@@ -459,7 +473,7 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
     than ``max_model_len`` (as a step's second admission) still reaches.
     Only the admission notice can save the block, and the notice must not
     shrink the free queue the admission allocates from. Moved to the tail,
-    the block survives the allocation, still buffered: preempting its
+    the block survives the allocation, still buffered: finishing its
     request stores it intact.
     """
     pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
@@ -470,7 +484,7 @@ def test_admission_keeps_buffered_block_its_allocation_would_recycle(
         manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
         assert pool.get_num_free_blocks() == num_free
     pool.get_new_blocks(ADMISSION_BLOCKS)
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = _flush(manager, "req")
 
     assert bool(actions.stores_to_submit) is admitted
 
@@ -515,7 +529,7 @@ def test_one_admission_after_a_drain_moves_no_buffered_block() -> None:
 
     manager.on_admission("new", ADMISSION_TOKENS, 0, 0, load_async=False)
     allocated = pool.get_new_blocks(ADMISSION_BLOCKS)
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = _flush(manager, "req")
 
     assert block not in {allocated_block.block_id for allocated_block in allocated}
     assert [store.request_id for store in actions.stores_to_submit] == ["req"]
@@ -554,7 +568,7 @@ def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
     block for the chunk, four in all. An earlier admission of the step has
     taken the reserve, which leaves the buffered block third in the queue,
     in reach. Saved by the admission notice, it is still intact when its
-    request's preemption stores it.
+    request's finish stores it.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager, _, _ = _buffered_block_in_queue(
@@ -566,7 +580,7 @@ def test_external_hit_of_mamba_groups_takes_a_state_block_of_its_own() -> None:
         "new", 20 * TOKENS_PER_BLOCK, 0, 10 * TOKENS_PER_BLOCK, load_async=False
     )
     pool.get_new_blocks(4)
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = _flush(manager, "req")
 
     assert actions.stores_to_submit != []
 
@@ -667,7 +681,7 @@ def test_resumed_load_keeps_buffered_block_its_allocation_would_recycle(
     if notified:
         manager.on_loads_finished({"new"})
     pool.get_new_blocks(ADMISSION_BLOCKS)
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = _flush(manager, "req")
 
     assert bool(actions.stores_to_submit) is notified
 
@@ -699,7 +713,7 @@ def test_resumed_load_left_waiting_keeps_its_protection() -> None:
     pool.free_blocks(finished)
     stores = manager.on_scheduler_step(_step()).stores_to_submit
     pool.get_new_blocks(ADMISSION_BLOCKS)
-    stores += manager.on_scheduler_step(_step(preempted={"req"})).stores_to_submit
+    stores += _flush(manager, "req").stores_to_submit
 
     assert stores != []
 
@@ -837,16 +851,24 @@ def test_stored_block_another_request_buffered_is_not_recycled_next() -> None:
     assert [store.request_id for store in second.stores_to_submit] == ["second"]
 
 
-def test_preemption_unpins_held_blocks() -> None:
-    """A reset discards held ops, and with them their pins."""
+def test_preemption_keeps_held_blocks_pinned() -> None:
+    """A preempted request's held op still protects its block.
+
+    The block stays pinned through the reset, and the op is stored once
+    the batch in flight settles.
+    """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     manager, second = _blocked_with_freed_successor(pool)
     free_while_held = pool.get_num_free_blocks()
 
     manager.on_request_reset("req")
+    manager.on_request_arrived("req", [])
+    pool.get_new_blocks(pool.get_num_free_blocks())
+    manager.on_store_results(set(), {"req": 1})
+    (store,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    assert pool.blocks[second].ref_cnt == 0
-    assert pool.get_num_free_blocks() == free_while_held + 1
+    assert free_while_held > 0
+    assert store.op.block_ids[0] == [second]
 
 
 def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
@@ -876,18 +898,50 @@ def test_window_reaches_past_blocks_the_drain_takes_out() -> None:
     assert {store.request_id for store in stored} == {"first", "second"}
 
 
-def test_preempted_request_releases_its_whole_buffer() -> None:
-    """A preempted request's buffered ops are stored before its restart.
+def test_preempted_request_buffer_waits_in_eviction_order() -> None:
+    """Preemption alone stores nothing; the op is stored when it comes due.
 
-    Rescheduled, the request starts over from token zero, which discards
-    its buffer; storing it at preemption keeps what eager offload stores.
+    vLLM keeps the hashes of a preempted request's freed blocks, so its
+    buffered ops are victims like any other.
     """
     pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
-    manager, _, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
+    manager, block, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
 
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    at_preemption = manager.on_scheduler_step(_step(preempted={"req"}))
+    manager.on_request_reset("req")
+    manager.on_request_arrived("req", [])
+    _bring_to_head(pool, block)
+    due = manager.on_scheduler_step(_step())
 
-    assert [store.request_id for store in actions.stores_to_submit] == ["req"]
+    assert at_preemption.stores_to_submit == []
+    (store,) = due.stores_to_submit
+    assert store.op.block_ids[0] == [block]
+
+
+def test_restarted_request_offer_supersedes_its_buffered_op() -> None:
+    """The restart's offer of the same tokens replaces the buffered op.
+
+    One store follows, from the new offer's blocks, and the superseded op's
+    hold is released.
+    """
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, block, others = _buffered_block_in_queue(
+        pool, position=ADMISSION_RESERVE + 5
+    )
+    null = pool.null_block.block_id
+    manager.on_request_reset("req")
+    manager.on_request_arrived("req", [])
+    (recomputed,) = _hashed_blocks(pool, 1)
+    manager.add_store_candidate(_op(0, [[recomputed], [null]]))
+    pool.free_blocks([pool.blocks[recomputed]])
+    # Every block ahead of the new one is allocated, the superseded op's
+    # too; only the new op is in reach.
+    _bring_to_head(pool, recomputed)
+    stores = manager.on_scheduler_step(_step()).stores_to_submit
+
+    assert block not in others
+    assert [store.op.block_ids[0] for store in stores] == [[recomputed]]
+    assert _counts(manager)["dropped_superseded"] == 1
 
 
 def test_admission_counts_the_local_hit_it_takes_from_the_queue() -> None:
@@ -910,7 +964,7 @@ def test_admission_counts_the_local_hit_it_takes_from_the_queue() -> None:
     manager.on_admission("new", hit + 2 * TOKENS_PER_BLOCK, hit, 0, load_async=False)
     pool.touch([pool.blocks[block_id] for block_id in ids[:2]])
     pool.get_new_blocks(new_blocks)
-    actions = manager.on_scheduler_step(_step(preempted={"req"}))
+    actions = _flush(manager, "req")
 
     assert [store.request_id for store in actions.stores_to_submit] == ["req"]
 
@@ -1189,7 +1243,7 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     past states, before the next step allocates; they join a tail already
     in reach. The op on such a block is not due, but it is pinned while its
     request still owns it, so it survives the whole queue being allocated,
-    and its request's preemption stores it intact.
+    and its request's finish stores it intact.
     """
     pool = BlockPool(num_gpu_blocks=16, enable_caching=True, hash_block_size=4)
     ids = _hashed_blocks(pool, pool.get_num_free_blocks())
@@ -1207,10 +1261,10 @@ def test_squeezed_drain_pins_a_block_its_request_still_owns() -> None:
     pool.free_blocks([pool.blocks[ids[5]]])
     allocated = pool.get_new_blocks(pool.get_num_free_blocks())
     pool.free_blocks(allocated + [pool.blocks[block_id] for block_id in ids[6:]])
-    preempted = manager.on_scheduler_step(_step(preempted={"owned"}))
+    finished = _flush(manager, "owned")
 
     assert [store.request_id for store in first.stores_to_submit] == ["first"]
-    assert [store.request_id for store in preempted.stores_to_submit] == ["owned"]
+    assert [store.request_id for store in finished.stores_to_submit] == ["owned"]
 
 
 def test_lasting_squeeze_stores_what_it_pinned() -> None:
@@ -1426,11 +1480,31 @@ def test_failed_store_waits_for_every_worker_before_its_retry() -> None:
     assert pool.blocks[block].ref_cnt == 0
 
 
-def test_failed_store_of_a_preempted_request_is_not_retried() -> None:
-    """A reset detaches the failed batch from the restarted request.
+def test_restarted_request_loss_before_its_offer_keeps_the_chain() -> None:
+    """A preempted request's op lost before the restart offers its range
+    again does not break the chain: the restart computes it again."""
+    pool = BlockPool(num_gpu_blocks=32, enable_caching=True, hash_block_size=4)
+    manager, block, _ = _buffered_block_in_queue(pool, position=ADMISSION_RESERVE + 5)
+    null = pool.null_block.block_id
+    manager.on_request_reset("req")
+    manager.on_request_arrived("req", [])
+    _bring_to_head(pool, block)
+    pool.get_new_blocks(1)
+    assert manager.on_scheduler_step(_step()).stores_to_submit == []
 
-    The restart recomputes from token zero, so the old range would be stored
-    from blocks the request no longer owns; its receipt only unpins them.
+    (recomputed,) = _hashed_blocks(pool, 1)
+    manager.add_store_candidate(_op(0, [[recomputed], [null]]))
+    stores = _flush(manager).stores_to_submit
+
+    assert _counts(manager)["dropped_evicted"] == 1
+    assert _counts(manager)["rejected_prefix_broken"] == 0
+    assert [store.op.block_ids[0] for store in stores] == [[recomputed]]
+
+
+def test_failed_store_of_a_preempted_request_is_retried() -> None:
+    """A preempted request keeps its batch: a failure is retried.
+
+    The batch's blocks keep their hashes, so their data is still valid.
     """
     # Smaller than the admission reserve: a buffered op on any free block is
     # due, so a retry would show.
@@ -1445,10 +1519,11 @@ def test_failed_store_of_a_preempted_request_is_not_retried() -> None:
     assert len(manager.on_scheduler_step(_step()).stores_to_submit) == 1
 
     manager.on_request_reset("req")
+    manager.on_request_arrived("req", [])
     manager.on_store_results({"req"}, {"req": 1})
+    (retried,) = manager.on_scheduler_step(_step()).stores_to_submit
 
-    assert manager.on_scheduler_step(_step()).stores_to_submit == []
-    assert pool.blocks[block].ref_cnt == 0
+    assert retried.op.block_ids[0] == [block]
 
 
 def _coordinator(
@@ -1542,6 +1617,16 @@ def _held_manager(
     manager.bind_cache_coordinator(coordinator)
     manager.on_request_arrived("req", chain)
     return manager, block_ids
+
+
+def _counts(manager: LazyOffloadManager) -> dict[str, int]:
+    """The manager's final ledger line, parsed into its counts."""
+    with patch.object(eviction_aware.logger, "info") as mock_info:
+        manager.log_final_stats()
+    (line,) = [call.args[1] for call in mock_info.call_args_list]
+    return {
+        name: int(value) for name, value in (field.split("=") for field in line.split())
+    }
 
 
 @pytest.mark.parametrize("use_eagle", [False, True])
@@ -1699,7 +1784,7 @@ def test_failed_later_segment_is_buffered_behind_the_earlier_ops() -> None:
     assert _span(failed) == (2, NUM_CHUNKS)
 
     manager.on_store_results({"req"}, {"req": 1})
-    (retried,) = manager.on_scheduler_step(_step(preempted={"req"})).stores_to_submit
+    (retried,) = _flush(manager, "req").stores_to_submit
 
     assert _span(retried) == (0, NUM_CHUNKS)
     assert retried.op.block_ids == [attention, mamba]

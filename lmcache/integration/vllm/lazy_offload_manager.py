@@ -18,9 +18,11 @@ ones defined in ``lazy_offload_policy.base``:
   recycle it while the worker is still reading it. The receipt releases it.
   A held operation (see ``lazy_offload_policy.base``) is pinned before its
   submission; the submitted batch takes that pin over.
-- **Orphaned**: said of a batch whose generation ended before its receipt
-  arrived. Its pins are still released, but its failure is not retried for
-  the generation now holding the id.
+- **Orphaned**: said of a batch whose request finished and whose id a new
+  request took over before its receipt arrived. Its pins are still
+  released, but its failure is not retried: the new request's tokens are
+  not the batch's. A preempted request keeps its id and its tokens, so its
+  batch is not orphaned.
 - **Token ledger**: the one token-id list a request's buffered operations
   share. The tracker hands out a fresh copy of the whole sequence with every
   operation, which deferral would otherwise retain once per operation.
@@ -394,7 +396,8 @@ class LazyOffloadManager:
         rebound = replace(
             rebound, op=replace(rebound.op, block_ids=protected_block_ids)
         )
-        self._require_policy().add(rebound, block_hashes)
+        superseded = self._require_policy().add(rebound, block_hashes)
+        self._release_superseded(superseded)
         self._index_offered_chunks(
             metadata.request_id, metadata.op.start, metadata.op.end
         )
@@ -587,8 +590,8 @@ class LazyOffloadManager:
             batch = self._requests.complete_batch(request_id)
             self._unpin(list(batch.block_ids))
             if batch.failed and not batch.orphaned:
-                # The data is still on the GPU; a reset or id reuse would
-                # have detached the batch from the generation it belongs to.
+                # The data is still on the GPU; an id reuse would have
+                # detached the batch from the request it belongs to.
                 logger.warning(
                     "Store failed for request %s; retrying its %d store op(s)",
                     request_id,
@@ -641,28 +644,22 @@ class LazyOffloadManager:
         return LazyOffloadActions(sessions_to_end=[request_id])
 
     def on_request_reset(self, request_id: str) -> None:
-        """Drop the operations a preemption reset invalidated.
+        """Restart a preempted request, keeping what it buffered.
 
-        The resumed request restarts at token zero and no longer owns the
-        blocks its buffered operations point at, so any batch it already
-        submitted is detached from it here.
+        vLLM freed the request's blocks when it preempted it: the hashed
+        ones joined the free queue with their hashes, so they are
+        prefix-cache victims like any other, and the request's buffered and
+        held operations keep protecting them. The restarted request offers
+        its tokens again; each offer supersedes the buffered operations it
+        overlaps. A batch already in flight is the request's own, retried if
+        it fails. Only what describes the request's progress is forgotten.
 
         Args:
             request_id: The preempted request.
         """
-        self._requests.reset(request_id)
-        self._token_ledgers.pop(request_id, None)
         self._forget_progress(request_id)
         self._forget_lookup(request_id)
-        self._unindex_offered_chunks(request_id)
-        dropped = self._require_policy().drop_request(request_id)
-        self._release_holds(request_id)
-        if dropped:
-            logger.info(
-                "Lazy offload: dropped %d buffered store op(s) of preempted request %s",
-                dropped,
-                request_id,
-            )
+        self._require_policy().restart_request(request_id)
 
     def on_request_arrived(
         self, request_id: str, block_hashes: list["BlockHash"]
@@ -761,7 +758,6 @@ class LazyOffloadManager:
                 admission_blocks=self._admission_blocks,
                 finished_request_ids=self._requests.finished_request_ids(),
                 blocked_request_ids=self._requests.in_flight_request_ids(),
-                preempted_request_ids=set(scheduler_output.preempted_req_ids or ()),
                 running_blocks_allocated=running_blocks_allocated,
             )
         )
@@ -1176,6 +1172,25 @@ class LazyOffloadManager:
             request_id: The request whose holds end.
         """
         self._unpin(list(self._held_block_ids.pop(request_id, set())))
+
+    def _release_superseded(self, superseded: PendingStoreItem) -> None:
+        """Unpin the held blocks of operations a newer offer superseded.
+
+        Args:
+            superseded: One request's operations the policy dropped for a
+                newer offer of the same tokens.
+        """
+        held = self._held_block_ids.get(superseded.request_id)
+        if not held:
+            return
+        released = [
+            block_id
+            for _, block_hashes in superseded.metadatas
+            for block_id in block_hashes
+            if block_id in held
+        ]
+        held.difference_update(released)
+        self._unpin(released)
 
     def _hit_tokens(self, request_id: str) -> int:
         """Return the length of vLLM's hit over a request's chain.

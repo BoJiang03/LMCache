@@ -300,9 +300,9 @@ lifecycle events to it.
    the running requests, and those free blocks first -- align-mode Mamba
    frees a running request's older state blocks, hash intact, on each
    step. Pinning a block its request still owns costs no free block.
-   A request in `preempted_request_ids` releases its whole buffer: vLLM
-   freed its blocks, and once rescheduled its tracker restarts from token
-   zero, which discards whatever is still buffered (step 7).
+   A preempted request is not special here: vLLM freed its hashed blocks
+   to the free-queue tail with their hashes, so its ops are victims in
+   eviction order like any other (step 7).
 3. For every item in `LazyOffloadDrain.items` (already ordered): pin
    (`touch`) its blocks, coalesce each request's released ops into one store
    op, register the submitted batch, and put it into this
@@ -332,13 +332,16 @@ lifecycle events to it.
    pin the returned holds (released to the tail, like step 5's), and
    defer the lookup while `is_flushing` or an open batch covers a flushed
    range.
-7. On preemption tracker reset, call `drop_request(id)`: buffered ops and
-   prefix-validity state are discarded, and the manager unpins held ops (as
-   it does when `discard_for_reuse` drops them); an
-   already submitted batch stays
-   registered -- now marked orphaned -- and blocks new emission until its
-   receipt. An abort is **not** a drop: its buffered ops remain storable
-   until drained.
+7. On preemption tracker reset, call `restart_request(id)`: buffered and
+   held ops and an already submitted batch all stay the request's own;
+   only its broken-chain marker is cleared, since the restart computes the
+   lost range again. The restarted request offers its tokens again from
+   where its hit ends, and `add()` drops the buffered ops each offer
+   overlaps (`dropped_superseded`); the manager unpins those that were
+   held. `requeue_failed` drops an op that overlaps a newer offer the same
+   way. A buffered op lost before the restart
+   offers its range again is dropped without breaking the chain. An abort
+   is **not** a drop: its buffered ops remain storable until drained.
 8. On a failed receipt, mark the in-flight batch failed and wait for the
    rest of its receipts: another worker may still be reading its blocks.
    Once the batch settles, unpin it; a failed batch that is not orphaned
@@ -350,12 +353,15 @@ lifecycle events to it.
    for the window like any buffered op rather than being resubmitted into
    the L1 that just refused it. Keys already resident count as stored, so
    retrying a partly stored batch is safe. An orphaned batch is never
-   retried: the request generation now using the id restarted from token
-   zero or is a different request.
+   retried: a different request now uses the id (step 9).
 9. On request-id reuse, detect the `FINISHED` predecessor in the registry and
    call `discard_for_reuse(id)`. With a submitted batch outstanding, that
    batch is marked orphaned and the id-keyed session spans both generations,
-   ending once through the successor's lifecycle. (vLLM's HTTP layer
+   ending once through the successor's lifecycle. A failed orphaned batch
+   cannot be retried: the worker keeps one store per request id and the
+   successor's ops are a different token sequence under that id, so the
+   retry could only go out after the successor's session, which ends the
+   id's L1 session for both. (vLLM's HTTP layer
    randomizes external ids, but direct engine callers and
    `VLLM_DISABLE_REQUEST_ID_RANDOMIZATION=1` reach this path.)
 
@@ -367,6 +373,32 @@ stores nothing at all. The recording is mode-independent by design: in eager
 mode an APC-hit request whose lookup misses now stores its full prefix at once
 instead of accumulating it over decode steps, and `cached_token_stats` reports
 the true vLLM hit instead of 0.
+
+## Losses, and which can be repaired
+
+The invariant (L0 plus L1 covers every block vLLM retains) has three
+places where an op can go unstored. Each is either repaired or provably
+loses nothing servable:
+
+- **A failed batch** (L1 refused it, or a worker failed) is requeued and
+  stored again when it comes due; its blocks were pinned, so the data is
+  intact. A preempted request's batch is its own and is retried too
+  (protocol step 7). Only an *orphaned* batch, whose finished request's id
+  a new request took over, is not retried (step 9): the worker keeps one
+  store per id, and the successor's ops are another token sequence under
+  that id.
+- **A hash mismatch at emission** (the manager re-reads hashes before it
+  pins). For this policy it is unreachable: `drain()` checked the same
+  hashes synchronously and nothing allocates in between. For FIFO, which
+  does not walk the queue, it is the only check, and a mismatch means the
+  block was already recycled: the data is gone from the GPU, so there is
+  nothing to store.
+- **An evicted suffix.** When op `k`'s block is recycled before it comes
+  due, its data is in neither tier. Both vLLM and LMCache match prefixes,
+  so ops after `k` cannot be hit until `k` is computed again, and the
+  request that computes it computes and offers them too. Dropping them
+  loses nothing a hit could read. A nonzero `dropped_evicted` means an
+  allocation escaped the bound (see Observability).
 
 ## Decision rule
 
@@ -507,7 +539,7 @@ requests, and each check is a dict lookup and a comparison.
 Request lifecycle is not policy state. The manager's registry owns request
 phase and submitted batches; the policy receives blocked request ids as a
 drain input and retains only prefix validity, a consequence of its own store
-decisions. `release_request`, `drop_request`, and `discard_for_reuse` clear
+decisions. `release_request`, `restart_request`, and `discard_for_reuse` clear
 that non-pending state at manager-defined lifecycle boundaries, so
 completed request ids do not accumulate.
 
@@ -535,7 +567,7 @@ Two log hooks:
 
   ```
   admitted + requeued == pending + emitted + dropped_evicted
-                         + dropped_on_request_drop + dropped_id_reuse
+                         + dropped_superseded + dropped_id_reuse
   ```
 
   `requeued` counts emitted ops whose store failed and came back to be

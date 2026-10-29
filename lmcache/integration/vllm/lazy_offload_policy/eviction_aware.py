@@ -44,8 +44,8 @@ logger = init_logger(__name__)
 MAX_DRAIN_PER_STEP = 64
 
 # Rank of an unblocked request whose front operations are held because they
-# came due earlier, or of a preempted request none of whose blocks is in reach:
-# they are safe for now, so they go after every block about to be recycled.
+# came due earlier: they are safe for now, so they go after every block about
+# to be recycled.
 # Sorts behind every real rank (free-queue positions, bounded by the queue
 # length).
 _HELD_RANK = 1 << 61
@@ -113,6 +113,20 @@ def _in_window(op: "PendingStoreOp", window: "Container[int]") -> bool:
         True when any block the op covers is in ``window``.
     """
     return any(block_id in window for block_id in op.block_hashes)
+
+
+def _overlaps(op: "PendingStoreOp", start: int, end: int) -> bool:
+    """Whether ``op`` stores a token of ``[start, end)``.
+
+    Args:
+        op: A buffered operation.
+        start: First token of the range.
+        end: Token the range ends at.
+
+    Returns:
+        True when the op's token range intersects the range.
+    """
+    return op.store_metadata.op.start < end and op.store_metadata.op.end > start
 
 
 def _due_segment(
@@ -191,8 +205,9 @@ class LazyOffloadCounters:
             the same request that the loss made unreachable.
         rejected_prefix_broken: Operations refused at admission because the
             request's prefix chain was already broken.
-        dropped_on_request_drop: Buffered operations discarded when vLLM
-            preempted the request and freed its blocks.
+        dropped_superseded: Buffered or requeued operations
+            replaced by a later offer of the same tokens: a preempted
+            request restarts and offers its tokens again.
         requeued: Emitted operations whose store failed, buffered again to
             be retried. A retried operation counts as emitted once more.
         bound_exceeded: Steps whose running requests allocated more blocks
@@ -216,7 +231,7 @@ class LazyOffloadCounters:
     bound_allocated_blocks: int = 0
     dropped_evicted: int = 0
     rejected_prefix_broken: int = 0
-    dropped_on_request_drop: int = 0
+    dropped_superseded: int = 0
     dropped_id_reuse: int = 0
 
 
@@ -226,8 +241,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     One rule decides when to store: an operation is due once one of its
     blocks sits within the *danger depth* of the free queue -- what the
     running requests, the resumed loads and one admission can allocate
-    before the next drain -- and nothing else makes it due but its request's
-    preemption. A due operation is emitted with the segment
+    before the next drain. A due operation is emitted with the segment
     :func:`_due_segment` closes it into: its request's front, or, on a model
     with Mamba anchors, only the ops vLLM cannot serve through an earlier
     anchor. A due segment is emitted, or, when its request has a batch in
@@ -238,8 +252,10 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     too, and released unpinned by the next drain whose window stops short
     of the tail. A second admission in one step reaches past the window;
     the operations it would recycle are moved to the free-queue tail and
-    stay buffered. A preempted request releases its whole buffer, which its
-    restart would discard. An engine with no requests never drains;
+    stay buffered. A preempted request's operations stay buffered like any
+    other: vLLM keeps the hashes of the blocks it freed, so they are victims
+    in eviction order, until the restarted request offers the same tokens
+    again. An engine with no requests never drains;
     operations whose blocks are evicted before they come due are dropped,
     never stored stale. Scheduler thread only.
     """
@@ -265,6 +281,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self._pending: dict[str, list[PendingStoreOp]] = {}
         # Prefix validity is policy; phase and batches are the manager's.
         self._broken_prefixes: set[str] = set()
+        # Per request, the token its offers since it last (re)started reach:
+        # a lost op starting there or later is one the request offers again.
+        self._offered_end: dict[str, int] = {}
         # Requests whose held ops a squeezed drain pinned without them being
         # due: the next unsqueezed drain releases them rather than emitting.
         self._squeeze_held: set[str] = set()
@@ -280,7 +299,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         self,
         meta: "LMCacheMPRequestMetadata",
         block_hashes: BlockHashes,
-    ) -> None:
+    ) -> PendingStoreItem:
         """Buffer one store operation; see ``OffloadPolicy.add``.
 
         Args:
@@ -288,7 +307,24 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             block_hashes: Hash of every protectable block the operation
                 covers, read at admission: the manager has already replaced
                 hash-less blocks, which vLLM never evicts, by the null block.
+
+        Returns:
+            The buffered operations the offer superseded.
         """
+        request_id = meta.request_id
+        start, end = meta.op.start, meta.op.end
+        self._offered_end[request_id] = max(self._offered_end.get(request_id, 0), end)
+        superseded = PendingStoreItem(request_id=request_id)
+        ops = self._pending.get(request_id, [])
+        if any(_overlaps(op, start, end) for op in ops):
+            kept = [op for op in ops if not _overlaps(op, start, end)]
+            superseded.metadatas = [
+                (op.store_metadata, op.block_hashes)
+                for op in ops
+                if _overlaps(op, start, end)
+            ]
+            self._counters.dropped_superseded += len(superseded.metadatas)
+            self._pending[request_id] = kept
         if meta.request_id in self._broken_prefixes:
             self._counters.rejected_prefix_broken += 1
             # DEBUG, not INFO: the site that broke the chain already logged
@@ -300,15 +336,12 @@ class EvictionAwareStoreQueue(OffloadPolicy):
                 meta.op.start,
                 meta.op.end,
             )
-            return
-        self._pending.setdefault(meta.request_id, []).append(
-            PendingStoreOp(
-                store_metadata=meta,
-                block_hashes=block_hashes,
-                has_anchor=self._has_anchor(meta),
-            )
-        )
+            if not self._pending.get(request_id, True):
+                del self._pending[request_id]
+            return superseded
+        self._insert_sorted(PendingStoreItem(request_id, [(meta, block_hashes)]))
         self._counters.admitted += 1
+        return superseded
 
     def protect(self, num_blocks: int) -> AdmissionProtection:
         """Protect the buffered ops an admission's allocation would recycle.
@@ -514,23 +547,18 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             *(op.block_hashes for ops in self._pending.values() for op in ops)
         )
 
-    def drop_request(self, request_id: str) -> int:
-        """Discard buffered operations invalidated by a tracker reset.
+    def restart_request(self, request_id: str) -> None:
+        """Note that a preempted request restarts; see ``OffloadPolicy``.
 
-        The request keeps its id and restarts at token zero, so its
-        broken-chain marker is cleared too.
+        Its buffered operations stay. The restarted request offers its
+        tokens again, so an earlier loss no longer breaks its chain, and an
+        op it loses before offering that range again is one it offers again.
 
         Args:
             request_id: The preempted request.
-
-        Returns:
-            The number of buffered operations discarded.
         """
-        dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
-        self._squeeze_held.discard(request_id)
-        self._counters.dropped_on_request_drop += len(dropped)
-        return len(dropped)
+        self._offered_end.pop(request_id, None)
 
     def discard_for_reuse(self, request_id: str) -> None:
         """Discard the buffered state of the id's previous holder.
@@ -541,6 +569,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """
         dropped = self._pending.pop(request_id, [])
         self._broken_prefixes.discard(request_id)
+        self._offered_end.pop(request_id, None)
         self._squeeze_held.discard(request_id)
         self._counters.dropped_id_reuse += len(dropped)
 
@@ -554,6 +583,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             request_id: The request whose session was torn down.
         """
         self._broken_prefixes.discard(request_id)
+        self._offered_end.pop(request_id, None)
 
     def requeue_failed(self, item: PendingStoreItem) -> None:
         """Buffer a failed batch in token order among its request's ops.
@@ -567,8 +597,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             item: The failed batch's operations, in token order. The
                 manager filters out orphaned batches first.
         """
-        self._insert_sorted(item)
         self._counters.requeued += len(item.metadatas)
+        self._insert_sorted(item)
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Record the step's block pressure and release what it made due.
@@ -582,10 +612,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         the worker holds one in-flight batch per request; their due segment
         is held instead, so a slow store cannot let it be recycled. Once
         unblocked, a request with held ops is due, held ops counting as due
-        ones. A request in ``preempted_request_ids`` releases its whole
-        buffer: its tracker restarts when it is scheduled again, which
-        discards what is still buffered, so it is not held to the budget.
-        Requests are served most imminent first until
+        ones. Requests are served most imminent first until
         ``MAX_DRAIN_PER_STEP``; due ops past the budget are held. Expedited
         ops (see :meth:`hold_past`) whose holds a squeeze released are due
         too, served after the held ones, and wait unheld once the budget is
@@ -609,7 +636,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             signals: The manager's bounds on the blocks the running
                 requests, the resumed loads and one admission allocate
                 before the next drain, which set the danger depth, plus the
-                finished, blocked and preempted request ids. Finished ids
+                finished and blocked request ids. Finished ids
                 are not read by this policy: imminence alone decides,
                 whether or not the request is still running.
 
@@ -709,7 +736,7 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             elif (
                 any(op.held for op in surviving)
                 and request_id not in self._squeeze_held
-            ) or request_id in signals.preempted_request_ids:
+            ):
                 candidates.append((_HELD_RANK, order, request_id))
             elif any(op.expedited for op in surviving):
                 candidates.append((_EXPEDITED_RANK, order, request_id))
@@ -735,23 +762,19 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             if is_ahead and ops_left <= 0:
                 # Nothing about to be recycled made it due: it waits in place.
                 continue
-            if request_id in signals.preempted_request_ids:
-                emitted, remaining = ops, []
-            else:
-                # A squeeze hold is not due; only the window makes its ops
-                # due.
-                start, end = self._segment(
-                    ops,
-                    ranks_ahead if is_ahead else ranks,
-                    held_due=request_id not in self._squeeze_held,
-                )
-                cut = start + min(end - start, max(ops_left, 0))
-                emitted = ops[start:cut]
-                remaining = ops[:start] + ops[cut:]
-                if not is_ahead:
-                    # Over budget, yet the running requests may recycle these
-                    # before the next drain: pin them.
-                    self._hold(drain, request_id, ops[cut:end])
+            # A squeeze hold is not due; only the window makes its ops due.
+            start, end = self._segment(
+                ops,
+                ranks_ahead if is_ahead else ranks,
+                held_due=request_id not in self._squeeze_held,
+            )
+            cut = start + min(end - start, max(ops_left, 0))
+            emitted = ops[start:cut]
+            remaining = ops[:start] + ops[cut:]
+            if not is_ahead:
+                # Over budget, yet the running requests may recycle these
+                # before the next drain: pin them.
+                self._hold(drain, request_id, ops[cut:end])
             ops_left -= len(emitted)
             if not emitted:
                 continue
@@ -876,8 +899,13 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         """Drop ops from the first one whose data was lost; return survivors.
 
         A hash mismatch means the block was recycled; that op and every later
-        op of the request go, and further admissions are rejected. The caller
-        installs the survivors and reports the count.
+        op of the request go. The data is in neither vLLM's prefix cache nor
+        L1, and both are read as prefixes, so the later ops are unreachable
+        until the lost range is computed again; whoever computes it computes
+        and offers them too. The request's further offers are rejected
+        unless it offers the lost range again, which only a restarted
+        (preempted) request does. The caller installs the survivors and
+        reports the count.
 
         Args:
             request_id: The request the operations belong to, marked
@@ -895,7 +923,9 @@ class EvictionAwareStoreQueue(OffloadPolicy):
         if first_lost == len(ops):
             return ops
         self._counters.dropped_evicted += len(ops) - first_lost
-        self._broken_prefixes.add(request_id)
+        lost_start = ops[first_lost].store_metadata.op.start
+        if lost_start < self._offered_end.get(request_id, 0):
+            self._broken_prefixes.add(request_id)
         return ops[:first_lost]
 
     def _free_blocks(self) -> "Iterator[KVCacheBlock]":
@@ -1005,11 +1035,17 @@ class EvictionAwareStoreQueue(OffloadPolicy):
     def _insert_sorted(self, item: PendingStoreItem) -> None:
         """Buffer ``item``'s ops, unheld, where their starts sort.
 
+        An op overlapping a buffered one is dropped: the buffered one is
+        the later offer of the same tokens (a preempted request restarted).
+
         Args:
             item: Ops of one request, in token order, with their snapshots.
         """
         ops = self._pending.setdefault(item.request_id, [])
         for meta, block_hashes in item.metadatas:
+            if any(_overlaps(op, meta.op.start, meta.op.end) for op in ops):
+                self._counters.dropped_superseded += 1
+                continue
             index = bisect.bisect_right(
                 [op.store_metadata.op.start for op in ops], meta.op.start
             )

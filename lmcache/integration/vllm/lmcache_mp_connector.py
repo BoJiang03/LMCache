@@ -2201,8 +2201,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             if tracker.state != LMCacheMPRequestState.PREFETCHING:
                 self.request_trackers.pop(request_id)
                 if self.lazy_offload:
-                    # The recreated tracker restarts at token zero, so its
-                    # manager discards overlapping buffered metadata.
+                    # The recreated tracker offers its tokens again; those
+                    # offers supersede the overlapping buffered ones.
                     self._lazy_offload_manager.on_request_reset(request_id)
 
         if request_id not in self.request_trackers:
