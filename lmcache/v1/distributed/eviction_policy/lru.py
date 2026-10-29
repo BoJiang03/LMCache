@@ -198,6 +198,17 @@ class LRUEvictionPolicy(EvictionPolicy):
 
             return [EvictionAction(keys=keys_to_evict, destination=destination)]
 
+    def eviction_order(self) -> list[ObjectKey]:
+        """Return every tracked key, least recently used first.
+
+        Holds the policy lock only for one list copy and updates no recency.
+
+        Returns:
+            A copy of the LRU order: the first key is the next victim.
+        """
+        with self._lock:
+            return list(self._order)
+
     # =========================================================================
     # Methods below are NOT part of the EvictionPolicy interface.
     # They are provided for testing and debugging purposes only.

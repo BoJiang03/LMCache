@@ -14,7 +14,11 @@ import time
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import ObjectKey
 from lmcache.v1.distributed.config import EvictionConfig
-from lmcache.v1.distributed.eviction import L1EvictionPolicy, L2EvictionPolicy
+from lmcache.v1.distributed.eviction import (
+    EvictionPolicy,
+    L1EvictionPolicy,
+    L2EvictionPolicy,
+)
 from lmcache.v1.distributed.eviction_policy import CreateEvictionPolicy
 from lmcache.v1.distributed.internal_api import (
     EvictionAction,
@@ -112,6 +116,11 @@ class L1EvictionController(EvictionController):
         self._l1_manager.register_listener(self._listener)
         self._event_bus = get_event_bus()
         self._last_extra_log = time.monotonic()
+
+    @property
+    def eviction_policy(self) -> EvictionPolicy:
+        """The policy that orders this L1's keys for eviction."""
+        return self._eviction_policy
 
     def report_status(self) -> dict:
         return {

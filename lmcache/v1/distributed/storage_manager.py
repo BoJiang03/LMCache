@@ -35,6 +35,7 @@ from lmcache.v1.distributed.config import (
 from lmcache.v1.distributed.error import L1Error, L1ReconfigureError, strerror
 from lmcache.v1.distributed.internal_api import (
     L1ManagerInterface,
+    L1ManagerSnapshot,
     L1MemoryDesc,
     L1OperationResult,
     L2AdapterListener,
@@ -918,6 +919,41 @@ class StorageManager:
         """
         usages = [m.get_memory_usage() for m in self._l1_managers_by_id.values()]
         return sum(u for u, _ in usages), sum(t for _, t in usages)
+
+    def snapshot_l1(self) -> list[L1ManagerSnapshot]:
+        """List every L1 manager's objects and eviction order.
+
+        Each manager is read under its own lock, then its policy under the
+        policy's lock, one after another; nothing is consistent across
+        managers or between a manager and its policy. No side effects on
+        L1 or eviction.
+
+        Returns:
+            One snapshot per L1 manager, in configuration order.
+        """
+        snapshots: list[L1ManagerSnapshot] = []
+        for manager, controller, config in zip(
+            self._l1_managers_by_id.values(),
+            self._eviction_controllers,
+            self._l1_configs,
+            strict=True,
+        ):
+            start = time.perf_counter()
+            objects = manager.list_objects()
+            listed = time.perf_counter()
+            order = controller.eviction_policy.eviction_order()
+            ordered = time.perf_counter()
+            snapshots.append(
+                L1ManagerSnapshot(
+                    l1_manager_id=manager.l1_manager_id,
+                    tag=config.tag,
+                    objects=objects,
+                    eviction_order=order,
+                    list_ms=(listed - start) * 1e3,
+                    order_ms=(ordered - listed) * 1e3,
+                )
+            )
+        return snapshots
 
     # L1 reconfiguration APIs
     def get_l1_devdax_arena_statuses(self) -> list[DevDaxArenaStatus]:

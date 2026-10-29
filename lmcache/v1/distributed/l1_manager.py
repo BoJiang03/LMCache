@@ -27,6 +27,7 @@ from lmcache.v1.distributed.internal_api import (
     L1ManagerInterface,
     L1ManagerListener,
     L1ObjectMeta,
+    L1ObjectRecord,
     L1OperationResult,
 )
 from lmcache.v1.distributed.memory_manager import (
@@ -1245,6 +1246,33 @@ class L1Manager(L1ManagerInterface):
             "write_ttl_seconds": self._write_ttl_seconds,
             "read_ttl_seconds": self._read_ttl_seconds,
         }
+
+    @l1_mgr_synchronized
+    def list_objects(self) -> list[L1ObjectRecord]:
+        """List every resident and staging object, under one lock hold.
+
+        Copies one small tuple per object and nothing else, so the lock is
+        held for one pass over the object tables. No read lock, recency
+        update, listener call or event.
+
+        Returns:
+            One record per resident object (``committed`` or ``temporary``)
+            and one per writer's staging object (``staging``).
+        """
+        records = [
+            L1ObjectRecord(
+                key,
+                entry.memory_obj.get_size(),
+                "temporary" if entry.is_temporary else "committed",
+            )
+            for key, entry in self._objects.items()
+        ]
+        records.extend(
+            L1ObjectRecord(key, staged.memory_obj.get_size(), "staging")
+            for key, per_tag in self._staging.items()
+            for staged in per_tag.values()
+        )
+        return records
 
     # Debugging APIs
     @l1_mgr_synchronized

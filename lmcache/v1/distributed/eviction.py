@@ -79,6 +79,20 @@ class EvictionPolicy:
             state: The section a checkpoint held for this policy.
         """
 
+    def eviction_order(self) -> list[ObjectKey] | None:
+        """Return every tracked key in the order the policy evicts them.
+
+        Read-only: it changes no recency. Default is ``None``, for a policy
+        whose victims follow no single total order over its keys (no-op,
+        ARC's adaptive lists, per-salt lists). Policies that keep one
+        override it.
+
+        Returns:
+            A copy of the tracked keys, the next victim first, or ``None``
+            when the policy keeps no such order.
+        """
+        return None
+
     @abstractmethod
     def register_eviction_destination(self, destination: EvictionDestination):
         """
