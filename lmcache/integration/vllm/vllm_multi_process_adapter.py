@@ -754,6 +754,8 @@ class LMCacheMPSchedulerAdapter:
         self._nonblocking_lookup_status = (
             ExtraConfigDefault.nonblocking_lookup_status.default
         )
+        # lmcache.mp.hash_algorithm: the algorithm servers key chunks with.
+        self.hash_algorithm: str = ExtraConfigDefault.hash_algorithm.default
         if extra_config is not None:
             cfg = _resolve_extra_config(extra_config)
             mq_timeout = cfg[ExtraConfigDefault.mq_timeout.name]
@@ -761,6 +763,7 @@ class LMCacheMPSchedulerAdapter:
             self._nonblocking_lookup_status = cfg[
                 ExtraConfigDefault.nonblocking_lookup_status.name
             ]
+            self.hash_algorithm = cfg[ExtraConfigDefault.hash_algorithm.name]
         self._mq_timeout = mq_timeout
         self._required_chunk_alignment = required_chunk_alignment
 

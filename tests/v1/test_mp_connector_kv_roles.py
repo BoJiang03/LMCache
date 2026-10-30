@@ -3,6 +3,7 @@
 
 # Standard
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -30,6 +31,11 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (  # noqa: E402
 from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (  # noqa: E402
     MultiConnector,
 )
+from vllm.v1.core.block_pool import BlockPool  # noqa: E402
+from vllm.v1.core.kv_cache_utils import (  # noqa: E402
+    BlockHash,
+    make_block_hash_with_group_id,
+)
 from vllm.v1.core.sched.output import SchedulerOutput  # noqa: E402
 from vllm.v1.kv_cache_interface import (  # noqa: E402
     FullAttentionSpec,
@@ -51,6 +57,12 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.utils import CacheStoreEvent  # noqa: E402
+from lmcache.v1.multiprocess.protocols.state_snapshot import (  # noqa: E402
+    RequestMappingRecord,
+    iter_records,
+    read_l0_snapshot,
+    split_block_key,
+)
 from lmcache.v1.multiprocess.token_codec import pack_token_ids
 
 pytestmark = pytest.mark.no_shared_allocator
@@ -125,6 +137,7 @@ def _request(request_id: str = "request") -> Request:
             status=RequestStatus.WAITING,
             num_computed_tokens=0,
             kv_transfer_params=None,
+            block_hashes=[f"{request_id}-{i}".encode() for i in range(3)],
         ),
     )
 
@@ -279,6 +292,74 @@ def test_decode_store_policy_through_scheduler(
                 assert metadata.requests == []
     finally:
         connector.shutdown()
+
+
+@pytest.mark.parametrize("interval", [0, -1.0, "10", True])
+def test_state_snapshot_interval_must_be_a_positive_number(
+    mock_io: SimpleNamespace, interval: Any
+) -> None:
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"lmcache.mp.snapshot_interval_s": interval},
+        )
+    )
+    with pytest.raises(ValueError, match="snapshot_interval_s"):
+        LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_state_snapshot_is_off_unless_a_directory_is_set(
+    mock_io: SimpleNamespace,
+    tmp_path: Path,
+    snapshot: bool,
+) -> None:
+    """Without lmcache.mp.snapshot_dir nothing is written, even when every
+    step is due; with it, each step writes an L0 file and the tracked prompt
+    is mapped."""
+    mock_io.scheduler.configure_mock(
+        hash_algorithm="blake3", model_name="test-model", world_size=1
+    )
+    # Every step is due.
+    options: dict[str, Any] = {"lmcache.mp.snapshot_interval_s": 1e-9}
+    if snapshot:
+        options["lmcache.mp.snapshot_dir"] = str(tmp_path)
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config=options,
+        )
+    )
+    pool = BlockPool(num_gpu_blocks=8, enable_caching=True, hash_block_size=4)
+    [block] = pool.get_new_blocks(1)
+    block.set_block_hash(make_block_hash_with_group_id(BlockHash(b"h" * 32), 0))
+    connector = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    connector.bind_gpu_block_pool(pool)
+    request = _request()
+    try:
+        assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+        connector.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([block.block_id],)), 0
+        )
+        connector.build_connector_meta(
+            _schedule(num_tokens=4, block_ids=([block.block_id],), new=True)
+        )
+        connector.request_finished(request, [block.block_id])
+    finally:
+        connector.shutdown()
+
+    if not snapshot:
+        assert list(tmp_path.iterdir()) == []
+        return
+    [l0_path] = tmp_path.glob("l0-*.msgpack")
+    header, body = read_l0_snapshot(str(l0_path))
+    assert [split_block_key(k) for k in body.block_keys] == [(b"h" * 32, 0)]
+    [requests_file] = tmp_path.glob("requests-*.bin")
+    [record] = iter_records(str(requests_file), RequestMappingRecord)
+    assert record.request_id == "request"
+    assert record.block_hashes == request.block_hashes
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, None])

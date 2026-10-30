@@ -302,3 +302,4 @@ Configuration
    metrics
    logs
    traces
+   state_snapshots
