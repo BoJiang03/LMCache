@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Write periodic snapshots of the GPU prefix cache (L0).
+"""Write periodic snapshots of the GPU prefix cache (L0) and of LMCache's L1.
 
-Enabled by ``lmcache.mp.snapshot_dir``. File formats:
-``lmcache.v1.multiprocess.protocols.state_snapshot``. Design:
+Enabled by ``lmcache.mp.snapshot_dir``; every server must load the
+``lmcache.v1.multiprocess.l1_snapshot`` server module to write its L1 file.
+File formats: ``lmcache.v1.multiprocess.protocols.state_snapshot``. Design:
 ``docs/design/integration/vllm/state_snapshot.md``.
 """
 
@@ -20,10 +21,15 @@ import msgspec
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.v1.multiprocess.futures import MessagingFuture
+from lmcache.v1.multiprocess.protocols.server_module import ServerModuleCallResponse
 from lmcache.v1.multiprocess.protocols.state_snapshot import (
     FORMAT_VERSION,
+    L1_SNAPSHOT_METHOD,
     L0Body,
     L0SnapshotFile,
+    L1SnapshotReply,
+    L1SnapshotRequest,
     RequestMappingRecord,
     append_record,
     l0_snapshot_path,
@@ -91,15 +97,19 @@ def _collect_cached_blocks(pool: "BlockPool") -> L0Body:
 
 
 class StateSnapshotter:
-    """Write an L0 file every interval.
+    """Write an L0 file and ask every server for an L1 file, every interval.
 
     The scheduler thread only copies vLLM's state; a writer thread encodes
-    and writes. Call every method on the scheduler thread.
+    and writes. A server's reply is read on a later step, never waited for.
+    Call every method on the scheduler thread.
 
     Args:
-        snapshot_dir: The directory every file goes to.
+        snapshot_dir: The directory every file goes to; the servers write
+            their L1 files to the same path, so it must name the same
+            directory on their hosts.
         interval_s: Seconds between two snapshots.
-        adapter: The scheduler adapter; read for the model and chunk keying.
+        adapter: The scheduler adapter; read for the model and chunk keying,
+            and used to reach the servers.
         block_pool: vLLM's scheduler block pool; only read.
         group_tokens_per_block: Tokens per block of each KV cache group, 0
             for a group LMCache does not cache.
@@ -148,6 +158,9 @@ class StateSnapshotter:
         self._mapping_ms = 0.0
         self._next_snapshot_id = 0
         self._next_snapshot_at = clock() + interval_s
+        # Response future per server URL of the last L1 request; empty once
+        # every server answered.
+        self._inflight: dict[str, MessagingFuture[ServerModuleCallResponse]] = {}
         # The last queued L0 write; a snapshot due before it finishes is
         # skipped rather than queued.
         self._last_write: Future[None] | None = None
@@ -204,14 +217,27 @@ class StateSnapshotter:
         self._mapped.discard(request_id)
 
     def on_scheduler_step(self) -> None:
-        """Take a snapshot once the interval elapsed.
+        """Read server replies; take a snapshot once the interval elapsed.
 
-        Call once per step, at its end.
+        Call once per step, at its end. Never waits on a server: a server
+        that has not answered when the next snapshot is due, or that fails
+        the request, is logged as a warning and nothing else.
         """
+        if self._inflight:
+            self._collect_replies()
         now = self._clock()
         if now < self._next_snapshot_at:
             return
         self._next_snapshot_at = now + self._interval_s
+        if self._inflight:
+            logger.warning(
+                "State snapshot: servers %s did not answer L1 snapshot request "
+                "%d within %g s",
+                sorted(self._inflight),
+                self._next_snapshot_id - 1,
+                self._interval_s,
+            )
+            self._inflight = {}
         if self._last_write is not None and not self._last_write.done():
             logger.debug(
                 "State snapshot %d skipped: the previous L0 file is still "
@@ -227,7 +253,7 @@ class StateSnapshotter:
         self._requests_file.close()
 
     def _take_snapshot(self) -> None:
-        """Copy L0, queue the L0 file."""
+        """Copy L0, ask the servers, queue the L0 file."""
         started_at = time.perf_counter()
         wall_time = time.time()
         monotonic_time = time.monotonic()
@@ -237,6 +263,23 @@ class StateSnapshotter:
         body = _collect_cached_blocks(self._pool)
         collected_at = time.perf_counter()
 
+        l1_requested = self._adapter.is_healthy
+        if l1_requested:
+            self._inflight = self._adapter.server_module_call(
+                L1_SNAPSHOT_METHOD,
+                msgspec.msgpack.encode(
+                    L1SnapshotRequest(
+                        run_id=self._run_id,
+                        snapshot_id=snapshot_id,
+                        # Absolute: the server resolves it from its own cwd.
+                        snapshot_dir=os.path.abspath(self._snapshot_dir),
+                    )
+                ),
+            )
+        else:
+            logger.warning(
+                "State snapshot %d: a server is unhealthy; no L1 file", snapshot_id
+            )
         header = L0SnapshotFile(
             format_version=FORMAT_VERSION,
             run_id=self._run_id,
@@ -250,6 +293,7 @@ class StateSnapshotter:
             hash_algorithm=self._hasher.hash_algorithm_name,
             num_gpu_blocks=self._pool.num_gpu_blocks,
             group_tokens_per_block=self._group_tokens_per_block,
+            l1_requested=l1_requested,
             collect_ms=(collected_at - started_at) * 1e3,
             dump_ms=(time.perf_counter() - started_at) * 1e3,
             mapping_ms=self._mapping_ms,
@@ -259,6 +303,45 @@ class StateSnapshotter:
         self._mapping_ms = 0.0
         self._last_write = self._writer.submit(self._write_l0, header, body)
         self._last_write.add_done_callback(log_failed_write)
+
+    def _collect_replies(self) -> None:
+        """Log the servers' answers once every one has answered."""
+        if not all(future.query() for future in self._inflight.values()):
+            return
+        inflight, self._inflight = self._inflight, {}
+        for url, future in inflight.items():
+            try:
+                response = future.result()
+            except Exception:
+                # MessagingFuture.result re-raises whatever the transport stored,
+                # with no narrower documented type; a lost L1 file must not fail
+                # the scheduler step.
+                logger.exception("State snapshot: L1 request to %s failed", url)
+                continue
+            if not response.success:
+                logger.warning(
+                    "L1 snapshot failed on server %s: %s (a possible cause: the "
+                    "server was started without --server-module "
+                    '\'{"module_path": "lmcache.v1.multiprocess.l1_snapshot"}\')',
+                    url,
+                    response.error,
+                )
+                continue
+            reply = msgspec.msgpack.decode(response.payload, type=L1SnapshotReply)
+            if reply.skipped:
+                logger.debug(
+                    "State snapshot: server %s skipped the L1 request; its "
+                    "previous file is still being written",
+                    url,
+                )
+                continue
+            logger.debug(
+                "State snapshot: server %s lists %d L1 objects in %.1f ms into %s",
+                url,
+                reply.num_objects,
+                reply.list_ms,
+                reply.path,
+            )
 
     def _append_mapping(self, record: RequestMappingRecord, tokens: list[int]) -> None:
         """Hash a prompt's chunks and append its record; writer thread only.

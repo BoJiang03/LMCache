@@ -24,7 +24,9 @@ from lmcache.v1.distributed.internal_api import (
     L1ManagerInterface,
     L1ManagerListener,
     L1MemoryDesc,
+    L1ObjectListing,
     L1ObjectMeta,
+    L1ObjectStateName,
     L1OperationResult,
 )
 from lmcache.v1.distributed.memory_manager import L1MemoryManagerProtocol
@@ -1095,6 +1097,34 @@ class BaseL1Manager(L1ManagerInterface):
             "write_ttl_seconds": self._write_ttl_seconds,
             "read_ttl_seconds": self._read_ttl_seconds,
         }
+
+    @l1_mgr_synchronized
+    def list_objects(self) -> L1ObjectListing:
+        """List every resident and staging object, under one lock hold.
+
+        Builds one list per field, so the lock is held for one pass over
+        the object tables. No read lock, recency update, listener call or
+        event.
+
+        Returns:
+            One entry per resident object (``committed`` or ``temporary``)
+            and one per writer's staging object (``staging``).
+        """
+        keys = list(self._objects)
+        entries = list(self._objects.values())
+        staged = [
+            (key, staging.memory_obj)
+            for key, per_tag in self._staging.items()
+            for staging in per_tag.values()
+        ]
+        keys.extend(key for key, _ in staged)
+        sizes = [entry.memory_obj.get_size() for entry in entries]
+        sizes.extend(memory_obj.get_size() for _, memory_obj in staged)
+        states: list[L1ObjectStateName] = [
+            "temporary" if entry.is_temporary else "committed" for entry in entries
+        ]
+        states.extend(["staging"] * len(staged))
+        return L1ObjectListing(keys=keys, size_bytes=sizes, states=states)
 
     # Debugging APIs
     @l1_mgr_synchronized

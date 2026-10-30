@@ -52,6 +52,10 @@ from lmcache.v1.multiprocess.kv_event_subscriber import (
     KVEventStreamClosed,
     MPKVEventSubscriber,
 )
+from lmcache.v1.multiprocess.protocols.server_module import (
+    ServerModuleCallRequest,
+    ServerModuleCallResponse,
+)
 from lmcache.v1.multiprocess.token_codec import (
     TOKEN_STRIDE,
     num_packed_tokens,
@@ -1169,6 +1173,27 @@ class LMCacheMPSchedulerAdapter:
             self.req_clients[url].report_block_allocation(
                 os.getpid(), self.model_name, records
             )
+
+    def server_module_call(
+        self, method: str, payload: bytes
+    ) -> dict[str, MessagingFuture[ServerModuleCallResponse]]:
+        """Send one server-module request to every server, without waiting.
+
+        The caller checks :attr:`is_healthy` first; this method does not.
+
+        Args:
+            method: The namespaced server-module method.
+            payload: The method's encoded request.
+
+        Returns:
+            The response future of each server, keyed by server URL. The
+            caller polls them; the scheduler step must not block on them.
+        """
+        request = ServerModuleCallRequest(method=method, payload=payload)
+        return {
+            url: self.req_clients[url].server_module_call(request)
+            for url in self._server_urls
+        }
 
     # Helper functions
     def _create_key(

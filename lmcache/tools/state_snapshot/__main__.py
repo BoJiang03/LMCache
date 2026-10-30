@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Print what one L0 state snapshot holds.
+"""Print what one L0/L1 state snapshot holds.
 
 Usage:
     python -m lmcache.tools.state_snapshot SNAPSHOT_DIR SNAPSHOT_ID [--run-id ID]

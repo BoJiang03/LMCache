@@ -576,7 +576,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     - lmcache.mp.save_decode_cache: also store chunks containing generated
       tokens. Defaults to False; only complete prompt chunks are stored.
     - lmcache.mp.snapshot_dir: a directory to write the GPU prefix cache
-      to, for offline analysis. Unset by default (no snapshots).
+      and every server's L1 to, for offline analysis. Unset by default (no
+      snapshots). Every server must load lmcache.v1.multiprocess.l1_snapshot.
     - lmcache.mp.snapshot_interval_s: seconds between two snapshots, when
       lmcache.mp.snapshot_dir is set. Defaults to 10.
     """

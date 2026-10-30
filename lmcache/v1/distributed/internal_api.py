@@ -6,7 +6,7 @@ Class for distributed storage manager internal API data structures
 # Standard
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 import enum
 
 # First Party
@@ -58,6 +58,60 @@ class L1ObjectMeta:
 
     size_bytes: int
     backend: L1BackendType
+
+
+#: Lifecycle state of one L1 object in :class:`L1ObjectListing`: ``committed``
+#: (resident, readable), ``temporary`` (resident, deleted after its read),
+#: or ``staging`` (write-reserved, its write not finished, unreadable).
+L1ObjectStateName = Literal["committed", "temporary", "staging"]
+
+
+@dataclass(frozen=True)
+class L1ObjectListing:
+    """Every L1 object, as parallel lists (one entry per object).
+
+    Parallel lists rather than one record per object, so listing a large L1
+    under its lock allocates one list per field.
+
+    Attributes:
+        keys: Each object's key.
+        size_bytes: Its logical size (``MemoryObj.get_size``).
+        states: Its lifecycle state (see :data:`L1ObjectStateName`).
+    """
+
+    keys: list[ObjectKey]
+    size_bytes: list[int]
+    states: list[L1ObjectStateName]
+
+
+@dataclass(frozen=True)
+class L1ManagerSnapshot:
+    """One L1 manager's objects and eviction order, for offline analysis.
+
+    The objects and the order are read under two different locks (the L1
+    manager's, then the eviction policy's), one right after the other, so
+    an object written or evicted in between appears in one but not both.
+
+    Attributes:
+        l1_manager_id: The manager's process-local id.
+        tag: The manager's configured tag.
+        objects: Every resident and staging object (see
+            :meth:`L1ManagerInterface.list_objects`).
+        eviction_order: The policy's keys, next victim first, or ``None``
+            when the policy keeps no single order
+            (``EvictionPolicy.eviction_order``).
+        list_ms: Wall time of ``list_objects``: the L1 manager lock's hold,
+            plus any wait for it.
+        order_ms: Wall time of reading the eviction order, under the
+            policy's own lock.
+    """
+
+    l1_manager_id: int
+    tag: str
+    objects: L1ObjectListing
+    eviction_order: list[ObjectKey] | None
+    list_ms: float
+    order_ms: float
 
 
 class EventListener(ABC):  # noqa: B024
@@ -364,6 +418,18 @@ class L1ManagerInterface(Protocol):
 
     def report_status(self) -> dict:
         """Return a status dictionary for the status endpoints."""
+        ...
+
+    def list_objects(self) -> L1ObjectListing:
+        """List every resident and staging object, under one lock hold.
+
+        No side effects: no read lock, recency update, listener call or
+        event.
+
+        Returns:
+            One entry per resident object and one per writer's staging
+            object, in no particular order.
+        """
         ...
 
     def memcheck(self) -> bool:

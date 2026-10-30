@@ -3,6 +3,7 @@
 
 # Standard
 from collections.abc import Iterator
+from pathlib import Path
 
 # Third Party
 import pytest
@@ -10,10 +11,16 @@ import torch
 
 # First Party
 from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
-from lmcache.v1.distributed.config import L1ManagerConfig, L1MemoryManagerConfig
+from lmcache.v1.distributed.config import (
+    EvictionConfig,
+    L1ManagerConfig,
+    L1MemoryManagerConfig,
+    StorageManagerConfig,
+)
 from lmcache.v1.distributed.error import L1Error
 from lmcache.v1.distributed.internal_api import L1ManagerInterface, L1ManagerListener
 from lmcache.v1.distributed.l1_manager import DevDaxL1Manager, DramL1Manager
+from lmcache.v1.distributed.storage_manager import StorageManager, l1_owners_of
 import lmcache.v1.memory_management as memory_management
 
 pytestmark = pytest.mark.no_shared_allocator
@@ -146,3 +153,81 @@ def test_medium_specific_calls_are_not_part_of_the_interface() -> None:
     ):
         assert not hasattr(L1ManagerInterface, name)
         assert hasattr(DevDaxL1Manager, name) or name == "memory_region_count"
+
+
+def _devdax_memory_config(tmp_path: Path) -> L1MemoryManagerConfig:
+    """A regular mmap-able file stands in for ``/dev/dax``, as in
+    ``test_devdax_l1_allocator.py``."""
+    path = tmp_path / "devdax.bin"
+    with open(path, "wb") as f:
+        f.truncate(CAPACITY)
+    return L1MemoryManagerConfig(
+        size_in_bytes=CAPACITY,
+        use_lazy=False,
+        shm_name="",
+        align_bytes=ALIGN,
+        devdax_path=str(path),
+    )
+
+
+@pytest.fixture
+def devdax_l1(tmp_path: Path) -> Iterator[L1ManagerInterface]:
+    manager = DevDaxL1Manager(L1ManagerConfig(_devdax_memory_config(tmp_path)))
+    yield manager
+    manager.close()
+
+
+@pytest.mark.parametrize("binding", ["l1", "devdax_l1"])
+def test_list_objects_reports_size_and_state(
+    binding: str, request: pytest.FixtureRequest
+) -> None:
+    l1: L1ManagerInterface = request.getfixturevalue(binding)
+    empty = l1.list_objects()
+    assert (empty.keys, empty.size_bytes, empty.states) == ([], [], [])
+    l1.reserve_write([key(5), key(6)], [False, True], LAYOUT)
+    l1.finish_write([key(5), key(6)])
+    l1.reserve_write([key(7)], [False], LAYOUT)
+
+    listing = l1.list_objects()
+    rows = sorted(
+        zip(listing.keys, listing.size_bytes, listing.states, strict=True),
+        key=lambda row: row[0].chunk_hash,
+    )
+    assert rows == [
+        (key(5), ALIGN, "committed"),
+        (key(6), ALIGN, "temporary"),
+        (key(7), ALIGN, "staging"),
+    ]
+
+    # Listing reserves nothing: the staged key is still the writer's.
+    assert l1.finish_write([key(7)]) == {key(7): L1Error.SUCCESS}
+    assert set(l1.list_objects().states) == {"committed", "temporary"}
+
+
+def test_snapshot_l1_lists_a_devdax_l1_in_lru_order(tmp_path: Path) -> None:
+    store = StorageManager(
+        StorageManagerConfig(
+            L1ManagerConfig(_devdax_memory_config(tmp_path)), EvictionConfig("LRU")
+        )
+    )
+    try:
+        reserved = store.reserve_write([key(1), key(2)], LAYOUT)
+        store.finish_write([key(1), key(2)], l1_owners_of(reserved))
+        store.reserve_write([key(3)], LAYOUT)
+
+        [snapshot] = store.snapshot_l1()
+        rows = sorted(
+            zip(snapshot.objects.keys, snapshot.objects.states, strict=True),
+            key=lambda row: row[0].chunk_hash,
+        )
+        assert rows == [
+            (key(1), "committed"),
+            (key(2), "committed"),
+            (key(3), "staging"),
+        ]
+        assert snapshot.objects.size_bytes == [ALIGN] * 3
+        assert snapshot.eviction_order is not None
+        assert set(snapshot.eviction_order) == {key(1), key(2), key(3)}
+        assert snapshot.eviction_order[-1] == key(3)
+    finally:
+        store.close()

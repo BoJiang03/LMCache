@@ -58,6 +58,7 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
 from lmcache.utils import CacheStoreEvent  # noqa: E402
 from lmcache.v1.multiprocess.protocols.state_snapshot import (  # noqa: E402
+    L1_SNAPSHOT_METHOD,
     RequestMappingRecord,
     iter_records,
     read_l0_snapshot,
@@ -315,12 +316,14 @@ def test_state_snapshot_is_off_unless_a_directory_is_set(
     tmp_path: Path,
     snapshot: bool,
 ) -> None:
-    """Without lmcache.mp.snapshot_dir nothing is written, even when every
-    step is due; with it, each step writes an L0 file and the tracked prompt
-    is mapped."""
+    """Without lmcache.mp.snapshot_dir no server is asked and nothing is
+    written, even when every step is due; with it, each step writes an L0
+    file, asks the servers for L1, and the tracked prompt is mapped."""
     mock_io.scheduler.configure_mock(
         hash_algorithm="blake3", model_name="test-model", world_size=1
     )
+    mock_io.scheduler.is_healthy = True
+    mock_io.scheduler.server_module_call.return_value = {}
     # Every step is due.
     options: dict[str, Any] = {"lmcache.mp.snapshot_interval_s": 1e-9}
     if snapshot:
@@ -350,9 +353,12 @@ def test_state_snapshot_is_off_unless_a_directory_is_set(
     finally:
         connector.shutdown()
 
+    calls = mock_io.scheduler.server_module_call.call_args_list
     if not snapshot:
+        assert calls == []
         assert list(tmp_path.iterdir()) == []
         return
+    assert [c.args[0] for c in calls] == [L1_SNAPSHOT_METHOD]
     [l0_path] = tmp_path.glob("l0-*.msgpack")
     header, body = read_l0_snapshot(str(l0_path))
     assert [split_block_key(k) for k in body.block_keys] == [(b"h" * 32, 0)]

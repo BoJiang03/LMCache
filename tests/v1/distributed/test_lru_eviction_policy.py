@@ -14,7 +14,10 @@ These tests verify the basic functionality of the LRUEvictionPolicy:
 
 # First Party
 from lmcache.v1.distributed.api import ObjectKey
-from lmcache.v1.distributed.eviction_policy import LRUEvictionPolicy
+from lmcache.v1.distributed.eviction_policy import (
+    LRUEvictionPolicy,
+    NoOpEvictionPolicy,
+)
 from lmcache.v1.distributed.internal_api import (
     EvictionDestination,
 )
@@ -401,3 +404,43 @@ class TestLRUEvictionPolicyKeyEligibleFilter:
         assert len(actions[0].keys) == 2
         for k in actions[0].keys:
             assert ObjectKey.Bytes2IntHash(k.chunk_hash) % 5 == 0
+
+
+# =============================================================================
+# Eviction Order Accessor Tests
+# =============================================================================
+
+
+class TestLRUEvictionOrder:
+    """eviction_order() lists every tracked key, next victim first."""
+
+    def test_order_follows_create_touch_and_remove(self) -> None:
+        policy = LRUEvictionPolicy()
+        k1, k2, k3, k4 = (make_key(i) for i in range(1, 5))
+        # One request's keys: the later ones are evicted first.
+        policy.on_keys_created([k1, k2, k3])
+        assert policy.eviction_order() == [k3, k2, k1]
+
+        policy.on_keys_created([k4])
+        policy.on_keys_touched([k3])
+        assert policy.eviction_order() == [k2, k1, k4, k3]
+
+        policy.on_keys_removed([k1])
+        assert policy.eviction_order() == [k2, k4, k3]
+
+    def test_order_is_a_copy_and_changes_no_recency(self) -> None:
+        policy = LRUEvictionPolicy()
+        k1, k2 = make_key(1), make_key(2)
+        policy.on_keys_created([k2])
+        policy.on_keys_created([k1])
+
+        order = policy.eviction_order()
+        order.clear()
+        assert policy.eviction_order() == [k2, k1]
+        [action] = policy.get_eviction_actions(0.5)
+        assert action.keys == [k2]
+
+    def test_policy_without_an_order_returns_none(self) -> None:
+        policy = NoOpEvictionPolicy()
+        policy.on_keys_created([make_key(1)])
+        assert policy.eviction_order() is None
