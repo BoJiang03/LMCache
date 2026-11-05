@@ -934,6 +934,24 @@ revisions of one model ID share the registered layout. That is correct as long
 as the revisions keep the same cache layout, which is the case for weights-only
 revisions.
 
+LoRA adapters
+~~~~~~~~~~~~~
+
+A LoRA adapter changes the KV bytes for the same token prefix, so the adapter is
+part of the cache identity. For a request served with an adapter, the connector
+adds ``lmcache.tag.lora=<lora_name>`` to the request's configuration, the same
+name vLLM puts in its own prefix-cache block hashes. Objects written under two
+adapters, or under an adapter and the base model, never mix in L1 or L2.
+Requests without an adapter add no tag and keep the base model's namespace.
+
+``lmcache.tag.lora`` is reserved: a value supplied by the client in
+``kv_transfer_params`` is always discarded, so a request cannot read or write
+another adapter's objects by naming it.
+
+The identity is the adapter name, not its weights. Reloading different weights
+under the same ``lora_name`` reuses the objects stored under that name, which
+persist across restarts in L2; give retrained adapters a new name.
+
 Connector ``extra_config`` Keys
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
