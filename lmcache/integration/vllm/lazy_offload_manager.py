@@ -434,7 +434,7 @@ class LazyOffloadManager:
 
         Raises:
             ValueError: If no GPU block pool has been bound, or if a
-                request's buffered operations are not contiguous.
+                request's buffered operations overlap.
             RuntimeError: If the policy emitted for a request that
                 already has a store batch in flight.
         """
@@ -583,7 +583,11 @@ class LazyOffloadManager:
 
         Returns:
             Sessions made releasable by completed batches.
+
+        Raises:
+            ValueError: If no GPU block pool has been bound.
         """
+        self._require_block_pool()
         for request_id in failed_request_ids:
             if self._requests.has_in_flight(request_id):
                 self._requests.fail_in_flight(request_id)
