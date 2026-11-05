@@ -22,10 +22,12 @@ THRESHOLD_KEY = "lmcache.mp.lazy_offload_threshold"
 SELECT_COUNT_KEY = "lmcache.mp.lazy_offload_select_count"
 
 
-def make_meta(request_id: str = "req-0") -> MagicMock:
-    """Build a mock ``LMCacheMPRequestMetadata`` for one store operation."""
+def make_meta(request_id: str = "req-0", start: int = 0, end: int = 16) -> MagicMock:
+    """Build a mock ``LMCacheMPRequestMetadata`` storing ``[start, end)``."""
     meta = MagicMock()
     meta.request_id = request_id
+    meta.op.start = start
+    meta.op.end = end
     return meta
 
 
@@ -40,10 +42,12 @@ def drain(
     """Drain an idle step with the given eligibility sets."""
     return policy.drain(
         DrainSignals(
-            new_blocks_allocated=0,
-            est_next_step_blocks=0,
+            next_step_blocks=0,
+            resuming_blocks=0,
+            admission_blocks=0,
             finished_request_ids=finished,
             blocked_request_ids=blocked or set(),
+            running_blocks_allocated=0,
         )
     )
 
@@ -97,8 +101,8 @@ class TestDrainThreshold:
 class TestCoalescingAndSnapshots:
     def test_one_request_drains_as_one_item(self) -> None:
         policy = FIFOOffloadPolicy({THRESHOLD_KEY: 1})
-        policy.add(make_meta("req"), make_block_hashes([0]))
-        policy.add(make_meta("req"), make_block_hashes([0, 1]))
+        policy.add(make_meta("req", 0, 16), make_block_hashes([0]))
+        policy.add(make_meta("req", 16, 32), make_block_hashes([0, 1]))
 
         (item,) = drain(policy, {"req"}).items
 
@@ -115,14 +119,6 @@ class TestCoalescingAndSnapshots:
 
 
 class TestDiscard:
-    def test_drop_request_reports_the_discarded_operations(self) -> None:
-        policy = FIFOOffloadPolicy({})
-        policy.add(make_meta("req"), make_block_hashes([0]))
-        policy.add(make_meta("req"), make_block_hashes([0, 1]))
-
-        assert policy.drop_request("req") == 2
-        assert policy.drop_request("req") == 0
-
     def test_discard_for_reuse_empties_the_buffer(self) -> None:
         policy = FIFOOffloadPolicy({})
         policy.add(make_meta("req"), make_block_hashes([0]))
@@ -131,12 +127,14 @@ class TestDiscard:
 
         assert not policy.has_pending_request("req")
 
-    def test_failed_store_reports_nothing_dropped(self) -> None:
-        """FIFO keeps no prefix-chain state, so a failure drops nothing and the
-        request's buffer is left as it was.
+    def test_failed_store_drops_the_buffered_operations(self) -> None:
+        """Giving a request's stores up drops what it has buffered; FIFO keeps
+        no prefix-chain state, so operations added later are buffered again.
         """
         policy = FIFOOffloadPolicy({})
         policy.add(make_meta("req"), make_block_hashes([0]))
 
-        assert policy.mark_store_failed("req") == 0
+        assert policy.mark_store_failed("req") == 1
+        assert not policy.has_pending_request("req")
+        policy.add(make_meta("req"), make_block_hashes([1]))
         assert policy.has_pending_request("req")

@@ -62,6 +62,8 @@ class _RecordingManager:
     finished_requests: list[str] = field(default_factory=list)
     reset_requests: list[str] = field(default_factory=list)
     arrived_requests: list[str] = field(default_factory=list)
+    admissions: list[tuple[str, int, int, int, bool]] = field(default_factory=list)
+    finished_loads: list[set[str]] = field(default_factory=list)
     candidates: list[LMCacheMPRequestMetadata] = field(default_factory=list)
     bound_pools: list[object] = field(default_factory=list)
     final_log_calls: int = 0
@@ -89,10 +91,39 @@ class _RecordingManager:
         """Record that a request was preempted."""
         self.reset_requests.append(request_id)
 
-    def on_request_arrived(self, request_id: str) -> LazyOffloadActions:
+    def on_request_arrived(
+        self, request_id: str, block_hashes: list[object]
+    ) -> LazyOffloadActions:
         """Record that a tracker was created for a request id."""
         self.arrived_requests.append(request_id)
         return self.arrival_actions
+
+    def on_admission(
+        self,
+        request_id: str,
+        num_tokens: int,
+        num_computed_tokens: int,
+        num_external_tokens: int,
+        load_async: bool,
+    ) -> None:
+        """Record a resolved admission."""
+        self.admissions.append(
+            (
+                request_id,
+                num_tokens,
+                num_computed_tokens,
+                num_external_tokens,
+                load_async,
+            )
+        )
+
+    def on_loads_finished(self, request_ids: set[str]) -> None:
+        """Record the requests whose asynchronous load finished."""
+        self.finished_loads.append(request_ids)
+
+    def flush_for_lookup(self, request_id: str, num_computed_tokens: int) -> bool:
+        """Report that no buffered op holds the lookup back."""
+        return False
 
     def add_store_candidate(self, metadata: LMCacheMPRequestMetadata) -> None:
         """Record one store offered for deferral."""
@@ -196,8 +227,9 @@ def _make_vllm_config(
             data_parallel_size=1,
         ),
         model_config=SimpleNamespace(
-            model="test-model", use_mla=False, is_hybrid=False
+            model="test-model", use_mla=False, is_hybrid=False, max_model_len=4096
         ),
+        scheduler_config=SimpleNamespace(max_num_batched_tokens=2048),
     )
 
 
@@ -218,6 +250,8 @@ def _make_connector() -> _Harness:
     # ``role`` is a read-only property over ``_role`` on the vLLM base.
     connector._role = KVConnectorRole.SCHEDULER
     connector.lazy_offload = True
+    # vLLM bound its KV cache manager, so lazy offload stays on.
+    connector._kv_cache_manager_bound = True
     connector.request_trackers = {}
     connector._group_tokens_per_block = [TOKENS_PER_BLOCK]
     connector._hit_alignment_tokens = TOKENS_PER_BLOCK
@@ -354,6 +388,7 @@ def test_update_connector_output_forwards_receipts_and_applies_actions() -> None
     harness.manager.store_actions = LazyOffloadActions(sessions_to_end=["req"])
     output = SimpleNamespace(
         kv_cache_events=None,
+        finished_recving=None,
         kv_connector_worker_meta=LMCacheMPWorkerMetadata(
             completed_store_requests={"req": 2},
             failed_store_requests={"req"},
@@ -370,7 +405,9 @@ def test_update_connector_output_ignores_foreign_metadata() -> None:
     harness = _make_connector()
 
     harness.connector.update_connector_output(
-        SimpleNamespace(kv_cache_events=None, kv_connector_worker_meta=None)
+        SimpleNamespace(
+            kv_cache_events=None, finished_recving=None, kv_connector_worker_meta=None
+        )
     )
 
     assert harness.manager.store_results == []
@@ -402,6 +439,7 @@ def test_new_request_arrival_forwards_event_and_applies_release() -> None:
         cache_salt="",
         all_token_ids=list(range(32)),
         num_prompt_tokens=32,
+        block_hashes=[],
     )
 
     tracker = harness.connector._get_or_create_request_tracker(request)
@@ -419,6 +457,7 @@ def test_preempted_tracker_reset_forwards_reset_before_rearrival() -> None:
         cache_salt="",
         all_token_ids=list(range(32)),
         num_prompt_tokens=32,
+        block_hashes=[],
     )
     stale = LMCacheMPRequestTracker(request)  # type: ignore[arg-type]
     stale.state = LMCacheMPRequestState.READY
@@ -443,6 +482,7 @@ def test_preempted_tracker_in_prefetching_state_is_kept() -> None:
         cache_salt="",
         all_token_ids=list(range(32)),
         num_prompt_tokens=32,
+        block_hashes=[],
     )
     fresh = LMCacheMPRequestTracker(request)  # type: ignore[arg-type]
     harness.connector.request_trackers["X"] = fresh
@@ -468,6 +508,7 @@ def test_lazy_new_request_store_routes_to_manager_not_metadata() -> None:
         all_token_ids=tokens,
         prompt_token_ids=tokens,
         num_prompt_tokens=len(tokens),
+        block_hashes=[],
     )
     assert harness.connector.get_num_new_matched_tokens(
         request, num_computed_tokens=0
@@ -506,6 +547,7 @@ def test_lazy_cached_request_store_routes_to_manager_not_metadata() -> None:
         all_token_ids=tokens,
         prompt_token_ids=tokens,
         num_prompt_tokens=len(tokens),
+        block_hashes=[],
     )
     assert harness.connector.get_num_new_matched_tokens(
         request, num_computed_tokens=3 * TOKENS_PER_BLOCK + 4
@@ -546,6 +588,7 @@ def test_consumer_role_offers_no_new_request_store_to_the_manager() -> None:
         all_token_ids=tokens,
         prompt_token_ids=tokens,
         num_prompt_tokens=len(tokens),
+        block_hashes=[],
     )
     harness.connector.get_num_new_matched_tokens(request, num_computed_tokens=0)
     harness.connector.request_trackers["C-new"].allocated_block_ids = {0: [1, 2, 3, 4]}
@@ -575,6 +618,7 @@ def test_consumer_role_offers_no_cached_request_store_to_the_manager() -> None:
         all_token_ids=tokens,
         prompt_token_ids=tokens,
         num_prompt_tokens=len(tokens),
+        block_hashes=[],
     )
     harness.connector.get_num_new_matched_tokens(
         request, num_computed_tokens=3 * TOKENS_PER_BLOCK + 4

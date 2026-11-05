@@ -49,6 +49,14 @@ class FakeFreeQueue:
     def __init__(self, owner: "FakeBlockPool") -> None:
         self._owner = owner
 
+    def remove(self, block: FakeBlock) -> None:
+        """Take one block out of the queue, wherever it sits."""
+        self._owner.free_list.remove(block)
+
+    def prepend_n(self, blocks: list[FakeBlock]) -> None:
+        """Put blocks at the head of the queue, in the given order."""
+        self._owner.free_list[:0] = blocks
+
     @property
     def fake_free_list_head(self) -> FakeBlock:
         """Head sentinel whose successor is the next eviction victim."""
@@ -69,9 +77,15 @@ class FakeBlockPool:
         self.blocks: dict[int, FakeBlock] = {}
         self.free_list: list[FakeBlock] = []
         self.free_block_queue = FakeFreeQueue(self)
+        # Tokens per block-hash entry, as in a real pool with prefix caching.
+        self.hash_block_size = TOKENS_PER_BLOCK
         self.link_reads = 0
         self.touched: list[list[int]] = []
         self.freed: list[list[int]] = []
+        # vLLM's null block is block 0, never free and never hashed. It is
+        # kept out of ``blocks`` so the free-queue fidelity check, which
+        # seeds every block in ``blocks``, compares the same ids 1..N.
+        self.null_block = FakeBlock(0, pool=self)
         for block_id in range(1, num_blocks + 1):
             self.blocks[block_id] = FakeBlock(block_id, pool=self)
 
@@ -104,11 +118,16 @@ class FakeBlockPool:
         self.blocks[block_id].block_hash = block_hash
 
     def make_free(self, block_ids: list[int]) -> None:
-        """Release blocks to the tail of the free queue."""
+        """Drop the owning request's reference, as vLLM frees its blocks.
+
+        A block no other pin holds rejoins the tail of the free queue; one
+        lazy offload pinned stays out of it until that pin is released.
+        """
         for block_id in block_ids:
             block = self.blocks[block_id]
-            block.ref_cnt = 0
-            self.free_list.append(block)
+            block.ref_cnt -= 1
+            if block.ref_cnt == 0:
+                self.free_list.append(block)
 
     def free_block_ids(self) -> list[int]:
         """The free queue's block ids, next victim first."""

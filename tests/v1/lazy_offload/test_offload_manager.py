@@ -8,7 +8,7 @@ pool is the shared ``FakeBlockPool``.
 """
 
 # Standard
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 # Third Party
@@ -21,8 +21,10 @@ from lmcache.integration.vllm import (  # noqa: E402
     lazy_offload_manager as manager_module,
 )
 from lmcache.integration.vllm.lazy_offload_manager import (  # noqa: E402
+    MAX_STORE_ATTEMPTS,
     LazyOffloadActions,
     LazyOffloadManager,
+    StoreCompletionTracker,
 )
 from lmcache.integration.vllm.lazy_offload_policy import (  # noqa: E402
     POLICY_CONFIG_KEY,
@@ -53,6 +55,46 @@ from tests.v1.lazy_offload.block_pool_fake import (  # noqa: E402
     make_real_pool,
     real_free_block_ids,
 )
+
+# Large enough that no step here is capped by the token budget.
+MAX_STEP_TOKENS = 1024
+# One block, so the admission reserve every drain keeps clear is small: the
+# 17 slots of a full hit's recomputed token span two blocks, plus a partial
+# block at the start and a copy-on-write block, plus one for a split between
+# a hit and an allocation.
+MAX_MODEL_LEN = TOKENS_PER_BLOCK
+ADMISSION_RESERVE = 2 + 2 + 1
+
+
+def _make_manager(
+    configs: dict[str, ConfigValue] | None,
+    completion_tracker: StoreCompletionTracker,
+    group_tokens_per_block: list[int] | None = None,
+) -> LazyOffloadManager:
+    """Build an unbound manager with the suite's schedule limits."""
+    return LazyOffloadManager(
+        configs,
+        group_tokens_per_block or [TOKENS_PER_BLOCK],
+        completion_tracker,
+        max_step_tokens=MAX_STEP_TOKENS,
+        num_lookahead_tokens=0,
+        max_model_len=MAX_MODEL_LEN,
+        chunk_size=TOKENS_PER_BLOCK,
+    )
+
+
+class _PrefixCache:
+    """A KV cache coordinator whose GPU prefix cache serves a set hit."""
+
+    def __init__(self) -> None:
+        # Tokens the hit serves of any request; none by default.
+        self.hit_tokens = 0
+
+    def find_longest_cache_hit(
+        self, block_hashes: list[object], max_cache_hit_length: int
+    ) -> tuple[tuple[list[object], ...], int, int]:
+        """Serve ``hit_tokens``; the blocks are not read."""
+        return ([],), self.hit_tokens, 0
 
 
 class _FakeCompletionTracker:
@@ -95,19 +137,45 @@ def _make_store_metadata(
 
 def _make_scheduler_output(
     total_num_scheduled_tokens: int,
-    new_request_block_ids: list[list[list[int]]] | None = None,
-    cached_new_block_ids: list[list[list[int]] | None] | None = None,
+    new_requests: dict[str, tuple[int, list[list[int]]]] | None = None,
+    cached_requests: dict[str, tuple[int, int, list[list[int]] | None]] | None = None,
 ) -> SimpleNamespace:
-    """Duck-typed ``SchedulerOutput`` with the fields the drain path reads."""
-    new_reqs = [
-        SimpleNamespace(req_id=f"new-req-{index}", block_ids=block_ids)
-        for index, block_ids in enumerate(new_request_block_ids or [])
-    ]
-    cached = SimpleNamespace(new_block_ids=cached_new_block_ids or [])
+    """Duck-typed ``SchedulerOutput`` with the fields the drain path reads.
+
+    Args:
+        total_num_scheduled_tokens: The step's token count; zero makes it a
+            no-forward step.
+        new_requests: Request id -> (tokens scheduled, block table per
+            group) of a request scheduled from token zero. None schedules
+            no request the manager tracks, so the danger depth is the
+            admission reserve alone.
+        cached_requests: Request id -> (tokens computed before the step,
+            tokens scheduled, blocks the step appended per group or None).
+    """
+    new_requests = new_requests or {}
+    cached_requests = cached_requests or {}
+    num_scheduled = {
+        request_id: scheduled for request_id, (scheduled, _) in new_requests.items()
+    }
+    num_scheduled.update(
+        (request_id, scheduled)
+        for request_id, (_, scheduled, _) in cached_requests.items()
+    )
     return SimpleNamespace(
         total_num_scheduled_tokens=total_num_scheduled_tokens,
-        scheduled_new_reqs=new_reqs,
-        scheduled_cached_reqs=cached,
+        num_scheduled_tokens=num_scheduled,
+        scheduled_new_reqs=[
+            SimpleNamespace(req_id=request_id, num_computed_tokens=0, block_ids=table)
+            for request_id, (_, table) in new_requests.items()
+        ],
+        scheduled_cached_reqs=SimpleNamespace(
+            req_ids=list(cached_requests),
+            num_computed_tokens=[entry[0] for entry in cached_requests.values()],
+            new_block_ids=[entry[2] for entry in cached_requests.values()],
+            resumed_req_ids=set(),
+        ),
+        finished_req_ids=set(),
+        preempted_req_ids=None,
     )
 
 
@@ -118,6 +186,9 @@ class _Harness:
     pool: FakeBlockPool
     manager: LazyOffloadManager
     ended_sessions: list[str]
+    prefix_cache: _PrefixCache = field(default_factory=_PrefixCache)
+    # Ids that arrived and whose session has not ended.
+    arrived: set[str] = field(default_factory=set)
 
 
 def _make_manager_harness(
@@ -128,16 +199,20 @@ def _make_manager_harness(
 ) -> _Harness:
     """Build a bound manager over a fake pool, EVICTION_AWARE by default."""
     pool = FakeBlockPool(num_blocks)
-    manager = LazyOffloadManager(
+    manager = _make_manager(
         {
             POLICY_CONFIG_KEY: LazyOffloadMode.EVICTION_AWARE.value,
             **(extra_config or {}),
         },
-        group_tokens_per_block or [TOKENS_PER_BLOCK],
         _FakeCompletionTracker(expected_worker_count),
+        group_tokens_per_block,
     )
     manager.bind_block_pool(pool)  # type: ignore[arg-type]
-    return _Harness(pool=pool, manager=manager, ended_sessions=[])
+    prefix_cache = _PrefixCache()
+    manager.bind_cache_coordinator(prefix_cache)  # type: ignore[arg-type]
+    return _Harness(
+        pool=pool, manager=manager, ended_sessions=[], prefix_cache=prefix_cache
+    )
 
 
 def _admit_op(
@@ -148,7 +223,13 @@ def _admit_op(
     end: int,
     cache_salt: str = "",
 ) -> LMCacheMPRequestMetadata:
-    """Give the blocks hashes and buffer one store op for them."""
+    """Give the blocks hashes and buffer one store op for them.
+
+    A request id with no live session arrives first, as vLLM creates its
+    tracker before it offers a store.
+    """
+    if request_id not in harness.arrived:
+        _arrive_new_request(harness, request_id)
     for group in group_block_ids:
         for bid in group:
             if harness.pool.blocks[bid].block_hash is None:
@@ -163,6 +244,7 @@ def _admit_op(
 def _apply_actions(harness: _Harness, actions: LazyOffloadActions) -> None:
     """Record the session-release actions the connector would apply."""
     harness.ended_sessions.extend(actions.sessions_to_end)
+    harness.arrived.difference_update(actions.sessions_to_end)
 
 
 @dataclass
@@ -183,12 +265,12 @@ class _DrainResult:
 def _drain(
     harness: _Harness,
     total_num_scheduled_tokens: int = 2 * TOKENS_PER_BLOCK,
-    new_request_block_ids: list[list[list[int]]] | None = None,
-    cached_new_block_ids: list[list[list[int]] | None] | None = None,
+    new_requests: dict[str, tuple[int, list[list[int]]]] | None = None,
+    cached_requests: dict[str, tuple[int, int, list[list[int]] | None]] | None = None,
 ) -> _DrainResult:
     """Run one public manager scheduler-step hook."""
     scheduler_output = _make_scheduler_output(
-        total_num_scheduled_tokens, new_request_block_ids, cached_new_block_ids
+        total_num_scheduled_tokens, new_requests, cached_requests
     )
     actions = harness.manager.on_scheduler_step(scheduler_output)  # type: ignore[arg-type]
     _apply_actions(harness, actions)
@@ -211,9 +293,22 @@ def _report_store_failed(harness: _Harness, request_id: str, count: int = 1) -> 
     _apply_actions(harness, actions)
 
 
+def _fail_for_good(harness: _Harness, request_id: str) -> None:
+    """Fail the request's in-flight batch until the manager gives it up.
+
+    A failed batch is buffered again and resubmitted by the next drain, so
+    every failure but the last is followed by a drain that re-emits it.
+    """
+    for attempt in range(1, MAX_STORE_ATTEMPTS + 1):
+        _report_store_failed(harness, request_id)
+        if attempt < MAX_STORE_ATTEMPTS:
+            assert len(_drain(harness)) == 1, "failed batch was not retried"
+
+
 def _arrive_new_request(harness: _Harness, request_id: str) -> None:
     """Deliver the manager lifecycle event for a newly observed request id."""
-    _apply_actions(harness, harness.manager.on_request_arrived(request_id))
+    harness.arrived.add(request_id)
+    _apply_actions(harness, harness.manager.on_request_arrived(request_id, []))
 
 
 def _make_fifo_harness(threshold: int = 1) -> _Harness:
@@ -234,12 +329,13 @@ class TestRealBlockPool:
         the fakes stand in for elsewhere.
         """
         pool = make_real_pool()
-        manager = LazyOffloadManager(
+        manager = _make_manager(
             {POLICY_CONFIG_KEY: LazyOffloadMode.EVICTION_AWARE.value},
-            [TOKENS_PER_BLOCK],
             _FakeCompletionTracker(),
         )
         manager.bind_block_pool(pool)
+        manager.bind_cache_coordinator(_PrefixCache())  # type: ignore[arg-type]
+        manager.on_request_arrived("req", [])
         blocks = pool.get_new_blocks(pool.get_num_free_blocks())
         stored, spare = blocks[0], blocks[1:]
         give_real_hash(stored, b"hash-real")
@@ -284,8 +380,11 @@ class _RoguePolicy(OffloadPolicy):
     def __init__(self, items: list[PendingStoreItem]) -> None:
         self._items = items
 
-    def add(self, meta: LMCacheMPRequestMetadata, block_hashes: BlockHashes) -> None:
+    def add(
+        self, meta: LMCacheMPRequestMetadata, block_hashes: BlockHashes
+    ) -> PendingStoreItem:
         """Drop the operation: the items to emit are fixed at construction."""
+        return PendingStoreItem(request_id=meta.request_id)
 
     def drain(self, signals: DrainSignals) -> LazyOffloadDrain:
         """Emit the fixed items every step, ignoring every signal."""
@@ -295,15 +394,21 @@ class _RoguePolicy(OffloadPolicy):
         """Report nothing buffered."""
         return False
 
-    def drop_request(self, request_id: str) -> int:
-        """Discard nothing."""
-        return 0
+    def buffered_block_ids(self) -> set[int]:
+        """Report no buffered block."""
+        return set()
+
+    def restart_request(self, request_id: str) -> None:
+        """Keep no per-request state, so there is nothing to restart."""
 
     def discard_for_reuse(self, request_id: str) -> None:
         """Keep no per-request state, so there is nothing to discard."""
 
     def release_request(self, request_id: str) -> None:
         """Keep no per-request state, so there is nothing to release."""
+
+    def requeue_failed(self, item: PendingStoreItem) -> None:
+        """Buffer nothing: the items to emit are fixed at construction."""
 
     def mark_store_failed(self, request_id: str) -> int:
         """Drop nothing on failure."""
@@ -316,28 +421,11 @@ class _RoguePolicy(OffloadPolicy):
 class TestDrainWiring:
     """One scheduler step: pressure translation, pinning, and emission."""
 
-    def test_zero_token_step_does_not_emit_or_pin(self) -> None:
-        """No-forward steps cannot carry metadata, so the manager must hold stores."""
-        harness = _make_manager_harness()
-        # Warm the pressure estimate before the idle step.
-        _drain(
-            harness,
-            total_num_scheduled_tokens=2 * TOKENS_PER_BLOCK,
-            new_request_block_ids=[[[30, 31]]],
-        )
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        harness.pool.make_free([1, 2])
-
-        result = _drain(harness, total_num_scheduled_tokens=0)
-
-        assert len(result) == 0
-        assert harness.pool.touched == []
-
     def test_drain_without_pressure_emits_nothing(self) -> None:
         """Ops whose blocks sit deep in the free queue are not released."""
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[41, 42]], 0, 32)
-        # 40 blocks ahead of the op's blocks; the step consumes ~2 blocks.
+        # 40 blocks ahead of the op's blocks, far past the admission reserve.
         harness.pool.make_free(list(range(1, 41)))
         harness.pool.make_free([41, 42])
 
@@ -360,80 +448,33 @@ class TestDrainWiring:
         # Pinned blocks left the free queue.
         assert harness.pool.get_num_free_blocks() == 0
 
-    def test_drain_pressure_from_gross_allocation(self) -> None:
-        """This step's observed block allocation alone must be able to trigger a drain:
-        the estimate from scheduled tokens is small, but the step allocated many blocks,
-        so deeper free-queue ranks come into danger.
+    @pytest.mark.parametrize("running", [False, True], ids=["idle", "decoding"])
+    def test_decoding_request_at_a_block_boundary_deepens_the_window(
+        self, running: bool
+    ) -> None:
+        """A running request whose next decode token starts a new block can take one
+        block more than the admission reserve: an op just past the reserve comes due.
+        vLLM reports ``None`` for a cached request the step allocated nothing for,
+        which must not hide the request's bound.
         """
         harness = _make_manager_harness()
+        prompt = 2 * TOKENS_PER_BLOCK - 1
+        harness.manager.on_admission("run", prompt, 0, 0, False)
+        # The prompt fills two blocks but their last slot.
+        _drain(harness, new_requests={"run": (prompt, [[50, 51]])})
         _admit_op(harness, "req", [[1, 2]], 0, 32)
-        # Three blocks ahead: ranks 3 and 4.
-        harness.pool.make_free([11, 12, 13])
+        harness.pool.make_free(list(range(11, 11 + ADMISSION_RESERVE)))
         harness.pool.make_free([1, 2])
 
-        # Scheduled tokens alone give est 1 -> a shallow window. The gross
-        # allocation of 4 blocks seeds the EMA -> the window reaches ranks 3-4.
-        drained = _drain(
-            harness,
-            total_num_scheduled_tokens=8,
-            new_request_block_ids=[[[20, 21, 22, 23]]],
-        )
+        if running:
+            # The first decode token takes that slot, so the step allocates
+            # nothing and the next token needs a third block.
+            drained = _drain(harness, cached_requests={"run": (prompt, 1, None)})
+        else:
+            harness.manager.on_request_finished("run")
+            drained = _drain(harness)
 
-        assert len(drained) == 1
-        assert harness.pool.touched == [[1, 2]]
-
-    def test_drain_pressure_from_cached_request_allocation(self) -> None:
-        """Decode-heavy steps allocate blocks exclusively through
-        ``scheduled_cached_reqs``; that allocation alone must be able to trigger a
-        drain, exactly as new-request allocation does.
-        """
-        harness = _make_manager_harness()
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        # Three blocks ahead: ranks 3 and 4.
-        harness.pool.make_free([11, 12, 13])
-        harness.pool.make_free([1, 2])
-
-        drained = _drain(
-            harness,
-            total_num_scheduled_tokens=8,
-            cached_new_block_ids=[[[20, 21, 22, 23]]],
-        )
-
-        assert len(drained) == 1
-        assert harness.pool.touched == [[1, 2]]
-
-    def test_cached_allocation_placeholders_do_not_hide_pressure(self) -> None:
-        """vLLM reports ``None`` for cached requests that allocated nothing; the
-        pressure counter must skip the placeholders and still see the step's real
-        allocations.
-        """
-        harness = _make_manager_harness()
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        harness.pool.make_free([11, 12, 13])
-        harness.pool.make_free([1, 2])
-
-        drained = _drain(
-            harness,
-            total_num_scheduled_tokens=8,
-            cached_new_block_ids=[None, [[20, 21, 22, 23]], None],
-        )
-
-        assert len(drained) == 1
-        assert harness.pool.touched == [[1, 2]]
-
-    def test_drain_estimate_rounds_partial_block_up(self) -> None:
-        """A step scheduling less than one block of tokens still consumes a block; the
-        next-step estimate must round up, not down.
-        """
-        harness = _make_manager_harness()
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        harness.pool.make_free([1, 2])
-
-        # 8 tokens, block size 16: ceil gives est 1 -> ranks 0 and 1 are due.
-        # Floor division would give est 0 -> depth 0 -> nothing due.
-        drained = _drain(harness, total_num_scheduled_tokens=8)
-
-        assert len(drained) == 1
+        assert len(drained) == int(running)
 
     def test_drain_coalesces_one_request_into_one_store_op(self) -> None:
         """The worker tracks one in-flight store per request, so a drained batch must
@@ -464,16 +505,6 @@ class TestDrainWiring:
             4,
         ]
 
-    def test_coalescing_a_gapped_batch_is_rejected(self) -> None:
-        """A store's block list must cover its whole token range."""
-        harness = _make_manager_harness()
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        _admit_op(harness, "req", [[3, 4]], 48, 80)
-        harness.pool.make_free([1, 2, 3, 4])
-
-        with pytest.raises(ValueError, match="non-contiguous store ops"):
-            _drain(harness)
-
     def test_drain_multi_group_op_pins_all_groups(self) -> None:
         """Hybrid-model batches merge each group independently and pin all blocks."""
         harness = _make_manager_harness(group_tokens_per_block=[16, 32])
@@ -500,6 +531,8 @@ class TestDrainWiring:
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
+        # vLLM's prefix cache serves the op, so the finish does not hold it.
+        harness.prefix_cache.hit_tokens = 32
         _finish_request(harness, "req")
         assert harness.ended_sessions == []
         # Block 1 is evicted and reallocated to other content: new hash, not free.
@@ -580,9 +613,9 @@ class TestDrainWiring:
         monkeypatch.setattr(
             manager_module,
             "create_offload_policy",
-            lambda configs, gpu_block_pool: _RoguePolicy([item]),
+            lambda configs, gpu_block_pool, anchor_groups: _RoguePolicy([item]),
         )
-        manager = LazyOffloadManager({}, [TOKENS_PER_BLOCK], _FakeCompletionTracker())
+        manager = _make_manager({}, _FakeCompletionTracker())
         manager.bind_block_pool(pool)  # type: ignore[arg-type]
 
         actions = manager.on_scheduler_step(
@@ -599,10 +632,10 @@ class TestDrainWiring:
 class TestStoreReceipts:
     """What a store receipt unpins, and when it ends the session."""
 
-    def test_receipt_unpins_at_free_queue_tail(self) -> None:
-        """A completed store is unpinned with no placement argument, so the blocks
-        rejoin the free queue behind entries already there, and a duplicate receipt
-        cannot unpin them a second time.
+    def test_receipt_returns_formerly_free_blocks_to_the_head(self) -> None:
+        """A completed store unpins blocks the drain took out of the free queue back
+        to its head, ahead of entries that joined meanwhile, close to their place in
+        eviction order; a duplicate receipt cannot unpin them a second time.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[5, 6]], 0, 32)
@@ -614,7 +647,7 @@ class TestStoreReceipts:
         _report_store_complete(harness, "req")
 
         assert harness.pool.freed == [[5, 6]]
-        assert harness.pool.free_block_ids() == [10, 11, 5, 6]
+        assert harness.pool.free_block_ids() == [5, 6, 10, 11]
         _report_store_complete(harness, "req")
         assert harness.pool.freed == [[5, 6]]
 
@@ -685,9 +718,8 @@ class TestStoreReceipts:
         assert harness.ended_sessions == ["req"]
 
     def test_manager_requires_bound_pool(self) -> None:
-        manager = LazyOffloadManager(
+        manager = _make_manager(
             {POLICY_CONFIG_KEY: LazyOffloadMode.EVICTION_AWARE.value},
-            [TOKENS_PER_BLOCK],
             _FakeCompletionTracker(),
         )
 
@@ -856,12 +888,15 @@ class TestFullLifecycle:
 
 
 class TestFailedStoreReceipts:
-    """A failed store unpins, breaks the prefix chain, and ends the session."""
+    """A store that fails for good unpins, breaks the prefix chain, and ends the
+    session. Each failure before the last is retried; ``_fail_for_good`` drives
+    the request through every attempt.
+    """
 
     def test_failed_store_receipt_unpins_and_drops_held_back_ops(self) -> None:
-        """A failure receipt still unpins the batch's blocks, but the request's held-
-        back ops must be dropped: without the failed prefix they would be stored
-        unreachable.
+        """The final failure receipt still unpins the batch's blocks, but the
+        request's held-back ops must be dropped: without the failed prefix they would
+        be stored unreachable.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
@@ -870,7 +905,7 @@ class TestFailedStoreReceipts:
         drained = _drain(harness)
         assert len(drained) == 1  # first op in flight, second held back
 
-        _report_store_failed(harness, "req")
+        _fail_for_good(harness, "req")
 
         # Unpinned regardless of the failure.
         assert harness.pool.blocks[1].ref_cnt == 0
@@ -888,32 +923,32 @@ class TestFailedStoreReceipts:
         harness.pool.make_free([1, 2])
         assert len(_drain(harness)) == 1
 
-        _report_store_failed(harness, "req")
+        _fail_for_good(harness, "req")
 
         assert harness.pool.blocks[1].ref_cnt == 0
         assert harness.ended_sessions == ["req"]
 
     def test_failed_store_blacklists_later_ops_of_the_same_generation(self) -> None:
-        """A non-orphaned failure breaks the request's prefix chain: operations admitted
-        after the failure are rejected, since without the failed prefix they would be
-        stored unreachable.
+        """A non-orphaned store that fails for good breaks the request's prefix chain:
+        operations admitted after it are rejected, since without the failed prefix
+        they would be stored unreachable.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
         harness.pool.make_free([1, 2])
         assert len(_drain(harness)) == 1
 
-        _report_store_failed(harness, "req")
+        _fail_for_good(harness, "req")
 
         _admit_op(harness, "req", [[3, 4]], 32, 64)
         harness.pool.make_free([3, 4])
         assert len(_drain(harness)) == 0, "op stored without its failed prefix"
 
     def test_failed_receipt_of_a_finished_request_ends_its_session(self) -> None:
-        """One call carrying both the failure and its receipt must end the session:
-        ``on_store_results`` applies failures first so that dropping the finished
-        request's held-back suffix makes it releasable by the receipt that arrives with
-        it.
+        """One call carrying both the final failure and its receipt must end the
+        session: ``on_store_results`` applies failures first so that dropping the
+        finished request's held-back suffix makes it releasable by the receipt that
+        arrives with it.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
@@ -924,34 +959,13 @@ class TestFailedStoreReceipts:
         _finish_request(harness, "req")
         assert harness.ended_sessions == []
 
-        _report_store_failed(harness, "req")
+        _fail_for_good(harness, "req")
 
         assert harness.ended_sessions == ["req"]
 
 
 class TestPreemptionReset:
-    """A preemption frees the blocks, so what the request buffered is stale."""
-
-    def test_preemption_reset_drops_buffered_ops_so_resume_cannot_overlap(self) -> None:
-        """After preempt+resume the recreated tracker restarts at
-        ``num_stored_tokens=0`` and re-produces store metadata from token zero.
-        """
-        harness = _make_manager_harness()
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        _admit_op(harness, "req", [[3, 4]], 32, 64)
-
-        harness.manager.on_request_reset("req")
-
-        # Resume: APC resurrected the same blocks (hashes still match) and the
-        # fresh tracker re-emits the first op.
-        _admit_op(harness, "req", [[1, 2]], 0, 32)
-        harness.pool.make_free([1, 2, 3, 4])
-
-        drained = _drain(harness, total_num_scheduled_tokens=4 * TOKENS_PER_BLOCK)
-
-        assert len(drained) == 1
-        op = drained.stores[0].op
-        assert (op.start, op.end) == (0, 32)
+    """A preempted request keeps its in-flight batch; its re-offers supersede."""
 
     def test_preemption_reset_keeps_in_flight_batch_and_its_pins(self) -> None:
         """A batch already drained when the preemption hits stays in flight: its blocks
@@ -974,10 +988,12 @@ class TestPreemptionReset:
         assert harness.pool.blocks[1].ref_cnt == 0
         assert len(_drain(harness)) == 1
 
-    def test_orphaned_batch_failure_receipt_spares_resumed_request(self) -> None:
+    def test_pre_preemption_batch_failure_receipt_spares_resumed_request(
+        self,
+    ) -> None:
         """The failure receipt of a batch emitted before the preemption must not drop
         the ops the resumed request re-buffered from token zero, nor blacklist its later
-        ops -- they do not depend on the failed prefix.
+        ops: the re-offer supersedes the failed batch's overlapping ops.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
@@ -987,7 +1003,7 @@ class TestPreemptionReset:
         harness.manager.on_request_reset("req")
         _admit_op(harness, "req", [[3, 4]], 0, 32)  # resumed, from token zero
 
-        _report_store_failed(harness, "req")  # the orphaned batch's receipt
+        _report_store_failed(harness, "req")  # the pre-preemption batch's receipt
         assert harness.pool.blocks[1].ref_cnt == 0  # receipt still unpins
 
         harness.pool.make_free([3, 4])
@@ -1013,7 +1029,7 @@ class TestPreemptionReset:
         assert len(_drain(harness)) == 1  # predecessor batch in flight
         _finish_request(harness, "X")
 
-        _apply_actions(harness, harness.manager.on_request_arrived("X"))
+        _arrive_new_request(harness, "X")
         _admit_op(harness, "X", [[3, 4]], 0, 32)  # the successor's first op
 
         _report_store_failed(harness, "X")  # the predecessor batch's receipt
@@ -1026,17 +1042,19 @@ class TestPreemptionReset:
         assert len(drained) == 1, "successor blacklisted by predecessor failure"
         assert (drained.stores[0].op.start, drained.stores[0].op.end) == (0, 32)
 
-    def test_orphaned_batch_completion_releases_deferred_session(self) -> None:
-        """A completion receipt for an orphaned batch still frees its pins, and it can
-        release the session when the request finished after the reset with nothing else
-        pending.
+    def test_pre_preemption_batch_completion_releases_deferred_session(
+        self,
+    ) -> None:
+        """A completion receipt for a batch emitted before the preemption frees its
+        pins, and it can release the session when the request finished after the reset
+        with nothing else pending.
         """
         harness = _make_manager_harness()
         _admit_op(harness, "req", [[1, 2]], 0, 32)
         harness.pool.make_free([1, 2])
         assert len(_drain(harness)) == 1  # in flight
 
-        harness.manager.on_request_reset("req")  # orphans the batch
+        harness.manager.on_request_reset("req")  # the batch stays its own
         _finish_request(harness, "req")
         assert harness.ended_sessions == []  # receipt still outstanding
 
@@ -1179,23 +1197,6 @@ class TestFIFODrain:
 
         assert len(drained) == 0
         assert harness.pool.freed == [[1, 2]]
-        assert harness.ended_sessions == ["req"]
-
-    def test_fifo_drain_drops_op_with_unhashed_block(self) -> None:
-        """A block with no hash at buffering time cannot prove at drain time that its
-        content survived: None == None must fail validation, not pass it (an evicted-
-        and-reallocated block also reads None).
-        """
-        harness = _make_fifo_harness()
-        # Bypass the hash-seeding helper: blocks 1-2 keep block_hash=None.
-        harness.manager.add_store_candidate(
-            _make_store_metadata("req", [[1, 2]], 0, 32)
-        )
-        _finish_request(harness, "req")
-
-        drained = _drain(harness)
-
-        assert len(drained) == 0
         assert harness.ended_sessions == ["req"]
 
     def test_fifo_drain_coalesces_ops_into_one_store(self) -> None:

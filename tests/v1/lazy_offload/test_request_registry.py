@@ -3,16 +3,22 @@
 
 ``LazyOffloadRequestRegistry`` answers two questions for the manager: has this
 request finished, and does it still have a store batch in flight. The hard
-cases are the ones where a request id outlives its owner -- a preemption reset,
-or a new request reusing a finished id -- where the outstanding batch must be
-detached from the generation now holding the id.
+case is a request id outliving its owner: a new request reusing a finished id
+must detach the outstanding batch from the request now holding the id, while a
+preempted request coming back keeps its batch.
 """
 
 # Third Party
 import pytest
 
 # First Party
+from lmcache.integration.vllm.lazy_offload_policy.base import PendingStoreItem
 from lmcache.integration.vllm.lazy_offload_state import LazyOffloadRequestRegistry
+
+
+def register(registry: LazyOffloadRequestRegistry, block_ids: list[int]) -> None:
+    """Put one batch of ``req`` in flight, pinning ``block_ids``."""
+    registry.register_batch("req", block_ids, PendingStoreItem(request_id="req"))
 
 
 def test_arrival_opens_an_active_slot_with_nothing_in_flight() -> None:
@@ -36,41 +42,25 @@ def test_unknown_request_is_neither_finished_nor_in_flight() -> None:
 def test_fresh_batch_is_not_orphaned() -> None:
     registry = LazyOffloadRequestRegistry()
     registry.arrive("req")
-    registry.register_batch("req", [1, 2])
+    register(registry, [1, 2])
 
     assert registry.has_in_flight("req")
     assert registry.in_flight_request_ids() == {"req"}
-    assert not registry.in_flight_is_orphaned("req")
+    assert not registry.complete_batch("req").orphaned
 
 
-def test_reset_orphans_the_in_flight_batch() -> None:
-    """A preemption reset detaches the batch but never drops its pins."""
-    registry = LazyOffloadRequestRegistry()
-    registry.register_batch("req", [1])
-    assert not registry.in_flight_is_orphaned("req")
-
-    registry.reset("req")
-
-    assert registry.has_in_flight("req")
-    assert registry.in_flight_is_orphaned("req")
-
-
-def test_rearrival_after_reset_keeps_a_new_batch_fresh() -> None:
-    """The recreated tracker's arrival must not orphan the successor's own batch: only
-    the pre-reset batch is detached, and its completion returns it with the flag set.
+def test_preempted_rearrival_keeps_its_batch() -> None:
+    """A preempted request re-arrives ACTIVE: its in-flight batch stays its own, so
+    the arrival must not orphan it.
     """
     registry = LazyOffloadRequestRegistry()
     registry.arrive("req")
-    registry.register_batch("req", [1])
-    registry.reset("req")
+    register(registry, [1])
     registry.arrive("req")
 
-    stale = registry.complete_batch("req")
-    assert stale.block_ids == (1,)
-    assert stale.orphaned
-
-    registry.register_batch("req", [2])
-    assert not registry.in_flight_is_orphaned("req")
+    batch = registry.complete_batch("req")
+    assert batch.block_ids == (1,)
+    assert not batch.orphaned
 
 
 def test_finished_id_reuse_orphans_the_outstanding_batch() -> None:
@@ -79,14 +69,12 @@ def test_finished_id_reuse_orphans_the_outstanding_batch() -> None:
     """
     registry = LazyOffloadRequestRegistry()
     registry.arrive("req")
-    registry.register_batch("req", [1, 2])
+    register(registry, [1, 2])
     registry.finish("req")
-    assert not registry.in_flight_is_orphaned("req")
 
     registry.arrive("req")
 
     assert not registry.is_finished("req")
-    assert registry.in_flight_is_orphaned("req")
     batch = registry.complete_batch("req")
     assert batch.block_ids == (1, 2)
     assert batch.orphaned
@@ -97,7 +85,7 @@ def test_finished_id_reuse_orphans_the_outstanding_batch() -> None:
 def test_session_release_requires_finished_request_and_no_batch() -> None:
     registry = LazyOffloadRequestRegistry()
     registry.arrive("req")
-    registry.register_batch("req", [1])
+    register(registry, [1])
     registry.finish("req")
     assert registry.is_finished("req")
     assert registry.finished_request_ids() == {"req"}
@@ -106,7 +94,8 @@ def test_session_release_requires_finished_request_and_no_batch() -> None:
     registry.session_ended("req")
     assert registry.has_in_flight("req")
 
-    registry.complete_batch("req")
+    # Finishing alone does not detach the batch from its generation.
+    assert not registry.complete_batch("req").orphaned
     assert registry.can_end_session("req")
     registry.session_ended("req")
     assert not registry.can_end_session("req")
@@ -115,10 +104,10 @@ def test_session_release_requires_finished_request_and_no_batch() -> None:
 
 def test_overlapping_batches_are_rejected() -> None:
     registry = LazyOffloadRequestRegistry()
-    registry.register_batch("req", [1])
+    register(registry, [1])
 
     with pytest.raises(RuntimeError, match="already has an in-flight"):
-        registry.register_batch("req", [2])
+        register(registry, [2])
 
 
 def test_complete_batch_requires_an_open_batch() -> None:
@@ -130,16 +119,16 @@ def test_complete_batch_requires_an_open_batch() -> None:
         registry.complete_batch("req")
 
 
-def test_finish_clears_the_rearrival_marker_for_later_id_reuse() -> None:
-    """After reset + finish, a rearrival is an id reuse, not the preempted tracker
-    coming back: a batch submitted between them (a finished request's op draining late)
-    must be orphaned by that arrival.
+def test_finish_turns_a_later_rearrival_into_an_id_reuse() -> None:
+    """After a finish, a rearrival is an id reuse, not the preempted tracker coming
+    back: a batch submitted between them (a finished request's op draining late) must
+    be orphaned by that arrival.
     """
     registry = LazyOffloadRequestRegistry()
-    registry.reset("req")
+    registry.arrive("req")
     registry.finish("req")
-    registry.register_batch("req", [1])
+    register(registry, [1])
 
     registry.arrive("req")
 
-    assert registry.in_flight_is_orphaned("req")
+    assert registry.complete_batch("req").orphaned

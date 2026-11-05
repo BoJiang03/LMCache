@@ -91,6 +91,14 @@ def test_fake_pool_free_queue_is_indistinguishable_from_the_real_pool() -> None:
         fake.free_blocks([fake.blocks[bid] for bid in block_ids])
         assert_agreement()
 
+    def to_head(block_ids: list[int]) -> None:
+        for pool in (real, fake):
+            blocks = [pool.blocks[bid] for bid in block_ids]
+            for block in blocks:
+                pool.free_block_queue.remove(block)
+            pool.free_block_queue.prepend_n(blocks)
+        assert_agreement()
+
     def drop_hash(block_id: int) -> None:
         clear_real_hash(real.blocks[block_id])
         fake.set_hash(block_id, None)
@@ -100,6 +108,7 @@ def test_fake_pool_free_queue_is_indistinguishable_from_the_real_pool() -> None:
     touch([3])  # shared pin: no queue change
     release([3])  # 2 -> 1: stays out of the queue
     release([3])  # 1 -> 0: rejoins at the tail, still hashed
+    to_head([3, 5])  # moved to the head, in the given order
     drop_hash(2)
     release([2])  # hashless: rejoins at the head, evicted next
 
