@@ -212,7 +212,7 @@ class KernelGroupInfo:
     ``-1`` means the layers are not sliding-window attention."""
     extra_object_group_tag: int = 0
     """Connector-private extra-group tag. ``0`` = a regular group, bucketed
-    by (recurrent, window) under ``separate_object_groups``; ``> 0`` = an
+    by (recurrent, window, tp_replicas) under ``separate_object_groups``; ``> 0`` = an
     extra group (e.g. the blend fused-aux pool) that buckets by tag —
     groups sharing a tag share an object group, and extras always sort
     after the regular groups."""
@@ -220,6 +220,11 @@ class KernelGroupInfo:
     """Whether this group's pages hold recurrent state snapshots (Mamba/GDN)
     rather than per-token attention KV. The window reflects restore
     semantics, so ``full_sw_kv`` forcing must not widen it."""
+    tp_replicas: int = 1
+    """Consecutive kv ranks holding identical copies of this group (carried
+    in ``EngineGroupInfo.tp_replicas``). Under ``separate_object_groups``
+    groups with different counts get different object groups, so each is
+    stored once per its own replica set."""
 
     def __repr__(self) -> str:
         if not self.layer_indices:
@@ -271,14 +276,19 @@ KVLayerGroupInfo = KernelGroupInfo  # Alias for compatibility
 class _ObjectBucket(NamedTuple):
     """Object-group bucket key under ``separate_object_groups``.
 
-    Regular groups (``extra_tag == 0``) bucket by ``(recurrent, sw_chunks)``;
-    tagged extras bucket by ``extra_tag`` (their other fields ride along for
-    bookkeeping but extras never mix with regular groups).
+    Regular groups (``extra_tag == 0``) bucket by
+    ``(recurrent, sw_chunks, tp_replicas)``; tagged extras bucket by
+    ``extra_tag`` (their other fields ride along for bookkeeping but extras
+    never mix with regular groups). ``tp_replicas`` is part of the key because
+    one object is shared only by ranks that agree on every kernel group in it:
+    mixing a GQA group replicated on 2 ranks with an indexer replicated on 8
+    would store the indexer 4 times.
     """
 
     extra_tag: int
     recurrent: bool
     sw_chunks: int
+    tp_replicas: int
 
 
 @dataclass
@@ -464,6 +474,7 @@ class KVLayerGroupsManager:
                     recurrent_state=(
                         info.recurrent_state if info is not None else False
                     ),
+                    tp_replicas=info.tp_replicas if info is not None else 1,
                 )
             )
 
@@ -693,7 +704,7 @@ class KVLayerGroupsManager:
 
         Puts all kernel groups into a single object group when object-group
         separation is disabled (the default). Otherwise groups the kernel
-        groups by (recurrent, sliding-window chunks), except that tagged
+        groups by (recurrent, sliding-window chunks, tp_replicas), except that tagged
         extra groups (``extra_object_group_tag``, connector-private) bucket
         by tag — and always sort after the regular groups, so the shared
         group ids match a registration without any extras.
@@ -725,6 +736,7 @@ class KVLayerGroupsManager:
                 extra_tag=group.extra_object_group_tag,
                 recurrent=group.recurrent_state,
                 sw_chunks=sw_size_chunks,
+                tp_replicas=group.tp_replicas,
             )
             groups_by_bucket[bucket].append(kernel_group_idx)
             bucket_sw_size[bucket] = sw_size_chunks

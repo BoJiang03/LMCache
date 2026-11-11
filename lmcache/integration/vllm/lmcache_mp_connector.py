@@ -67,6 +67,7 @@ from lmcache.integration.vllm.kv_cache_group_edits import (
 from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
     get_tokens_per_block,
+    gqa_kv_head_replicas,
     is_align_mode_mamba_spec,
     is_per_request_state_spec,
     is_scratch_spec,
@@ -910,6 +911,11 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         self._dcp_size = parallel_strategy.dcp_size
         self._kv_tp_size = parallel_strategy.kv_tp_size
+        self._gqa_replicas = gqa_kv_head_replicas(
+            parallel_strategy.tp_size,
+            vllm_config.model_config.get_total_num_kv_heads(),
+            parallel_strategy.dcp_size,
+        )
 
         # Lazy offload configuration: when enabled, store operations are
         # buffered and drained by the configured policy.
@@ -1146,6 +1152,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             layout_hints=layout_hints,
             dcp_size=self._dcp_size,
             kv_tp_size=self._kv_tp_size,
+            gqa_replicas=self._gqa_replicas,
         )
         self.worker_adapter.register_kv_caches(
             kv_caches,
