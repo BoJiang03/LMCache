@@ -6,7 +6,9 @@ from __future__ import annotations
 
 # Standard
 from collections.abc import Mapping, Sequence
+from functools import reduce
 from typing import TYPE_CHECKING, Any
+import math
 
 if TYPE_CHECKING:
     # First Party
@@ -17,6 +19,28 @@ from lmcache.logging import init_logger
 from lmcache.v1.multiprocess.group_view import EngineGroupInfo
 
 logger = init_logger(__name__)
+
+
+def gqa_kv_head_replicas(tp_size: int, total_num_kv_heads: int, dcp_size: int) -> int:
+    """Return how many consecutive TP ranks hold the same GQA KV head.
+
+    vLLM's ``QKVParallelLinear`` gives each rank one KV head once
+    ``tp_size >= total_num_kv_heads``, so rank ``r`` holds head
+    ``r // (tp_size // total_num_kv_heads)`` and that many consecutive ranks
+    hold identical KV. Under DCP the replicas hold token shards instead, which
+    this count does not describe, so it is ``1`` there.
+
+    Args:
+        tp_size: Tensor-parallel size of the engine.
+        total_num_kv_heads: The model's KV head count before TP sharding.
+        dcp_size: Decode-context-parallel size.
+
+    Returns:
+        The replica count, ``1`` when every rank holds distinct heads.
+    """
+    if dcp_size > 1 or total_num_kv_heads >= tp_size:
+        return 1
+    return tp_size // total_num_kv_heads
 
 
 def _is_attention_spec(spec: Any) -> bool:
@@ -264,25 +288,40 @@ def _resolve_per_layer_recurrent(
     return per_layer_recurrent
 
 
-def _resolve_per_layer_tp_replicated(
+def _resolve_per_layer_tp_replicas(
     vllm_groups: Sequence[Any],
     layer_to_idx: Mapping[str, int],
     num_layers: int,
-) -> list[bool]:
-    """Resolve whether vLLM leaves each registered KV tensor unsharded across
-    tensor-parallel ranks: its spec declares ``max_tp_shards == 1``, or is an
-    MLA spec that leaves it unset. Every rank of a TP group then holds the
-    same KV for the layer, or the same token shard of it under DCP.
+    kv_tp_size: int,
+    gqa_replicas: int,
+) -> list[int]:
+    """Resolve how many consecutive kv ranks hold identical KV for each layer.
+
+    A layer whose spec declares ``max_tp_shards == 1``, or an MLA spec that
+    leaves it unset, is unsharded: every rank of the TP group holds the same
+    KV (or the same token shard of it under DCP), so its count is
+    ``kv_tp_size``. A GQA attention layer with one KV head per rank holds
+    the head ``gqa_replicas`` consecutive ranks share (see
+    :func:`gqa_kv_head_replicas`); the count is capped to what one server's
+    rank block can fold. Every other layer counts ``1``.
 
     Args:
         vllm_groups: vLLM ``KVCacheGroupSpec`` instances.
         layer_to_idx: Layer name to registered tensor index mapping.
         num_layers: Number of registered KV tensors.
+        kv_tp_size: Tensor-parallel ranks attached to one LMCache server.
+        gqa_replicas: Ranks sharing one GQA KV head across the whole TP group.
 
     Returns:
-        A list of length ``num_layers``, ``True`` for TP-replicated layers.
+        A list of length ``num_layers`` with each layer's replica count.
+
+    Note:
+        ``gqa_replicas`` comes from the model-wide KV head count, so a model
+        whose attention layers have different KV head counts is described
+        correctly only for the layers matching that count.
     """
-    per_layer_tp_replicated = [False] * num_layers
+    per_layer_tp_replicas = [1] * num_layers
+    gqa_server_replicas = math.gcd(gqa_replicas, kv_tp_size)
     for group in vllm_groups:
         spec = getattr(group, "kv_cache_spec", None)
         per_layer_specs = getattr(spec, "kv_cache_specs", None)
@@ -292,8 +331,14 @@ def _resolve_per_layer_tp_replicated(
             if max_tp_shards == 1 or (
                 max_tp_shards is None and _is_mla_spec(layer_spec)
             ):
-                per_layer_tp_replicated[layer_to_idx[name]] = True
-    return per_layer_tp_replicated
+                per_layer_tp_replicas[layer_to_idx[name]] = kv_tp_size
+            elif (
+                max_tp_shards is None
+                and _is_attention_spec(layer_spec)
+                and getattr(layer_spec, "num_kv_heads", None) == 1
+            ):
+                per_layer_tp_replicas[layer_to_idx[name]] = gqa_server_replicas
+    return per_layer_tp_replicas
 
 
 def _merge_layer_recurrent(per_layer_recurrent: list[bool], indices: list[int]) -> bool:
@@ -352,6 +397,7 @@ def create_engine_group_infos_from_vllm(
     layout_hints: "LayoutHints | None" = None,
     dcp_size: int = 1,
     kv_tp_size: int = 1,
+    gqa_replicas: int = 1,
 ) -> list[EngineGroupInfo]:
     """Build the LMCache engine group infos from vLLM metadata and registered tensors.
 
@@ -377,6 +423,9 @@ def create_engine_group_infos_from_vllm(
             an MLA spec that leaves it unset) is tagged
             ``EngineGroupInfo.tp_replicas = kv_tp_size`` and
             ``dcp_shards = dcp_size``; every other group stays ``(1, 1)``.
+        gqa_replicas: Consecutive TP ranks sharing one GQA KV head, from
+            :func:`gqa_kv_head_replicas`. A group of one-head-per-rank GQA
+            layers is tagged with it (capped to ``kv_tp_size``).
 
     Note:
         Under DCP each attention group's ``tokens_per_block`` is scaled by
@@ -444,7 +493,7 @@ def create_engine_group_infos_from_vllm(
     group_tokens_per_block: dict[int, int] = {}
     per_layer_sw_size = [-1] * num_layers
     per_layer_recurrent = [False] * num_layers
-    per_layer_tp_replicated = [False] * num_layers
+    per_layer_tp_replicas = [1] * num_layers
     if vllm_groups:
         per_layer_group_idx = [EXCLUDED_ENGINE_GROUP] * num_layers
         for engine_group_id, group in enumerate(vllm_groups):
@@ -465,8 +514,8 @@ def create_engine_group_infos_from_vllm(
         per_layer_recurrent = _resolve_per_layer_recurrent(
             vllm_groups, layer_to_idx, num_layers
         )
-        per_layer_tp_replicated = _resolve_per_layer_tp_replicated(
-            vllm_groups, layer_to_idx, num_layers
+        per_layer_tp_replicas = _resolve_per_layer_tp_replicas(
+            vllm_groups, layer_to_idx, num_layers, kv_tp_size, gqa_replicas
         )
 
     # Aux pools form synthetic engine groups after the vLLM groups (an
@@ -505,9 +554,9 @@ def create_engine_group_infos_from_vllm(
         engine_kv_formats,
         per_layer_group_idx,
     ):
-        # A group's object is stored once per TP group only if every layer in
-        # it is replicated: one sharded layer makes the object differ per rank.
-        replicated = all(per_layer_tp_replicated[idx] for idx in indices)
+        # A group's object is shared only by ranks that agree on every layer
+        # in it: one sharded layer makes the object differ per rank.
+        tp_replicas = reduce(math.gcd, (per_layer_tp_replicas[i] for i in indices))
         infos.append(
             EngineGroupInfo(
                 engine_group_id=identity.engine_group_idx,
@@ -520,9 +569,9 @@ def create_engine_group_infos_from_vllm(
                 # --separate-object-groups, after the regular groups.
                 extra_object_group_tag=aux_group_tags.get(identity.engine_group_idx, 0),
                 recurrent_state=_merge_layer_recurrent(per_layer_recurrent, indices),
-                tp_replicas=kv_tp_size if replicated else 1,
+                tp_replicas=tp_replicas,
                 # DCP splits a replicated group's tokens across its replicas.
-                dcp_shards=dcp_size if replicated else 1,
+                dcp_shards=dcp_size if tp_replicas > 1 else 1,
             )
         )
     return infos

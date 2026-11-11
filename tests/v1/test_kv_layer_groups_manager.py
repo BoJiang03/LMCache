@@ -883,5 +883,41 @@ def test_bundled_object_group_is_replicated_only_if_all_kernel_groups_are():
     )
 
 
+def test_separate_object_groups_split_groups_by_replica_count() -> None:
+    """Two full-attention kernel groups shared by different rank sets get
+    their own object groups, so each is stored once per its own replica set."""
+    tensors = [torch.randn(2, 32, 32, 8, 64, dtype=torch.float16) for _ in range(2)]
+    infos = [
+        EngineGroupInfo(0, (0,), tp_replicas=2),
+        EngineGroupInfo(1, (1,), tp_replicas=8),
+    ]
+    manager = _build_manager(
+        tensors, engine_group_infos=infos, separate_object_groups=True
+    )
+
+    assert [g.kernel_group_indices for g in manager.object_groups] == [[0], [1]]
+    assert _fold_shard_replication_desc(
+        manager.object_groups, infos
+    ) == ShardReplicationDesc(group_tp_replicas=(2, 8), group_dcp_shards=(1, 1))
+
+
+def test_bundled_object_group_is_shared_by_ranks_common_to_its_groups() -> None:
+    """Without separation one object holds both groups, so it is shared only by
+    the ranks that agree on both: the smaller replica set, which the larger
+    one contains."""
+    tensors = [torch.randn(2, 32, 32, 8, 64, dtype=torch.float16) for _ in range(2)]
+    infos = [
+        EngineGroupInfo(0, (0,), tp_replicas=2),
+        EngineGroupInfo(1, (1,), tp_replicas=8),
+    ]
+    manager = _build_manager(
+        tensors, engine_group_infos=infos, separate_object_groups=False
+    )
+
+    assert _fold_shard_replication_desc(
+        manager.object_groups, infos
+    ) == ShardReplicationDesc(group_tp_replicas=(2,), group_dcp_shards=(1,))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

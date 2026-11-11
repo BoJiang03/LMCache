@@ -11,6 +11,7 @@ import torch
 from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
     get_tokens_per_block,
+    gqa_kv_head_replicas,
     is_scratch_spec,
 )
 from lmcache.v1.kv_layer_groups import EXCLUDED_ENGINE_GROUP
@@ -52,6 +53,7 @@ class SlidingWindowMLASpec(SlidingWindowSpec):
 @dataclass
 class FullAttentionSpec(AttentionSpec):
     sliding_window: "int | None" = None
+    num_kv_heads: "int | None" = None
 
 
 @dataclass
@@ -706,6 +708,92 @@ def test_conversion_partial_tp_sharding_is_not_replicated():
     )
 
     assert [(group.tp_replicas, group.dcp_shards) for group in infos] == [(1, 1)]
+
+
+@pytest.mark.parametrize(
+    ("tp_size", "total_num_kv_heads", "dcp_size", "expected"),
+    [
+        (8, 4, 1, 2),  # MiniMax-M3: each head on two ranks
+        (4, 2, 1, 2),
+        (8, 1, 1, 8),  # MQA: one head on every rank
+        (8, 8, 1, 1),  # one distinct head per rank
+        (4, 8, 1, 1),  # several distinct heads per rank
+        (8, 4, 2, 1),  # DCP turns replicas into token shards
+    ],
+)
+def test_gqa_kv_head_replicas_matches_vllm_head_split(
+    tp_size: int, total_num_kv_heads: int, dcp_size: int, expected: int
+) -> None:
+    """Ranks share a KV head only when there are fewer heads than ranks.
+
+    Args:
+        tp_size: Tensor-parallel world size.
+        total_num_kv_heads: KV heads of the model before the TP split.
+        dcp_size: Decode-context-parallel size.
+        expected: Ranks that hold the same KV head.
+    """
+    assert gqa_kv_head_replicas(tp_size, total_num_kv_heads, dcp_size) == expected
+
+
+def test_conversion_tags_one_head_per_rank_gqa_with_its_replicas() -> None:
+    """A GQA layer holding one KV head per rank is shared by ``gqa_replicas``
+    ranks; an MLA indexer beside it stays replicated on every rank."""
+    infos = create_engine_group_infos_from_vllm(
+        MockKVCacheConfig(
+            kv_cache_groups=[
+                MockKVCacheGroup(
+                    ["attn.0"], FullAttentionSpec(block_size=16, num_kv_heads=1)
+                ),
+                MockKVCacheGroup(["idx.0"], MLAAttentionSpec(block_size=16)),
+            ]
+        ),
+        _same_shape_caches(["attn.0", "idx.0"]),
+        kv_tp_size=8,
+        gqa_replicas=2,
+    )
+
+    assert [(group.tp_replicas, group.dcp_shards) for group in infos] == [
+        (2, 1),
+        (8, 1),
+    ]
+
+
+def test_conversion_caps_gqa_replicas_to_server_rank_block() -> None:
+    """With several servers each sees only its own rank block, so a head shared
+    by 4 ranks folds at most the 2 ranks one server holds."""
+    infos = create_engine_group_infos_from_vllm(
+        MockKVCacheConfig(
+            kv_cache_groups=[
+                MockKVCacheGroup(
+                    ["attn.0"], FullAttentionSpec(block_size=16, num_kv_heads=1)
+                ),
+            ]
+        ),
+        _same_shape_caches(["attn.0"]),
+        kv_tp_size=2,
+        gqa_replicas=4,
+    )
+
+    assert [group.tp_replicas for group in infos] == [2]
+
+
+def test_conversion_multi_head_gqa_layer_stays_per_rank() -> None:
+    """A rank holding several KV heads holds distinct heads, so the layer is
+    stored per rank whatever the model-wide replica count says."""
+    infos = create_engine_group_infos_from_vllm(
+        MockKVCacheConfig(
+            kv_cache_groups=[
+                MockKVCacheGroup(
+                    ["attn.0"], FullAttentionSpec(block_size=16, num_kv_heads=2)
+                ),
+            ]
+        ),
+        _same_shape_caches(["attn.0"]),
+        kv_tp_size=8,
+        gqa_replicas=2,
+    )
+
+    assert [group.tp_replicas for group in infos] == [1]
 
 
 def test_conversion_pure_mla_model_replicates_every_group():
