@@ -13,6 +13,7 @@ from lmcache.integration.vllm.kv_cache_groups import (
     get_tokens_per_block,
     gqa_kv_head_replicas,
     is_scratch_spec,
+    resolve_gqa_replicas_by_layer,
 )
 from lmcache.v1.common.group_view import (
     EXCLUDED_ENGINE_GROUP,
@@ -43,6 +44,7 @@ class AttentionSpec:
 @dataclass
 class SlidingWindowSpec(AttentionSpec):
     sliding_window: int
+    num_kv_heads: "int | None" = None
 
 
 @dataclass
@@ -814,3 +816,125 @@ def test_conversion_pure_mla_model_replicates_every_group():
     )
 
     assert [(group.tp_replicas, group.dcp_shards) for group in infos] == [(8, 2)]
+
+
+@dataclass
+class _TextConfig:
+    """Double for a Hugging Face text config: only the head-count fields."""
+
+    num_hidden_layers: int
+    num_key_value_heads: int
+    swa_num_key_value_heads: "int | None" = None
+    num_global_key_value_heads: "int | None" = None
+
+
+def _mimo_v2_tp8_config() -> MockKVCacheConfig:
+    """MiMo-V2 at TP8: full layers hold 4 KV heads, sliding layers 8, and the
+    draft's sliding layers (indices past the target's 2 layers) 8 more."""
+    return MockKVCacheConfig(
+        kv_cache_groups=[
+            MockKVCacheGroup(
+                ["model.layers.0.self_attn.attn"],
+                FullAttentionSpec(block_size=16, num_kv_heads=1),
+            ),
+            MockKVCacheGroup(
+                ["model.layers.1.self_attn.attn"],
+                SlidingWindowSpec(block_size=16, sliding_window=128, num_kv_heads=1),
+            ),
+            MockKVCacheGroup(
+                ["model.layers.2.self_attn.attn"],
+                SlidingWindowSpec(block_size=16, sliding_window=128, num_kv_heads=1),
+            ),
+        ]
+    )
+
+
+def test_resolve_gqa_replicas_reads_each_layer_type_head_count() -> None:
+    """A sliding layer with its own head count is not folded with the full
+    layers' replica count, and a draft layer reads the draft config."""
+    replicas = resolve_gqa_replicas_by_layer(
+        _mimo_v2_tp8_config(),
+        _TextConfig(
+            num_hidden_layers=2, num_key_value_heads=4, swa_num_key_value_heads=8
+        ),
+        _TextConfig(num_hidden_layers=1, num_key_value_heads=8),
+        tp_size=8,
+        dcp_size=1,
+    )
+
+    assert replicas == {
+        "model.layers.0.self_attn.attn": 2,
+        "model.layers.1.self_attn.attn": 1,
+        "model.layers.2.self_attn.attn": 1,
+    }
+
+
+def test_resolve_gqa_replicas_reads_global_head_count_for_full_layers() -> None:
+    """Gemma 4 names its full-attention head count separately: 4 global heads
+    at TP8 put one head on two ranks while 16 sliding heads stay distinct."""
+    replicas = resolve_gqa_replicas_by_layer(
+        MockKVCacheConfig(
+            kv_cache_groups=[
+                MockKVCacheGroup(
+                    ["model.layers.0.self_attn.attn"],
+                    SlidingWindowSpec(
+                        block_size=16, sliding_window=1024, num_kv_heads=2
+                    ),
+                ),
+                MockKVCacheGroup(
+                    ["model.layers.5.self_attn.attn"],
+                    FullAttentionSpec(block_size=16, num_kv_heads=1),
+                ),
+            ]
+        ),
+        _TextConfig(
+            num_hidden_layers=6, num_key_value_heads=16, num_global_key_value_heads=4
+        ),
+        None,
+        tp_size=8,
+        dcp_size=1,
+    )
+
+    assert replicas == {
+        "model.layers.0.self_attn.attn": 1,
+        "model.layers.5.self_attn.attn": 2,
+    }
+
+
+def test_resolve_gqa_replicas_without_head_count_stores_per_rank() -> None:
+    """A layer whose head count no config declares is stored per rank."""
+    replicas = resolve_gqa_replicas_by_layer(
+        _mimo_v2_tp8_config(), None, None, tp_size=8, dcp_size=1
+    )
+
+    assert set(replicas.values()) == {1}
+
+
+def test_conversion_keeps_distinct_sliding_heads_per_rank() -> None:
+    """End to end: with per-layer counts only the full-attention group folds
+    its replicas; the model-wide count alone would fold every group."""
+    config = _mimo_v2_tp8_config()
+    names = [name for group in config.kv_cache_groups for name in group.layer_names]
+    per_layer = resolve_gqa_replicas_by_layer(
+        config,
+        _TextConfig(
+            num_hidden_layers=2, num_key_value_heads=4, swa_num_key_value_heads=8
+        ),
+        _TextConfig(num_hidden_layers=1, num_key_value_heads=8),
+        tp_size=8,
+        dcp_size=1,
+    )
+
+    model_wide = create_engine_group_infos_from_vllm(
+        config, _same_shape_caches(names), kv_tp_size=8, gqa_replicas=2
+    )
+    by_layer = create_engine_group_infos_from_vllm(
+        config,
+        _same_shape_caches(names),
+        kv_tp_size=8,
+        gqa_replicas=2,
+        gqa_replicas_by_layer=per_layer,
+    )
+
+    assert [group.tp_replicas for group in model_wide] == [2, 2, 2]
+    assert [group.tp_replicas for group in by_layer] == [2, 1, 1]

@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from functools import reduce
 from typing import TYPE_CHECKING, Any
 import math
+import re
 
 if TYPE_CHECKING:
     # First Party
@@ -41,6 +42,96 @@ def gqa_kv_head_replicas(tp_size: int, total_num_kv_heads: int, dcp_size: int) -
     if dcp_size > 1 or total_num_kv_heads >= tp_size:
         return 1
     return tp_size // total_num_kv_heads
+
+
+# KV head count fields of a text config, most specific first. A model whose
+# sliding-window and full-attention layers hold different head counts names the
+# odd one out (MiMo-V2 ``swa_num_key_value_heads``, Gemma 4
+# ``num_global_key_value_heads``); every other layer reads ``num_key_value_heads``.
+_SLIDING_KV_HEAD_FIELDS = (
+    "swa_num_key_value_heads",
+    "sliding_window_num_key_value_heads",
+    "num_key_value_heads",
+)
+_FULL_KV_HEAD_FIELDS = ("num_global_key_value_heads", "num_key_value_heads")
+_LAYER_INDEX_RE = re.compile(r"(?:^|\.)layers\.(\d+)\.")
+
+
+def _config_kv_heads(text_config: Any, sliding: bool) -> int | None:
+    """Return the total KV head count a text config declares for one layer type.
+
+    Args:
+        text_config: A Hugging Face text config, or ``None``.
+        sliding: Whether the layer is a sliding-window attention layer.
+
+    Returns:
+        The first positive head count among the fields for that layer type, or
+        ``None`` when the config declares none.
+    """
+    if text_config is None:
+        return None
+    fields = _SLIDING_KV_HEAD_FIELDS if sliding else _FULL_KV_HEAD_FIELDS
+    for field in fields:
+        value = getattr(text_config, field, None)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def resolve_gqa_replicas_by_layer(
+    kv_cache_config: Any,
+    target_text_config: Any,
+    draft_text_config: Any,
+    tp_size: int,
+    dcp_size: int,
+) -> dict[str, int]:
+    """Resolve, per attention layer, how many consecutive TP ranks share its KV head.
+
+    The model-wide KV head count describes only the layers that hold it. A
+    hybrid such as MiMo-V2 gives its full-attention layers 4 KV heads and its
+    sliding-window layers 8, so at TP8 the former put one head on two ranks
+    while the latter put a distinct head on every rank. Reading each layer's
+    own head count keeps the distinct heads from being folded into one object.
+
+    A layer whose index lies past the target model's layers belongs to the
+    speculative draft and reads the draft's text config. A layer whose head
+    count cannot be resolved maps to ``1``: storing it per rank costs space,
+    folding distinct heads would serve one rank's KV to another.
+
+    Args:
+        kv_cache_config: vLLM ``KVCacheConfig`` (or ``None``).
+        target_text_config: The target model's Hugging Face text config.
+        draft_text_config: The draft model's text config, or ``None``.
+        tp_size: Tensor-parallel size of the engine.
+        dcp_size: Decode-context-parallel size.
+
+    Returns:
+        A mapping from layer name to replica count for every layer of every
+        KV cache group.
+    """
+    replicas: dict[str, int] = {}
+    groups = getattr(kv_cache_config, "kv_cache_groups", None) or ()
+    num_target_layers = getattr(target_text_config, "num_hidden_layers", None)
+    for group in groups:
+        spec = getattr(group, "kv_cache_spec", None)
+        per_layer_specs = getattr(spec, "kv_cache_specs", None)
+        for name in group.layer_names:
+            layer_spec = per_layer_specs[name] if per_layer_specs else spec
+            match = _LAYER_INDEX_RE.search(name)
+            is_draft = (
+                draft_text_config is not None
+                and match is not None
+                and isinstance(num_target_layers, int)
+                and int(match.group(1)) >= num_target_layers
+            )
+            heads = _config_kv_heads(
+                draft_text_config if is_draft else target_text_config,
+                _is_sliding_window_spec(layer_spec),
+            )
+            replicas[name] = (
+                1 if heads is None else gqa_kv_head_replicas(tp_size, heads, dcp_size)
+            )
+    return replicas
 
 
 def _is_attention_spec(spec: Any) -> bool:
@@ -294,6 +385,7 @@ def _resolve_per_layer_tp_replicas(
     num_layers: int,
     kv_tp_size: int,
     gqa_replicas: int,
+    gqa_replicas_by_layer: Mapping[str, int] | None = None,
 ) -> list[int]:
     """Resolve how many consecutive kv ranks hold identical KV for each layer.
 
@@ -311,6 +403,9 @@ def _resolve_per_layer_tp_replicas(
         num_layers: Number of registered KV tensors.
         kv_tp_size: Tensor-parallel ranks attached to one LMCache server.
         gqa_replicas: Ranks sharing one GQA KV head across the whole TP group.
+        gqa_replicas_by_layer: Per-layer replica counts from
+            :func:`resolve_gqa_replicas_by_layer`; when given they replace
+            ``gqa_replicas``, and a layer missing from it counts ``1``.
 
     Returns:
         A list of length ``num_layers`` with each layer's replica count.
@@ -318,7 +413,8 @@ def _resolve_per_layer_tp_replicas(
     Note:
         ``gqa_replicas`` comes from the model-wide KV head count, so a model
         whose attention layers have different KV head counts is described
-        correctly only for the layers matching that count.
+        correctly only for the layers matching that count; pass
+        ``gqa_replicas_by_layer`` for such a model.
     """
     per_layer_tp_replicas = [1] * num_layers
     gqa_server_replicas = math.gcd(gqa_replicas, kv_tp_size)
@@ -337,7 +433,11 @@ def _resolve_per_layer_tp_replicas(
                 and _is_attention_spec(layer_spec)
                 and getattr(layer_spec, "num_kv_heads", None) == 1
             ):
-                per_layer_tp_replicas[layer_to_idx[name]] = gqa_server_replicas
+                per_layer_tp_replicas[layer_to_idx[name]] = (
+                    gqa_server_replicas
+                    if gqa_replicas_by_layer is None
+                    else math.gcd(gqa_replicas_by_layer.get(name, 1), kv_tp_size)
+                )
     return per_layer_tp_replicas
 
 
@@ -398,6 +498,7 @@ def create_engine_group_infos_from_vllm(
     dcp_size: int = 1,
     kv_tp_size: int = 1,
     gqa_replicas: int = 1,
+    gqa_replicas_by_layer: Mapping[str, int] | None = None,
 ) -> list[EngineGroupInfo]:
     """Build the LMCache engine group infos from vLLM metadata and registered tensors.
 
@@ -426,6 +527,9 @@ def create_engine_group_infos_from_vllm(
         gqa_replicas: Consecutive TP ranks sharing one GQA KV head, from
             :func:`gqa_kv_head_replicas`. A group of one-head-per-rank GQA
             layers is tagged with it (capped to ``kv_tp_size``).
+        gqa_replicas_by_layer: Per-layer replica counts from
+            :func:`resolve_gqa_replicas_by_layer`, replacing ``gqa_replicas``
+            for models whose layers hold different KV head counts.
 
     Note:
         Under DCP each attention group's ``tokens_per_block`` is scaled by
@@ -513,7 +617,12 @@ def create_engine_group_infos_from_vllm(
             vllm_groups, layer_to_idx, num_layers
         )
         per_layer_tp_replicas = _resolve_per_layer_tp_replicas(
-            vllm_groups, layer_to_idx, num_layers, kv_tp_size, gqa_replicas
+            vllm_groups,
+            layer_to_idx,
+            num_layers,
+            kv_tp_size,
+            gqa_replicas,
+            gqa_replicas_by_layer,
         )
 
     # Aux pools form synthetic engine groups after the vLLM groups (an
