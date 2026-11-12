@@ -127,7 +127,12 @@ def _make_module(
 def _store(module: LMCacheDrivenTransferModule, due: bool = True) -> bool:
     """Store the one-chunk request; return the store's ok."""
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: due),
+        SimpleNamespace(
+            request_id="req",
+            worker_id=1,
+            has_unfull_chunk=lambda chunk_size: False,
+            store_is_due=lambda: due,
+        ),
         1,
         [[1], [2]],
         b"producer",
@@ -242,7 +247,12 @@ def test_due_store_larger_than_l1_is_skipped_with_a_warning(
     )
 
     _handle, ok = module.store(
-        SimpleNamespace(request_id="req", worker_id=1, store_is_due=lambda: True),
+        SimpleNamespace(
+            request_id="req",
+            worker_id=1,
+            has_unfull_chunk=lambda chunk_size: False,
+            store_is_due=lambda: True,
+        ),
         1,
         [list(range(num_chunks)), list(range(num_chunks))],
         b"producer",

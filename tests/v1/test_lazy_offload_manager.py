@@ -48,10 +48,10 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (  # noqa: E402
 from lmcache.integration.vllm.vllm_multi_process_adapter import (  # noqa: E402
     LoadStoreOp,
 )
-from lmcache.v1.multiprocess.custom_types import (  # noqa: E402
+from lmcache.v1.common.custom_types import (  # noqa: E402
     STORE_DUE_HINT,
 )
-from lmcache.v1.multiprocess.token_codec import pack_token_ids  # noqa: E402
+from lmcache.v1.common.token_codec import pack_token_ids  # noqa: E402
 
 TOKENS_PER_BLOCK = 4
 # Large enough that every admission here is scheduled in one chunk.

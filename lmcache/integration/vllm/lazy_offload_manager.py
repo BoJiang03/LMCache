@@ -48,7 +48,7 @@ from lmcache.integration.vllm.lmcache_mp_metadata import (
     LoadStoreOp,
 )
 from lmcache.utils import cdiv, init_logger, round_up
-from lmcache.v1.multiprocess.custom_types import STORE_DUE_HINT
+from lmcache.v1.common.custom_types import STORE_DUE_HINT
 
 if TYPE_CHECKING:
     # Third Party

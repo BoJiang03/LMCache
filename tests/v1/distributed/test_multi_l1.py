@@ -408,13 +408,20 @@ def test_reserve_write_trace_records_no_out_of_memory_keys(
     out_of_memory_keys: list[ObjectKey] = []
     trace_decorator.set_tracing_enabled(True)
     try:
-        assert store.reserve_write([key(2)], LAYOUT, out_of_memory_keys) == {}
+        assert (
+            store.reserve_write([key(2)], LAYOUT, out_of_memory_keys=out_of_memory_keys)
+            == {}
+        )
     finally:
         trace_decorator.set_tracing_enabled(False)
 
     assert out_of_memory_keys == [key(2)]
     (event,) = events
-    assert event.metadata["args"] == {"keys": [key(2)], "layout_desc": LAYOUT}
+    assert event.metadata["args"] == {
+        "keys": [key(2)],
+        "layout_desc": LAYOUT,
+        "is_temporary": False,
+    }
 
 
 def test_read_release_trace_redacts_owners_and_replays_on_single_l1(
