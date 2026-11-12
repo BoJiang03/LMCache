@@ -68,6 +68,7 @@ from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
     get_tokens_per_block,
     gqa_kv_head_replicas,
+    resolve_gqa_replicas_by_layer,
     is_align_mode_mamba_spec,
     is_per_request_state_spec,
     is_scratch_spec,
@@ -784,6 +785,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
 
         self._dcp_size = parallel_strategy.dcp_size
         self._kv_tp_size = parallel_strategy.kv_tp_size
+        self._tp_size = parallel_strategy.tp_size
         self._gqa_replicas = gqa_kv_head_replicas(
             parallel_strategy.tp_size,
             vllm_config.model_config.get_total_num_kv_heads(),
@@ -990,6 +992,26 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         assert self._connector_metadata is not None
         return self._connector_metadata
 
+    def _resolve_gqa_replicas_by_layer(self, kv_cache_config: Any) -> dict[str, int]:
+        """Resolve each layer's GQA replica count from its own KV head count.
+
+        Args:
+            kv_cache_config: vLLM's resolved KV cache group configuration.
+
+        Returns:
+            Layer name to replica count, from the target text config and, for
+            speculative draft layers, the draft's.
+        """
+        spec_config = getattr(self._vllm_config, "speculative_config", None)
+        draft_model_config = getattr(spec_config, "draft_model_config", None)
+        return resolve_gqa_replicas_by_layer(
+            kv_cache_config,
+            self._vllm_config.model_config.hf_text_config,
+            getattr(draft_model_config, "hf_text_config", None),
+            self._tp_size,
+            self._dcp_size,
+        )
+
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """
         Initialize with the KV caches. Useful for pre-registering the
@@ -1013,6 +1035,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             dcp_size=self._dcp_size,
             kv_tp_size=self._kv_tp_size,
             gqa_replicas=self._gqa_replicas,
+            gqa_replicas_by_layer=self._resolve_gqa_replicas_by_layer(kv_cache_config),
         )
         self.worker_adapter.register_kv_caches(
             kv_caches,
