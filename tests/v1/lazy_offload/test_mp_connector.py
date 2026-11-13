@@ -228,7 +228,11 @@ def _make_vllm_config(
             data_parallel_size=1,
         ),
         model_config=SimpleNamespace(
-            model="test-model", use_mla=False, is_hybrid=False, max_model_len=4096
+            model="test-model",
+            use_mla=False,
+            is_hybrid=False,
+            max_model_len=4096,
+            get_total_num_kv_heads=lambda: 8,
         ),
         scheduler_config=SimpleNamespace(max_num_batched_tokens=2048),
     )

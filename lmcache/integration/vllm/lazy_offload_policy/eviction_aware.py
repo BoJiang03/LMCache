@@ -188,10 +188,10 @@ class PendingStoreOp:
         store_metadata: The operation itself, handed back unchanged when it
             is emitted: the token range and the GPU blocks holding its KV.
         block_hashes: Prefix-cache hash of every block the range covers,
-            snapshotted at admission. It never holds a None -- the manager
-            replaced each hash-less block by the null block before buffering
-            -- so a later mismatch means the block was recycled and the data
-            is gone.
+            snapshotted at admission. Its only None values are window-tail
+            blocks the manager keeps pinned; it replaced every other
+            hash-less block by the null block before buffering, so a later
+            mismatch means the block was recycled and the data is gone.
         has_anchor: Whether the range holds a real block of an anchor group
             (an align-mode Mamba state), so vLLM can resume a hit there.
         held: Whether the manager pinned its blocks for a hold.
@@ -328,7 +328,8 @@ class EvictionAwareStoreQueue(OffloadPolicy):
             meta: The store operation offered by the manager.
             block_hashes: Hash of every hashed block the operation
                 covers, read at admission: the manager has already replaced
-                hash-less blocks, which vLLM never evicts, by the null block.
+                hash-less blocks, which vLLM never evicts, by the null block,
+                except the window-tail blocks it keeps pinned (hash None).
 
         Returns:
             The buffered operations the offer superseded.

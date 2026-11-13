@@ -199,6 +199,7 @@ class LazyOffloadManager:
         chunk_size: int,
         mamba_groups: dict[int, int] | None = None,
         prefill_alignment: int = 0,
+        sliding_window_tail_blocks: dict[int, int] | None = None,
     ) -> None:
         """Create an unbound scheduler-side manager.
 
@@ -230,6 +231,12 @@ class LazyOffloadManager:
                 the prompt's end ends on a multiple of, as vLLM splits
                 chunks of Mamba-hybrid models; 0 when a chunk may end
                 anywhere.
+            sliding_window_tail_blocks: Sliding-window groups -> the blocks
+                before a chunk boundary a hit at that boundary reads, which
+                the server stores for the chunk ending there. vLLM hashes
+                only the window tail of its own hit alignment, which need
+                not end on a chunk boundary, so these blocks are kept even
+                when hash-less (see :meth:`add_store_candidate`).
         """
         self._configs = dict(configs or {})
         self._group_tokens_per_block = list(group_tokens_per_block)
@@ -238,6 +245,12 @@ class LazyOffloadManager:
         self._num_lookahead_tokens = num_lookahead_tokens
         self._mamba_groups = dict(mamba_groups or {})
         self._prefill_alignment = prefill_alignment
+        self._swa_tail_blocks = dict(sliding_window_tail_blocks or {})
+        # Per request, the hash-less window-tail blocks this class pinned at
+        # admission, until a submission pins them for its batch or the
+        # operation holding them is gone. Nothing else keeps them: vLLM
+        # frees them to the queue head once they leave the window.
+        self._tail_pins: dict[str, set[int]] = {}
         self._completion_tracker = completion_tracker
         # Both are set by bind_block_pool: the policy reads the pool.
         self._gpu_block_pool: "BlockPool | None" = None
@@ -373,6 +386,15 @@ class LazyOffloadManager:
         blocks are read here, at admission, so that the policy holds the
         snapshot the data was stored under.
 
+        One exception: a sliding-window group's window tail before the op's
+        last chunk boundary (and before its end) is kept even when
+        hash-less, and pinned here until a submission takes it over. vLLM
+        hashes the tail its own hit alignment reads, which need not end on
+        a chunk boundary, while a hit LMCache serves at a boundary reads the
+        window before it; nulled, those blocks would be stored as the null
+        block's contents. Its snapshot hash is None, and the pin, not the
+        hash, guards it.
+
         One request's operations must be offered in token order, each
         starting where the previous one ended: they are submitted as one
         coalesced store, which a gap makes impossible. A preempted request's
@@ -390,14 +412,16 @@ class LazyOffloadManager:
         """
         pool = self._require_block_pool()
         null_block_id = pool.null_block.block_id
+        tail_positions = self._window_tail_positions(metadata.op)
         protected_block_ids = [
             [
                 block_id
                 if pool.blocks[block_id].block_hash is not None
+                or index in tail_positions.get(group_idx, ())
                 else null_block_id
-                for block_id in group_block_ids
+                for index, block_id in enumerate(group_block_ids)
             ]
-            for group_block_ids in metadata.op.block_ids
+            for group_idx, group_block_ids in enumerate(metadata.op.block_ids)
         ]
         block_hashes: BlockHashes = {
             block_id: pool.blocks[block_id].block_hash
@@ -405,12 +429,24 @@ class LazyOffloadManager:
             for block_id in group_block_ids
             if block_id != null_block_id
         }
+        tail_block_ids = [
+            block_id
+            for block_id, block_hash in block_hashes.items()
+            if block_hash is None
+        ]
+        if tail_block_ids:
+            # The request still owns them, so nothing recycled them yet.
+            self._pin(tail_block_ids, release_to_head=False)
+            self._tail_pins.setdefault(metadata.request_id, set()).update(
+                tail_block_ids
+            )
         rebound = self._rebind_tokens(metadata)
         rebound = replace(
             rebound, op=replace(rebound.op, block_ids=protected_block_ids)
         )
         superseded = self._require_policy().add(rebound, block_hashes)
         self._release_held_ops(superseded)
+        self._release_tail_pins(superseded)
         self._index_offered_chunks(
             metadata.request_id, metadata.op.start, metadata.op.end
         )
@@ -610,7 +646,18 @@ class LazyOffloadManager:
                 self._failed_store_attempts.pop(request_id, None)
             elif not batch.orphaned:
                 # The data is still on the GPU; an id reuse would have
-                # detached the batch from the request it belongs to.
+                # detached the batch from the request it belongs to. The
+                # window-tail blocks lost their batch pin just now, with no
+                # allocation since: pin them again for the retry.
+                tail_block_ids = [
+                    block_id
+                    for _, block_hashes in batch.operations.metadatas
+                    for block_id, block_hash in block_hashes.items()
+                    if block_hash is None
+                ]
+                if tail_block_ids:
+                    self._pin(tail_block_ids, release_to_head=False)
+                    self._tail_pins.setdefault(request_id, set()).update(tail_block_ids)
                 self._retry_or_give_up(batch.operations)
                 self._move_to_tail([batch.operations])
             if not self._require_policy().has_pending_request(
@@ -704,6 +751,7 @@ class LazyOffloadManager:
         self._forget_lookup(request_id)
         self._unindex_offered_chunks(request_id)
         self._release_holds(request_id)
+        self._release_all_tail_pins(request_id)
         self._token_ledgers.pop(request_id, None)
         self._failed_store_attempts.pop(request_id, None)
         if predecessor_in_flight:
@@ -788,6 +836,7 @@ class LazyOffloadManager:
                     "is still in flight"
                 )
             held = self._held_block_ids.pop(item.request_id, set())
+            tail_pinned = self._tail_pins.get(item.request_id, set())
             valid = PendingStoreItem(request_id=item.request_id)
             valid_block_ids: list[int] = []
             for metadata, old_block_hashes in item.metadatas:
@@ -800,8 +849,13 @@ class LazyOffloadManager:
                     block_id: pool.blocks[block_id].block_hash
                     for block_id in gpu_block_ids
                 }
+                # A window-tail block is hash-less by design; its own pin,
+                # not its hash, kept it from being recycled.
                 if (
-                    any(block_hash is None for block_hash in new_block_hashes.values())
+                    any(
+                        block_hash is None and block_id not in tail_pinned
+                        for block_id, block_hash in new_block_hashes.items()
+                    )
                     or old_block_hashes != new_block_hashes
                 ):
                     logger.warning(
@@ -816,6 +870,9 @@ class LazyOffloadManager:
             if held:
                 # Held ops the drain budget left buffered keep their pins.
                 self._held_block_ids[item.request_id] = held
+            # The batch pinned the valid ops' tail blocks; the rest left the
+            # buffer with the drain.
+            self._release_tail_pins(item)
             if not valid.metadatas:
                 continue
             store = _coalesce_store_metadata(
@@ -901,7 +958,7 @@ class LazyOffloadManager:
             cached.req_ids, cached.new_block_ids, strict=True
         ):
             groups: tuple[list[int], ...] = new_block_ids or ([],) * num_groups
-            if request_id in cached.resumed_req_ids:
+            if request_id in getattr(cached, "resumed_req_ids", ()):
                 self._handed_blocks[request_id] = [set(group) for group in groups]
                 self._table_lengths[request_id] = [len(group) for group in groups]
                 continue
@@ -1239,6 +1296,72 @@ class LazyOffloadManager:
         )
         return hit_tokens
 
+    def _window_tail_positions(self, op: LoadStoreOp) -> dict[int, set[int]]:
+        """Positions, in an op's block lists, of the window tails to keep.
+
+        A hit at a chunk boundary reads each sliding-window group's last
+        window of blocks before it, and the server stores those blocks in
+        the chunk ending there. vLLM hashes only the tail its own hit
+        alignment reads, so the blocks a hit at the op's last chunk boundary
+        (and at its end, for an unfull last chunk) reads are kept even when
+        hash-less. The boundaries inside the op stay unstored, as before:
+        only the newest prefix of a request is what a later turn extends.
+
+        Args:
+            op: The store operation offered by the tracker, whose block lists
+                start at ``op.start``.
+
+        Returns:
+            Per sliding-window group, the indices into its block list.
+        """
+        positions: dict[int, set[int]] = {}
+        if not self._swa_tail_blocks:
+            return positions
+        boundaries = {op.end // self._chunk_size * self._chunk_size, op.end}
+        for group_idx, tail in self._swa_tail_blocks.items():
+            tokens_per_block = self._group_tokens_per_block[group_idx]
+            num_blocks = len(op.block_ids[group_idx])
+            kept = positions.setdefault(group_idx, set())
+            for boundary in boundaries:
+                if boundary <= op.start:
+                    continue
+                end_block = min(cdiv(boundary - op.start, tokens_per_block), num_blocks)
+                kept.update(range(max(0, end_block - tail), end_block))
+        return positions
+
+    def _release_tail_pins(self, item: PendingStoreItem) -> None:
+        """Unpin the window-tail blocks of operations that are gone or
+        whose submission pinned them.
+
+        Args:
+            item: The operations, as the policy or the drain reported them.
+        """
+        pinned = self._tail_pins.get(item.request_id)
+        if not pinned:
+            return
+        released = [
+            block_id
+            for _, block_hashes in item.metadatas
+            for block_id in block_hashes
+            if block_id in pinned
+        ]
+        if not released:
+            return
+        pinned.difference_update(released)
+        if not pinned:
+            del self._tail_pins[item.request_id]
+        self._unpin(released)
+
+    def _release_all_tail_pins(self, request_id: str) -> None:
+        """Unpin every window-tail block a request still holds.
+
+        Args:
+            request_id: The request whose buffered operations are all gone.
+        """
+        pinned = self._tail_pins.pop(request_id, None)
+        if pinned:
+            self._unpin(list(pinned))
+
     def _pin(self, block_ids: list[int], *, release_to_head: bool = True) -> None:
         """Pin blocks, remembering which ones were waiting for eviction.
 
@@ -1322,6 +1445,7 @@ class LazyOffloadManager:
             return
         dropped = policy.mark_store_failed(request_id)
         self._release_holds(request_id)
+        self._release_all_tail_pins(request_id)
         logger.warning(
             "Store failed for request %s %d times in a row; dropped its %d "
             "store op(s) and stopped storing the request",
@@ -1338,6 +1462,7 @@ class LazyOffloadManager:
         """
         self._failed_store_attempts.pop(request_id, None)
         self._require_policy().release_request(request_id)
+        self._release_all_tail_pins(request_id)
         self._requests.session_ended(request_id)
         self._token_ledgers.pop(request_id, None)
         self._block_hash_chains.pop(request_id, None)

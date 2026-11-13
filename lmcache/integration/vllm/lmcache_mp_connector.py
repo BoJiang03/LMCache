@@ -66,6 +66,7 @@ from lmcache.integration.vllm.kv_cache_group_edits import (
 )
 from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
+    get_sliding_window_tail_blocks,
     get_tokens_per_block,
     gqa_kv_head_replicas,
     resolve_gqa_replicas_by_layer,
@@ -1088,6 +1089,15 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     mamba_groups=mamba_groups,
                     prefill_alignment=get_prefill_alignment(
                         vllm_config, kv_cache_config, mamba_groups
+                    ),
+                    sliding_window_tail_blocks=get_sliding_window_tail_blocks(
+                        getattr(kv_cache_config, "kv_cache_groups", ()) or (),
+                        lmcache_tokens_per_chunk,
+                        getattr(
+                            vllm_config.parallel_config,
+                            "decode_context_parallel_size",
+                            1,
+                        ),
                     ),
                 )
 

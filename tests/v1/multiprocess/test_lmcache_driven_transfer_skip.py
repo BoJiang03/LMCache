@@ -106,6 +106,36 @@ def test_negative_null_marker_preserves_checkpoint_zero() -> None:
     assert masks == [[True, False, True, False]]
 
 
+def test_sliding_window_chunk_missing_a_kept_block_is_skipped() -> None:
+    # Full attention (kg0, 1 block per chunk) plus a 2-block window over a
+    # 4-block chunk (kg1, keeps the last 2). Lazy offload nulls the blocks
+    # vLLM did not hash: chunk 1 holds its window tail, chunk 2 only the
+    # blocks before it, which the store would replace with null-block data.
+    full, swa = ObjectGroupInfo([0]), ObjectGroupInfo([1], sw_size_chunks=1)
+    block_ids = [[1, 2, 3], [0, 0, 0, 0, 0, 0, 5, 6, 7, 8, 0, 0]]
+    masks = all_null_chunk_masks(
+        block_ids, [full, swa], [1, 4], 3, kept_blocks_per_chunk=[1, 2]
+    )
+    assert masks == [[False, False, False], [True, False, True]]
+
+
+def test_kept_block_check_ignores_full_attention_and_recurrent_groups() -> None:
+    # Only sliding-window attention groups read their kept tail; a recurrent
+    # or full-attention group keeps the all-null rule.
+    full = ObjectGroupInfo([0])
+    state = ObjectGroupInfo([1], sw_size_chunks=1, recurrent=True)
+    masks = all_null_chunk_masks(
+        [[7, 0], [7, 0]], [full, state], [2, 2], 1, kept_blocks_per_chunk=[1, 1]
+    )
+    assert masks == [[False], [False]]
+
+
+def test_kept_block_check_off_without_kept_counts() -> None:
+    swa = ObjectGroupInfo([0], sw_size_chunks=1)
+    masks = all_null_chunk_masks([[5, 6, 0, 0]], [swa], [4], 1)
+    assert masks == [[False]]
+
+
 def _staging_context(
     num_kernel_groups: int,
     object_groups: list[ObjectGroupInfo],
