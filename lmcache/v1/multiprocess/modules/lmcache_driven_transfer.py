@@ -99,12 +99,45 @@ def get_layout_desc(
     return MemoryLayoutDesc(shapes=list(shapes), dtypes=list(dtypes))
 
 
+def _is_sliding_window(group: ObjectGroupInfo) -> bool:
+    """Whether an object group holds sliding-window attention KV."""
+    return group.sw_size_chunks > 0 and not group.recurrent
+
+
+def kept_blocks_per_chunk(cache_context: BaseCacheContext) -> list[int] | None:
+    """Trailing blocks of a chunk the store keeps, per kernel group.
+
+    The same count ``downsample_and_stage_block_ids`` keeps: a kernel group
+    whose sliding window is shorter than a chunk keeps only the window's
+    blocks, every other group keeps the whole chunk.
+
+    Args:
+        cache_context: The worker's cache context.
+
+    Returns:
+        The kept block count per kernel group, indexed by kernel-group index,
+        or None when no object group is sliding-window attention, so there
+        is no window tail to check.
+    """
+    manager = cache_context.kv_layer_groups_manager
+    if not any(_is_sliding_window(group) for group in manager.object_groups):
+        return None
+    chunk_tokens = cache_context.lmcache_tokens_per_chunk
+    return [
+        cache_context.calculate_num_blocks(
+            min(chunk_tokens, manager.get_subchunk_sw_size_tokens(kg)), kg
+        )
+        for kg in range(manager.num_kernel_groups)
+    ]
+
+
 def all_null_chunk_masks(
     block_ids: Sequence[Sequence[int]],
     object_groups: Sequence[ObjectGroupInfo],
     blocks_per_chunk: Sequence[int],
     num_chunks: int,
     null_block_id: int = 0,
+    kept_blocks_per_chunk: Sequence[int] | None = None,
 ) -> list[list[bool]]:
     """Mark, per object group, the chunks whose engine block ids are all null.
 
@@ -124,12 +157,22 @@ def all_null_chunk_masks(
         num_chunks: Number of chunks in the request.
         null_block_id: Server-wide block ID denoting absent data. Defaults to
             the historical vLLM null block zero.
+        kept_blocks_per_chunk: Per kernel group, the trailing blocks of a
+            chunk the store keeps (see ``downsample_and_stage_block_ids``).
+            When given, a chunk of a sliding-window object group is also
+            masked if any kept block is null: the stored object would hold
+            the null block's contents where a hit reads KV. Lazy offload
+            nulls the blocks vLLM did not hash, and vLLM hashes the window
+            tail of its own hit alignment, which need not end on an LMCache
+            chunk boundary.
 
     Returns:
-        ``mask[g][i]`` is True iff chunk ``i`` is all-null for object group ``g``.
+        ``mask[g][i]`` is True iff chunk ``i`` must not be stored for object
+        group ``g``: all-null, or a sliding-window chunk missing a kept block.
     """
     masks: list[list[bool]] = []
     for group in object_groups:
+        check_kept = kept_blocks_per_chunk is not None and _is_sliding_window(group)
         chunk_null: list[bool] = []
         for i in range(num_chunks):
             is_null = True
@@ -141,6 +184,14 @@ def all_null_chunk_masks(
                 ):
                     is_null = False
                     break
+            if not is_null and check_kept:
+                assert kept_blocks_per_chunk is not None
+                for kg in group.kernel_group_indices:
+                    end = (i + 1) * blocks_per_chunk[kg]
+                    kept = block_ids[kg][end - kept_blocks_per_chunk[kg] : end]
+                    if null_block_id in kept:
+                        is_null = True
+                        break
             chunk_null.append(is_null)
         masks.append(chunk_null)
     return masks
@@ -798,6 +849,7 @@ class LMCacheDrivenTransferModule(DiscoverableModule, InstanceLivenessTarget):
                 blocks_per_chunk,
                 num_chunks,
                 null_block_id,
+                kept_blocks_per_chunk=kept_blocks_per_chunk(cache_context),
             )
 
             block_ids_per_group_gpu = downsample_and_stage_block_ids(

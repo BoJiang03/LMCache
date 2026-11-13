@@ -137,6 +137,41 @@ def _is_sliding_window_spec(spec: Any) -> bool:
     return any(cls.__name__ == "SlidingWindowSpec" for cls in type(spec).__mro__)
 
 
+def get_sliding_window_tail_blocks(
+    kv_cache_groups: Sequence[Any], chunk_size: int, dcp_size: int
+) -> dict[int, int]:
+    """Blocks before a chunk boundary a hit there reads, per sliding-window group.
+
+    The server stores, for the chunk ending at a boundary, the blocks the
+    group's window covers: the window's own blocks when it is shorter than a
+    chunk, else the whole chunks it spans (see
+    ``KVLayerGroupsManager.get_subchunk_sw_size_tokens``).
+
+    Args:
+        kv_cache_groups: vLLM's KV cache groups, in group order.
+        chunk_size: LMCache tokens per chunk, a multiple of every group's
+            tokens per block.
+        dcp_size: Decode context parallel size, which widens a block's span.
+
+    Returns:
+        Sliding-window group index -> the trailing block count.
+    """
+    tails: dict[int, int] = {}
+    for group_idx, group in enumerate(kv_cache_groups):
+        spec = group.kv_cache_spec
+        if not _is_sliding_window_spec(spec):
+            continue
+        tokens_per_block = get_tokens_per_block(spec, dcp_size)
+        window = int(spec.sliding_window)
+        if window >= chunk_size:
+            tails[group_idx] = -(-window // chunk_size) * (
+                chunk_size // tokens_per_block
+            )
+        else:
+            tails[group_idx] = -(-window // tokens_per_block)
+    return tails
+
+
 def _is_cachable_mamba_spec(spec: Any) -> bool:
     """Return whether the spec is a snapshotting Mamba/linear-attention spec.
 

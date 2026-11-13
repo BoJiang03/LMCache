@@ -70,6 +70,7 @@ def _make_manager(
     configs: dict[str, ConfigValue] | None,
     completion_tracker: StoreCompletionTracker,
     group_tokens_per_block: list[int] | None = None,
+    sliding_window_tail_blocks: dict[int, int] | None = None,
 ) -> LazyOffloadManager:
     """Build an unbound manager with the suite's schedule limits."""
     return LazyOffloadManager(
@@ -80,6 +81,7 @@ def _make_manager(
         num_lookahead_tokens=0,
         max_model_len=MAX_MODEL_LEN,
         chunk_size=TOKENS_PER_BLOCK,
+        sliding_window_tail_blocks=sliding_window_tail_blocks,
     )
 
 
@@ -196,6 +198,7 @@ def _make_manager_harness(
     extra_config: dict[str, ConfigValue] | None = None,
     expected_worker_count: int = 1,
     group_tokens_per_block: list[int] | None = None,
+    sliding_window_tail_blocks: dict[int, int] | None = None,
 ) -> _Harness:
     """Build a bound manager over a fake pool, EVICTION_AWARE by default."""
     pool = FakeBlockPool(num_blocks)
@@ -206,6 +209,7 @@ def _make_manager_harness(
         },
         _FakeCompletionTracker(expected_worker_count),
         group_tokens_per_block,
+        sliding_window_tail_blocks,
     )
     manager.bind_block_pool(pool)  # type: ignore[arg-type]
     prefix_cache = _PrefixCache()
@@ -885,6 +889,73 @@ class TestFullLifecycle:
         # behind.
         assert harness.pool.free_block_ids() == [1, 2]
         assert harness.pool.blocks[1].ref_cnt == 0
+
+
+class TestSlidingWindowTailPins:
+    """Hash-less window-tail blocks are kept, pinned once per operation."""
+
+    @staticmethod
+    def _admit_with_hashless_tail(
+        harness: _Harness, request_id: str, block_ids: list[int], start: int, end: int
+    ) -> None:
+        """Buffer one op whose last block (the partial one) has no hash."""
+        if request_id not in harness.arrived:
+            _arrive_new_request(harness, request_id)
+        for bid in block_ids[:-1]:
+            harness.pool.set_hash(bid, f"hash-{bid}".encode())
+        harness.manager.add_store_candidate(
+            _make_store_metadata(request_id, [block_ids], start, end)
+        )
+
+    def test_tail_block_hashed_after_admission_is_still_stored(self) -> None:
+        """vLLM hashes a partial tail block once decode fills it; the op holding
+        it must not be dropped as recycled.
+        """
+        harness = _make_manager_harness(sliding_window_tail_blocks={0: 1})
+        self._admit_with_hashless_tail(harness, "req", [1, 2, 3], 0, 40)
+        harness.pool.set_hash(3, b"filled-by-decode")
+        _finish_request(harness, "req")
+        harness.pool.make_free([1, 2, 3])
+
+        drained = _drain(harness)
+
+        assert len(drained) == 1
+        assert drained.stores[0].op.block_ids == [[1, 2, 3]]
+
+    def test_boundary_block_shared_by_two_ops_has_balanced_pins(self) -> None:
+        """Two ops of a request keep the partial block at their boundary: each
+        pins it, and each pin is released.
+        """
+        harness = _make_manager_harness(sliding_window_tail_blocks={0: 1})
+        self._admit_with_hashless_tail(harness, "req", [1, 2, 3], 0, 40)
+        self._admit_with_hashless_tail(harness, "req", [3], 40, 48)
+        _finish_request(harness, "req")
+        harness.pool.make_free([1, 2, 3])
+
+        assert len(_drain(harness)) == 1
+        _report_store_complete(harness, "req")
+
+        pinned = sorted(bid for pin in harness.pool.touched for bid in pin)
+        unpinned = sorted(bid for freed in harness.pool.freed for bid in freed)
+        assert pinned == unpinned
+        assert harness.pool.blocks[3].ref_cnt == 0
+        assert harness.ended_sessions == ["req"]
+
+    def test_shared_boundary_block_is_unpinned_when_the_store_gives_up(
+        self,
+    ) -> None:
+        """A store failing for good releases both ops' pins of the shared block."""
+        harness = _make_manager_harness(sliding_window_tail_blocks={0: 1})
+        self._admit_with_hashless_tail(harness, "req", [1, 2, 3], 0, 40)
+        self._admit_with_hashless_tail(harness, "req", [3], 40, 48)
+        _finish_request(harness, "req")
+        harness.pool.make_free([1, 2, 3])
+        assert len(_drain(harness)) == 1
+
+        _fail_for_good(harness, "req")
+
+        assert harness.pool.blocks[3].ref_cnt == 0
+        assert 3 in harness.pool.free_block_ids()
 
 
 class TestFailedStoreReceipts:
